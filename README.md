@@ -134,6 +134,13 @@ Once startup completes, it prints:
   Default: `binary`
 - `MENTISDB_STORAGE_ADAPTER`
   Optional short alias for `MENTISDB_DEFAULT_STORAGE_ADAPTER`.
+- `MENTISDB_VERBOSE`
+  When unset, verbose interaction logging defaults to `true`. Supported explicit values:
+  `1`, `0`, `true`, `false`.
+- `MENTISDB_LOG_FILE`
+  Optional path for interaction logs. When set, MentisDB writes interaction logs to that file
+  even if console verbosity is disabled. If `MENTISDB_VERBOSE=true`, the same lines are also
+  mirrored to the console logger.
 - `MENTISDB_BIND_HOST`
   Bind host for both HTTP servers. Default: `127.0.0.1`
 - `MENTISDB_MCP_PORT`
@@ -147,6 +154,8 @@ Example:
 MENTISDB_DIR=/tmp/mentisdb \
 MENTISDB_DEFAULT_KEY=borganism-brain \
 MENTISDB_DEFAULT_STORAGE_ADAPTER=binary \
+MENTISDB_VERBOSE=true \
+MENTISDB_LOG_FILE=/tmp/mentisdb/mentisdbd.log \
 MENTISDB_BIND_HOST=127.0.0.1 \
 MENTISDB_MCP_PORT=9471 \
 MENTISDB_REST_PORT=9472 \

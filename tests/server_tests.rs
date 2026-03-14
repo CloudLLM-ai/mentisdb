@@ -29,6 +29,10 @@ fn unique_chain_dir() -> PathBuf {
     dir
 }
 
+fn unique_log_file_path() -> PathBuf {
+    unique_chain_dir().join("mentisdb-interactions.log")
+}
+
 fn env_mutex() -> &'static Mutex<()> {
     ENV_MUTEX.get_or_init(|| Mutex::new(()))
 }
@@ -100,6 +104,26 @@ fn server_config_parses_mentisdb_verbose_env_values() {
         std::env::set_var("MENTISDB_VERBOSE", original);
     } else {
         std::env::remove_var("MENTISDB_VERBOSE");
+    }
+}
+
+#[test]
+fn server_config_parses_mentisdb_log_file_env_values() {
+    let _guard = env_mutex().lock().unwrap();
+    let original = std::env::var("MENTISDB_LOG_FILE").ok();
+    let log_path = unique_log_file_path();
+
+    std::env::set_var("MENTISDB_LOG_FILE", &log_path);
+    let config = MentisDbServerConfig::from_env();
+    assert_eq!(config.service.log_file.as_deref(), Some(log_path.as_path()));
+
+    std::env::remove_var("MENTISDB_LOG_FILE");
+    assert!(MentisDbServerConfig::from_env().service.log_file.is_none());
+
+    if let Some(original) = original {
+        std::env::set_var("MENTISDB_LOG_FILE", original);
+    } else {
+        std::env::remove_var("MENTISDB_LOG_FILE");
     }
 }
 
@@ -616,6 +640,26 @@ async fn rest_router_bootstraps_and_reports_head() {
     assert_eq!(summary["storage_adapter"], "binary");
     assert_eq!(summary["thought_count"], 1);
     assert_eq!(summary["agent_count"], 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn rest_router_writes_interaction_logs_to_file_when_console_logging_is_disabled() {
+    let dir = unique_chain_dir();
+    let log_path = dir.join("interactions.log");
+    let router = rest_router(
+        MentisDbServiceConfig::new(dir.clone(), "log-file", StorageAdapterKind::Jsonl)
+            .with_verbose(false)
+            .with_log_file(Some(log_path.clone())),
+    );
+
+    append_thought_via_rest(router, "log-file", "astro", "Insight", None, "log me").await;
+
+    let log_contents = std::fs::read_to_string(&log_path).unwrap();
+    assert!(log_contents.contains("[mentisdbd]"));
+    assert!(log_contents.contains("op=append"));
+    assert!(log_contents.contains("chain=log-file"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

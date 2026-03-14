@@ -59,11 +59,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
-use std::fs;
-use std::io;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, RwLock};
 use uuid::Uuid;
@@ -97,6 +97,7 @@ const SKILL_SAFETY_WARNINGS: [&str; 4] = [
 /// );
 /// assert_eq!(config.default_chain_key, "borganism-brain");
 /// assert!(!config.verbose);
+/// assert!(config.log_file.is_none());
 /// ```
 #[derive(Debug, Clone)]
 pub struct MentisDbServiceConfig {
@@ -106,8 +107,10 @@ pub struct MentisDbServiceConfig {
     pub default_chain_key: String,
     /// Default storage adapter used when creating new chains.
     pub default_storage_adapter: StorageAdapterKind,
-    /// When true, log each MentisDB read or write interaction to stderr.
+    /// When true, mirror each MentisDB read or write interaction to the console logger.
     pub verbose: bool,
+    /// Optional file path that receives interaction logs regardless of console verbosity.
+    pub log_file: Option<PathBuf>,
 }
 
 impl MentisDbServiceConfig {
@@ -122,12 +125,19 @@ impl MentisDbServiceConfig {
             default_chain_key: default_chain_key.into(),
             default_storage_adapter,
             verbose: false,
+            log_file: None,
         }
     }
 
     /// Enable or disable verbose interaction logging for the service.
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
+        self
+    }
+
+    /// Configure an optional interaction log file for daemon read/write logs.
+    pub fn with_log_file(mut self, log_file: Option<PathBuf>) -> Self {
+        self.log_file = log_file;
         self
     }
 }
@@ -140,6 +150,7 @@ impl MentisDbServiceConfig {
 /// - `MENTISDB_DEFAULT_KEY`
 /// - `MENTISDB_DEFAULT_STORAGE_ADAPTER`
 /// - `MENTISDB_VERBOSE` (defaults to `true` when unset)
+/// - `MENTISDB_LOG_FILE`
 /// - `MENTISDB_BIND_HOST`
 /// - `MENTISDB_MCP_PORT`
 /// - `MENTISDB_REST_PORT`
@@ -180,6 +191,11 @@ impl MentisDbServerConfig {
             .ok()
             .map(|value| parse_bool_flag(&value).unwrap_or(false))
             .unwrap_or(true);
+        let log_file = env_var(&["MENTISDB_LOG_FILE"])
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
         let mcp_port = env_u16(&["MENTISDB_MCP_PORT"]).unwrap_or(9471);
         let rest_port = env_u16(&["MENTISDB_REST_PORT"]).unwrap_or(9472);
 
@@ -192,7 +208,8 @@ impl MentisDbServerConfig {
                     .unwrap_or_else(|_| "borganism-brain".to_string()),
                 storage_adapter,
             )
-            .with_verbose(verbose),
+            .with_verbose(verbose)
+            .with_log_file(log_file),
             mcp_addr: SocketAddr::new(bind_host, mcp_port),
             rest_addr: SocketAddr::new(bind_host, rest_port),
         }
@@ -556,6 +573,59 @@ struct MentisDbService {
     config: MentisDbServiceConfig,
     chains: Arc<RwLock<HashMap<String, Arc<RwLock<MentisDb>>>>>,
     skills: Arc<RwLock<SkillRegistry>>,
+    interaction_log: Arc<InteractionLogSink>,
+}
+
+#[derive(Debug)]
+struct InteractionLogSink {
+    file: Option<Mutex<File>>,
+}
+
+impl InteractionLogSink {
+    fn open(path: Option<&Path>) -> io::Result<Self> {
+        let file = match path {
+            Some(path) => {
+                if let Some(parent) = path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                {
+                    fs::create_dir_all(parent)?;
+                }
+                Some(Mutex::new(
+                    OpenOptions::new().create(true).append(true).open(path)?,
+                ))
+            }
+            None => None,
+        };
+        Ok(Self { file })
+    }
+
+    fn write(&self, line: &str, also_console: bool) {
+        if also_console {
+            log::info!(target: "mentisdb::interaction", "{line}");
+        }
+
+        let Some(file) = &self.file else {
+            return;
+        };
+
+        match file.lock() {
+            Ok(mut file) => {
+                if let Err(error) = writeln!(file, "{line}").and_then(|_| file.flush()) {
+                    log::error!(
+                        target: "mentisdb::interaction",
+                        "failed to append interaction log entry: {error}"
+                    );
+                }
+            }
+            Err(_) => {
+                log::error!(
+                    target: "mentisdb::interaction",
+                    "failed to lock interaction log file for writing"
+                );
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -729,6 +799,16 @@ impl ToolProtocol for MentisDbMcpProtocol {
 
 impl MentisDbService {
     fn new(config: MentisDbServiceConfig) -> Self {
+        let interaction_log = Arc::new(
+            InteractionLogSink::open(config.log_file.as_deref()).unwrap_or_else(|error| {
+                let target = config
+                    .log_file
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<unset>".to_string());
+                panic!("failed to open MentisDB interaction log at {target}: {error}");
+            }),
+        );
         Self {
             skills: Arc::new(RwLock::new(
                 SkillRegistry::open(&config.chain_dir).unwrap_or_else(|error| {
@@ -738,6 +818,7 @@ impl MentisDbService {
                     )
                 }),
             )),
+            interaction_log,
             config,
             chains: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -1731,11 +1812,12 @@ impl MentisDbService {
     }
 
     fn log_interaction(&self, entry: InteractionLogEntry) {
-        if !self.config.verbose {
+        if !self.config.verbose && self.config.log_file.is_none() {
             return;
         }
 
-        log::info!(target: "mentisdb::interaction", "{}", format_interaction_log_entry(&entry));
+        self.interaction_log
+            .write(&format_interaction_log_entry(&entry), self.config.verbose);
     }
 
     async fn resolve_registered_skill_agent(

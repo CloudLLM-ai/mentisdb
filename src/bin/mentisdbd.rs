@@ -11,6 +11,7 @@
 //! - `MENTISDB_DEFAULT_KEY`
 //! - `MENTISDB_DEFAULT_STORAGE_ADAPTER`
 //! - `MENTISDB_VERBOSE` (defaults to `true` when unset)
+//! - `MENTISDB_LOG_FILE`
 //! - `MENTISDB_BIND_HOST`
 //! - `MENTISDB_MCP_PORT`
 //! - `MENTISDB_REST_PORT`
@@ -87,6 +88,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some(config.service.default_storage_adapter.to_string()),
     );
     print_env_var("MENTISDB_VERBOSE", Some(config.service.verbose.to_string()));
+    print_env_var(
+        "MENTISDB_LOG_FILE",
+        config
+            .service
+            .log_file
+            .as_ref()
+            .map(|path| path.display().to_string()),
+    );
     print_env_var("MENTISDB_BIND_HOST", Some(config.mcp_addr.ip().to_string()));
     print_env_var(
         "MENTISDB_MCP_PORT",

@@ -1,4 +1,4 @@
-0.4.0 MAR/13/2026
+0.4.0.5 MAR/13/2026
  - feat: Complete the MentisDB skill registry release
    - Added the built-in `MENTISDB_SKILL.md` plus versioned uploaded skill documents for specialist agents
    - Finished the MCP and REST skill registry surfaces for list, manifest, upload, search, read, version listing, deprecate, and revoke flows
@@ -19,7 +19,7 @@
    - Added crate tests for skill import/export, persistence, lifecycle operations, and query timestamp windows
    - Added server tests for live skill registry MCP/REST flows and embedded skill retrieval
 
-0.3.0 MAR/12/2026
+0.3.0.4 MAR/12/2026
 Note: historical entries below use the original ThoughtChain / thoughtchaind
 names because they describe earlier releases. The project is now being
 rebranded to MentisDB / mentisdbd.
@@ -66,14 +66,14 @@ This release also records the project rename from ThoughtChain to MentisDB.
    - Added coverage for v0 to v1 migration
    - Added server coverage for registry-backed chain summaries, bootstrap adapter overrides, and the skill registry endpoints
 
-0.2.1 MAR/11/2026
+0.2.1.3 MAR/11/2026
  - feat: Add env-controlled verbose interaction logging to `thoughtchaind`
    - Added `THOUGHTCHAIN_VERBOSE` with support for `1`, `0`, `true`, and `false`
    - When enabled, the daemon logs each ThoughtChain read and write interaction with chain key, touched agents, thought types, roles, tags, and concepts
    - Startup configuration output now shows the effective verbose setting
  - test: Add coverage for verbose env parsing in server configuration
 
-0.2.0 MAR/11/2026
+0.2.0.2 MAR/11/2026
  - feat: Add retrospective memory support
    - Added `ThoughtType::LessonLearned`
    - Added `ThoughtRole::Retrospective`
@@ -92,7 +92,7 @@ This release also records the project rename from ThoughtChain to MentisDB.
    - Updated the white paper and protocol docs to explain retrospective memory, lessons learned, and shared-daemon discovery
  - test: Add coverage for retrospective type/role queries, discovery endpoints, and server append behavior
 
-0.1.0 MAR/11/2026
+0.1.0.1 MAR/11/2026
  - feat: First public release of `thoughtchain`
    - Standalone Rust crate for semantic, hash-chained memory in long-running and multi-agent systems
    - Append-only, adapter-backed storage with explicit integrity verification
