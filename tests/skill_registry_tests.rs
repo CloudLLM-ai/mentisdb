@@ -52,6 +52,33 @@ Use tags and UTC time windows.
 }
 
 #[test]
+fn markdown_import_extracts_frontmatter_and_sections() {
+    let markdown = r#"---
+schema_version: 1
+name: mentisdb
+description: Durable memory skill
+tags: [memory, registry]
+triggers: [mentisdb, skill]
+warnings: [untrusted-content]
+---
+
+# MentisDB
+
+Durable memory skill
+
+## Usage
+
+Use it well.
+"#;
+
+    let document = import_skill(markdown, SkillFormat::Markdown).unwrap();
+    assert_eq!(document.name, "mentisdb");
+    assert_eq!(document.tags, vec!["memory", "registry"]);
+    assert_eq!(document.triggers, vec!["mentisdb", "skill"]);
+    assert_eq!(document.sections.len(), 2);
+}
+
+#[test]
 fn upload_list_search_read_and_status_flows_work() {
     let path = unique_registry_path();
     let mut registry = SkillRegistry::open_at_path(&path).unwrap();

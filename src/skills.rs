@@ -1245,34 +1245,3 @@ fn verify_skill_registry_integrity(skills: &BTreeMap<String, SkillEntry>) -> io:
 fn skill_registry_path(chain_dir: &Path) -> PathBuf {
     chain_dir.join(MENTISDB_SKILL_REGISTRY_FILENAME)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn markdown_parser_extracts_frontmatter_and_sections() {
-        let markdown = r#"---
-schema_version: 1
-name: mentisdb
-description: Durable memory skill
-tags: [memory, registry]
-triggers: [mentisdb, skill]
-warnings: [untrusted-content]
----
-
-# MentisDB
-
-Durable memory skill
-
-## Usage
-
-Use it well.
-"#;
-        let document = parse_markdown_skill(markdown).unwrap();
-        assert_eq!(document.name, "mentisdb");
-        assert_eq!(document.tags, vec!["memory", "registry"]);
-        assert_eq!(document.triggers, vec!["mentisdb", "skill"]);
-        assert_eq!(document.sections.len(), 2);
-    }
-}
