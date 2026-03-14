@@ -169,6 +169,105 @@ High-value retrieval strategies:
 - `Correction` before trusting older memories
 - `since` and `until` when reconstructing a specific day or incident window
 
+## Direct Lookup And Ordered Traversal
+
+Use the right read tool for the job:
+
+- use `search` when you want relevant matching thoughts
+- use `get_thought` when you already know the exact `id`, `hash`, or `index`
+- use `get_genesis_thought` when you want the first thought ever recorded
+- use `head` when you want the latest thought at the current chain tip
+- use `traverse_thoughts` when you need deterministic append-order replay rather than ranked retrieval
+
+This distinction matters:
+
+- search answers "what looks relevant?"
+- direct lookup answers "give me this exact thought"
+- traversal answers "what came before or after this point in the ledger?"
+
+Think of traversal as pagination over the append-only history.
+
+### Anchor Choices
+
+- `genesis` + `forward`: replay from the beginning toward the present
+- `head` + `backward`: inspect the newest history first
+- `id`, `hash`, or `index`: continue from a known thought returned by search, lookup, or a previous traversal page
+
+### Paging Rules
+
+- use `chunk_size = 1` when you literally want the next or previous matching thought
+- use larger chunks such as `25`, `50`, or `100` for broad review or export-style replay
+- keep `include_anchor = false` when continuing from a returned cursor, or you will repeat the boundary thought
+- to keep moving `forward`, anchor on `next_cursor`
+- to keep moving `backward`, anchor on `previous_cursor`
+
+### Filtered Traversal
+
+Traversal reuses the same semantic filters as search.
+
+That means you can walk:
+
+- only one agent's thoughts
+- only certain thought types such as `Decision`, `Constraint`, or `LessonLearned`
+- only certain roles such as `Checkpoint` or `Retrospective`
+- only one project or subsystem via tags and concepts
+- only a time window
+- any combination of the above
+
+Use that to build context deliberately instead of replaying the whole chain blindly.
+
+### Time Windows
+
+Use exact UTC timestamps when you know the wall-clock boundaries:
+
+- `since`
+- `until`
+
+Use numeric windows when you are paging programmatically from a known epoch:
+
+- `time_window.start`
+- `time_window.delta`
+- `time_window.unit`
+
+Rules:
+
+- `time_window.start` is numeric, not RFC 3339 text
+- `time_window.unit` applies to both `start` and `delta`
+- use `seconds` for coarse programmatic ranges
+- use `milliseconds` when sub-second precision matters
+- if you need exact human-readable boundaries, prefer `since` and `until`
+
+### Traversal Strategy Patterns
+
+- Search first, traverse second.
+  Search gives you the likely region of interest. Traversal then gives you the ordered context around that region.
+- Start backward from `head` when you want the newest lessons fast.
+  This is usually the best default for incident review, recent debugging, or session resumption.
+- Start forward from `genesis` when you need a historical reconstruction.
+  This is useful for audits, migrations, provenance review, or building a compressed summary of the full chain.
+- Filter aggressively for specialist replay.
+  If you only need Solana cancellations by one agent in the last day, say that explicitly.
+- Read corrections before trusting older lessons.
+  A backward scan filtered to `Correction` often prevents loading stale rules into your context.
+
+### Full-Scan Guidance
+
+Do not default to a whole-chain replay unless you actually need it.
+
+If you do need it:
+
+- prefer chunked traversal over a single giant search
+- keep your chunk size large enough to make progress but small enough to summarize
+- summarize each chunk before pulling the next one
+- preserve the current cursor so you can resume without repeating work
+- narrow by agent, type, role, or time window whenever possible
+
+For multi-agent chains:
+
+- scan one agent first when you want a specialist's operating guidance
+- scan across agents when you want decisions, conflicts, or shared constraints
+- combine `agent_ids` with `thought_types` and `roles` to avoid drowning in generic history
+
 ## Skill Registry
 
 Use the skill registry when the reusable thing is bigger than a single thought and should be shared as a versioned instruction bundle.
@@ -336,6 +435,218 @@ Then narrow by subsystem:
   "thought_types": ["Insight", "LessonLearned"]
 }
 ```
+
+### Example: Full Replay From Genesis
+
+Use traversal rather than plain search when you need oldest-to-newest replay:
+
+```json
+{
+  "tool": "mentisdb_traverse_thoughts",
+  "parameters": {
+    "chain_key": "borganism-brain",
+    "anchor_boundary": "genesis",
+    "direction": "forward",
+    "include_anchor": true,
+    "chunk_size": 100
+  }
+}
+```
+
+Use this for:
+
+- building a historical summary
+- migration review
+- provenance reconstruction
+
+### Example: Recent-First Replay From Head
+
+Use backward traversal when the newest lessons matter most:
+
+```json
+{
+  "tool": "mentisdb_traverse_thoughts",
+  "parameters": {
+    "chain_key": "borganism-brain",
+    "anchor_boundary": "head",
+    "direction": "backward",
+    "include_anchor": true,
+    "chunk_size": 25
+  }
+}
+```
+
+Use this for:
+
+- recent incident review
+- picking up interrupted work
+- loading the latest constraints before acting
+
+### Example: Traverse Only One Agent
+
+If you want Astro's ordered memory rather than everyone else's:
+
+```json
+{
+  "tool": "mentisdb_traverse_thoughts",
+  "parameters": {
+    "chain_key": "borganism-brain",
+    "anchor_boundary": "genesis",
+    "direction": "forward",
+    "include_anchor": true,
+    "chunk_size": 50,
+    "agent_ids": ["astro"]
+  }
+}
+```
+
+Use this for:
+
+- specialist handoff review
+- reconstructing one agent's reasoning across sessions
+- separating one producer's durable lessons from multi-agent noise
+
+### Example: Traverse Only Lessons And Decisions For One Agent
+
+```json
+{
+  "tool": "mentisdb_traverse_thoughts",
+  "parameters": {
+    "chain_key": "borganism-brain",
+    "anchor_boundary": "genesis",
+    "direction": "forward",
+    "include_anchor": true,
+    "chunk_size": 50,
+    "agent_ids": ["astro"],
+    "thought_types": ["Decision", "LessonLearned", "Correction"],
+    "roles": ["Memory", "Retrospective"]
+  }
+}
+```
+
+This is often better than replaying all summaries, questions, and incidental notes.
+
+### Example: Traverse A Specific Time Window
+
+Use exact UTC bounds for one day or incident:
+
+```json
+{
+  "tool": "mentisdb_traverse_thoughts",
+  "parameters": {
+    "chain_key": "borganism-brain",
+    "anchor_boundary": "genesis",
+    "direction": "forward",
+    "include_anchor": true,
+    "chunk_size": 50,
+    "since": "2026-03-11T00:00:00Z",
+    "until": "2026-03-11T23:59:59.999999999Z",
+    "thought_types": ["Decision", "Correction", "LessonLearned"]
+  }
+}
+```
+
+Use numeric windows when a machine already has epoch values:
+
+```json
+{
+  "tool": "mentisdb_traverse_thoughts",
+  "parameters": {
+    "chain_key": "borganism-brain",
+    "anchor_boundary": "genesis",
+    "direction": "forward",
+    "include_anchor": true,
+    "chunk_size": 50,
+    "time_window": {
+      "start": 1773187200000,
+      "delta": 86400000,
+      "unit": "milliseconds"
+    }
+  }
+}
+```
+
+### Example: Get The Next Matching Thought
+
+Use `chunk_size = 1` for next/previous navigation:
+
+```json
+{
+  "tool": "mentisdb_traverse_thoughts",
+  "parameters": {
+    "chain_key": "borganism-brain",
+    "anchor_id": "11111111-1111-1111-1111-111111111111",
+    "direction": "forward",
+    "include_anchor": false,
+    "chunk_size": 1,
+    "agent_ids": ["astro"],
+    "thought_types": ["Correction"]
+  }
+}
+```
+
+This means:
+
+- start from a known thought
+- move forward
+- skip the anchor itself
+- return only the next matching correction written by Astro
+
+### Example: Continue Paging Without Repeating
+
+If a traversal page returns:
+
+```json
+{
+  "next_cursor": {
+    "index": 842
+  },
+  "previous_cursor": {
+    "index": 818
+  }
+}
+```
+
+Continue forward like this:
+
+```json
+{
+  "tool": "mentisdb_traverse_thoughts",
+  "parameters": {
+    "chain_key": "borganism-brain",
+    "anchor_index": 842,
+    "direction": "forward",
+    "include_anchor": false,
+    "chunk_size": 25
+  }
+}
+```
+
+Continue backward like this:
+
+```json
+{
+  "tool": "mentisdb_traverse_thoughts",
+  "parameters": {
+    "chain_key": "borganism-brain",
+    "anchor_index": 818,
+    "direction": "backward",
+    "include_anchor": false,
+    "chunk_size": 25
+  }
+}
+```
+
+### Example: Search Then Traverse
+
+A strong retrieval loop is:
+
+1. `mentisdb_search` for candidate thoughts
+2. choose one anchor thought from the results
+3. `mentisdb_get_thought` if you need the exact full record
+4. `mentisdb_traverse_thoughts` around that anchor to recover ordered context
+
+That gives better context than either search-only or full-chain replay.
 
 ## Domain-Specific Guidance
 
