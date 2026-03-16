@@ -297,6 +297,67 @@ pub struct SkillVersionSummary {
     pub signing_key_id: Option<String>,
 }
 
+/// Upload request for one new immutable skill version.
+///
+/// This request groups the upload metadata needed by
+/// [`SkillRegistry::upload_skill`] into a single value so callers can add
+/// optional fields without growing the method signature.
+#[derive(Debug, Clone)]
+pub struct SkillUpload<'a> {
+    skill_id: Option<&'a str>,
+    uploaded_by_agent_id: &'a str,
+    uploaded_by_agent_name: Option<&'a str>,
+    uploaded_by_agent_owner: Option<&'a str>,
+    format: SkillFormat,
+    content: &'a str,
+    signing_key_id: Option<String>,
+    skill_signature: Option<Vec<u8>>,
+}
+
+impl<'a> SkillUpload<'a> {
+    /// Create a new upload request with the required fields.
+    pub fn new(uploaded_by_agent_id: &'a str, format: SkillFormat, content: &'a str) -> Self {
+        Self {
+            skill_id: None,
+            uploaded_by_agent_id,
+            uploaded_by_agent_name: None,
+            uploaded_by_agent_owner: None,
+            format,
+            content,
+            signing_key_id: None,
+            skill_signature: None,
+        }
+    }
+
+    /// Attach an explicit skill id instead of deriving one from the skill name.
+    pub fn with_skill_id(mut self, skill_id: &'a str) -> Self {
+        self.skill_id = Some(skill_id);
+        self
+    }
+
+    /// Attach optional human-readable agent identity metadata.
+    pub fn with_agent_identity(
+        mut self,
+        uploaded_by_agent_name: Option<&'a str>,
+        uploaded_by_agent_owner: Option<&'a str>,
+    ) -> Self {
+        self.uploaded_by_agent_name = uploaded_by_agent_name;
+        self.uploaded_by_agent_owner = uploaded_by_agent_owner;
+        self
+    }
+
+    /// Attach optional signing metadata for this upload.
+    pub fn with_signing(
+        mut self,
+        signing_key_id: Option<String>,
+        skill_signature: Option<Vec<u8>>,
+    ) -> Self {
+        self.signing_key_id = signing_key_id;
+        self.skill_signature = skill_signature;
+        self
+    }
+}
+
 /// Query parameters for skill-registry search.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillQuery {
@@ -652,32 +713,22 @@ impl SkillRegistry {
     /// as unified-diff deltas against the immediately preceding version to
     /// save storage space.
     ///
-    /// # Parameters
-    ///
-    /// - `skill_id`: Optional stable id; derived from skill name when `None`.
-    /// - `uploaded_by_agent_id`: Non-empty agent identifier performing the upload.
-    /// - `uploaded_by_agent_name`: Optional human-readable agent display name.
-    /// - `uploaded_by_agent_owner`: Optional agent owner or tenant label.
-    /// - `format`: Source format of the `content` string.
-    /// - `content`: Raw skill source text (Markdown or JSON).
-    /// - `signing_key_id`: Optional key id used to sign this version.
-    /// - `skill_signature`: Optional Ed25519 signature bytes over `content`.
-    ///
     /// # Errors
     ///
-    /// Returns an error if `content` cannot be parsed, validation fails,
+    /// Returns an error if the request content cannot be parsed, validation fails,
     /// or the registry cannot be persisted.
-    pub fn upload_skill(
-        &mut self,
-        skill_id: Option<&str>,
-        uploaded_by_agent_id: &str,
-        uploaded_by_agent_name: Option<&str>,
-        uploaded_by_agent_owner: Option<&str>,
-        format: SkillFormat,
-        content: &str,
-        signing_key_id: Option<String>,
-        skill_signature: Option<Vec<u8>>,
-    ) -> io::Result<SkillSummary> {
+    pub fn upload_skill(&mut self, request: SkillUpload<'_>) -> io::Result<SkillSummary> {
+        let SkillUpload {
+            skill_id,
+            uploaded_by_agent_id,
+            uploaded_by_agent_name,
+            uploaded_by_agent_owner,
+            format,
+            content,
+            signing_key_id,
+            skill_signature,
+        } = request;
+
         let document = import_skill(content, format)?;
         document.validate()?;
         let normalized_skill_id = skill_id
@@ -687,7 +738,8 @@ impl SkillRegistry {
         let now = Utc::now();
 
         // Resolve prev_raw before taking a mutable borrow on self.skills.
-        let prev_raw: Option<String> = if let Some(existing) = self.skills.get(&normalized_skill_id) {
+        let prev_raw: Option<String> = if let Some(existing) = self.skills.get(&normalized_skill_id)
+        {
             let prev_index = existing.versions.len().saturating_sub(1);
             if existing.versions.is_empty() {
                 None
@@ -1188,7 +1240,7 @@ pub fn migrate_skill_registry<P: AsRef<Path>>(
         skills: migrated_skills,
     };
     let encoded = bincode::serde::encode_to_vec(&new_persisted, bincode::config::standard())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("encode error: {e}")))?;
+        .map_err(|e| io::Error::other(format!("encode error: {e}")))?;
     fs::write(&path, &encoded)?;
     Ok(Some(SkillRegistryMigrationReport {
         path,
@@ -1268,13 +1320,12 @@ fn reconstruct_raw_content(entry: &SkillEntry, version_index: usize) -> io::Resu
                 current = raw.clone();
             }
             SkillVersionContent::Delta { patch } => {
-                let parsed_patch =
-                    diffy::Patch::from_str(patch).map_err(|e| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("invalid patch at v{i}: {e}"),
-                        )
-                    })?;
+                let parsed_patch = diffy::Patch::from_str(patch).map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("invalid patch at v{i}: {e}"),
+                    )
+                })?;
                 current = diffy::apply(&current, &parsed_patch).map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,

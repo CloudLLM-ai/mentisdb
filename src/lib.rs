@@ -26,7 +26,7 @@ use uuid::Uuid;
 pub use skills::{
     export_skill, import_skill, migrate_skill_registry, SkillDocument, SkillEntry, SkillFormat,
     SkillQuery, SkillRegistry, SkillRegistryManifest, SkillRegistryMigrationReport, SkillSection,
-    SkillStatus, SkillSummary, SkillVersion, SkillVersionContent, SkillVersionSummary,
+    SkillStatus, SkillSummary, SkillUpload, SkillVersion, SkillVersionContent, SkillVersionSummary,
     MENTISDB_SKILL_CURRENT_SCHEMA_VERSION, MENTISDB_SKILL_REGISTRY_CURRENT_VERSION,
     MENTISDB_SKILL_REGISTRY_V1, MENTISDB_SKILL_REGISTRY_V2,
 };
@@ -419,7 +419,10 @@ impl BinaryStorageAdapter {
     ///
     /// Returns an [`io::Error`] if the underlying write or flush fails.
     pub fn flush(&self) -> io::Result<()> {
-        let mut state = self.state.lock().expect("BinaryStorageAdapter state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .expect("BinaryStorageAdapter state mutex poisoned");
         state.flush_buffer(&self.file_path)
     }
 }
@@ -451,7 +454,10 @@ impl StorageAdapter for BinaryStorageAdapter {
             .map_err(|e| io::Error::other(format!("Failed to serialize thought: {e}")))?;
         let length_bytes = (payload.len() as u64).to_le_bytes();
 
-        let mut state = self.state.lock().expect("BinaryStorageAdapter state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .expect("BinaryStorageAdapter state mutex poisoned");
 
         if self.auto_flush {
             // --- Immediate-flush path (default) ---

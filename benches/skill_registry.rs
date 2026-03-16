@@ -11,8 +11,10 @@
 //! - **`reconstruct_latency`**: read-skill reconstruction at chain depths of
 //!   1, 5, 10, and 20 versions, measuring the cumulative patch-application cost.
 
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
-use mentisdb::{SkillFormat, SkillQuery, SkillRegistry};
+use criterion::{
+    black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
+};
+use mentisdb::{SkillFormat, SkillQuery, SkillRegistry, SkillUpload};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -88,14 +90,8 @@ fn populate_registry(registry: &mut SkillRegistry, count: usize) -> String {
         let content = skill_markdown(i, tag_index);
         let summary = registry
             .upload_skill(
-                None,
-                "bench-agent",
-                Some("Bench Agent"),
-                None,
-                SkillFormat::Markdown,
-                &content,
-                None,
-                None,
+                SkillUpload::new("bench-agent", SkillFormat::Markdown, &content)
+                    .with_agent_identity(Some("Bench Agent"), None),
             )
             .expect("populate_registry: upload failed");
         last_id = summary.skill_id;
@@ -122,16 +118,11 @@ pub fn bench_upload_first_version(c: &mut Criterion) {
             |(mut registry, _dir)| {
                 let content = black_box(skill_markdown(0, 0));
                 let summary = registry
-                    .upload_skill(
-                        None,
+                    .upload_skill(SkillUpload::new(
                         "bench-agent",
-                        None,
-                        None,
                         SkillFormat::Markdown,
                         &content,
-                        None,
-                        None,
-                    )
+                    ))
                     .expect("upload_first_version: upload failed");
                 black_box(summary.skill_id);
             },
@@ -159,14 +150,8 @@ pub fn bench_upload_delta_version(c: &mut Criterion) {
                 let v0 = skill_markdown(0, 0);
                 registry
                     .upload_skill(
-                        Some("bench-delta-skill"),
-                        "bench-agent",
-                        None,
-                        None,
-                        SkillFormat::Markdown,
-                        &v0,
-                        None,
-                        None,
+                        SkillUpload::new("bench-agent", SkillFormat::Markdown, &v0)
+                            .with_skill_id("bench-delta-skill"),
                     )
                     .expect("upload_delta_version setup: v0 upload failed");
                 (registry, dir)
@@ -174,20 +159,11 @@ pub fn bench_upload_delta_version(c: &mut Criterion) {
             |(mut registry, _dir)| {
                 // v1 appends a version note — produces a non-trivial diff.
                 let v0 = skill_markdown(0, 0);
-                let v1 = format!(
-                    "{v0}{}",
-                    VERSION_DELTA_SUFFIX.replace("{version}", "1")
-                );
+                let v1 = format!("{v0}{}", VERSION_DELTA_SUFFIX.replace("{version}", "1"));
                 let summary = registry
                     .upload_skill(
-                        Some("bench-delta-skill"),
-                        "bench-agent",
-                        None,
-                        None,
-                        SkillFormat::Markdown,
-                        black_box(&v1),
-                        None,
-                        None,
+                        SkillUpload::new("bench-agent", SkillFormat::Markdown, black_box(&v1))
+                            .with_skill_id("bench-delta-skill"),
                     )
                     .expect("upload_delta_version: v1 upload failed");
                 black_box(summary.skill_id);
@@ -218,16 +194,11 @@ pub fn bench_upload_batch(c: &mut Criterion) {
                     for i in 0..n as usize {
                         let content = skill_markdown(i, i % 10);
                         registry
-                            .upload_skill(
-                                None,
+                            .upload_skill(SkillUpload::new(
                                 "bench-agent",
-                                None,
-                                None,
                                 SkillFormat::Markdown,
                                 black_box(&content),
-                                None,
-                                None,
-                            )
+                            ))
                             .expect("upload_batch: upload failed");
                     }
                     black_box(registry.list_skills().len());
@@ -329,14 +300,8 @@ pub fn reconstruct_latency(c: &mut Criterion) {
                         // v0 — Full.
                         registry
                             .upload_skill(
-                                Some(skill_id),
-                                "bench-agent",
-                                None,
-                                None,
-                                SkillFormat::Markdown,
-                                &base,
-                                None,
-                                None,
+                                SkillUpload::new("bench-agent", SkillFormat::Markdown, &base)
+                                    .with_skill_id(skill_id),
                             )
                             .expect("reconstruct setup: v0 upload failed");
                         // v1..vN-1 — Deltas.
@@ -347,14 +312,12 @@ pub fn reconstruct_latency(c: &mut Criterion) {
                             );
                             registry
                                 .upload_skill(
-                                    Some(skill_id),
-                                    "bench-agent",
-                                    None,
-                                    None,
-                                    SkillFormat::Markdown,
-                                    &content,
-                                    None,
-                                    None,
+                                    SkillUpload::new(
+                                        "bench-agent",
+                                        SkillFormat::Markdown,
+                                        &content,
+                                    )
+                                    .with_skill_id(skill_id),
                                 )
                                 .expect("reconstruct setup: version upload failed");
                         }
@@ -362,11 +325,7 @@ pub fn reconstruct_latency(c: &mut Criterion) {
                     },
                     |(registry, _dir, skill_id)| {
                         let text = registry
-                            .read_skill(
-                                black_box(&skill_id),
-                                None,
-                                SkillFormat::Markdown,
-                            )
+                            .read_skill(black_box(&skill_id), None, SkillFormat::Markdown)
                             .expect("reconstruct_latency: read_skill failed");
                         black_box(text.len());
                     },

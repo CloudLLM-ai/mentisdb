@@ -1,7 +1,11 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use mentisdb::{export_skill, import_skill, migrate_skill_registry, SkillFormat, SkillQuery, SkillRegistry, SkillStatus, SkillVersionContent, MENTISDB_SKILL_REGISTRY_CURRENT_VERSION, MENTISDB_SKILL_REGISTRY_V1};
+use mentisdb::{
+    export_skill, import_skill, migrate_skill_registry, SkillFormat, SkillQuery, SkillRegistry,
+    SkillStatus, SkillUpload, SkillVersionContent, MENTISDB_SKILL_REGISTRY_CURRENT_VERSION,
+    MENTISDB_SKILL_REGISTRY_V1,
+};
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -101,14 +105,8 @@ Search by UTC day window first.
 
     let summary = registry
         .upload_skill(
-            None,
-            "astro",
-            Some("Astro"),
-            Some("@gubatron"),
-            SkillFormat::Markdown,
-            markdown,
-            None,
-            None,
+            SkillUpload::new("astro", SkillFormat::Markdown, markdown)
+                .with_agent_identity(Some("Astro"), Some("@gubatron")),
         )
         .unwrap();
     assert_eq!(summary.skill_id, "mentisdb");
@@ -117,18 +115,17 @@ Search by UTC day window first.
 
     let second_summary = registry
         .upload_skill(
-            Some("mentisdb"),
-            "apollo",
-            Some("Apollo"),
-            Some("@gubatron"),
-            SkillFormat::Json,
-            &export_skill(
-                &import_skill(markdown, SkillFormat::Markdown).unwrap(),
+            SkillUpload::new(
+                "apollo",
                 SkillFormat::Json,
+                &export_skill(
+                    &import_skill(markdown, SkillFormat::Markdown).unwrap(),
+                    SkillFormat::Json,
+                )
+                .unwrap(),
             )
-            .unwrap(),
-            None,
-            None,
+            .with_skill_id("mentisdb")
+            .with_agent_identity(Some("Apollo"), Some("@gubatron")),
         )
         .unwrap();
     assert_eq!(second_summary.version_count, 2);
@@ -210,12 +207,10 @@ fn skill_registry_persists_and_reloads() {
         let mut registry = SkillRegistry::open_at_path(&path).unwrap();
         registry
             .upload_skill(
-                None,
-                "astro",
-                Some("Astro"),
-                Some("@gubatron"),
-                SkillFormat::Markdown,
-                r#"---
+                SkillUpload::new(
+                    "astro",
+                    SkillFormat::Markdown,
+                    r#"---
 schema_version: 1
 name: test-skill
 description: A persisted skill
@@ -230,8 +225,8 @@ A persisted skill
 
 Remember the persisted rule.
 "#,
-                None,
-                None,
+                )
+                .with_agent_identity(Some("Astro"), Some("@gubatron")),
             )
             .unwrap();
     }
@@ -286,20 +281,17 @@ fn skill_first_upload_stores_full_content() {
     let content = skill_markdown("First Skill", "First upload test", "Initial body text.");
     registry
         .upload_skill(
-            None,
-            "astro",
-            Some("Astro"),
-            Some("@gubatron"),
-            SkillFormat::Markdown,
-            &content,
-            None,
-            None,
+            SkillUpload::new("astro", SkillFormat::Markdown, &content)
+                .with_agent_identity(Some("Astro"), Some("@gubatron")),
         )
         .unwrap();
 
     let version = registry.skill_version("first-skill", None).unwrap();
 
-    assert_eq!(version.version_number, 0, "first upload must have version_number 0");
+    assert_eq!(
+        version.version_number, 0,
+        "first upload must have version_number 0"
+    );
 
     match &version.content {
         SkillVersionContent::Full { raw } => {
@@ -347,27 +339,16 @@ fn skill_second_upload_stores_delta() {
     );
 
     registry
-        .upload_skill(
-            None,
+        .upload_skill(SkillUpload::new(
             "astro",
-            None,
-            None,
             SkillFormat::Markdown,
             &content_v0,
-            None,
-            None,
-        )
+        ))
         .unwrap();
     registry
         .upload_skill(
-            Some("delta-skill"),
-            "astro",
-            None,
-            None,
-            SkillFormat::Markdown,
-            &content_v1,
-            None,
-            None,
+            SkillUpload::new("astro", SkillFormat::Markdown, &content_v1)
+                .with_skill_id("delta-skill"),
         )
         .unwrap();
 
@@ -405,7 +386,11 @@ fn skill_second_upload_stores_delta() {
 
     // Both versions must reconstruct to the originally uploaded text (via read_skill).
     let reconstructed_v0 = registry
-        .read_skill("delta-skill", Some(summaries[0].version_id), SkillFormat::Markdown)
+        .read_skill(
+            "delta-skill",
+            Some(summaries[0].version_id),
+            SkillFormat::Markdown,
+        )
         .unwrap();
     assert!(
         reconstructed_v0.contains("Original paragraph with some detail"),
@@ -413,7 +398,11 @@ fn skill_second_upload_stores_delta() {
     );
 
     let reconstructed_v1 = registry
-        .read_skill("delta-skill", Some(summaries[1].version_id), SkillFormat::Markdown)
+        .read_skill(
+            "delta-skill",
+            Some(summaries[1].version_id),
+            SkillFormat::Markdown,
+        )
         .unwrap();
     assert!(
         reconstructed_v1.contains("Revised paragraph with updated information"),
@@ -449,20 +438,18 @@ fn skill_delta_chain_reconstructs_all_versions() {
     for content in &versions_content {
         registry
             .upload_skill(
-                Some("chain-skill"),
-                "astro",
-                None,
-                None,
-                SkillFormat::Markdown,
-                content,
-                None,
-                None,
+                SkillUpload::new("astro", SkillFormat::Markdown, content)
+                    .with_skill_id("chain-skill"),
             )
             .unwrap();
     }
 
     let summaries = registry.skill_versions("chain-skill").unwrap();
-    assert_eq!(summaries.len(), 4, "must have four versions after four uploads");
+    assert_eq!(
+        summaries.len(),
+        4,
+        "must have four versions after four uploads"
+    );
 
     for (i, summary) in summaries.iter().enumerate() {
         assert_eq!(
@@ -472,7 +459,11 @@ fn skill_delta_chain_reconstructs_all_versions() {
 
         // Reconstruct this version and verify it contains the unique token.
         let reconstructed = registry
-            .read_skill("chain-skill", Some(summary.version_id), SkillFormat::Markdown)
+            .read_skill(
+                "chain-skill",
+                Some(summary.version_id),
+                SkillFormat::Markdown,
+            )
             .unwrap();
         let expected_token = format!("REVISION_{i}_TOKEN");
         assert!(
@@ -614,7 +605,10 @@ fn skill_migration_v1_to_v2() {
         report.to_version, MENTISDB_SKILL_REGISTRY_CURRENT_VERSION,
         "migration must report to_version == current"
     );
-    assert_eq!(report.skills_migrated, 1, "one skill must have been migrated");
+    assert_eq!(
+        report.skills_migrated, 1,
+        "one skill must have been migrated"
+    );
     assert_eq!(
         report.versions_migrated, 1,
         "one version must have been migrated"
@@ -625,7 +619,11 @@ fn skill_migration_v1_to_v2() {
     let registry =
         SkillRegistry::open_at_path(&registry_path).expect("migrated registry must open cleanly");
     let listed = registry.list_skills();
-    assert_eq!(listed.len(), 1, "migrated registry must contain exactly one skill");
+    assert_eq!(
+        listed.len(),
+        1,
+        "migrated registry must contain exactly one skill"
+    );
     assert_eq!(listed[0].skill_id, "legacy-skill");
 
     let reconstructed = registry
@@ -665,16 +663,11 @@ fn skill_upload_without_signature_succeeds_when_agent_has_no_keys() {
 
     let content = skill_markdown("Unsigned Skill", "No signing required", "Plain upload.");
 
-    let result = registry.upload_skill(
-        None,
+    let result = registry.upload_skill(SkillUpload::new(
         "anonymous-agent",
-        None,
-        None,
         SkillFormat::Markdown,
         &content,
-        None, // signing_key_id
-        None, // skill_signature
-    );
+    ));
 
     assert!(
         result.is_ok(),
@@ -704,20 +697,18 @@ fn skill_upload_signing_fields_stored_on_version() {
     let path = unique_registry_path();
     let mut registry = SkillRegistry::open_at_path(&path).unwrap();
 
-    let content = skill_markdown("Signed Skill", "Signature fields test", "Signed upload body.");
+    let content = skill_markdown(
+        "Signed Skill",
+        "Signature fields test",
+        "Signed upload body.",
+    );
     let fake_key_id = "my-key".to_string();
     let fake_sig = vec![0u8; 64];
 
     registry
         .upload_skill(
-            None,
-            "signing-agent",
-            None,
-            None,
-            SkillFormat::Markdown,
-            &content,
-            Some(fake_key_id.clone()),
-            Some(fake_sig.clone()),
+            SkillUpload::new("signing-agent", SkillFormat::Markdown, &content)
+                .with_signing(Some(fake_key_id.clone()), Some(fake_sig.clone())),
         )
         .unwrap();
 

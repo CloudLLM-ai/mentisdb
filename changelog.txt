@@ -3,6 +3,13 @@
    - Split the `mentisdb/` subtree out of the former `cloudllm` monorepo and preserved the MentisDB commit history in the new repository
    - Updated crate metadata to point at the standalone `CloudLLM-ai/mentisdb` repository
    - Replaced the old local `../mcp` path dependency with the published `cloudllm_mcp` crate so `mentisdbd` builds and runs from the standalone checkout
+ - api: Make skill uploads warning-clean under strict Clippy
+   - Replaced the long `SkillRegistry::upload_skill(...)` parameter list with a public `SkillUpload` request type
+   - Updated server, tests, and benchmark call sites to use the new upload request builder methods
+   - Fixed the remaining Clippy findings in `server.rs` and `skills.rs` so `cargo clippy -- -D warnings` passes on the standalone repository
+ - chore: Track standalone repo build artifacts more cleanly
+   - Added a root `.gitignore` for `target/` and editor backup files
+   - Added `Cargo.lock` to the standalone repository so the daemon build resolves against a checked-in lockfile
 
 0.4.1.6 MAR/16/2026
  - feat: Agent registry public key support

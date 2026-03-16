@@ -9,7 +9,9 @@
 //! - **`traversal`**: forward and backward append-order traversal at chunk sizes
 //!   of 10 and 100 over a 500-thought chain.
 
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
+use criterion::{
+    black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
+};
 use mentisdb::{
     BinaryStorageAdapter, MentisDb, ThoughtInput, ThoughtQuery, ThoughtTraversalAnchor,
     ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType,
@@ -31,8 +33,8 @@ fn temp_chain(label: &str) -> (MentisDb, TempDir) {
         .tempdir()
         .expect("failed to create tempdir for benchmark");
     let adapter = BinaryStorageAdapter::for_chain_key(dir.path(), label);
-    let chain = MentisDb::open_with_storage(Box::new(adapter))
-        .expect("failed to open chain for benchmark");
+    let chain =
+        MentisDb::open_with_storage(Box::new(adapter)).expect("failed to open chain for benchmark");
     (chain, dir)
 }
 
@@ -76,8 +78,7 @@ pub fn bench_append_single(c: &mut Criterion) {
         b.iter_batched(
             || temp_chain("append-single"),
             |(mut chain, _dir)| {
-                let input =
-                    ThoughtInput::new(ThoughtType::Insight, black_box("benchmark content"));
+                let input = ThoughtInput::new(ThoughtType::Insight, black_box("benchmark content"));
                 chain
                     .append_thought(black_box("bench-agent"), input)
                     .expect("append_single: append failed");
@@ -107,10 +108,7 @@ pub fn bench_append_batch(c: &mut Criterion) {
                 || temp_chain("append-batch"),
                 |(mut chain, _dir)| {
                     for i in 0..n {
-                        let input = ThoughtInput::new(
-                            ThoughtType::Insight,
-                            format!("thought {i}"),
-                        );
+                        let input = ThoughtInput::new(ThoughtType::Insight, format!("thought {i}"));
                         chain
                             .append_thought("bench-agent", input)
                             .expect("append_batch: append failed");

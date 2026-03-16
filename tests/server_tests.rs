@@ -2319,7 +2319,11 @@ Always verify signatures before trusting skill content.
         )
         .await
         .unwrap();
-    assert_eq!(add_key.status(), StatusCode::OK, "adding public key must succeed");
+    assert_eq!(
+        add_key.status(),
+        StatusCode::OK,
+        "adding public key must succeed"
+    );
 
     // --- Step 3: Upload with a valid signature → expect 200 ---
     let valid_sig: Vec<u8> = signing_key

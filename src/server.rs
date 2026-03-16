@@ -38,12 +38,11 @@
 
 use crate::{
     load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus, MentisDb, PublicKeyAlgorithm,
-    SkillFormat,
-    SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus, SkillSummary,
-    SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRole,
-    ThoughtTimeWindow, ThoughtTraversalAnchor, ThoughtTraversalCursor, ThoughtTraversalDirection,
-    ThoughtTraversalRequest, ThoughtType, TimeWindowUnit, MENTISDB_CURRENT_VERSION,
-    MENTISDB_SKILL_CURRENT_SCHEMA_VERSION,
+    SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus, SkillSummary,
+    SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery,
+    ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor, ThoughtTraversalCursor,
+    ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType, TimeWindowUnit,
+    MENTISDB_CURRENT_VERSION, MENTISDB_SKILL_CURRENT_SCHEMA_VERSION,
 };
 use async_trait::async_trait;
 use axum::extract::{Query, State};
@@ -52,12 +51,12 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use mcp::http::axum_router as shared_mcp_router;
 use mcp::{
     streamable_http_router, HttpServerConfig, IpFilter, StreamableHttpConfig, ToolError,
     ToolMetadata, ToolParameter, ToolParameterType, ToolProtocol, ToolResult,
 };
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1664,21 +1663,21 @@ impl MentisDbService {
                     ))
                 })?;
             verify_ed25519_signature(&key.public_key_bytes, request.content.as_bytes(), sig_bytes)
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(e))?;
+                .map_err(Box::<dyn Error + Send + Sync>::from)?;
         }
         // --- End signature verification ---
 
         let mut registry = self.skills.write().await;
-        let skill = registry.upload_skill(
-            request.skill_id.as_deref(),
-            &agent.agent_id,
-            Some(&agent.display_name),
-            agent.owner.as_deref(),
-            format,
-            &request.content,
-            request.signing_key_id.clone(),
-            request.skill_signature.clone(),
-        )?;
+        let mut upload = SkillUpload::new(&agent.agent_id, format, &request.content)
+            .with_agent_identity(Some(&agent.display_name), agent.owner.as_deref())
+            .with_signing(
+                request.signing_key_id.clone(),
+                request.skill_signature.clone(),
+            );
+        if let Some(skill_id) = request.skill_id.as_deref() {
+            upload = upload.with_skill_id(skill_id);
+        }
+        let skill = registry.upload_skill(upload)?;
         self.log_interaction(InteractionLogEntry {
             access: "write",
             operation: "upload_skill",
@@ -2766,8 +2765,8 @@ fn verify_ed25519_signature(
             public_key_bytes.len()
         )
     })?;
-    let verifying_key =
-        VerifyingKey::from_bytes(&key_arr).map_err(|e| format!("invalid Ed25519 public key: {e}"))?;
+    let verifying_key = VerifyingKey::from_bytes(&key_arr)
+        .map_err(|e| format!("invalid Ed25519 public key: {e}"))?;
     let sig_arr: [u8; 64] = signature_bytes.try_into().map_err(|_| {
         format!(
             "invalid Ed25519 signature length: expected 64 bytes, got {}",
