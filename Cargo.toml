@@ -1,6 +1,6 @@
 [package]
 name = "mentisdb"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Angel Leon <gubatron@gmail.com>"]
 edition = "2021"
 license = "MIT"
@@ -21,6 +21,8 @@ bincode = { version = "2.0.1", features = ["serde"] }
 chrono = { version = "0.4.44", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+diffy = "0.3"
+ed25519-dalek = { version = "2", features = ["alloc"] }
 sha2 = "0.10.9"
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
 mcp = { package = "cloudllm_mcp", path = "../mcp", version = "0.1.0" }
@@ -30,8 +32,24 @@ log = { version = "0.4.28", optional = true }
 tokio = { version = "1.50.0", features = ["full"], optional = true }
 
 [dev-dependencies]
+bincode = { version = "2.0.1", features = ["serde"] }
+chrono = { version = "0.4.44", features = ["serde"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+ed25519-dalek = { version = "2", features = ["alloc"] }
 reqwest = { version = "0.13.2", features = ["json"] }
+serde = { version = "1.0.228", features = ["derive"] }
+sha2 = "0.10.9"
+tempfile = "3"
 tower = { version = "0.5.3", features = ["util"] }
+uuid = { version = "1.22.0", features = ["v4", "serde"] }
+
+[[bench]]
+name = "thought_chain"
+harness = false
+
+[[bench]]
+name = "skill_registry"
+harness = false
 
 [[bin]]
 name = "mentisdbd"
