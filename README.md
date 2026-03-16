@@ -1,36 +1,63 @@
 # MentisDB
 
-MentisDB, formerly ThoughtChain, is the standalone durable-memory crate in this
-repository.
+MentisDB is a **durable semantic memory engine and versioned skill registry** for AI agents — a persistent, hash-chained brain that survives context resets, model swaps, and team turnover.
 
-It stores semantically typed thoughts in an append-only, hash-chained memory
-log through a swappable storage adapter layer. The current default backend is
-binary, but the chain model is no longer tied to that format. Agents can:
+It stores semantically typed thoughts in an append-only, hash-chained memory log through a swappable storage adapter layer. The skill registry is a git-like immutable version store for agent instruction bundles — every upload is a new version, history is never overwritten, and every version is cryptographically signable.
 
-- persist important insights, decisions, constraints, and checkpoints
-- record retrospectives and lessons learned after hard failures or non-obvious fixes
-- relate new thoughts to earlier thoughts with typed graph edges
-- query memory by type, role, agent, tags, concepts, text, and importance
-- reconstruct context for agent resumption
-- export a Markdown memory view that can back `MEMORY.md`, MCP, REST, or CLI flows
+---
 
-The crate is intentionally independent from `cloudllm` so it can be embedded in
-other agent systems without creating circular dependencies.
+## Why MentisDB
+
+**Harness Swapping** — the same durable memory works across every AI coding environment. Connect Claude Code, OpenAI Codex, GitHub Copilot CLI, Qwen Code, Cursor, VS Code, or any MCP-capable host to the same `mentisdbd` daemon and your agents share one brain, regardless of which tool you picked up today.
+
+**Zero Knowledge Loss Across Context Boundaries** — when an agent's context window fills, it writes a `Summary` checkpoint to MentisDB, compacts, reloads `mentisdb_recent_context`, and continues without losing a single decision. Chat history is ephemeral. MentisDB is permanent.
+
+**Fleet Orchestration at Scale** — one project manager agent decomposes work, dispatches a parallel fleet of specialists, each pre-warmed with shared memory, and synthesizes results wave by wave. MentisDB is the coordination substrate: every agent reads from the same chain and writes its lessons back. The fleet's collective intelligence compounds.
+
+**Versioned Skill Registry** — skills are not just stored, they are versioned like a git repository. Every upload to an existing `skill_id` creates a new immutable version (stored as a unified diff). Any historical version is reconstructable. Skills can be deprecated or revoked while full audit history is preserved. Uploading agents with registered Ed25519 keys must cryptographically sign their uploads — provenance is verifiable, not assumed.
+
+**Session Resurrection** — any agent can call `mentisdb_recent_context` and immediately know exactly where the project stands, what decisions were made, what traps were already hit, and what comes next — without re-reading code, re-running exploratory searches, or asking the human to re-explain context that was earned through hours of work.
+
+**Self-Improving Agent Fleets** — agents upload updated skill files after learning something new. A skill checked in at the start of a project is better by the end of it. Combine with Ed25519 signing to create a verifiable, tamper-evident record of which agent authored which version of institutional knowledge.
+
+**Multi-Agent Shared Brain** — multiple agents, multiple roles, multiple owners can write to the same chain key simultaneously. Every thought carries a stable `agent_id`. Queries filter by agent identity, thought type, role, tags, concepts, importance, and time windows. The chain represents the full collective intelligence of an entire orchestration system, not just one session.
+
+**Lessons That Outlive Models** — architectural decisions, hard constraints, non-obvious failure modes, and retrospectives written to MentisDB survive chat loss, model upgrades, and team changes. The knowledge compounds instead of evaporating. A new engineer or a new agent boots up, loads the chain, and inherits everything the team learned.
+
+---
 
 ## Quick Start
 
-If you just want the daemon:
+Install and run the daemon:
 
 ```bash
 cargo install mentisdb
 mentisdbd
 ```
 
-If you want to leave it running after closing your SSH session:
+Run persistently after closing your SSH session:
 
 ```bash
 nohup mentisdbd &
 ```
+
+Connect your AI coding tool to the running daemon:
+
+```bash
+# Claude Code
+claude mcp add --transport http mentisdb http://127.0.0.1:9471
+
+# OpenAI Codex
+codex mcp add mentisdb --url http://127.0.0.1:9471
+
+# Qwen Code
+qwen mcp add --transport http mentisdb http://127.0.0.1:9471
+
+# GitHub Copilot CLI — use /mcp add in interactive mode,
+# or write ~/.copilot/mcp-config.json manually (see below)
+```
+
+---
 
 ## What Is In This Folder
 
@@ -41,12 +68,41 @@ nohup mentisdbd &
 - the `mentisdbd` daemon binary
 - dedicated tests under `mentisdb/tests`
 
-## Build
+---
 
-From inside `mentisdb/`:
+## Makefile
+
+A `Makefile` is included at the repository root. All common workflows have a target:
 
 ```bash
-cargo build
+make build          # fmt + release build
+make build-mentisdbd # build only the daemon binary
+make release        # fmt, check, clippy, build, test, doc in sequence
+make fmt            # cargo fmt
+make check          # cargo check (lib + binary)
+make clippy         # cargo fmt + clippy --all-targets -D warnings
+make test           # cargo test
+make bench          # Criterion benchmarks, output tee'd to /tmp/mentisdb_bench_results.txt
+make doc            # cargo doc --all-features
+make install        # cargo install --path . --bin mentisdbd
+make publish        # cargo publish
+make publish-dry-run
+make clean
+make help           # list all targets with descriptions
+```
+
+---
+
+## Build
+
+```bash
+make build
+```
+
+Or directly with Cargo:
+
+```bash
+cargo build --release
 ```
 
 Build only the library without the default daemon/server stack:
@@ -55,9 +111,15 @@ Build only the library without the default daemon/server stack:
 cargo build --no-default-features
 ```
 
+---
+
 ## Test
 
-Run the crate tests:
+```bash
+make test
+```
+
+Or directly:
 
 ```bash
 cargo test
@@ -75,9 +137,41 @@ Run rustdoc tests:
 cargo test --doc
 ```
 
+---
+
+## Benchmarks
+
+MentisDB ships a Criterion benchmark suite and a harness-free HTTP concurrency benchmark:
+
+```bash
+make bench
+```
+
+Or directly:
+
+```bash
+cargo bench
+```
+
+Results are also written to `/tmp/mentisdb_bench_results.txt` so numbers persist across terminal sessions.
+
+Benchmark coverage:
+
+- `benches/thought_chain.rs` — 10 benchmarks: append throughput, query latency, traversal patterns
+- `benches/skill_registry.rs` — 12 benchmarks: skill upload, search, delta reconstruction, lifecycle
+- `benches/http_concurrency.rs` — starts `mentisdbd` in-process on a random port; measures write and read throughput at 100 / 1k / 10k concurrent Tokio tasks with p50/p95/p99 latency reporting
+
+Baseline numbers from the `DashMap` concurrent chain lookup refactor: **750–930 read req/s at 10k concurrent tasks**, compared to a sequential bottleneck on the previous `RwLock<HashMap>` implementation.
+
+---
+
 ## Generate Docs
 
-Build local Rust documentation:
+```bash
+make doc
+```
+
+Or directly:
 
 ```bash
 cargo doc --no-deps
@@ -89,6 +183,8 @@ Generate docs for the library-only build:
 cargo doc --no-deps --no-default-features
 ```
 
+---
+
 ## Run The Daemon
 
 The standalone daemon binary is `mentisdbd`.
@@ -99,9 +195,11 @@ Run it from source:
 cargo run --bin mentisdbd
 ```
 
-Install it from the crate directory while working in this repo:
+Install it from the crate directory:
 
 ```bash
+make install
+# or
 cargo install --path . --locked
 ```
 
@@ -121,6 +219,8 @@ Once startup completes, it prints:
 - the active chain directory, default chain key, and bound MCP/REST addresses
 - a catalog of all exposed HTTP endpoints with one-line descriptions
 - a per-chain summary with version, adapter, thought count, and per-agent counts
+
+---
 
 ## Daemon Configuration
 
@@ -180,6 +280,8 @@ MENTISDB_BIND_HOST=0.0.0.0 \
 mentisdbd
 ```
 
+---
+
 ## Server Surfaces
 
 MCP endpoints:
@@ -221,6 +323,8 @@ REST endpoints:
 - `POST /v1/skills/deprecate`
 - `POST /v1/skills/revoke`
 - `POST /v1/head`
+
+---
 
 ## MCP Tool Catalog
 
@@ -289,9 +393,11 @@ The detailed request and response shapes for the MCP surface live in
 [`MENTISDB_MCP.md`](../MENTISDB_MCP.md). The REST equivalents live in
 [`MENTISDB_REST.md`](../MENTISDB_REST.md).
 
+---
+
 ## Thought Lookup And Traversal
 
-MentisDB now distinguishes three different read patterns:
+MentisDB distinguishes three different read patterns:
 
 - `head` means the newest thought at the current tip of the append-only chain
 - `genesis` means the very first thought in the chain
@@ -309,9 +415,11 @@ Lookup and traversal support:
 - optional filters reused from thought search, such as agent identity, thought type, role, tags, concepts, text, importance, confidence, and time windows
 - numeric time windows expressed as `start + delta` with `seconds` or `milliseconds` units for MCP/REST callers
 
+---
+
 ## Skill Registry
 
-MentisDB now includes a versioned skill registry stored alongside chain data in a binary file. Skills are ingested through adapters:
+MentisDB includes a versioned skill registry stored alongside chain data in a binary file. Skills are ingested through adapters:
 
 - Markdown -> `SkillDocument`
 - JSON -> `SkillDocument`
@@ -368,6 +476,8 @@ Upload flow for signing agents:
    POST /v1/skills/upload   { agent_id, skill_id, content, signing_key_id, skill_signature }
    ```
    or via MCP: `mentisdb_upload_skill` with the same fields.
+
+---
 
 ## Using With MCP Clients
 
@@ -485,6 +595,8 @@ You can also configure it manually in `~/.copilot/mcp-config.json`:
 }
 ```
 
+---
+
 ## Retrospective Memory
 
 MentisDB supports a dedicated retrospective workflow for lessons learned.
@@ -501,6 +613,8 @@ The retrospective helper:
 - always stores the thought with `role = Retrospective`
 - still supports tags, concepts, confidence, importance, and `refs` to earlier
   thoughts such as the original mistake or correction
+
+---
 
 ## Shared-Chain Multi-Agent Use
 
@@ -536,6 +650,8 @@ Queries can filter by:
 Administrative tools can also inspect and mutate the agent registry directly,
 so agents can be documented, disabled, aliased, or provisioned with public keys
 before they start writing thoughts.
+
+---
 
 ## Related Docs
 
