@@ -334,7 +334,7 @@
 </head>
 <body>
   <nav>
-    <div class="nav-brand">🧠 MentisDB</div>
+    <div class="nav-brand">🧠 MentisDB <span id="nav-version" style="font-size:0.7rem;font-weight:400;color:#8b949e;margin-left:4px"></span></div>
     <div class="nav-links">
       <a href="#chains"  id="nav-chains">Chains</a>
       <a href="#agents"  id="nav-agents">Agents</a>
@@ -514,7 +514,15 @@
     else                                                     renderChainList();
   }
   window.addEventListener('hashchange', route);
-  window.addEventListener('load', route);
+  window.addEventListener('load', () => {
+    api('/dashboard/api/version')
+      .then(d => {
+        const el = document.getElementById('nav-version');
+        if (el && d && d.version) el.textContent = `v${d.version}`;
+      })
+      .catch(() => {});
+    route();
+  });
 
   // =====================================================================
   // CHAIN LIST
@@ -524,7 +532,10 @@
     app.innerHTML = `
       <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
         <h1>Memory Chains</h1>
-        <button class="btn btn-primary" id="cl-bootstrap-btn">＋ Bootstrap New Chain</button>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-secondary" id="cl-refresh-btn" title="Refresh counts from server">↺ Refresh</button>
+          <button class="btn btn-primary" id="cl-bootstrap-btn">＋ Bootstrap New Chain</button>
+        </div>
       </div>
 
       <!-- Bootstrap modal -->
@@ -563,6 +574,9 @@
 
     // Bootstrap modal wiring
     let _delChainKey = null;
+    document.getElementById('cl-refresh-btn').addEventListener('click', () => {
+      loadChains();
+    });
     document.getElementById('cl-bootstrap-btn').addEventListener('click', () => {
       document.getElementById('cl-bootstrap-modal').style.display = '';
       document.getElementById('cl-ck').focus();

@@ -128,7 +128,9 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
         .route("/skills/{skill_id}/versions", get(api_skill_versions))
         .route("/skills/{skill_id}/diff", get(api_skill_diff))
         .route("/skills/{skill_id}/revoke", post(api_revoke_skill))
-        .route("/skills/{skill_id}/deprecate", post(api_deprecate_skill));
+        .route("/skills/{skill_id}/deprecate", post(api_deprecate_skill))
+        // Version
+        .route("/version", get(api_version));
 
     // ── Protected surface (PIN-gated when pin is set) ─────────────────────
     let protected = Router::new()
@@ -407,16 +409,23 @@ struct DiffQuery {
 /// `GET /dashboard/api/chains`
 ///
 /// Returns a JSON array of chain summaries with live thought and agent counts.
-/// Each chain is opened on demand via [`get_or_open_chain`] (which also caches
-/// it in `state.chains`) so counts are never read from a stale registry value.
+/// Includes both chains registered on disk and any chains currently live in the
+/// in-memory DashMap cache (e.g. created mid-session via MCP/REST).
 async fn api_chains(
     State(state): State<DashboardState>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let registry = load_registered_chains(&state.mentisdb_dir).map_err(internal_error)?;
+    // Collect all known chain keys: disk registry ∪ live DashMap.
+    let mut chain_keys: std::collections::BTreeSet<String> = {
+        let registry = load_registered_chains(&state.mentisdb_dir).map_err(internal_error)?;
+        registry.chains.into_keys().collect()
+    };
+    for entry in state.chains.iter() {
+        chain_keys.insert(entry.key().clone());
+    }
 
-    let mut chains = Vec::with_capacity(registry.chains.len());
+    let mut chains = Vec::with_capacity(chain_keys.len());
 
-    for chain_key in registry.chains.keys() {
+    for chain_key in &chain_keys {
         // Open (or retrieve from cache) to guarantee live counts.
         let arc = get_or_open_chain(&state, chain_key).await?;
         let chain = arc.read().await;
@@ -936,4 +945,11 @@ async fn api_deprecate_skill(
         .deprecate_skill(&skill_id, body.reason.as_deref())
         .map_err(internal_error)?;
     Ok(Json(serde_json::to_value(summary).map_err(internal_error)?))
+}
+
+/// `GET /dashboard/api/version`
+///
+/// Returns the crate version baked in at compile time.
+async fn api_version() -> Json<Value> {
+    Json(json!({ "version": env!("CARGO_PKG_VERSION") }))
 }
