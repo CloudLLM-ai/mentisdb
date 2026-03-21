@@ -476,17 +476,36 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     println!("{skill_registry_msg}");
     println!("mentisdbd running");
+
+    // ── Resolved endpoints (local + friendly) ────────────────────────────────
+    let mcp_local  = format!("http://{}",  handles.mcp.local_addr());
+    let rest_local = format!("http://{}",  handles.rest.local_addr());
+    let mcp_port   = handles.mcp.local_addr().port();
+    let rest_port  = handles.rest.local_addr().port();
+    let mcp_friendly  = format!("http://my.mentisdb.com:{mcp_port}");
+    let rest_friendly = format!("http://my.mentisdb.com:{rest_port}");
+
     println!("Resolved endpoints:");
-    println!("  MCP:  http://{}", handles.mcp.local_addr());
-    println!("  REST: http://{}", handles.rest.local_addr());
+    println!("  MCP  (HTTP)  {mcp_local:<32}  {YELLOW}{mcp_friendly}{RESET}");
+    println!("  REST (HTTP)  {rest_local:<32}  {YELLOW}{rest_friendly}{RESET}");
+
     if let Some(ref h) = handles.https_mcp {
-        println!("  MCP:  https://{}", h.local_addr());
+        let local    = format!("https://{}", h.local_addr());
+        let port     = h.local_addr().port();
+        let friendly = format!("https://my.mentisdb.com:{port}");
+        println!("  MCP  (TLS)   {local:<32}  {YELLOW}{friendly}{RESET}");
     }
     if let Some(ref h) = handles.https_rest {
-        println!("  REST: https://{}", h.local_addr());
+        let local    = format!("https://{}", h.local_addr());
+        let port     = h.local_addr().port();
+        let friendly = format!("https://my.mentisdb.com:{port}");
+        println!("  REST (TLS)   {local:<32}  {YELLOW}{friendly}{RESET}");
     }
     if let Some(ref h) = handles.dashboard {
-        println!("  Dashboard: http://{}/dashboard", h.local_addr());
+        let local    = format!("http://{}/dashboard", h.local_addr());
+        let port     = h.local_addr().port();
+        let friendly = format!("http://my.mentisdb.com:{port}/dashboard");
+        println!("  Dashboard    {local:<32}  {YELLOW}{friendly}{RESET}");
     }
 
     tokio::signal::ctrl_c().await?;
