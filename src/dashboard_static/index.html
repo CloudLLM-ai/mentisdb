@@ -1,0 +1,1287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB Dashboard</title>
+  <style>
+    /* === Reset & Base === */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { font-size: 14px; }
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+    h1, h2, h3, h4 { font-weight: 600; line-height: 1.3; }
+    h1 { font-size: 1.75rem; }
+    h2 { font-size: 1.4rem; }
+    h3 { font-size: 1.15rem; }
+    a { color: #58a6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .mono { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 0.85em; }
+
+    /* === Nav === */
+    nav {
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      padding: 0 24px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .nav-brand { font-size: 1.2rem; font-weight: 700; color: #e6edf3; letter-spacing: -0.5px; user-select: none; }
+    .nav-links { display: flex; gap: 4px; }
+    .nav-links a {
+      color: #8b949e;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      transition: background 0.15s, color 0.15s;
+    }
+    .nav-links a:hover { background: #21262d; color: #e6edf3; text-decoration: none; }
+    .nav-links a.active { color: #e6edf3; background: #21262d; }
+
+    /* === Main === */
+    #app { padding: 24px; max-width: 1400px; margin: 0 auto; }
+
+    /* === Cards === */
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .card-title {
+      font-size: 0.9rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #8b949e;
+      margin-bottom: 14px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #30363d;
+    }
+
+    /* === Tables === */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th {
+      color: #58a6ff;
+      text-align: left;
+      padding: 8px 12px;
+      border-bottom: 1px solid #30363d;
+      font-weight: 600;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+    td { padding: 8px 12px; border-bottom: 1px solid #1c2128; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tbody tr.clickable:hover { background: #1c2128; cursor: pointer; }
+
+    /* === Badges === */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 0.73rem;
+      font-weight: 600;
+      white-space: nowrap;
+      line-height: 1.6;
+    }
+    .badge-blue   { background: rgba(88,166,255,0.15);   color: #58a6ff; border: 1px solid rgba(88,166,255,0.3); }
+    .badge-yellow { background: rgba(227,179,65,0.15);   color: #e3b341; border: 1px solid rgba(227,179,65,0.3); }
+    .badge-red    { background: rgba(248,81,73,0.15);    color: #f85149; border: 1px solid rgba(248,81,73,0.3); }
+    .badge-purple { background: rgba(188,140,255,0.15);  color: #bc8cff; border: 1px solid rgba(188,140,255,0.3); }
+    .badge-green  { background: rgba(63,185,80,0.15);    color: #3fb950; border: 1px solid rgba(63,185,80,0.3); }
+    .badge-orange { background: rgba(255,123,114,0.15);  color: #ff7b72; border: 1px solid rgba(255,123,114,0.3); }
+    .badge-amber  { background: rgba(255,159,10,0.15);   color: #ff9f0a; border: 1px solid rgba(255,159,10,0.3); }
+    .badge-gray   { background: rgba(139,148,158,0.15);  color: #8b949e; border: 1px solid rgba(139,148,158,0.3); }
+
+    /* === Buttons === */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+      line-height: 1.4;
+      font-family: inherit;
+    }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary   { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+    .btn-primary:hover:not(:disabled)   { background: #388bfd; border-color: #388bfd; }
+    .btn-secondary { background: transparent; color: #e6edf3; border-color: #30363d; }
+    .btn-secondary:hover:not(:disabled) { background: #21262d; border-color: #8b949e; }
+    .btn-danger    { background: transparent; color: #f85149; border-color: rgba(248,81,73,0.5); }
+    .btn-danger:hover:not(:disabled)    { background: rgba(248,81,73,0.12); border-color: #f85149; }
+    .btn-success   { background: transparent; color: #3fb950; border-color: rgba(63,185,80,0.5); }
+    .btn-success:hover:not(:disabled)   { background: rgba(63,185,80,0.12); border-color: #3fb950; }
+    .btn-sm { padding: 3px 10px; font-size: 0.8rem; }
+
+    /* === Forms === */
+    .form-group { margin-bottom: 12px; }
+    .form-group label { display: block; font-size: 0.82rem; color: #8b949e; margin-bottom: 4px; font-weight: 600; }
+    input[type="text"], textarea, select {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #e6edf3;
+      padding: 7px 10px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      transition: border-color 0.15s;
+      outline: none;
+    }
+    input[type="text"]:focus, textarea:focus, select:focus { border-color: #58a6ff; }
+    textarea { min-height: 80px; resize: vertical; }
+    select { cursor: pointer; appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b949e'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px; }
+    select option { background: #161b22; }
+
+    /* === Spinner === */
+    .spinner-wrap { display: flex; justify-content: center; align-items: center; padding: 56px; }
+    .spinner {
+      width: 34px; height: 34px;
+      border: 3px solid #21262d;
+      border-top-color: #58a6ff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* === States === */
+    .error-state {
+      color: #f85149; padding: 20px; text-align: center;
+      background: rgba(248,81,73,0.08); border-radius: 6px;
+      border: 1px solid rgba(248,81,73,0.2); font-size: 0.9rem;
+    }
+    .empty-state { color: #8b949e; padding: 28px; text-align: center; font-size: 0.9rem; }
+
+    /* === Inline feedback === */
+    .feedback {
+      display: inline-flex; align-items: center;
+      margin-left: 10px; font-size: 0.82rem;
+      opacity: 0; transition: opacity 0.25s;
+    }
+    .feedback.show { opacity: 1; }
+    .feedback-ok  { color: #3fb950; }
+    .feedback-err { color: #f85149; }
+
+    /* === Page layout helpers === */
+    .page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+    .page-header h1 { flex: 1; }
+    .back-link {
+      display: inline-flex; align-items: center; gap: 6px;
+      color: #8b949e; font-size: 0.88rem; margin-bottom: 14px;
+    }
+    .back-link:hover { color: #58a6ff; text-decoration: none; }
+    .section-label {
+      font-size: 0.72rem; text-transform: uppercase;
+      letter-spacing: 0.8px; color: #8b949e; font-weight: 700;
+      margin: 16px 0 8px;
+    }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+    @media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
+
+    /* === Filter bar === */
+    .filter-bar {
+      display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap;
+      margin-bottom: 14px; padding: 12px 14px;
+      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+    }
+    .filter-item { display: flex; flex-direction: column; gap: 4px; }
+    .filter-item label { font-size: 0.78rem; color: #8b949e; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+    .filter-item select { width: auto; min-width: 70px; }
+
+    /* === Multi-select dropdown === */
+    .ms-wrap { position: relative; }
+    .ms-btn {
+      background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+      padding: 7px 30px 7px 10px; border-radius: 6px; font-size: 0.88rem;
+      cursor: pointer; white-space: nowrap; position: relative;
+      min-width: 170px; text-align: left; transition: border-color 0.15s;
+      font-family: inherit;
+    }
+    .ms-btn::after { content: '▾'; position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: #8b949e; font-size: 0.8rem; }
+    .ms-btn:hover { border-color: #8b949e; }
+    .ms-panel {
+      position: absolute; top: calc(100% + 4px); left: 0;
+      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      padding: 8px; z-index: 300; min-width: 270px; max-height: 420px;
+      overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.55);
+    }
+    .ms-panel.hidden { display: none; }
+    .type-group { margin-bottom: 6px; }
+    .type-group-hdr {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 4px 6px; margin-bottom: 3px; border-radius: 4px;
+    }
+    .tg-actions { display: flex; gap: 4px; }
+    .tg-actions button {
+      font-size: 0.7rem; background: none; border: none; cursor: pointer;
+      padding: 1px 5px; border-radius: 3px; font-family: inherit;
+      transition: background 0.1s;
+    }
+    .tg-actions button:hover { background: rgba(255,255,255,0.1); }
+    .type-cb-row {
+      display: flex; align-items: center; gap: 7px;
+      padding: 3px 6px; border-radius: 4px; cursor: pointer;
+    }
+    .type-cb-row:hover { background: #21262d; }
+    .type-cb-row input[type="checkbox"] { width: auto; margin: 0; accent-color: #58a6ff; cursor: pointer; flex-shrink: 0; }
+    .type-cb-row span { font-size: 0.85rem; color: #e6edf3; }
+    .selected-types { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; min-height: 4px; }
+
+    /* === Pagination === */
+    .pagination { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+    .pagination-info { color: #8b949e; font-size: 0.83rem; }
+
+    /* === Modal === */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.72);
+      z-index: 1000; display: flex; align-items: flex-start;
+      justify-content: center; padding: 32px 16px; overflow-y: auto;
+    }
+    .modal-overlay.hidden { display: none; }
+    .modal {
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      width: 100%; max-width: 700px; position: relative; margin: auto;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+    }
+    .modal-hdr {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 20px; border-bottom: 1px solid #30363d;
+    }
+    .modal-hdr h3 { font-size: 0.95rem; font-weight: 600; color: #8b949e; }
+    .modal-close {
+      background: none; border: none; color: #8b949e; cursor: pointer;
+      font-size: 1.3rem; padding: 2px 8px; border-radius: 4px; line-height: 1;
+    }
+    .modal-close:hover { color: #e6edf3; background: #21262d; }
+    .modal-body { padding: 20px; }
+    .modal-body pre {
+      background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+      padding: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+      max-height: 280px; overflow-y: auto; font-size: 0.83rem; color: #e6edf3;
+      font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+      line-height: 1.5;
+    }
+    dl.t-fields { display: grid; grid-template-columns: 130px 1fr; gap: 5px 12px; align-items: start; }
+    dl.t-fields dt { color: #8b949e; font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; padding-top: 3px; }
+    dl.t-fields dd { color: #e6edf3; font-size: 0.88rem; word-break: break-word; }
+    .field-label { font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: #8b949e; margin: 16px 0 6px; }
+
+    /* === Skill tabs === */
+    .tab-bar { display: flex; gap: 0; border-bottom: 1px solid #30363d; margin-bottom: 16px; }
+    .tab-btn {
+      background: none; border: none; border-bottom: 2px solid transparent;
+      color: #8b949e; padding: 8px 18px; cursor: pointer; font-size: 0.88rem;
+      transition: color 0.15s, border-color 0.15s; margin-bottom: -1px; font-family: inherit;
+    }
+    .tab-btn.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+    .tab-btn:hover:not(.active) { color: #e6edf3; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* === Rendered Markdown === */
+    .md-render { color: #c9d1d9; line-height: 1.7; font-size: 0.92rem; }
+    .md-render h1 { font-size: 1.5rem; border-bottom: 1px solid #30363d; padding-bottom: 8px; margin: 0 0 16px; color: #e6edf3; }
+    .md-render h2 { font-size: 1.2rem; margin: 20px 0 10px; color: #e6edf3; }
+    .md-render h3 { font-size: 1rem; margin: 16px 0 8px; color: #e6edf3; }
+    .md-render p { margin-bottom: 12px; }
+    .md-render ul, .md-render ol { margin: 6px 0 12px 24px; }
+    .md-render li { margin-bottom: 4px; }
+    .md-render code { background: rgba(88,166,255,0.1); color: #79c0ff; padding: 1px 5px; border-radius: 3px; font-size: 0.83em; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }
+    .md-render pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; overflow-x: auto; margin: 0 0 14px; }
+    .md-render pre code { background: none; color: #e6edf3; padding: 0; font-size: 0.85rem; }
+    .md-render blockquote { border-left: 3px solid #30363d; padding-left: 14px; color: #8b949e; margin: 12px 0; font-style: italic; }
+    .md-render hr { border: none; border-top: 1px solid #30363d; margin: 18px 0; }
+    .md-render strong { color: #e6edf3; font-weight: 600; }
+    .md-render em { font-style: italic; }
+    .md-render a { color: #58a6ff; }
+    .md-render table { margin-bottom: 14px; }
+
+    /* === Diff viewer === */
+    .diff-wrap { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px; overflow-x: auto; max-height: 500px; overflow-y: auto; }
+    .diff-line { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 0.81rem; padding: 1px 6px; white-space: pre; line-height: 1.5; }
+    .diff-add  { background: rgba(63,185,80,0.1);  color: #3fb950; }
+    .diff-del  { background: rgba(248,81,73,0.1);  color: #f85149; }
+    .diff-hunk { background: rgba(188,140,255,0.06); color: #bc8cff; }
+    .diff-ctx  { color: #6e7681; }
+
+    /* === KV pairs === */
+    .kv { display: flex; gap: 8px; margin-bottom: 7px; align-items: flex-start; }
+    .kv-k { color: #8b949e; font-size: 0.82rem; font-weight: 600; min-width: 90px; flex-shrink: 0; padding-top: 1px; }
+    .kv-v { color: #e6edf3; font-size: 0.88rem; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="nav-brand">🧠 MentisDB</div>
+    <div class="nav-links">
+      <a href="#chains"  id="nav-chains">Chains</a>
+      <a href="#agents"  id="nav-agents">Agents</a>
+      <a href="#skills"  id="nav-skills">Skills</a>
+    </div>
+  </nav>
+  <main id="app"></main>
+
+  <!-- Modal -->
+  <div id="modal-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal" id="modal-box">
+      <div class="modal-hdr">
+        <h3 id="modal-title">Thought Detail</h3>
+        <button class="modal-close" id="modal-close-btn" aria-label="Close modal">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <script>
+  // =====================================================================
+  // CONSTANTS
+  // =====================================================================
+  const TYPE_GROUPS = [
+    { label: 'Finding',    color: 'blue',   types: ['Finding','Insight','FactLearned','PatternDetected','Hypothesis'] },
+    { label: 'Decision',   color: 'yellow', types: ['Constraint','Plan','Subgoal','Decision','StrategyShift'] },
+    { label: 'Correction', color: 'red',    types: ['Mistake','Correction','LessonLearned','AssumptionInvalidated'] },
+    { label: 'Inquiry',    color: 'purple', types: ['Wonder','Question','Idea','Experiment'] },
+    { label: 'Progress',   color: 'green',  types: ['ActionTaken','TaskComplete','Checkpoint','StateSnapshot','Handoff','Summary'] },
+    { label: 'Preference', color: 'orange', types: ['PreferenceUpdate','UserTrait','RelationshipUpdate'] },
+    { label: 'Surprise',   color: 'amber',  types: ['Surprise'] },
+  ];
+
+  const TYPE_COLOR = {};
+  TYPE_GROUPS.forEach(g => g.types.forEach(t => { TYPE_COLOR[t] = g.color; }));
+
+  // =====================================================================
+  // UTILITIES
+  // =====================================================================
+  function esc(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  function fmtDate(str) {
+    if (!str) return '—';
+    const d = new Date(str);
+    if (isNaN(d)) return String(str);
+    const p = n => String(n).padStart(2,'0');
+    return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  function typeBadge(t) {
+    const c = TYPE_COLOR[t] || 'gray';
+    return `<span class="badge badge-${c}">${esc(t)}</span>`;
+  }
+
+  function statusBadge(s) {
+    if (!s) return '<span class="badge badge-gray">Unknown</span>';
+    const sl = s.toLowerCase();
+    if (sl === 'active')     return '<span class="badge badge-green">Active</span>';
+    if (sl === 'revoked')    return '<span class="badge badge-red">Revoked</span>';
+    if (sl === 'deprecated') return '<span class="badge badge-yellow">Deprecated</span>';
+    return `<span class="badge badge-gray">${esc(s)}</span>`;
+  }
+
+  function spinner(el) { el.innerHTML = '<div class="spinner-wrap"><div class="spinner"></div></div>'; }
+  function errBox(el, msg) { el.innerHTML = `<div class="error-state">⚠️ ${esc(msg)}</div>`; }
+
+  async function api(path, opts = {}) {
+    const r = await fetch(path, { credentials: 'include', ...opts });
+    if (!r.ok) {
+      let txt = '';
+      try { txt = await r.text(); } catch (_) {}
+      throw new Error(`HTTP ${r.status}: ${txt || r.statusText}`);
+    }
+    return r.json();
+  }
+
+  function showFeedback(el, ok, msg) {
+    el.textContent = (ok ? '✓ ' : '✗ ') + msg;
+    el.className = `feedback show ${ok ? 'feedback-ok' : 'feedback-err'}`;
+    setTimeout(() => {
+      el.classList.remove('show');
+      setTimeout(() => { el.textContent = ''; }, 300);
+    }, 3000);
+  }
+
+  function updateNav() {
+    const section = (window.location.hash.slice(1) || 'chains').split('/')[0];
+    document.querySelectorAll('.nav-links a').forEach(a => {
+      a.classList.toggle('active', a.getAttribute('href') === '#' + section);
+    });
+  }
+
+  // =====================================================================
+  // MODAL
+  // =====================================================================
+  let _prevFocus = null;
+  let _modalKH   = null;
+
+  function openModal(thought) {
+    _prevFocus = document.activeElement;
+    const tags     = (thought.tags     || []).map(t => `<span class="badge badge-blue">${esc(t)}</span>`).join(' ');
+    const concepts = (thought.concepts || []).map(c => `<span class="badge badge-purple">${esc(c)}</span>`).join(' ');
+    const refs     = (thought.refs     || []).map(r => `<code class="mono">${esc(String(r))}</code>`).join(' ');
+
+    document.getElementById('modal-body').innerHTML = `
+      <dl class="t-fields">
+        <dt>Index</dt>  <dd>${esc(String(thought.index ?? '—'))}</dd>
+        <dt>ID</dt>     <dd class="mono" style="font-size:0.8rem;word-break:break-all">${esc(thought.thought_id || '—')}</dd>
+        <dt>Hash</dt>   <dd class="mono" style="font-size:0.8rem;word-break:break-all">${esc(thought.thought_hash || '—')}</dd>
+        <dt>Type</dt>   <dd>${typeBadge(thought.thought_type)}</dd>
+        <dt>Role</dt>   <dd>${thought.role ? `<span class="badge badge-gray">${esc(thought.role)}</span>` : '<span style="color:#484f58">—</span>'}</dd>
+        <dt>Agent</dt>  <dd class="mono" style="font-size:0.82rem">${esc(thought.agent_id || '—')}</dd>
+        <dt>Created</dt><dd>${esc(fmtDate(thought.created_at))}</dd>
+        <dt>Tags</dt>   <dd>${tags     || '<span style="color:#484f58">none</span>'}</dd>
+        <dt>Concepts</dt><dd>${concepts || '<span style="color:#484f58">none</span>'}</dd>
+        <dt>Refs</dt>   <dd>${refs     || '<span style="color:#484f58">none</span>'}</dd>
+      </dl>
+      <div class="field-label" style="margin-top:16px">Content</div>
+      <pre>${esc(thought.content || '')}</pre>
+    `;
+
+    const overlay = document.getElementById('modal-overlay');
+    overlay.classList.remove('hidden');
+    const closeBtn = document.getElementById('modal-close-btn');
+    closeBtn.focus();
+
+    if (_modalKH) document.removeEventListener('keydown', _modalKH);
+    _modalKH = e => {
+      if (e.key === 'Escape') { closeModal(); return; }
+      if (e.key === 'Tab') {
+        const box = document.getElementById('modal-box');
+        const focusable = Array.from(box.querySelectorAll('button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])'));
+        if (!focusable.length) return;
+        const first = focusable[0], last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) { last.focus(); e.preventDefault(); }
+        else if (!e.shiftKey && document.activeElement === last) { first.focus(); e.preventDefault(); }
+      }
+    };
+    document.addEventListener('keydown', _modalKH);
+  }
+
+  function closeModal() {
+    document.getElementById('modal-overlay').classList.add('hidden');
+    if (_modalKH) { document.removeEventListener('keydown', _modalKH); _modalKH = null; }
+    try { if (_prevFocus) _prevFocus.focus(); } catch (_) {}
+    _prevFocus = null;
+  }
+
+  document.getElementById('modal-close-btn').addEventListener('click', closeModal);
+  document.getElementById('modal-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
+
+  // =====================================================================
+  // ROUTER
+  // =====================================================================
+  let _ddCloseH = null;
+
+  function route() {
+    if (_ddCloseH) { document.removeEventListener('click', _ddCloseH); _ddCloseH = null; }
+    updateNav();
+    const hash  = window.location.hash.slice(1) || 'chains';
+    const parts = hash.split('/');
+    if      (parts[0] === 'chains' && parts[1])              renderExplorer(decodeURIComponent(parts[1]));
+    else if (parts[0] === 'chains')                          renderChainList();
+    else if (parts[0] === 'agents' && parts[1] && parts[2]) renderAgentDetail(decodeURIComponent(parts[1]), decodeURIComponent(parts[2]));
+    else if (parts[0] === 'agents')                          renderAgentList();
+    else if (parts[0] === 'skills' && parts[1])              renderSkillDetail(decodeURIComponent(parts[1]));
+    else if (parts[0] === 'skills')                          renderSkillList();
+    else                                                     renderChainList();
+  }
+  window.addEventListener('hashchange', route);
+  window.addEventListener('load', route);
+
+  // =====================================================================
+  // CHAIN LIST
+  // =====================================================================
+  function renderChainList() {
+    const app = document.getElementById('app');
+    app.innerHTML = `
+      <div class="page-header"><h1>Memory Chains</h1></div>
+      <div class="card"><div id="cl-body"></div></div>
+    `;
+    const el = document.getElementById('cl-body');
+    spinner(el);
+    api('/dashboard/api/chains')
+      .then(chains => {
+        if (!chains || !chains.length) { el.innerHTML = '<div class="empty-state">No chains found.</div>'; return; }
+        el.innerHTML = `
+          <div class="table-wrap"><table>
+            <thead><tr><th>Chain Key</th><th>Thoughts</th><th>Agents</th><th>Head Hash</th></tr></thead>
+            <tbody>
+              ${chains.map(c => `
+                <tr class="clickable" onclick="location.hash='chains/${encodeURIComponent(c.chain_key)}'">
+                  <td><span class="mono" style="color:#58a6ff">${esc(c.chain_key)}</span></td>
+                  <td>${esc(String(c.thought_count ?? '—'))}</td>
+                  <td>${esc(String(c.agent_count  ?? '—'))}</td>
+                  <td class="mono" style="color:#8b949e">${c.head_hash ? esc(c.head_hash.slice(0,8)) : '—'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table></div>
+        `;
+      })
+      .catch(err => errBox(el, err.message));
+  }
+
+  // =====================================================================
+  // THOUGHT EXPLORER
+  // =====================================================================
+  let EX = { chainKey: null, page: 1, perPage: 50, sel: [] };
+
+  function renderExplorer(chainKey) {
+    if (EX.chainKey !== chainKey) EX = { chainKey, page: 1, perPage: 50, sel: [] };
+    const app = document.getElementById('app');
+    app.innerHTML = `
+      <a href="#chains" class="back-link">← Back to Chains</a>
+      <div class="page-header">
+        <h1>Chain: <span class="mono" style="color:#58a6ff;font-size:1.4rem">${esc(chainKey)}</span></h1>
+      </div>
+      <div class="filter-bar">
+        <div class="filter-item">
+          <label>Per page</label>
+          <select id="ex-perpage">
+            <option value="25"  ${EX.perPage===25?'selected':''}>25</option>
+            <option value="50"  ${EX.perPage===50?'selected':''}>50</option>
+            <option value="100" ${EX.perPage===100?'selected':''}>100</option>
+          </select>
+        </div>
+        <div class="filter-item">
+          <label>Type filter</label>
+          <div class="ms-wrap">
+            <button class="ms-btn" id="ex-ms-btn" type="button"><span id="ex-ms-label">All Types</span></button>
+            <div class="ms-panel hidden" id="ex-ms-panel">
+              ${TYPE_GROUPS.map(g => `
+                <div class="type-group">
+                  <div class="type-group-hdr">
+                    <span class="badge badge-${g.color}" style="font-size:0.7rem">${g.label}</span>
+                    <div class="tg-actions">
+                      <button onclick="exSelectGroup('${g.color}',true)"  style="color:#58a6ff">All</button>
+                      <button onclick="exSelectGroup('${g.color}',false)" style="color:#8b949e">Clear</button>
+                    </div>
+                  </div>
+                  ${g.types.map(t => `
+                    <label class="type-cb-row">
+                      <input type="checkbox" class="type-cb" value="${t}" ${EX.sel.includes(t)?'checked':''}>
+                      <span>${esc(t)}</span>
+                    </label>
+                  `).join('')}
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="ex-sel-row" class="selected-types"></div>
+      <div id="ex-body"></div>
+      <div id="ex-page" class="pagination"></div>
+    `;
+
+    document.getElementById('ex-perpage').addEventListener('change', e => {
+      EX.perPage = parseInt(e.target.value); EX.page = 1; loadThoughts();
+    });
+
+    const msBtn   = document.getElementById('ex-ms-btn');
+    const msPanel = document.getElementById('ex-ms-panel');
+
+    msBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      const wasHidden = msPanel.classList.contains('hidden');
+      msPanel.classList.toggle('hidden');
+      if (wasHidden) {
+        if (_ddCloseH) document.removeEventListener('click', _ddCloseH);
+        _ddCloseH = ev => {
+          if (!msPanel.contains(ev.target) && ev.target !== msBtn) {
+            msPanel.classList.add('hidden');
+            document.removeEventListener('click', _ddCloseH);
+            _ddCloseH = null;
+          }
+        };
+        setTimeout(() => document.addEventListener('click', _ddCloseH), 0);
+      }
+    });
+
+    document.getElementById('ex-ms-panel').addEventListener('change', e => {
+      if (!e.target.classList.contains('type-cb')) return;
+      const t = e.target.value;
+      if (e.target.checked) { if (!EX.sel.includes(t)) EX.sel.push(t); }
+      else EX.sel = EX.sel.filter(x => x !== t);
+      EX.page = 1; exUpdateLabel(); exRenderSel(); loadThoughts();
+    });
+
+    exUpdateLabel(); exRenderSel(); loadThoughts();
+  }
+
+  function exSelectGroup(color, select) {
+    const g = TYPE_GROUPS.find(x => x.color === color);
+    if (!g) return;
+    g.types.forEach(t => {
+      const cb = document.querySelector(`.type-cb[value="${t}"]`);
+      if (cb) cb.checked = select;
+      if (select) { if (!EX.sel.includes(t)) EX.sel.push(t); }
+      else EX.sel = EX.sel.filter(x => x !== t);
+    });
+    EX.page = 1; exUpdateLabel(); exRenderSel(); loadThoughts();
+  }
+
+  function exUpdateLabel() {
+    const el = document.getElementById('ex-ms-label');
+    if (!el) return;
+    const n = EX.sel.length;
+    el.textContent = n === 0 ? 'All Types' : `${n} type${n!==1?'s':''} selected`;
+  }
+
+  function exRenderSel() {
+    const el = document.getElementById('ex-sel-row');
+    if (!el) return;
+    el.innerHTML = EX.sel.map(t => {
+      const c = TYPE_COLOR[t] || 'gray';
+      return `<span class="badge badge-${c}" style="cursor:pointer" onclick="exRemoveType('${t}')">${esc(t)} ×</span>`;
+    }).join('');
+  }
+
+  function exRemoveType(type) {
+    EX.sel = EX.sel.filter(t => t !== type);
+    const cb = document.querySelector(`.type-cb[value="${type}"]`);
+    if (cb) cb.checked = false;
+    EX.page = 1; exUpdateLabel(); exRenderSel(); loadThoughts();
+  }
+
+  function loadThoughts() {
+    const body = document.getElementById('ex-body');
+    const pgEl = document.getElementById('ex-page');
+    if (!body) return;
+    spinner(body);
+    const { chainKey, page, perPage, sel } = EX;
+    let url = `/dashboard/api/chains/${encodeURIComponent(chainKey)}/thoughts?page=${page}&per_page=${perPage}`;
+    if (sel.length) url += '&types=' + sel.map(encodeURIComponent).join(',');
+    api(url)
+      .then(data => {
+        const thoughts = data.thoughts || [];
+        const total    = data.total    || 0;
+        const pages    = data.pages    || 1;
+        if (!thoughts.length) {
+          body.innerHTML = '<div class="empty-state">No thoughts match the current filter.</div>';
+          if (pgEl) pgEl.innerHTML = '';
+          return;
+        }
+        body.innerHTML = `
+          <div class="table-wrap"><table>
+            <thead><tr><th>#</th><th>Type</th><th>Role</th><th>Agent</th><th>Content</th><th>Date</th></tr></thead>
+            <tbody>
+              ${thoughts.map((t, i) => `
+                <tr class="clickable" data-idx="${i}">
+                  <td class="mono" style="color:#8b949e;font-size:0.82rem">${esc(String(t.index ?? (EX.page-1)*EX.perPage+i+1))}</td>
+                  <td>${typeBadge(t.thought_type)}</td>
+                  <td>${t.role ? `<span class="badge badge-gray">${esc(t.role)}</span>` : '<span style="color:#484f58">—</span>'}</td>
+                  <td style="font-size:0.82rem">
+                    ${t.agent_id
+                      ? `<a class="mono" href="#agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(t.agent_id)}" onclick="event.stopPropagation()">${esc(t.agent_id)}</a>`
+                      : '<span style="color:#484f58">—</span>'}
+                  </td>
+                  <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9d1d9">
+                    ${esc((t.content || '').slice(0,100))}${(t.content||'').length>100?'…':''}
+                  </td>
+                  <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.created_at))}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table></div>
+        `;
+        body.querySelectorAll('tbody tr').forEach((row, i) => {
+          row.addEventListener('click', () => openModal(thoughts[i]));
+        });
+        if (pgEl) {
+          pgEl.innerHTML = `
+            <button class="btn btn-secondary btn-sm" id="ex-prev" ${page<=1?'disabled':''}>← Prev</button>
+            <span class="pagination-info">Page ${page} of ${pages} &nbsp;·&nbsp; ${total.toLocaleString()} thought${total!==1?'s':''}</span>
+            <button class="btn btn-secondary btn-sm" id="ex-next" ${page>=pages?'disabled':''}>Next →</button>
+          `;
+          document.getElementById('ex-prev')?.addEventListener('click', () => { EX.page--; loadThoughts(); window.scrollTo(0,0); });
+          document.getElementById('ex-next')?.addEventListener('click', () => { EX.page++; loadThoughts(); window.scrollTo(0,0); });
+        }
+      })
+      .catch(err => { errBox(body, err.message); if (pgEl) pgEl.innerHTML = ''; });
+  }
+
+  // =====================================================================
+  // AGENT LIST
+  // =====================================================================
+  function renderAgentList() {
+    const app = document.getElementById('app');
+    app.innerHTML = `<div class="page-header"><h1>Agents</h1></div><div id="al-body"></div>`;
+    const el = document.getElementById('al-body');
+    spinner(el);
+    api('/dashboard/api/agents')
+      .then(data => {
+        const keys = Object.keys(data || {});
+        if (!keys.length) { el.innerHTML = '<div class="empty-state">No agents found.</div>'; return; }
+        el.innerHTML = keys.map(ck => {
+          const agents = data[ck] || [];
+          return `
+            <div class="section-label">Chain: ${esc(ck)}</div>
+            <div class="card" style="margin-bottom:20px">
+              <div class="table-wrap"><table>
+                <thead><tr><th>Agent ID</th><th>Display Name</th><th>Status</th><th></th></tr></thead>
+                <tbody>
+                  ${!agents.length
+                    ? '<tr><td colspan="4" class="empty-state">No agents in this chain.</td></tr>'
+                    : agents.map(a => `
+                      <tr>
+                        <td class="mono" style="color:#58a6ff;font-size:0.83rem">${esc(a.agent_id)}</td>
+                        <td>${esc(a.display_name || '—')}</td>
+                        <td>${statusBadge(a.status)}</td>
+                        <td><a class="btn btn-secondary btn-sm" href="#agents/${encodeURIComponent(ck)}/${encodeURIComponent(a.agent_id)}">View</a></td>
+                      </tr>
+                    `).join('')
+                  }
+                </tbody>
+              </table></div>
+            </div>
+          `;
+        }).join('');
+      })
+      .catch(err => errBox(el, err.message));
+  }
+
+  // =====================================================================
+  // AGENT DETAIL
+  // =====================================================================
+  function renderAgentDetail(chainKey, agentId) {
+    const app = document.getElementById('app');
+    app.innerHTML = `
+      <a href="#agents" class="back-link">← Back to Agents</a>
+      <div class="page-header">
+        <h1>Agent: <span class="mono" style="color:#58a6ff;font-size:1.3rem">${esc(agentId)}</span></h1>
+      </div>
+      <div id="ad-body"><div class="spinner-wrap"><div class="spinner"></div></div></div>
+    `;
+    api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}`)
+      .then(agent => buildAgentDetail(chainKey, agentId, agent))
+      .catch(err  => errBox(document.getElementById('ad-body'), err.message));
+  }
+
+  function buildAgentDetail(chainKey, agentId, agent) {
+    const el = document.getElementById('ad-body');
+    const isActive = (agent.status || '').toLowerCase() === 'active';
+    el.innerHTML = `
+      <div class="two-col">
+        <!-- LEFT: Metadata -->
+        <div class="card">
+          <div class="card-title">Metadata</div>
+          <div class="form-group">
+            <label>Display Name</label>
+            <input type="text" id="ad-name" value="${esc(agent.display_name || '')}">
+          </div>
+          <div class="form-group">
+            <label>Description</label>
+            <textarea id="ad-desc">${esc(agent.description || '')}</textarea>
+          </div>
+          <div class="form-group">
+            <label>Owner</label>
+            <input type="text" id="ad-owner" value="${esc(agent.agent_owner || '')}">
+          </div>
+          <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
+            <button class="btn btn-primary btn-sm" id="ad-save">Save Changes</button>
+            <span id="ad-save-fb" class="feedback"></span>
+          </div>
+
+          <div style="margin-top:18px;padding-top:14px;border-top:1px solid #30363d">
+            <div class="section-label">Status</div>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              ${statusBadge(agent.status)}
+              ${isActive
+                ? '<button class="btn btn-danger btn-sm" id="ad-revoke">Revoke Agent</button>'
+                : '<button class="btn btn-success btn-sm" id="ad-activate">Activate Agent</button>'
+              }
+              <span id="ad-status-fb" class="feedback"></span>
+            </div>
+          </div>
+
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid #30363d">
+            <div class="section-label">Info</div>
+            <div class="kv"><span class="kv-k">Created</span><span class="kv-v">${esc(fmtDate(agent.created_at))}</span></div>
+            <div class="kv"><span class="kv-k">Updated</span><span class="kv-v">${esc(fmtDate(agent.updated_at))}</span></div>
+            ${(agent.aliases||[]).length ? `
+              <div class="kv"><span class="kv-k">Aliases</span><span class="kv-v">${(agent.aliases||[]).map(a=>`<span class="badge badge-gray">${esc(a)}</span>`).join(' ')}</span></div>
+            ` : ''}
+          </div>
+        </div>
+
+        <!-- RIGHT: Public Keys -->
+        <div class="card">
+          <div class="card-title">Public Keys</div>
+          <div id="keys-wrap">${buildKeysTable(agent.public_keys || [])}</div>
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid #30363d">
+            <div class="section-label">Add Key</div>
+            <div class="form-group"><label>Key ID</label><input type="text" id="nk-id" placeholder="e.g. my-key-v1"></div>
+            <div class="form-group">
+              <label>Algorithm</label>
+              <select id="nk-algo"><option value="ed25519">ed25519</option></select>
+            </div>
+            <div class="form-group">
+              <label>Public Key Bytes <span style="color:#484f58;font-weight:400">(comma-separated integers or 0x hex)</span></label>
+              <textarea id="nk-bytes" placeholder="1,2,3,... or 0xABCD..."></textarea>
+            </div>
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
+              <button class="btn btn-primary btn-sm" id="nk-add">Add Key</button>
+              <span id="nk-fb" class="feedback"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- BOTTOM: Recent Thoughts -->
+      <div class="card" style="margin-top:0">
+        <div class="card-title">Recent Thoughts</div>
+        <div id="ad-thoughts"><div class="spinner-wrap"><div class="spinner"></div></div></div>
+      </div>
+    `;
+
+    // Save
+    document.getElementById('ad-save').addEventListener('click', () => {
+      const fb = document.getElementById('ad-save-fb');
+      const btn = document.getElementById('ad-save');
+      btn.disabled = true;
+      api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          display_name: document.getElementById('ad-name').value,
+          description:  document.getElementById('ad-desc').value,
+          agent_owner:  document.getElementById('ad-owner').value,
+        })
+      })
+      .then(() => showFeedback(fb, true, 'Saved'))
+      .catch(err => showFeedback(fb, false, err.message))
+      .finally(() => { btn.disabled = false; });
+    });
+
+    // Revoke / Activate
+    const revokeBtn   = document.getElementById('ad-revoke');
+    const activateBtn = document.getElementById('ad-activate');
+    if (revokeBtn) {
+      revokeBtn.addEventListener('click', () => {
+        const fb = document.getElementById('ad-status-fb');
+        revokeBtn.disabled = true;
+        api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}/revoke`, { method: 'POST' })
+          .then(() => { showFeedback(fb, true, 'Revoked'); setTimeout(() => renderAgentDetail(chainKey, agentId), 1200); })
+          .catch(err => { showFeedback(fb, false, err.message); revokeBtn.disabled = false; });
+      });
+    }
+    if (activateBtn) {
+      activateBtn.addEventListener('click', () => {
+        const fb = document.getElementById('ad-status-fb');
+        activateBtn.disabled = true;
+        api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}/activate`, { method: 'POST' })
+          .then(() => { showFeedback(fb, true, 'Activated'); setTimeout(() => renderAgentDetail(chainKey, agentId), 1200); })
+          .catch(err => { showFeedback(fb, false, err.message); activateBtn.disabled = false; });
+      });
+    }
+
+    // Add Key
+    document.getElementById('nk-add').addEventListener('click', () => {
+      const fb    = document.getElementById('nk-fb');
+      const btn   = document.getElementById('nk-add');
+      const keyId = document.getElementById('nk-id').value.trim();
+      const algo  = document.getElementById('nk-algo').value;
+      const raw   = document.getElementById('nk-bytes').value.trim();
+      if (!keyId || !raw) { showFeedback(fb, false, 'Key ID and bytes are required'); return; }
+      let bytes;
+      try {
+        if (/^0x/i.test(raw)) {
+          const hex = raw.slice(2).replace(/\s/g,'');
+          if (hex.length % 2 !== 0) throw new Error('Odd hex length');
+          bytes = Array.from({length: hex.length/2}, (_,i) => parseInt(hex.substr(i*2,2),16));
+        } else {
+          bytes = raw.split(',').map(s => {
+            const n = parseInt(s.trim());
+            if (isNaN(n) || n < 0 || n > 255) throw new Error(`Invalid byte value: ${s.trim()}`);
+            return n;
+          });
+        }
+      } catch(e) { showFeedback(fb, false, e.message); return; }
+      btn.disabled = true;
+      api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}/keys`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key_id: keyId, algorithm: algo, public_key_bytes: bytes })
+      })
+      .then(() => {
+        showFeedback(fb, true, 'Key added');
+        document.getElementById('nk-id').value = '';
+        document.getElementById('nk-bytes').value = '';
+        return refreshKeys(chainKey, agentId);
+      })
+      .catch(err => showFeedback(fb, false, err.message))
+      .finally(() => { btn.disabled = false; });
+    });
+
+    wireKeyDelete(chainKey, agentId);
+
+    // Recent thoughts
+    api(`/dashboard/api/chains/${encodeURIComponent(chainKey)}/agents/${encodeURIComponent(agentId)}/thoughts?per_page=10&page=1`)
+      .then(data => {
+        const thoughts = data.thoughts || [];
+        const tEl = document.getElementById('ad-thoughts');
+        if (!tEl) return;
+        if (!thoughts.length) { tEl.innerHTML = '<div class="empty-state">No thoughts recorded.</div>'; return; }
+        tEl.innerHTML = `
+          <div class="table-wrap"><table>
+            <thead><tr><th>#</th><th>Type</th><th>Content</th><th>Date</th></tr></thead>
+            <tbody>
+              ${thoughts.map((t,i) => `
+                <tr class="clickable" data-tidx="${i}">
+                  <td class="mono" style="color:#8b949e;font-size:0.81rem">${esc(String(t.index ?? i+1))}</td>
+                  <td>${typeBadge(t.thought_type)}</td>
+                  <td style="max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9d1d9">
+                    ${esc((t.content||'').slice(0,100))}${(t.content||'').length>100?'…':''}
+                  </td>
+                  <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.created_at))}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table></div>
+        `;
+        tEl.querySelectorAll('tbody tr').forEach((row, i) => {
+          row.addEventListener('click', () => openModal(thoughts[i]));
+        });
+      })
+      .catch(err => {
+        const tEl = document.getElementById('ad-thoughts');
+        if (tEl) errBox(tEl, err.message);
+      });
+  }
+
+  function buildKeysTable(keys) {
+    if (!keys || !keys.length) return '<div class="empty-state" style="padding:12px 0">No public keys registered.</div>';
+    return `
+      <div class="table-wrap"><table>
+        <thead><tr><th>Key ID</th><th>Algorithm</th><th></th></tr></thead>
+        <tbody>
+          ${keys.map(k => `
+            <tr>
+              <td class="mono" style="font-size:0.83rem">${esc(k.key_id)}</td>
+              <td><span class="badge badge-gray">${esc(k.algorithm)}</span></td>
+              <td><button class="btn btn-danger btn-sm del-key-btn" data-kid="${esc(k.key_id)}">Delete</button></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table></div>
+    `;
+  }
+
+  function wireKeyDelete(chainKey, agentId) {
+    document.querySelectorAll('.del-key-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const kid = btn.getAttribute('data-kid');
+        const fb  = document.getElementById('nk-fb');
+        btn.disabled = true;
+        api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}/keys/${encodeURIComponent(kid)}`, { method: 'DELETE' })
+          .then(() => { showFeedback(fb, true, 'Key deleted'); return refreshKeys(chainKey, agentId); })
+          .catch(err => { showFeedback(fb, false, err.message); btn.disabled = false; });
+      });
+    });
+  }
+
+  function refreshKeys(chainKey, agentId) {
+    return api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}`)
+      .then(a => {
+        const wrap = document.getElementById('keys-wrap');
+        if (wrap) { wrap.innerHTML = buildKeysTable(a.public_keys || []); wireKeyDelete(chainKey, agentId); }
+      });
+  }
+
+  // =====================================================================
+  // SKILL LIST
+  // =====================================================================
+  function renderSkillList() {
+    const app = document.getElementById('app');
+    app.innerHTML = `<div class="page-header"><h1>Skills</h1></div><div class="card"><div id="sl-body"></div></div>`;
+    const el = document.getElementById('sl-body');
+    spinner(el);
+    api('/dashboard/api/skills')
+      .then(skills => {
+        if (!skills || !skills.length) { el.innerHTML = '<div class="empty-state">No skills found.</div>'; return; }
+        el.innerHTML = `
+          <div class="table-wrap"><table>
+            <thead><tr><th>Name</th><th>Status</th><th>Versions</th><th>Uploader</th><th>Updated</th></tr></thead>
+            <tbody>
+              ${skills.map(s => `
+                <tr class="clickable" onclick="location.hash='skills/${encodeURIComponent(s.skill_id)}'">
+                  <td style="color:#58a6ff;font-weight:600">${esc(s.name || s.skill_id)}</td>
+                  <td>${statusBadge(s.status)}</td>
+                  <td>${esc(String(s.version_count ?? '—'))}</td>
+                  <td class="mono" style="font-size:0.81rem;color:#8b949e">${esc(s.uploader_agent_id || '—')}</td>
+                  <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(s.updated_at))}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table></div>
+        `;
+      })
+      .catch(err => errBox(el, err.message));
+  }
+
+  // =====================================================================
+  // SKILL DETAIL
+  // =====================================================================
+  let SD = { skillId: null, versionId: null, tab: 'rendered' };
+
+  function renderSkillDetail(skillId) {
+    if (SD.skillId !== skillId) SD = { skillId, versionId: null, tab: 'rendered' };
+    const app = document.getElementById('app');
+    app.innerHTML = `
+      <a href="#skills" class="back-link">← Back to Skills</a>
+      <div id="sd-body"><div class="spinner-wrap"><div class="spinner"></div></div></div>
+    `;
+    Promise.all([
+      api(`/dashboard/api/skills/${encodeURIComponent(skillId)}`),
+      api(`/dashboard/api/skills/${encodeURIComponent(skillId)}/versions`)
+    ])
+    .then(([sd, versions]) => buildSkillDetail(skillId, sd, versions))
+    .catch(err => errBox(document.getElementById('sd-body'), err.message));
+  }
+
+  function buildSkillDetail(skillId, sd, versions) {
+    const el      = document.getElementById('sd-body');
+    const summary = sd.summary || {};
+    let   markdown = sd.markdown || '';
+    if (!SD.versionId && versions && versions.length) SD.versionId = versions[0].version_id;
+
+    el.innerHTML = `
+      <div class="page-header" style="margin-bottom:14px">
+        <h1 style="font-size:1.5rem">${esc(summary.name || skillId)}</h1>
+        ${statusBadge(summary.status)}
+        ${versions && versions.length ? `
+          <div style="display:flex;align-items:center;gap:8px;margin-left:auto">
+            <label style="font-size:0.82rem;color:#8b949e;white-space:nowrap">Version:</label>
+            <select id="sd-version" style="width:auto">
+              ${versions.map(v => `
+                <option value="${esc(v.version_id)}" ${v.version_id===SD.versionId?'selected':''}>
+                  ${esc(v.version_id)} (${esc(fmtDate(v.uploaded_at))})
+                </option>
+              `).join('')}
+            </select>
+          </div>
+        ` : ''}
+      </div>
+      <div class="card">
+        <div class="tab-bar">
+          <button class="tab-btn ${SD.tab==='rendered'?'active':''}" data-tab="rendered">Rendered</button>
+          <button class="tab-btn ${SD.tab==='source'  ?'active':''}" data-tab="source">Source</button>
+          <button class="tab-btn ${SD.tab==='diff'    ?'active':''}" data-tab="diff">Diff</button>
+        </div>
+        <div id="tab-rendered" class="tab-panel ${SD.tab==='rendered'?'active':''}">
+          <div class="md-render" id="sd-rendered">${mdRender(markdown)}</div>
+        </div>
+        <div id="tab-source" class="tab-panel ${SD.tab==='source'?'active':''}">
+          <pre style="max-height:600px;overflow-y:auto;line-height:1.5"><code>${esc(markdown)}</code></pre>
+        </div>
+        <div id="tab-diff" class="tab-panel ${SD.tab==='diff'?'active':''}">
+          ${versions && versions.length >= 2 ? `
+            <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px">
+              <div class="form-group" style="margin:0">
+                <label>From version</label>
+                <select id="diff-from" style="width:auto">
+                  ${versions.slice().reverse().map(v=>`<option value="${esc(v.version_id)}">${esc(v.version_id)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="form-group" style="margin:0">
+                <label>To version</label>
+                <select id="diff-to" style="width:auto">
+                  ${versions.map(v=>`<option value="${esc(v.version_id)}" ${v.version_id===SD.versionId?'selected':''}>${esc(v.version_id)}</option>`).join('')}
+                </select>
+              </div>
+              <button class="btn btn-primary btn-sm" id="diff-go">Show Diff</button>
+              <span id="diff-fb" class="feedback"></span>
+            </div>
+            <div id="diff-out"></div>
+          ` : '<div class="empty-state">Need at least 2 versions to compare.</div>'}
+        </div>
+      </div>
+    `;
+
+    // Tab switching
+    el.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        SD.tab = btn.getAttribute('data-tab');
+        el.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+        el.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + SD.tab));
+      });
+    });
+
+    // Version change
+    const verSel = document.getElementById('sd-version');
+    if (verSel) {
+      verSel.addEventListener('change', e => {
+        SD.versionId = e.target.value;
+        const rendEl = document.getElementById('sd-rendered');
+        if (rendEl) { rendEl.innerHTML = '<div class="spinner-wrap"><div class="spinner"></div></div>'; }
+        api(`/dashboard/api/skills/${encodeURIComponent(skillId)}?version=${encodeURIComponent(e.target.value)}`)
+          .then(data => {
+            const md = data.markdown || '';
+            const r  = document.getElementById('sd-rendered');
+            const s  = document.getElementById('tab-source')?.querySelector('pre code');
+            if (r) r.innerHTML = mdRender(md);
+            if (s) s.textContent = md;
+          })
+          .catch(err => {
+            const r = document.getElementById('sd-rendered');
+            if (r) errBox(r, err.message);
+          });
+      });
+    }
+
+    // Diff
+    const diffBtn = document.getElementById('diff-go');
+    if (diffBtn) {
+      diffBtn.addEventListener('click', () => {
+        const from = document.getElementById('diff-from').value;
+        const to   = document.getElementById('diff-to').value;
+        const out  = document.getElementById('diff-out');
+        const fb   = document.getElementById('diff-fb');
+        diffBtn.disabled = true;
+        spinner(out);
+        api(`/dashboard/api/skills/${encodeURIComponent(skillId)}/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
+          .then(data => renderDiff(out, data.diff || ''))
+          .catch(err => { errBox(out, err.message); showFeedback(fb, false, err.message); })
+          .finally(() => { diffBtn.disabled = false; });
+      });
+    }
+  }
+
+  function renderDiff(container, diffText) {
+    if (!diffText) { container.innerHTML = '<div class="empty-state">No diff available.</div>'; return; }
+    const lines = diffText.split('\n');
+    container.innerHTML = `
+      <div class="diff-wrap">
+        ${lines.map(line => {
+          let cls = 'diff-ctx';
+          if      (line.startsWith('+') && !line.startsWith('+++')) cls = 'diff-add';
+          else if (line.startsWith('-') && !line.startsWith('---')) cls = 'diff-del';
+          else if (line.startsWith('@@'))                           cls = 'diff-hunk';
+          return `<div class="diff-line ${cls}">${esc(line)}</div>`;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  // =====================================================================
+  // MARKDOWN RENDERER
+  // =====================================================================
+  function mdRender(md) {
+    if (!md) return '<em style="color:#8b949e">No content.</em>';
+
+    function inlineProcess(text) {
+      const codes = [];
+      text = text.replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return '\x00IC'+(codes.length-1)+'\x00'; });
+      text = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+      text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+      text = text.replace(/\*\*(.+?)\*\*/g,     '<strong>$1</strong>');
+      text = text.replace(/\*(.+?)\*/g,          '<em>$1</em>');
+      text = text.replace(/__(.+?)__/g,          '<strong>$1</strong>');
+      text = text.replace(/_([^_\s][^_]*)_/g,   '<em>$1</em>');
+      text = text.replace(/\x00IC(\d+)\x00/g,   (_,i) => `<code>${esc(codes[+i])}</code>`);
+      return text;
+    }
+
+    const lines  = md.split('\n');
+    let   html   = '';
+    let   inCode = false;
+    let   codeBuf = '', codeLang = '';
+    let   inUl = false, inOl = false;
+
+    const closeListsIfOpen = () => {
+      if (inUl) { html += '</ul>\n'; inUl = false; }
+      if (inOl) { html += '</ol>\n'; inOl = false; }
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Fenced code blocks
+      if (line.startsWith('```')) {
+        if (inCode) {
+          html += `<pre><code${codeLang?` class="lang-${esc(codeLang)}"`:''}>` + esc(codeBuf.replace(/\n$/,'')) + '</code></pre>\n';
+          inCode = false; codeBuf = ''; codeLang = '';
+        } else {
+          closeListsIfOpen();
+          inCode = true; codeLang = line.slice(3).trim();
+        }
+        continue;
+      }
+      if (inCode) { codeBuf += line + '\n'; continue; }
+
+      // Blank line
+      if (!line.trim()) { closeListsIfOpen(); html += '\n'; continue; }
+
+      // HR
+      if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { closeListsIfOpen(); html += '<hr>\n'; continue; }
+
+      // Headings
+      const hm = line.match(/^(#{1,3})\s+(.+)$/);
+      if (hm) {
+        closeListsIfOpen();
+        const lvl = hm[1].length;
+        html += `<h${lvl}>${inlineProcess(hm[2])}</h${lvl}>\n`;
+        continue;
+      }
+
+      // Blockquote
+      const bq = line.match(/^>\s*(.*)/);
+      if (bq) { closeListsIfOpen(); html += `<blockquote>${inlineProcess(bq[1])}</blockquote>\n`; continue; }
+
+      // Unordered list
+      const ul = line.match(/^[\-\*\+]\s+(.+)/);
+      if (ul) {
+        if (inOl) { html += '</ol>\n'; inOl = false; }
+        if (!inUl) { html += '<ul>\n'; inUl = true; }
+        html += `<li>${inlineProcess(ul[1])}</li>\n`;
+        continue;
+      }
+
+      // Ordered list
+      const ol = line.match(/^\d+\.\s+(.+)/);
+      if (ol) {
+        if (inUl) { html += '</ul>\n'; inUl = false; }
+        if (!inOl) { html += '<ol>\n'; inOl = true; }
+        html += `<li>${inlineProcess(ol[1])}</li>\n`;
+        continue;
+      }
+
+      // Paragraph
+      closeListsIfOpen();
+      html += `<p>${inlineProcess(line)}</p>\n`;
+    }
+
+    closeListsIfOpen();
+    if (inCode) html += `<pre><code>${esc(codeBuf)}</code></pre>\n`;
+
+    return html;
+  }
+  </script>
+</body>
+</html>

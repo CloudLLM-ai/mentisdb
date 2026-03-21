@@ -436,6 +436,21 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some(config.tls_key_path.display().to_string()),
     );
     print_env_var(
+        "MENTISDB_DASHBOARD_PORT",
+        Some(match config.dashboard_addr {
+            Some(addr) => addr.port().to_string(),
+            None => "disabled".to_string(),
+        }),
+    );
+    print_env_var(
+        "MENTISDB_DASHBOARD_PIN",
+        Some(if config.dashboard_pin.is_some() {
+            "set".to_string()
+        } else {
+            "not set".to_string()
+        }),
+    );
+    print_env_var(
         "RUST_LOG",
         std::env::var("RUST_LOG")
             .ok()
@@ -469,6 +484,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     if let Some(ref h) = handles.https_rest {
         println!("  REST: https://{}", h.local_addr());
+    }
+    if let Some(ref h) = handles.dashboard {
+        println!("  Dashboard: http://{}/dashboard", h.local_addr());
     }
 
     tokio::signal::ctrl_c().await?;

@@ -241,6 +241,10 @@ pub struct MentisDbServerConfig {
     pub tls_cert_path: PathBuf,
     /// Path to the TLS private key PEM file.
     pub tls_key_path: PathBuf,
+    /// Socket address for the web dashboard, or `None` if disabled (port 0).
+    pub dashboard_addr: Option<SocketAddr>,
+    /// Optional PIN to protect the dashboard. `None` = open access.
+    pub dashboard_pin: Option<String>,
 }
 
 impl MentisDbServerConfig {
@@ -296,6 +300,17 @@ impl MentisDbServerConfig {
             None
         };
 
+        let dashboard_port = env_u16(&["MENTISDB_DASHBOARD_PORT"]).unwrap_or(9475);
+        let dashboard_addr = if dashboard_port > 0 {
+            Some(SocketAddr::new(bind_host, dashboard_port))
+        } else {
+            None
+        };
+        let dashboard_pin = env_var(&["MENTISDB_DASHBOARD_PIN"])
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+
         Self {
             service: MentisDbServiceConfig::new(
                 env_var(&["MENTISDB_DIR"])
@@ -314,6 +329,8 @@ impl MentisDbServerConfig {
             https_rest_addr,
             tls_cert_path,
             tls_key_path,
+            dashboard_addr,
+            dashboard_pin,
         }
     }
 }
@@ -388,6 +405,8 @@ pub struct MentisDbServerHandles {
     pub https_mcp: Option<ServerHandle>,
     /// Running HTTPS REST server handle, if HTTPS is enabled.
     pub https_rest: Option<ServerHandle>,
+    /// Running web dashboard handle, if the dashboard is enabled.
+    pub dashboard: Option<ServerHandle>,
 }
 
 /// Return the default on-disk MentisDB directory.
@@ -630,13 +649,22 @@ pub async fn start_https_rest_server(
 pub async fn start_servers(
     config: MentisDbServerConfig,
 ) -> Result<MentisDbServerHandles, Box<dyn Error + Send + Sync>> {
+    use crate::dashboard::DashboardState;
+
     // Ensure TLS cert exists before starting HTTPS servers
     if config.https_mcp_addr.is_some() || config.https_rest_addr.is_some() {
         ensure_tls_cert(&config.tls_cert_path, &config.tls_key_path)?;
     }
 
+    // Create one shared REST service so the dashboard can reuse its Arc fields.
+    let rest_service = Arc::new(MentisDbService::new(config.service.clone()));
+
     let mcp = start_mcp_server(config.mcp_addr, config.service.clone()).await?;
-    let rest = start_rest_server(config.rest_addr, config.service.clone()).await?;
+    let rest = start_router(
+        config.rest_addr,
+        rest_router_with_service(rest_service.clone()),
+    )
+    .await?;
 
     let https_mcp = if let Some(addr) = config.https_mcp_addr {
         Some(
@@ -656,7 +684,7 @@ pub async fn start_servers(
         Some(
             start_https_rest_server(
                 addr,
-                config.service,
+                config.service.clone(),
                 config.tls_cert_path.clone(),
                 config.tls_key_path.clone(),
             )
@@ -666,12 +694,92 @@ pub async fn start_servers(
         None
     };
 
+    let dashboard = if let Some(addr) = config.dashboard_addr {
+        let dashboard_state = DashboardState {
+            chains: rest_service.chains.clone(),
+            skills: rest_service.skills.clone(),
+            mentisdb_dir: config.service.chain_dir.clone(),
+            default_chain_key: config.service.default_chain_key.clone(),
+            dashboard_pin: config.dashboard_pin.clone(),
+            default_storage_adapter: config.service.default_storage_adapter,
+            auto_flush: config.service.auto_flush,
+        };
+        Some(start_dashboard_server(addr, dashboard_state).await?)
+    } else {
+        None
+    };
+
     Ok(MentisDbServerHandles {
         mcp,
         rest,
         https_mcp,
         https_rest,
+        dashboard,
     })
+}
+
+/// Bind a TCP socket and serve the dashboard router.
+///
+/// Returns a [`ServerHandle`] that can be used to query the bound address or
+/// shut the server down gracefully.
+pub(crate) async fn start_dashboard_server(
+    addr: SocketAddr,
+    state: crate::dashboard::DashboardState,
+) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
+    use crate::dashboard::dashboard_router;
+    start_router(addr, dashboard_router(state)).await
+}
+
+/// Build the REST router pre-wired to an existing [`MentisDbService`] arc.
+///
+/// This is a private companion to [`rest_router`] that avoids constructing a
+/// second `MentisDbService` when the caller already holds one (e.g. in
+/// [`start_servers`] where the dashboard needs to share the same arc).
+fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
+    Router::new()
+        .route("/health", get(health_handler))
+        .route("/mentisdb_skill_md", get(rest_skill_markdown_handler))
+        .route("/v1/skills", get(rest_list_skills_handler))
+        .route("/v1/skills/manifest", get(rest_skill_manifest_handler))
+        .route("/v1/skills/upload", post(rest_upload_skill_handler))
+        .route("/v1/skills/search", post(rest_search_skill_handler))
+        .route("/v1/skills/read", post(rest_read_skill_handler))
+        .route("/v1/skills/versions", post(rest_skill_versions_handler))
+        .route("/v1/skills/deprecate", post(rest_deprecate_skill_handler))
+        .route("/v1/skills/revoke", post(rest_revoke_skill_handler))
+        .route("/v1/bootstrap", post(rest_bootstrap_handler))
+        .route("/v1/thoughts", post(rest_append_handler))
+        .route(
+            "/v1/retrospectives",
+            post(rest_append_retrospective_handler),
+        )
+        .route("/v1/search", post(rest_search_handler))
+        .route("/v1/recent-context", post(rest_recent_context_handler))
+        .route("/v1/memory-markdown", post(rest_memory_markdown_handler))
+        .route("/v1/thought", post(rest_get_thought_handler))
+        .route("/v1/thoughts/genesis", post(rest_genesis_thought_handler))
+        .route(
+            "/v1/thoughts/traverse",
+            post(rest_traverse_thoughts_handler),
+        )
+        .route("/v1/head", post(rest_head_handler))
+        .route("/v1/chains", get(rest_list_chains_handler))
+        .route("/v1/agents", post(rest_list_agents_handler))
+        .route("/v1/agent", post(rest_get_agent_handler))
+        .route("/v1/agent-registry", post(rest_list_agent_registry_handler))
+        .route("/v1/agents/upsert", post(rest_upsert_agent_handler))
+        .route(
+            "/v1/agents/description",
+            post(rest_set_agent_description_handler),
+        )
+        .route("/v1/agents/aliases", post(rest_add_agent_alias_handler))
+        .route("/v1/agents/keys", post(rest_add_agent_key_handler))
+        .route(
+            "/v1/agents/keys/revoke",
+            post(rest_revoke_agent_key_handler),
+        )
+        .route("/v1/agents/disable", post(rest_disable_agent_handler))
+        .with_state(service)
 }
 
 /// Build the MCP router without binding a socket.
@@ -761,8 +869,8 @@ pub fn rest_router(config: MentisDbServiceConfig) -> Router {
 struct MentisDbService {
     config: MentisDbServiceConfig,
     /// Concurrent chain map: lock-free lookup, per-chain `RwLock` for writes.
-    chains: Arc<DashMap<String, Arc<RwLock<MentisDb>>>>,
-    skills: Arc<RwLock<SkillRegistry>>,
+    pub(crate) chains: Arc<DashMap<String, Arc<RwLock<MentisDb>>>>,
+    pub(crate) skills: Arc<RwLock<SkillRegistry>>,
     interaction_log: Arc<InteractionLogSink>,
 }
 

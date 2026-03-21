@@ -8,6 +8,8 @@
 #![warn(missing_docs)]
 
 #[cfg(feature = "server")]
+pub(crate) mod dashboard;
+#[cfg(feature = "server")]
 pub mod server;
 mod skills;
 

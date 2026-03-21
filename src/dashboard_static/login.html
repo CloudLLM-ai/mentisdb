@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB — Login</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .login-card {
+      width: 100%;
+      max-width: 380px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 40px 32px 32px;
+      text-align: center;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.55);
+    }
+    .logo { font-size: 2.4rem; margin-bottom: 4px; }
+    .logo-text { font-size: 1.35rem; font-weight: 700; color: #e6edf3; letter-spacing: -0.3px; }
+    h2 { font-size: 1rem; font-weight: 400; color: #8b949e; margin: 8px 0 28px; }
+    .error-msg {
+      background: rgba(248,81,73,0.12);
+      border: 1px solid rgba(248,81,73,0.3);
+      color: #f85149;
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-size: 0.875rem;
+      margin-bottom: 18px;
+      text-align: left;
+    }
+    form { display: flex; flex-direction: column; gap: 14px; }
+    input[type="password"] {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      color: #e6edf3;
+      padding: 13px 14px;
+      font-size: 1.1rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      letter-spacing: 0.25em;
+      text-align: center;
+    }
+    input[type="password"]:focus {
+      border-color: #58a6ff;
+      box-shadow: 0 0 0 3px rgba(88,166,255,0.15);
+    }
+    input[type="password"]::placeholder { letter-spacing: normal; color: #484f58; font-size: 0.95rem; }
+    button[type="submit"] {
+      width: 100%;
+      background: #1f6feb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 13px 14px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
+      font-family: inherit;
+    }
+    button[type="submit"]:hover { background: #388bfd; box-shadow: 0 4px 16px rgba(31,111,235,0.35); }
+    button[type="submit"]:active { transform: scale(0.98); }
+    .hint { margin-top: 22px; font-size: 0.8rem; color: #484f58; line-height: 1.5; }
+    .divider { height: 1px; background: #21262d; margin: 24px 0 20px; }
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <div class="logo">🧠</div>
+    <div class="logo-text">MentisDB</div>
+    <h2>Dashboard Access</h2>
+    <div id="error-msg" class="error-msg" style="display:none">
+      🔒 Invalid PIN. Please try again.
+    </div>
+    <form method="POST" action="/dashboard/login">
+      <input type="password" name="pin" placeholder="Enter PIN" autofocus required minlength="4" autocomplete="current-password">
+      <button type="submit">Unlock Dashboard</button>
+    </form>
+    <div class="divider"></div>
+    <p class="hint">Contact your MentisDB administrator for access credentials.</p>
+  </div>
+  <script>
+    if (new URLSearchParams(window.location.search).get('error') === '1') {
+      document.getElementById('error-msg').style.display = 'block';
+    }
+  </script>
+</body>
+</html>
