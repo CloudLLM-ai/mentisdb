@@ -341,7 +341,14 @@ fn parse_thought_type(s: &str) -> Option<ThoughtType> {
 // ── API response shape helpers ────────────────────────────────────────────────
 
 /// Serialise a page of thoughts alongside pagination metadata.
-fn paginated_thoughts(thoughts: Vec<&Thought>, page: usize, per_page: usize) -> Value {
+///
+/// When `reverse` is `true` the slice is returned newest-first (descending by
+/// append index). Pagination is applied *after* reversing so that page 1 is
+/// always the logical "first" page in the chosen order.
+fn paginated_thoughts(mut thoughts: Vec<&Thought>, page: usize, per_page: usize, reverse: bool) -> Value {
+    if reverse {
+        thoughts.reverse();
+    }
     let total = thoughts.len();
     let pages = if per_page == 0 {
         0
@@ -372,6 +379,8 @@ struct ThoughtsQuery {
     per_page: Option<usize>,
     /// Comma-separated list of [`ThoughtType`] names to filter by.
     types: Option<String>,
+    /// Sort order: `"asc"` (oldest first) or `"desc"` (newest first, default).
+    order: Option<String>,
 }
 
 /// Query parameters for the skill-diff endpoint.
@@ -454,8 +463,9 @@ async fn api_chain_thoughts(
 
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(50).max(1);
+    let reverse = params.order.as_deref().unwrap_or("desc") != "asc";
 
-    Ok(Json(paginated_thoughts(thoughts, page, per_page)))
+    Ok(Json(paginated_thoughts(thoughts, page, per_page, reverse)))
 }
 
 /// `GET /dashboard/api/thoughts/:chain_key/:thought_id`
@@ -518,8 +528,9 @@ async fn api_agent_thoughts(
 
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(50).max(1);
+    let reverse = params.order.as_deref().unwrap_or("desc") != "asc";
 
-    Ok(Json(paginated_thoughts(thoughts, page, per_page)))
+    Ok(Json(paginated_thoughts(thoughts, page, per_page, reverse)))
 }
 
 // ── API: agents ───────────────────────────────────────────────────────────────

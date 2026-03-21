@@ -548,10 +548,10 @@
   // =====================================================================
   // THOUGHT EXPLORER
   // =====================================================================
-  let EX = { chainKey: null, page: 1, perPage: 50, sel: [] };
+  let EX = { chainKey: null, page: 1, perPage: 50, sel: [], order: 'desc' };
 
   function renderExplorer(chainKey) {
-    if (EX.chainKey !== chainKey) EX = { chainKey, page: 1, perPage: 50, sel: [] };
+    if (EX.chainKey !== chainKey) EX = { chainKey, page: 1, perPage: 50, sel: [], order: 'desc' };
     const app = document.getElementById('app');
     app.innerHTML = `
       <a href="#chains" class="back-link">← Back to Chains</a>
@@ -566,6 +566,19 @@
             <option value="50"  ${EX.perPage===50?'selected':''}>50</option>
             <option value="100" ${EX.perPage===100?'selected':''}>100</option>
           </select>
+        </div>
+        <div class="filter-item">
+          <label>Order</label>
+          <button id="ex-order-btn" class="btn btn-secondary btn-sm" style="min-width:120px">
+            ${EX.order==='desc'?'⬇ Newest first':'⬆ Oldest first'}
+          </button>
+        </div>
+        <div class="filter-item">
+          <label>Jump to</label>
+          <div style="display:flex;gap:6px">
+            <button id="ex-genesis-btn" class="btn btn-secondary btn-sm" title="Jump to oldest thought">⏮ Genesis</button>
+            <button id="ex-head-btn"    class="btn btn-secondary btn-sm" title="Jump to newest thought">Head ⏭</button>
+          </div>
         </div>
         <div class="filter-item">
           <label>Type filter</label>
@@ -600,6 +613,24 @@
 
     document.getElementById('ex-perpage').addEventListener('change', e => {
       EX.perPage = parseInt(e.target.value); EX.page = 1; loadThoughts();
+    });
+
+    document.getElementById('ex-order-btn').addEventListener('click', () => {
+      EX.order = EX.order === 'desc' ? 'asc' : 'desc';
+      document.getElementById('ex-order-btn').textContent = EX.order === 'desc' ? '⬇ Newest first' : '⬆ Oldest first';
+      EX.page = 1; loadThoughts();
+    });
+
+    document.getElementById('ex-genesis-btn').addEventListener('click', () => {
+      EX.order = 'asc'; EX.page = 1;
+      document.getElementById('ex-order-btn').textContent = '⬆ Oldest first';
+      loadThoughts(); window.scrollTo(0,0);
+    });
+
+    document.getElementById('ex-head-btn').addEventListener('click', () => {
+      EX.order = 'desc'; EX.page = 1;
+      document.getElementById('ex-order-btn').textContent = '⬇ Newest first';
+      loadThoughts(); window.scrollTo(0,0);
     });
 
     const msBtn   = document.getElementById('ex-ms-btn');
@@ -673,8 +704,8 @@
     const pgEl = document.getElementById('ex-page');
     if (!body) return;
     spinner(body);
-    const { chainKey, page, perPage, sel } = EX;
-    let url = `/dashboard/api/chains/${encodeURIComponent(chainKey)}/thoughts?page=${page}&per_page=${perPage}`;
+    const { chainKey, page, perPage, sel, order } = EX;
+    let url = `/dashboard/api/chains/${encodeURIComponent(chainKey)}/thoughts?page=${page}&per_page=${perPage}&order=${order}`;
     if (sel.length) url += '&types=' + sel.map(encodeURIComponent).join(',');
     api(url)
       .then(data => {
