@@ -206,7 +206,8 @@ fn thought_sound_sequence(tt: ThoughtType) -> &'static [(f32, u64)] {
 /// Plays a sequence of square-wave notes.
 #[cfg(feature = "startup-sound")]
 fn play_notes(notes: &[(f32, u64)]) {
-    if let Ok(device_sink) = rodio::DeviceSinkBuilder::open_default_sink() {
+    if let Ok(mut device_sink) = rodio::DeviceSinkBuilder::open_default_sink() {
+        device_sink.log_on_drop(false);
         let sink = rodio::Player::connect_new(device_sink.mixer());
         for &(freq, ms) in notes {
             sink.append(SquareWave::new(freq, ms));
