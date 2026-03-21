@@ -217,3 +217,11 @@ This release also records the project rename from ThoughtChain to MentisDB.
  - test: Dedicated crate test coverage
    - Separate tests under `thoughtchain/tests`
    - Coverage for persistence, integrity, querying, export behavior, and server routing
+
+v0.5.1
+------
+- Startup jingle: 4-note square-wave PC-speaker-style sound on daemon start
+  ("men-tis-D-B" → C5 → E5 → D5 → B4).  Implemented via rodio (CoreAudio /
+  ALSA / WASAPI); feature-gated as `startup-sound` (on by default).
+  Silence with MENTISDB_STARTUP_SOUND=0.
+- MENTISDB_STARTUP_SOUND added to Configuration printout.

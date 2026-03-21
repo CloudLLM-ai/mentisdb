@@ -20,6 +20,7 @@
 //! - `MENTISDB_HTTPS_REST_PORT` (set to 0 to disable; default 9474)
 //! - `MENTISDB_TLS_CERT` (default `~/.cloudllm/mentisdb/tls/cert.pem`)
 //! - `MENTISDB_TLS_KEY` (default `~/.cloudllm/mentisdb/tls/key.pem`)
+//! - `MENTISDB_STARTUP_SOUND` (default `true`; set `0`/`false`/`no`/`off` to silence)
 //! - `RUST_LOG`
 
 use env_logger::Env;
@@ -48,8 +49,94 @@ const YELLOW: &str = "\x1b[38;5;226m";
 const PINK: &str = "\x1b[38;5;213m";
 const RESET: &str = "\x1b[0m";
 
+// ── Startup jingle ────────────────────────────────────────────────────────────
+
+/// A square-wave tone source for `rodio`.
+///
+/// Produces a mono square wave at `freq` Hz for exactly `num_samples` frames
+/// at 44 100 Hz.  Amplitude is kept low (±0.25) so it stays pleasant even on
+/// laptop speakers.
+#[cfg(feature = "startup-sound")]
+struct SquareWave {
+    freq: f32,
+    sample_rate: u32,
+    num_samples: usize,
+    elapsed: usize,
+}
+
+#[cfg(feature = "startup-sound")]
+impl SquareWave {
+    fn new(freq: f32, duration_ms: u64) -> Self {
+        const SR: u32 = 44_100;
+        let num_samples = (SR as f64 * duration_ms as f64 / 1_000.0) as usize;
+        Self { freq, sample_rate: SR, num_samples, elapsed: 0 }
+    }
+}
+
+#[cfg(feature = "startup-sound")]
+impl Iterator for SquareWave {
+    type Item = f32;
+    fn next(&mut self) -> Option<f32> {
+        if self.elapsed >= self.num_samples {
+            return None;
+        }
+        let period = self.sample_rate as f32 / self.freq;
+        let pos = self.elapsed as f32 % period;
+        self.elapsed += 1;
+        Some(if pos < period / 2.0 { 0.25 } else { -0.25 })
+    }
+}
+
+#[cfg(feature = "startup-sound")]
+impl rodio::Source for SquareWave {
+    fn current_frame_len(&self) -> Option<usize> { None }
+    fn channels(&self) -> u16 { 1 }
+    fn sample_rate(&self) -> u32 { self.sample_rate }
+    fn total_duration(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_millis(
+            self.num_samples as u64 * 1_000 / self.sample_rate as u64,
+        ))
+    }
+}
+
+/// Plays the "men-tis-D-B" startup jingle.
+///
+/// The four notes map directly to the name:
+/// - **C5** (523 Hz) — "men"
+/// - **E5** (659 Hz) — "tis"
+/// - **D5** (587 Hz) — "D"  ← actual note name
+/// - **B4** (494 Hz) — "B"  ← actual note name
+///
+/// Silenced by setting `MENTISDB_STARTUP_SOUND=0` (or `false`/`no`/`off`).
+#[cfg(feature = "startup-sound")]
+fn play_startup_jingle() {
+    let enabled = std::env::var("MENTISDB_STARTUP_SOUND")
+        .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
+        .unwrap_or(true);
+    if !enabled {
+        return;
+    }
+    // men   tis    D      B
+    let notes: &[(f32, u64)] = &[
+        (523.25, 160),
+        (659.25, 160),
+        (587.33, 160),
+        (493.88, 380),
+    ];
+    if let Ok((_stream, handle)) = rodio::OutputStream::try_default() {
+        if let Ok(sink) = rodio::Sink::try_new(&handle) {
+            for &(freq, ms) in notes {
+                sink.append(SquareWave::new(freq, ms));
+            }
+            sink.sleep_until_end();
+        }
+    }
+}
+
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_logger();
+    #[cfg(feature = "startup-sound")]
+    play_startup_jingle();
     let storage_root_migration = if std::env::var_os("MENTISDB_DIR").is_none() {
         adopt_legacy_default_mentisdb_dir()?
     } else {
@@ -170,22 +257,44 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     println!("Configuration:");
-    print_env_var("MENTISDB_DIR", Some(config.service.chain_dir.display().to_string()));
-    print_env_var("MENTISDB_DEFAULT_KEY", Some(config.service.default_chain_key.clone()));
+    print_env_var(
+        "MENTISDB_DIR",
+        Some(config.service.chain_dir.display().to_string()),
+    );
+    print_env_var(
+        "MENTISDB_DEFAULT_KEY",
+        Some(config.service.default_chain_key.clone()),
+    );
     print_env_var(
         "MENTISDB_DEFAULT_STORAGE_ADAPTER",
         Some(config.service.default_storage_adapter.to_string()),
     );
-    print_env_var("MENTISDB_STORAGE_ADAPTER", Some(config.service.default_storage_adapter.to_string()));
-    print_env_var("MENTISDB_AUTO_FLUSH", Some(config.service.auto_flush.to_string()));
+    print_env_var(
+        "MENTISDB_STORAGE_ADAPTER",
+        Some(config.service.default_storage_adapter.to_string()),
+    );
+    print_env_var(
+        "MENTISDB_AUTO_FLUSH",
+        Some(config.service.auto_flush.to_string()),
+    );
     print_env_var("MENTISDB_VERBOSE", Some(config.service.verbose.to_string()));
     print_env_var(
         "MENTISDB_LOG_FILE",
-        config.service.log_file.as_ref().map(|p| p.display().to_string()),
+        config
+            .service
+            .log_file
+            .as_ref()
+            .map(|p| p.display().to_string()),
     );
     print_env_var("MENTISDB_BIND_HOST", Some(config.mcp_addr.ip().to_string()));
-    print_env_var("MENTISDB_MCP_PORT", Some(config.mcp_addr.port().to_string()));
-    print_env_var("MENTISDB_REST_PORT", Some(config.rest_addr.port().to_string()));
+    print_env_var(
+        "MENTISDB_MCP_PORT",
+        Some(config.mcp_addr.port().to_string()),
+    );
+    print_env_var(
+        "MENTISDB_REST_PORT",
+        Some(config.rest_addr.port().to_string()),
+    );
     print_env_var(
         "MENTISDB_HTTPS_MCP_PORT",
         Some(match config.https_mcp_addr {
@@ -200,11 +309,26 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None => "disabled".to_string(),
         }),
     );
-    print_env_var("MENTISDB_TLS_CERT", Some(config.tls_cert_path.display().to_string()));
-    print_env_var("MENTISDB_TLS_KEY", Some(config.tls_key_path.display().to_string()));
+    print_env_var(
+        "MENTISDB_TLS_CERT",
+        Some(config.tls_cert_path.display().to_string()),
+    );
+    print_env_var(
+        "MENTISDB_TLS_KEY",
+        Some(config.tls_key_path.display().to_string()),
+    );
     print_env_var(
         "RUST_LOG",
-        std::env::var("RUST_LOG").ok().or_else(|| Some("info (default)".to_string())),
+        std::env::var("RUST_LOG")
+            .ok()
+            .or_else(|| Some("info (default)".to_string())),
+    );
+    #[cfg(feature = "startup-sound")]
+    print_env_var(
+        "MENTISDB_STARTUP_SOUND",
+        std::env::var("MENTISDB_STARTUP_SOUND")
+            .ok()
+            .or_else(|| Some("true (default)".to_string())),
     );
 
     if migration_reports.is_empty() {
@@ -587,7 +711,9 @@ fn print_agent_registry_summary(
 
     for entry in registry.chains.values() {
         match MentisDb::open_with_storage(
-            entry.storage_adapter.for_chain_key(&config.service.chain_dir, &entry.chain_key),
+            entry
+                .storage_adapter
+                .for_chain_key(&config.service.chain_dir, &entry.chain_key),
         ) {
             Ok(chain) => {
                 let agents = chain.list_agent_registry();

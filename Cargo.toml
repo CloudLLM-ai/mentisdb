@@ -12,8 +12,9 @@ keywords = ["agents", "memory", "event-sourcing", "llm", "orchestration"]
 categories = ["data-structures", "development-tools", "asynchronous"]
 
 [features]
-default = ["server"]
+default = ["server", "startup-sound"]
 server = ["dep:axum", "dep:env_logger", "dep:log", "dep:tokio", "mcp/server", "dep:rcgen", "dep:axum-server", "dep:rustls-pemfile"]
+startup-sound = ["dep:rodio"]
 
 [dependencies]
 async-trait = "0.1.89"
@@ -33,6 +34,7 @@ env_logger = { version = "0.11.8", optional = true }
 log = { version = "0.4.28", optional = true }
 rcgen = { version = "0.13", optional = true }
 rustls-pemfile = { version = "2", optional = true }
+rodio = { version = "0.17", optional = true }
 tokio = { version = "1.50.0", features = ["full"], optional = true }
 
 [dev-dependencies]
