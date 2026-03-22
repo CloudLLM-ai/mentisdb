@@ -1008,7 +1008,13 @@ async fn api_agent_memory_markdown(
     //   <agent_id>_<chain_key>_AGENT.md  (spaces → underscores, lowercased)
     let safe = |s: &str| {
         s.chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
             .collect::<String>()
     };
     let filename = format!("{}_{}_AGENT.md", safe(&agent_id), safe(&chain_key));
