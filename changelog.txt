@@ -10,7 +10,7 @@
  - feat(dashboard): skill revoke / deprecate with GitHub-style confirmation
    - "Revoke Skill…" button in skill detail header triggers an overlay panel
    - User must type the exact skill ID before "Revoke Forever" is enabled (mirrors GitHub repository deletion UX)
-   - New `POST /dashboard/api/skills/{skill_id}/revoke` and `POST /dashboard/api/skills/{skill_id}/deprecate` endpoints backed by `SkillRegistry::revoke_skill` and `deprecate_skill`
+   - New admin-only `POST /dashboard/api/skills/{skill_id}/revoke` and `POST /dashboard/api/skills/{skill_id}/deprecate` routes in the dashboard server; these manage skill lifecycle entries in the `SkillRegistry` (backed by `SkillRegistry::revoke_skill` and `deprecate_skill`) and are separate from the MCP/REST API endpoints exposed to agents
  - feat(dashboard): version number in navigation header
    - Brand now reads "🧠 MentisDB v0.5.0" — fetched from new `GET /dashboard/api/version` endpoint on page load
    - New endpoint returns `{ "version": "…" }` compiled in via `env!("CARGO_PKG_VERSION")`
