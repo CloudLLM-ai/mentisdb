@@ -239,6 +239,162 @@ Remember the persisted rule.
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
+#[test]
+fn skill_registry_updates_latest_summary_and_status_indexes_after_mutations() {
+    let path = unique_registry_path();
+    let mut registry = SkillRegistry::open_at_path(&path).unwrap();
+
+    let alpha = r#"---
+schema_version: 1
+name: Alpha Skill
+description: First version
+tags: [alpha]
+triggers: [first]
+---
+
+# Alpha Skill
+
+First version
+"#;
+    let beta = r#"---
+schema_version: 1
+name: Beta Skill
+description: Second version
+tags: [beta]
+triggers: [second]
+---
+
+# Beta Skill
+
+Second version
+"#;
+
+    registry
+        .upload_skill(
+            SkillUpload::new("astro", SkillFormat::Markdown, alpha).with_skill_id("tracked-skill"),
+        )
+        .unwrap();
+
+    assert_eq!(registry.list_skills()[0].name, "Alpha Skill");
+    assert_eq!(
+        registry
+            .search_skills(&SkillQuery {
+                tags_any: vec!["alpha".to_string()],
+                ..SkillQuery::default()
+            })
+            .len(),
+        1
+    );
+    assert_eq!(
+        registry
+            .search_skills(&SkillQuery {
+                names: Some(vec!["Alpha Skill".to_string()]),
+                ..SkillQuery::default()
+            })
+            .len(),
+        1
+    );
+
+    registry
+        .upload_skill(
+            SkillUpload::new("astro", SkillFormat::Markdown, beta).with_skill_id("tracked-skill"),
+        )
+        .unwrap();
+
+    assert_eq!(registry.list_skills()[0].name, "Beta Skill");
+    assert_eq!(
+        registry
+            .search_skills(&SkillQuery {
+                tags_any: vec!["alpha".to_string()],
+                ..SkillQuery::default()
+            })
+            .len(),
+        0
+    );
+    assert_eq!(
+        registry
+            .search_skills(&SkillQuery {
+                tags_any: vec!["beta".to_string()],
+                ..SkillQuery::default()
+            })
+            .len(),
+        1
+    );
+    assert_eq!(
+        registry
+            .search_skills(&SkillQuery {
+                names: Some(vec!["Alpha Skill".to_string()]),
+                ..SkillQuery::default()
+            })
+            .len(),
+        0
+    );
+    assert_eq!(
+        registry
+            .search_skills(&SkillQuery {
+                names: Some(vec!["Beta Skill".to_string()]),
+                ..SkillQuery::default()
+            })
+            .len(),
+        1
+    );
+    assert_eq!(
+        registry
+            .search_skills(&SkillQuery {
+                statuses: Some(vec![SkillStatus::Active]),
+                ..SkillQuery::default()
+            })
+            .len(),
+        1
+    );
+
+    registry
+        .deprecate_skill("tracked-skill", Some("superseded"))
+        .unwrap();
+    assert_eq!(
+        registry
+            .search_skills(&SkillQuery {
+                statuses: Some(vec![SkillStatus::Active]),
+                ..SkillQuery::default()
+            })
+            .len(),
+        0
+    );
+    assert_eq!(
+        registry
+            .search_skills(&SkillQuery {
+                statuses: Some(vec![SkillStatus::Deprecated]),
+                ..SkillQuery::default()
+            })
+            .len(),
+        1
+    );
+
+    registry
+        .revoke_skill("tracked-skill", Some("unsafe"))
+        .unwrap();
+    assert_eq!(
+        registry
+            .search_skills(&SkillQuery {
+                statuses: Some(vec![SkillStatus::Deprecated]),
+                ..SkillQuery::default()
+            })
+            .len(),
+        0
+    );
+    assert_eq!(
+        registry
+            .search_skills(&SkillQuery {
+                statuses: Some(vec![SkillStatus::Revoked]),
+                ..SkillQuery::default()
+            })
+            .len(),
+        1
+    );
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
 // ---------------------------------------------------------------------------
 // Helper: a small reusable markdown skill template
 // ---------------------------------------------------------------------------

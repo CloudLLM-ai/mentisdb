@@ -21,12 +21,44 @@ pub const MENTISDB_SKILL_CURRENT_SCHEMA_VERSION: u32 = MENTISDB_SKILL_SCHEMA_V1;
 const MENTISDB_SKILL_REGISTRY_FILENAME: &str = "mentisdb-skills.bin";
 
 /// Supported import and export formats for skill documents.
+///
+/// MentisDB stores every skill as a [`SkillVersionContent::Full`] raw string in the
+/// format it was uploaded in.  The registry can round-trip any skill through either
+/// format: upload in Markdown, read back as JSON (or vice-versa) via
+/// [`SkillRegistry::read_skill`].
+///
+/// # Examples
+///
+/// ```rust
+/// use mentisdb::SkillFormat;
+/// use std::str::FromStr;
+///
+/// // Display gives the canonical lowercase name.
+/// assert_eq!(SkillFormat::Markdown.to_string(), "markdown");
+/// assert_eq!(SkillFormat::Json.to_string(), "json");
+///
+/// // Both "md" and "markdown" parse as Markdown.
+/// assert_eq!("md".parse::<SkillFormat>().unwrap(), SkillFormat::Markdown);
+/// assert_eq!("json".parse::<SkillFormat>().unwrap(), SkillFormat::Json);
+///
+/// // Unknown strings return an error.
+/// assert!("xml".parse::<SkillFormat>().is_err());
+/// ```
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillFormat {
     /// Markdown skill document with optional YAML-like frontmatter.
+    ///
+    /// The Markdown parser recognises an optional `---` … `---` frontmatter block
+    /// at the top of the file that may carry `name`, `description`, `tags`,
+    /// `triggers`, and `warnings` key-value pairs.  Everything after the
+    /// frontmatter block is parsed into [`SkillSection`]s by heading level.
     Markdown,
-    /// JSON representation of the structured skill document.
+    /// JSON representation of the structured [`SkillDocument`] object.
+    ///
+    /// The JSON format is a direct `serde_json` serialisation of [`SkillDocument`].
+    /// It is useful for programmatic consumption or when the skill content is
+    /// already available as a structured object rather than freeform Markdown.
     Json,
 }
 
@@ -61,14 +93,60 @@ impl FromStr for SkillFormat {
 }
 
 /// Lifecycle state of a stored skill entry.
+///
+/// Every skill begins life as [`SkillStatus::Active`].  Registry operators can
+/// advance the lifecycle to [`SkillStatus::Deprecated`] or
+/// [`SkillStatus::Revoked`] via [`SkillRegistry::deprecate_skill`] and
+/// [`SkillRegistry::revoke_skill`].  **Neither transition deletes any version
+/// history** — the registry is append-only and all prior versions remain
+/// accessible.
+///
+/// | Status       | Searchable | Safe to use | Indicates                              |
+/// |--------------|-----------|-------------|----------------------------------------|
+/// | `Active`     | ✅        | ✅          | Normal operational skill               |
+/// | `Deprecated` | ✅        | ⚠️          | Superseded; prefer a newer alternative |
+/// | `Revoked`    | ✅        | ❌          | Safety/correctness concern             |
+///
+/// # Examples
+///
+/// ```rust
+/// use mentisdb::SkillStatus;
+/// use std::str::FromStr;
+///
+/// // Display gives the canonical lowercase name.
+/// assert_eq!(SkillStatus::Active.to_string(), "active");
+/// assert_eq!(SkillStatus::Deprecated.to_string(), "deprecated");
+/// assert_eq!(SkillStatus::Revoked.to_string(), "revoked");
+///
+/// // "disabled" is accepted as an alias for "revoked".
+/// assert_eq!("disabled".parse::<SkillStatus>().unwrap(), SkillStatus::Revoked);
+///
+/// // Unknown strings return an error.
+/// assert!("unknown".parse::<SkillStatus>().is_err());
+/// ```
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillStatus {
-    /// The skill is active and should be returned normally.
+    /// The skill is active and in normal use.
+    ///
+    /// `Active` is the default status assigned when a skill is first uploaded,
+    /// and it is automatically restored on every subsequent upload (unless the
+    /// skill is currently [`Revoked`](SkillStatus::Revoked)).  Skills in this
+    /// state are returned by all search and list calls.
     Active,
-    /// The skill is superseded but still readable.
+    /// The skill has been superseded but is still safe to read.
+    ///
+    /// Use `Deprecated` when a newer version of the skill (possibly under a
+    /// different `skill_id`) should be preferred.  Deprecated skills remain
+    /// fully accessible and searchable; callers are expected to surface the
+    /// deprecation reason to users or agents.
     Deprecated,
-    /// The skill should not be trusted for normal use.
+    /// The skill must not be used; a safety or correctness concern was found.
+    ///
+    /// Revoked skills are still stored (all version history is preserved) but
+    /// agents and callers should treat them as untrusted.  A subsequent upload
+    /// to the same `skill_id` will **not** clear the `Revoked` status — use
+    /// a new `skill_id` to publish a corrected replacement.
     Revoked,
 }
 
@@ -105,6 +183,26 @@ impl FromStr for SkillStatus {
 }
 
 /// One heading-delimited section of a structured skill document.
+///
+/// The Markdown parser splits a skill file into sections at each heading
+/// (`#` through `######`).  Every run of non-heading lines that follows a
+/// heading becomes the section's `body`.  Lines that appear before the first
+/// heading are used as the document-level `description` in [`SkillDocument`].
+///
+/// # Examples
+///
+/// ```rust
+/// use mentisdb::{import_skill, SkillFormat, SkillSection};
+///
+/// let md = "# Memory Management\n\nAlways clean up allocations.\n\n## Tips\n\nUse RAII.";
+/// let doc = import_skill(md, SkillFormat::Markdown).unwrap();
+///
+/// assert_eq!(doc.sections[0].level, 1);
+/// assert_eq!(doc.sections[0].heading, "Memory Management");
+/// assert_eq!(doc.sections[1].level, 2);
+/// assert_eq!(doc.sections[1].heading, "Tips");
+/// assert!(doc.sections[1].body.contains("RAII"));
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillSection {
     /// Markdown heading level, from `1` (`#`) through `6` (`######`).
@@ -115,7 +213,68 @@ pub struct SkillSection {
     pub body: String,
 }
 
-/// Structured representation of a skill file.
+/// Structured representation of a parsed skill file.
+///
+/// A `SkillDocument` is the canonical in-memory form of a skill.  It is
+/// produced by [`import_skill`] from raw Markdown or JSON source and consumed
+/// by [`export_skill`] to render back to either format.  The [`SkillRegistry`]
+/// stores skills as raw text and reconstructs `SkillDocument` on demand so
+/// that the schema can evolve without re-encoding all stored versions.
+///
+/// ## Frontmatter fields
+///
+/// When importing from Markdown, the following YAML-like frontmatter keys are
+/// recognised (all optional):
+///
+/// | Key              | Mapped field  |
+/// |------------------|---------------|
+/// | `name`           | `name`        |
+/// | `description`    | `description` |
+/// | `tags`           | `tags`        |
+/// | `triggers`       | `triggers`    |
+/// | `warnings`       | `warnings`    |
+/// | `schema_version` | `schema_version` |
+///
+/// If `name` is absent from frontmatter the first `#`-level heading is used.
+/// If `description` is absent, any text that appears before the first heading
+/// (the "intro" block) is used.
+///
+/// # Examples
+///
+/// ```rust
+/// use mentisdb::{import_skill, export_skill, SkillFormat};
+///
+/// // Markdown with frontmatter — name and description come from the header block.
+/// // Section headings use ## (level 2) so they remain intact in doctest compilation.
+/// let markdown = r#"---
+/// name: Task Planner
+/// description: Break large goals into ordered sub-tasks.
+/// tags: [planning, tasks]
+/// triggers: [plan this, decompose]
+/// ---
+///
+/// ## Overview
+///
+/// Useful for project planning and task decomposition.
+///
+/// ## Steps
+///
+/// 1. Identify the goal.
+/// 2. List sub-tasks.
+/// 3. Order by dependency.
+/// "#;
+///
+/// let doc = import_skill(markdown, SkillFormat::Markdown).unwrap();
+/// assert_eq!(doc.name, "Task Planner");
+/// assert!(doc.tags.contains(&"planning".to_string()));
+/// assert_eq!(doc.sections[0].heading, "Overview");
+/// assert_eq!(doc.sections[1].heading, "Steps");
+///
+/// // Round-trip to JSON and back preserves all fields.
+/// let json = export_skill(&doc, SkillFormat::Json).unwrap();
+/// let doc2 = import_skill(&json, SkillFormat::Json).unwrap();
+/// assert_eq!(doc, doc2);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillDocument {
     /// Schema version for this structured skill object.
@@ -299,9 +458,49 @@ pub struct SkillVersionSummary {
 
 /// Upload request for one new immutable skill version.
 ///
-/// This request groups the upload metadata needed by
-/// [`SkillRegistry::upload_skill`] into a single value so callers can add
-/// optional fields without growing the method signature.
+/// `SkillUpload` is a builder-style value that groups the upload metadata
+/// consumed by [`SkillRegistry::upload_skill`].  Required fields are provided
+/// to [`SkillUpload::new`]; optional fields are attached with the chainable
+/// builder methods.
+///
+/// ## Required fields
+///
+/// | Field                  | Source                    |
+/// |------------------------|---------------------------|
+/// | `uploaded_by_agent_id` | The stable agent identifier responsible for this upload |
+/// | `format`               | The [`SkillFormat`] of the raw `content` string        |
+/// | `content`              | The full raw Markdown or JSON skill source              |
+///
+/// ## Optional fields (builder methods)
+///
+/// | Builder method        | What it sets                                          |
+/// |-----------------------|-------------------------------------------------------|
+/// | `with_skill_id`       | Explicit stable id; derived from name if omitted      |
+/// | `with_agent_identity` | Human-readable agent name and owner for display       |
+/// | `with_signing`        | Ed25519 signing key id and raw signature bytes        |
+///
+/// # Examples
+///
+/// ```rust
+/// use mentisdb::{SkillUpload, SkillFormat};
+///
+/// // Minimal upload — skill_id derived from the skill name in the content.
+/// let minimal = SkillUpload::new(
+///     "agent-42",
+///     SkillFormat::Markdown,
+///     "# Code Review\n\nReview PRs for correctness.",
+/// );
+///
+/// // Full upload with explicit skill_id, display identity, and (placeholder) signature.
+/// let full = SkillUpload::new(
+///     "agent-42",
+///     SkillFormat::Markdown,
+///     "# Code Review\n\nReview PRs for correctness.",
+/// )
+/// .with_skill_id("code-review")
+/// .with_agent_identity(Some("Reviewer Agent"), Some("acme-corp"))
+/// .with_signing(Some("key-v1".to_string()), Some(vec![0u8; 64]));
+/// ```
 #[derive(Debug, Clone)]
 pub struct SkillUpload<'a> {
     skill_id: Option<&'a str>,
@@ -316,6 +515,21 @@ pub struct SkillUpload<'a> {
 
 impl<'a> SkillUpload<'a> {
     /// Create a new upload request with the required fields.
+    ///
+    /// The `skill_id` will be derived from the skill name parsed out of `content`
+    /// unless overridden with [`SkillUpload::with_skill_id`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use mentisdb::{SkillUpload, SkillFormat};
+    ///
+    /// let upload = SkillUpload::new(
+    ///     "my-agent",
+    ///     SkillFormat::Markdown,
+    ///     "# Hello\n\nA minimal skill.",
+    /// );
+    /// ```
     pub fn new(uploaded_by_agent_id: &'a str, format: SkillFormat, content: &'a str) -> Self {
         Self {
             skill_id: None,
@@ -330,12 +544,40 @@ impl<'a> SkillUpload<'a> {
     }
 
     /// Attach an explicit skill id instead of deriving one from the skill name.
+    ///
+    /// The provided value is normalised to a URL-safe slug (lowercase
+    /// alphanumerics and hyphens).  Use this when you need a stable, predictable
+    /// id regardless of how the skill name is worded.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use mentisdb::{SkillUpload, SkillFormat};
+    ///
+    /// let upload = SkillUpload::new("agent-1", SkillFormat::Markdown, "# My Skill\n\nDoes things.")
+    ///     .with_skill_id("my-skill");
+    /// ```
     pub fn with_skill_id(mut self, skill_id: &'a str) -> Self {
         self.skill_id = Some(skill_id);
         self
     }
 
     /// Attach optional human-readable agent identity metadata.
+    ///
+    /// Both parameters are trimmed and stored as-is; `None` or blank values are
+    /// treated as absent.  These fields appear in [`SkillSummary`] and
+    /// [`SkillVersionSummary`] for display purposes and are searchable via
+    /// [`SkillQuery::uploaded_by_agent_names`] and
+    /// [`SkillQuery::uploaded_by_agent_owners`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use mentisdb::{SkillUpload, SkillFormat};
+    ///
+    /// let upload = SkillUpload::new("agent-7", SkillFormat::Markdown, "# Demo\n\nDemonstration skill.")
+    ///     .with_agent_identity(Some("Helpful Agent"), Some("acme-org"));
+    /// ```
     pub fn with_agent_identity(
         mut self,
         uploaded_by_agent_name: Option<&'a str>,
@@ -347,6 +589,23 @@ impl<'a> SkillUpload<'a> {
     }
 
     /// Attach optional signing metadata for this upload.
+    ///
+    /// When provided, `signing_key_id` identifies the Ed25519 key registered on
+    /// the uploading agent, and `skill_signature` contains the raw 64-byte
+    /// signature over the skill content.  The registry stores both values
+    /// verbatim in the [`SkillVersion`]; it does **not** verify the signature
+    /// during upload — verification is the caller's responsibility.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use mentisdb::{SkillUpload, SkillFormat};
+    ///
+    /// // In production use a real Ed25519 signature; here we show the shape.
+    /// let fake_sig = vec![0u8; 64];
+    /// let upload = SkillUpload::new("agent-1", SkillFormat::Markdown, "# Signed\n\nSigned skill.")
+    ///     .with_signing(Some("key-2024".to_string()), Some(fake_sig));
+    /// ```
     pub fn with_signing(
         mut self,
         signing_key_id: Option<String>,
@@ -358,7 +617,41 @@ impl<'a> SkillUpload<'a> {
     }
 }
 
-/// Query parameters for skill-registry search.
+/// Query parameters for [`SkillRegistry::search_skills`].
+///
+/// Every field is optional and acts as an independent filter.  When multiple
+/// fields are set the registry returns only skills that satisfy **all** of them
+/// (logical AND across fields).  Within a single multi-value field (e.g.
+/// `tags_any`) the registry returns skills that match **any** of the values
+/// (logical OR within a field).
+///
+/// All string comparisons are case-insensitive.  The `text` filter is applied
+/// last, after all indexed filters have been evaluated, and it searches across
+/// the skill name, description, warnings, section headings, and section bodies.
+///
+/// ## Builder-style construction
+///
+/// `SkillQuery` derives [`Default`] so the idiomatic pattern is to start with
+/// `SkillQuery::default()` and set only the fields you need:
+///
+/// ```rust
+/// use mentisdb::{SkillQuery, SkillStatus, SkillFormat};
+///
+/// // Find active skills tagged with "memory" or "cache" that mention "evict".
+/// let query = SkillQuery {
+///     text: Some("evict".into()),
+///     tags_any: vec!["memory".into(), "cache".into()],
+///     statuses: Some(vec![SkillStatus::Active]),
+///     ..Default::default()
+/// };
+///
+/// // Limit to the 5 most recently updated results.
+/// let limited = SkillQuery {
+///     formats: Some(vec![SkillFormat::Markdown]),
+///     limit: Some(5),
+///     ..Default::default()
+/// };
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillQuery {
     /// Optional text filter applied to latest name, description, warnings, headings, and bodies.
@@ -571,18 +864,108 @@ impl SkillIndexes {
             );
         }
     }
+
+    fn remove_skill(&mut self, skill_id: &str) {
+        remove_skill_id_from_index(&mut self.by_skill_id, skill_id);
+        remove_skill_id_from_index(&mut self.by_name, skill_id);
+        remove_skill_id_from_index(&mut self.by_tag, skill_id);
+        remove_skill_id_from_index(&mut self.by_trigger, skill_id);
+        remove_skill_id_from_index(&mut self.by_agent_id, skill_id);
+        remove_skill_id_from_index(&mut self.by_agent_name, skill_id);
+        remove_skill_id_from_index(&mut self.by_agent_owner, skill_id);
+        remove_skill_id_from_index(&mut self.by_status, skill_id);
+        remove_skill_id_from_index(&mut self.by_format, skill_id);
+        remove_skill_id_from_index(&mut self.by_schema_version, skill_id);
+    }
+
+    fn replace_skill(&mut self, skill_id: &str, entry: &SkillEntry) {
+        self.remove_skill(skill_id);
+        self.observe(skill_id, entry);
+    }
 }
 
 // ---------------------------------------------------------------------------
 // SkillRegistry
 // ---------------------------------------------------------------------------
 
-/// Durable skill registry backed by a versioned binary storage file.
+/// Durable, append-only skill registry backed by a versioned binary storage file.
+///
+/// ## Design: immutable versioned history
+///
+/// Every call to [`upload_skill`](SkillRegistry::upload_skill) creates a new
+/// **immutable version** for the target skill id.  Versions are never
+/// overwritten or deleted — the registry is append-only.  This gives you a
+/// complete audit trail of how every skill has evolved over time.
+///
+/// To save storage space the first version of each skill is stored in full
+/// ([`SkillVersionContent::Full`]); every subsequent version stores only a
+/// compact unified-diff patch ([`SkillVersionContent::Delta`]) against the
+/// immediately preceding version.  The registry reconstructs the full content
+/// on demand by replaying patches forward from the base.
+///
+/// ## Lifecycle
+///
+/// Skills begin in the [`SkillStatus::Active`] state and can be transitioned to
+/// [`SkillStatus::Deprecated`] (superseded, but still safe to use) or
+/// [`SkillStatus::Revoked`] (must not be used) without losing any version
+/// history.  Uploading a new version automatically restores `Active` status
+/// unless the skill is currently `Revoked`.
+///
+/// ## Persistence
+///
+/// The registry is persisted as a single binary file named
+/// `mentisdb-skills.bin` inside the MentisDB chain directory.  Writes use an
+/// atomic rename so the file is never left in a partially-written state.
+///
+/// ## In-memory indexes
+///
+/// On open the registry builds in-memory indexes keyed by skill id, name, tag,
+/// trigger phrase, agent id/name/owner, status, format, and schema version.
+/// These indexes speed up [`search_skills`](SkillRegistry::search_skills) by
+/// quickly narrowing the candidate set before the linear text filter runs.
+///
+/// # Examples
+///
+/// ```no_run
+/// use mentisdb::{SkillRegistry, SkillUpload, SkillFormat, SkillQuery, SkillStatus};
+/// use std::path::PathBuf;
+///
+/// // ── Open (or create) the registry ──────────────────────────────────────
+/// let dir = std::env::temp_dir().join("mentisdb_docs_example");
+/// std::fs::create_dir_all(&dir).unwrap();
+/// let mut registry = SkillRegistry::open(&dir).unwrap();
+///
+/// // ── Upload a skill ─────────────────────────────────────────────────────
+/// let content = "# PR Reviewer\n\nReview pull requests for correctness and style.";
+/// let upload = SkillUpload::new("agent-1", SkillFormat::Markdown, content)
+///     .with_skill_id("pr-reviewer")
+///     .with_agent_identity(Some("Reviewer Bot"), Some("acme"));
+/// let summary = registry.upload_skill(upload).unwrap();
+/// assert_eq!(summary.skill_id, "pr-reviewer");
+/// assert_eq!(summary.version_count, 1);
+///
+/// // ── List all skills ────────────────────────────────────────────────────
+/// let skills = registry.list_skills();
+/// assert!(!skills.is_empty());
+/// println!("Registry has {} skill(s)", skills.len());
+///
+/// // ── Search by tag ──────────────────────────────────────────────────────
+/// let results = registry.search_skills(&SkillQuery {
+///     statuses: Some(vec![SkillStatus::Active]),
+///     ..Default::default()
+/// });
+/// assert!(!results.is_empty());
+///
+/// // ── Read back as Markdown ──────────────────────────────────────────────
+/// let rendered = registry.read_skill("pr-reviewer", None, SkillFormat::Markdown).unwrap();
+/// assert!(rendered.contains("PR Reviewer"));
+/// ```
 pub struct SkillRegistry {
     version: u32,
     skills: BTreeMap<String, SkillEntry>,
     storage_path: Option<PathBuf>,
     indexes: SkillIndexes,
+    latest_summaries: BTreeMap<String, SkillSummary>,
 }
 
 impl SkillRegistry {
@@ -617,6 +1000,7 @@ impl SkillRegistry {
                 skills: BTreeMap::new(),
                 storage_path: Some(path),
                 indexes: SkillIndexes::default(),
+                latest_summaries: BTreeMap::new(),
             });
         }
 
@@ -665,6 +1049,7 @@ impl SkillRegistry {
         Ok(Self {
             version: persisted.version,
             indexes: SkillIndexes::from_entries(&persisted.skills),
+            latest_summaries: build_latest_summaries(&persisted.skills)?,
             skills: persisted.skills,
             storage_path: Some(path),
         })
@@ -707,16 +1092,60 @@ impl SkillRegistry {
 
     /// Upload a skill file, parsing it through the requested import adapter.
     ///
-    /// If `skill_id` is omitted, the registry derives one from the normalized
-    /// skill name. Reusing an existing `skill_id` creates a new immutable
-    /// version for that skill entry. The second and later versions are stored
-    /// as unified-diff deltas against the immediately preceding version to
-    /// save storage space.
+    /// If `skill_id` is omitted from the [`SkillUpload`] request, the registry
+    /// derives a URL-safe slug from the skill name found in the parsed content.
+    /// Reusing an existing `skill_id` creates a new **immutable version** for
+    /// that skill entry — all prior versions are preserved.
+    ///
+    /// ## Version storage
+    ///
+    /// - **Version 0**: stored as [`SkillVersionContent::Full`] (complete raw text).
+    /// - **Version 1+**: stored as [`SkillVersionContent::Delta`] (unified diff
+    ///   against the immediately preceding version).  This typically reduces
+    ///   storage to the size of the change rather than the full document.
+    ///
+    /// ## Status behaviour
+    ///
+    /// Uploading a new version resets the status to [`SkillStatus::Active`]
+    /// **unless** the skill is currently [`SkillStatus::Revoked`], in which case
+    /// the revoked status is intentionally preserved to prevent accidentally
+    /// re-activating a skill that was revoked for a safety reason.
     ///
     /// # Errors
     ///
     /// Returns an error if the request content cannot be parsed, validation fails,
     /// or the registry cannot be persisted.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mentisdb::{SkillRegistry, SkillUpload, SkillFormat};
+    ///
+    /// let dir = std::env::temp_dir().join("mentisdb_upload_example");
+    /// std::fs::create_dir_all(&dir).unwrap();
+    /// let mut registry = SkillRegistry::open(&dir).unwrap();
+    ///
+    /// let v1_content = "# Summariser\n\nSummarise long documents into bullet points.";
+    /// let v1 = registry.upload_skill(
+    ///     SkillUpload::new("agent-1", SkillFormat::Markdown, v1_content)
+    ///         .with_skill_id("summariser"),
+    /// ).unwrap();
+    /// assert_eq!(v1.version_count, 1); // first upload → version 0
+    ///
+    /// // A second upload to the same skill_id creates version 1 (stored as a delta).
+    /// let v2_content = "# Summariser\n\nSummarise long documents into concise bullet points.";
+    /// let v2 = registry.upload_skill(
+    ///     SkillUpload::new("agent-1", SkillFormat::Markdown, v2_content)
+    ///         .with_skill_id("summariser"),
+    /// ).unwrap();
+    /// assert_eq!(v2.version_count, 2); // second upload → version 1
+    ///
+    /// // Confirm both versions are accessible.
+    /// let versions = registry.skill_versions("summariser").unwrap();
+    /// assert_eq!(versions.len(), 2);
+    /// assert_eq!(versions[0].version_number, 0);
+    /// assert_eq!(versions[1].version_number, 1);
+    /// ```
     pub fn upload_skill(&mut self, request: SkillUpload<'_>) -> io::Result<SkillSummary> {
         let SkillUpload {
             skill_id,
@@ -796,23 +1225,117 @@ impl SkillRegistry {
             skill_signature,
         });
         let summary = summarize_entry(entry)?;
-        self.rebuild_indexes();
+        let entry = self
+            .skills
+            .get(&normalized_skill_id)
+            .expect("uploaded skill entry must exist");
+        self.indexes.replace_skill(&normalized_skill_id, entry);
+        self.latest_summaries
+            .insert(normalized_skill_id.clone(), summary.clone());
         self.persist()?;
         Ok(summary)
     }
 
-    /// Return all stored skills as summaries ordered by most recent update first.
+    /// Return all stored skills as [`SkillSummary`] values ordered by most recent update first.
+    ///
+    /// Summaries carry the latest name, description, tags, triggers, warnings,
+    /// current [`SkillStatus`], total version count, and uploader metadata.
+    /// They do **not** contain the full skill text — use
+    /// [`read_skill`](SkillRegistry::read_skill) to retrieve the rendered
+    /// content.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mentisdb::{SkillRegistry, SkillUpload, SkillFormat, SkillStatus};
+    ///
+    /// let dir = std::env::temp_dir().join("mentisdb_list_example");
+    /// std::fs::create_dir_all(&dir).unwrap();
+    /// let mut registry = SkillRegistry::open(&dir).unwrap();
+    ///
+    /// registry.upload_skill(
+    ///     SkillUpload::new("agent-1", SkillFormat::Markdown, "# Alpha\n\nFirst skill.")
+    ///         .with_skill_id("alpha"),
+    /// ).unwrap();
+    /// registry.upload_skill(
+    ///     SkillUpload::new("agent-1", SkillFormat::Markdown, "# Beta\n\nSecond skill.")
+    ///         .with_skill_id("beta"),
+    /// ).unwrap();
+    ///
+    /// let skills = registry.list_skills();
+    /// // "beta" was uploaded last, so it appears first.
+    /// assert_eq!(skills[0].skill_id, "beta");
+    /// assert_eq!(skills[1].skill_id, "alpha");
+    ///
+    /// // Each summary exposes lifecycle status and version count.
+    /// assert_eq!(skills[0].status, SkillStatus::Active);
+    /// assert_eq!(skills[0].version_count, 1);
+    /// ```
     pub fn list_skills(&self) -> Vec<SkillSummary> {
-        let mut summaries: Vec<_> = self
-            .skills
-            .values()
-            .filter_map(|e| summarize_entry(e).ok())
-            .collect();
+        let mut summaries: Vec<_> = self.latest_summaries.values().cloned().collect();
         summaries.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         summaries
     }
 
     /// Search the skill registry using indexed filters plus optional text and time bounds.
+    ///
+    /// All filter fields in [`SkillQuery`] are optional.  An empty query
+    /// (`SkillQuery::default()`) returns all skills, equivalent to
+    /// [`list_skills`](SkillRegistry::list_skills).  Results are ordered by most
+    /// recent update first and truncated to `query.limit` when set.
+    ///
+    /// ## How filtering works
+    ///
+    /// 1. **Indexed pass** — the registry resolves each non-`None` indexed field
+    ///    (status, tags, agent id, format, …) using in-memory hash maps and
+    ///    intersects the candidate sets.
+    /// 2. **Linear pass** — the remaining candidates are checked against `since`,
+    ///    `until`, and `text` filters in a single O(n) scan.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mentisdb::{SkillRegistry, SkillUpload, SkillFormat, SkillQuery, SkillStatus};
+    ///
+    /// let dir = std::env::temp_dir().join("mentisdb_search_example");
+    /// std::fs::create_dir_all(&dir).unwrap();
+    /// let mut registry = SkillRegistry::open(&dir).unwrap();
+    ///
+    /// // Upload two skills with different tags.
+    /// registry.upload_skill(
+    ///     SkillUpload::new("agent-1", SkillFormat::Markdown,
+    ///         "---\ntags: [memory, cache]\n---\n# Cache Manager\n\nManage in-memory caches.")
+    ///         .with_skill_id("cache-manager"),
+    /// ).unwrap();
+    /// registry.upload_skill(
+    ///     SkillUpload::new("agent-1", SkillFormat::Markdown,
+    ///         "---\ntags: [io, network]\n---\n# HTTP Client\n\nMake HTTP requests.")
+    ///         .with_skill_id("http-client"),
+    /// ).unwrap();
+    ///
+    /// // Filter by tag — returns only the cache skill.
+    /// let results = registry.search_skills(&SkillQuery {
+    ///     tags_any: vec!["cache".into()],
+    ///     ..Default::default()
+    /// });
+    /// assert_eq!(results.len(), 1);
+    /// assert_eq!(results[0].skill_id, "cache-manager");
+    ///
+    /// // Filter by free text across name, description, and section bodies.
+    /// let text_results = registry.search_skills(&SkillQuery {
+    ///     text: Some("HTTP".into()),
+    ///     statuses: Some(vec![SkillStatus::Active]),
+    ///     ..Default::default()
+    /// });
+    /// assert_eq!(text_results[0].skill_id, "http-client");
+    ///
+    /// // Limit to 1 result.
+    /// let limited = registry.search_skills(&SkillQuery {
+    ///     limit: Some(1),
+    ///     ..Default::default()
+    /// });
+    /// assert_eq!(limited.len(), 1);
+    /// ```
     pub fn search_skills(&self, query: &SkillQuery) -> Vec<SkillSummary> {
         let candidate_ids = self.indexed_candidate_ids(query);
         let candidate_entries: Vec<&SkillEntry> = if let Some(ids) = candidate_ids {
@@ -826,7 +1349,7 @@ impl SkillRegistry {
         let mut summaries: Vec<SkillSummary> = candidate_entries
             .into_iter()
             .filter_map(|entry| {
-                let summary = summarize_entry(entry).ok()?;
+                let summary = self.latest_summaries.get(&entry.skill_id)?.clone();
                 matches_skill_entry(entry, &summary, query).then_some(summary)
             })
             .collect();
@@ -878,13 +1401,21 @@ impl SkillRegistry {
     /// Returns `NotFound` if the skill does not exist, or `InvalidData` if the
     /// latest version cannot be reconstructed.
     pub fn skill_summary(&self, skill_id: &str) -> io::Result<SkillSummary> {
-        let entry = self.skills.get(skill_id).ok_or_else(|| {
+        self.latest_summaries.get(skill_id).cloned().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 format!("No skill \'{skill_id}\' found"),
             )
-        })?;
-        summarize_entry(entry)
+        })
+    }
+
+    pub(crate) fn cloned_entry(&self, skill_id: &str) -> io::Result<SkillEntry> {
+        self.skills.get(skill_id).cloned().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("No skill \'{skill_id}\' found"),
+            )
+        })
     }
 
     /// Return one stored skill version, or the latest version when omitted.
@@ -923,13 +1454,55 @@ impl SkillRegistry {
         Ok(version.clone())
     }
 
-    /// Reconstruct the full document for a specific skill version, applying any
+    /// Reconstruct the full [`SkillDocument`] for a specific skill version, applying any
     /// delta patches from the base version forward.
+    ///
+    /// Use this method when you need access to the **structured object model** —
+    /// sections, tags, triggers, warnings — rather than the rendered text.  For
+    /// rendered text output (Markdown or JSON string) use
+    /// [`read_skill`](SkillRegistry::read_skill).
+    ///
+    /// Pass `version_id: None` to retrieve the latest version.  Pass a specific
+    /// [`Uuid`] (from [`SkillVersionSummary::version_id`]) to retrieve an older
+    /// version.
+    ///
+    /// ## `skill_document` vs `read_skill`
+    ///
+    /// | Method           | Returns               | Use when …                              |
+    /// |------------------|-----------------------|-----------------------------------------|
+    /// | `skill_document` | `SkillDocument`       | You need structured fields (tags, …)    |
+    /// | `read_skill`     | `String`              | You need rendered text for display/LLM  |
     ///
     /// # Errors
     ///
     /// Returns `NotFound` if the skill or version does not exist, or `InvalidData`
     /// if reconstruction or document parsing fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mentisdb::{SkillRegistry, SkillUpload, SkillFormat};
+    ///
+    /// let dir = std::env::temp_dir().join("mentisdb_document_example");
+    /// std::fs::create_dir_all(&dir).unwrap();
+    /// let mut registry = SkillRegistry::open(&dir).unwrap();
+    ///
+    /// let content = "---\ntags: [rust, safety]\n---\n# Borrow Checker\n\nExplain ownership rules.";
+    /// registry.upload_skill(
+    ///     SkillUpload::new("agent-1", SkillFormat::Markdown, content)
+    ///         .with_skill_id("borrow-checker"),
+    /// ).unwrap();
+    ///
+    /// // Retrieve the structured document for the latest version.
+    /// let doc = registry.skill_document("borrow-checker", None).unwrap();
+    /// assert_eq!(doc.name, "Borrow Checker");
+    /// assert!(doc.tags.contains(&"rust".to_string()));
+    /// assert!(!doc.sections.is_empty());
+    ///
+    /// // The same content rendered as a string via read_skill.
+    /// let markdown = registry.read_skill("borrow-checker", None, SkillFormat::Markdown).unwrap();
+    /// assert!(markdown.contains("Borrow Checker"));
+    /// ```
     pub fn skill_document(
         &self,
         skill_id: &str,
@@ -959,15 +1532,58 @@ impl SkillRegistry {
         import_skill(&raw, version.source_format)
     }
 
-    /// Read one stored skill through the requested export adapter.
+    /// Read one stored skill rendered through the requested export adapter.
     ///
     /// The raw content is reconstructed by applying any stored delta patches,
-    /// then parsed and re-exported in the requested `format`.
+    /// then parsed into a [`SkillDocument`] and re-exported in the requested
+    /// `format`.  This means you can upload a skill as Markdown and read it
+    /// back as JSON (or vice-versa) transparently.
+    ///
+    /// Pass `version_id: None` to retrieve the latest version.  Pass a specific
+    /// [`Uuid`] (from [`SkillVersionSummary::version_id`]) to retrieve an older
+    /// version.
+    ///
+    /// ## `read_skill` vs `skill_document`
+    ///
+    /// | Method           | Returns               | Use when …                              |
+    /// |------------------|-----------------------|-----------------------------------------|
+    /// | `read_skill`     | `String`              | You need rendered text for display/LLM  |
+    /// | `skill_document` | `SkillDocument`       | You need structured fields (tags, …)    |
     ///
     /// # Errors
     ///
     /// Returns `NotFound` if the skill or version does not exist, or `InvalidData`
     /// if reconstruction, parsing, or re-export fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mentisdb::{SkillRegistry, SkillUpload, SkillFormat};
+    ///
+    /// let dir = std::env::temp_dir().join("mentisdb_read_example");
+    /// std::fs::create_dir_all(&dir).unwrap();
+    /// let mut registry = SkillRegistry::open(&dir).unwrap();
+    ///
+    /// registry.upload_skill(
+    ///     SkillUpload::new("agent-1", SkillFormat::Markdown,
+    ///         "# Greeter\n\nGreet users warmly.")
+    ///         .with_skill_id("greeter"),
+    /// ).unwrap();
+    ///
+    /// // Read back as Markdown (same format as uploaded).
+    /// let md = registry.read_skill("greeter", None, SkillFormat::Markdown).unwrap();
+    /// assert!(md.contains("Greeter"));
+    ///
+    /// // Cross-format: read the same skill as JSON.
+    /// let json = registry.read_skill("greeter", None, SkillFormat::Json).unwrap();
+    /// assert!(json.contains("\"name\""));
+    ///
+    /// // Read a specific historical version by its version_id.
+    /// let versions = registry.skill_versions("greeter").unwrap();
+    /// let v0_id = versions[0].version_id;
+    /// let v0 = registry.read_skill("greeter", Some(v0_id), SkillFormat::Markdown).unwrap();
+    /// assert!(v0.contains("Greeter"));
+    /// ```
     pub fn read_skill(
         &self,
         skill_id: &str,
@@ -980,30 +1596,57 @@ impl SkillRegistry {
                 format!("No skill \'{skill_id}\' found"),
             )
         })?;
-        let version_index = match version_id {
-            Some(vid) => entry
-                .versions
-                .iter()
-                .position(|v| v.version_id == vid)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!("No version \'{vid}\' found for skill \'{skill_id}\'"),
-                    )
-                })?,
-            None => entry.versions.len().saturating_sub(1),
-        };
-        let version = &entry.versions[version_index];
-        let raw = reconstruct_raw_content(entry, version_index)?;
-        let document = import_skill(&raw, version.source_format)?;
-        export_skill(&document, format)
+        Ok(read_skill_from_entry(skill_id, entry, version_id, format)?.content)
     }
 
     /// Mark one skill as deprecated while preserving all prior versions.
     ///
+    /// `Deprecated` signals that the skill has been superseded — perhaps by a
+    /// newer skill id or an updated version — but it is still **safe to read**
+    /// and reference.  Callers and agents should surface the deprecation reason
+    /// to users when available and prefer the successor skill.
+    ///
+    /// All version history is preserved; the change only updates the
+    /// `status` field on the [`SkillEntry`].  A subsequent upload to the same
+    /// `skill_id` will automatically restore [`SkillStatus::Active`].
+    ///
+    /// For a stronger signal (safety/correctness concern, must not be used) use
+    /// [`revoke_skill`](SkillRegistry::revoke_skill) instead.
+    ///
     /// # Errors
     ///
     /// Returns `NotFound` if the skill does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mentisdb::{SkillRegistry, SkillUpload, SkillFormat, SkillStatus};
+    ///
+    /// let dir = std::env::temp_dir().join("mentisdb_deprecate_example");
+    /// std::fs::create_dir_all(&dir).unwrap();
+    /// let mut registry = SkillRegistry::open(&dir).unwrap();
+    ///
+    /// registry.upload_skill(
+    ///     SkillUpload::new("agent-1", SkillFormat::Markdown, "# Old Summariser\n\nLegacy approach.")
+    ///         .with_skill_id("old-summariser"),
+    /// ).unwrap();
+    ///
+    /// // Mark the skill as deprecated with an explanatory reason.
+    /// let summary = registry.deprecate_skill(
+    ///     "old-summariser",
+    ///     Some("Superseded by 'summariser-v2'; migrate all usages."),
+    /// ).unwrap();
+    ///
+    /// assert_eq!(summary.status, SkillStatus::Deprecated);
+    /// assert!(summary.status_reason.as_deref().unwrap().contains("Superseded"));
+    ///
+    /// // All version history is preserved — version_count is unchanged.
+    /// assert_eq!(summary.version_count, 1);
+    ///
+    /// // The skill is still visible in list/search results.
+    /// let skills = registry.list_skills();
+    /// assert!(skills.iter().any(|s| s.skill_id == "old-summariser"));
+    /// ```
     pub fn deprecate_skill(
         &mut self,
         skill_id: &str,
@@ -1019,16 +1662,72 @@ impl SkillRegistry {
         entry.status_reason = normalize_optional(reason);
         entry.updated_at = Utc::now();
         let summary = summarize_entry(entry)?;
-        self.rebuild_indexes();
+        let entry = self
+            .skills
+            .get(skill_id)
+            .expect("deprecated skill entry must exist");
+        self.indexes.replace_skill(skill_id, entry);
+        self.latest_summaries
+            .insert(skill_id.to_string(), summary.clone());
         self.persist()?;
         Ok(summary)
     }
 
     /// Mark one skill as revoked while preserving all prior versions for auditability.
     ///
+    /// `Revoked` is the strongest lifecycle signal: it indicates a **safety or
+    /// correctness concern** that makes the skill unsuitable for use.  Agents
+    /// and callers must treat revoked skills as untrusted and must not execute
+    /// or apply them.
+    ///
+    /// Unlike [`deprecate_skill`](SkillRegistry::deprecate_skill), a revoked
+    /// skill's status is **not** automatically cleared by a subsequent upload to
+    /// the same `skill_id`.  This is intentional: publish a corrected skill under
+    /// a new `skill_id` and leave the revoked entry as a permanent audit record.
+    ///
+    /// All version history is preserved; the change only updates the `status`
+    /// field on the [`SkillEntry`].
+    ///
     /// # Errors
     ///
     /// Returns `NotFound` if the skill does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mentisdb::{SkillRegistry, SkillUpload, SkillFormat, SkillStatus};
+    ///
+    /// let dir = std::env::temp_dir().join("mentisdb_revoke_example");
+    /// std::fs::create_dir_all(&dir).unwrap();
+    /// let mut registry = SkillRegistry::open(&dir).unwrap();
+    ///
+    /// registry.upload_skill(
+    ///     SkillUpload::new("agent-1", SkillFormat::Markdown,
+    ///         "# Dangerous Op\n\nDo something risky.")
+    ///         .with_skill_id("dangerous-op"),
+    /// ).unwrap();
+    ///
+    /// // Revoke the skill with a safety explanation.
+    /// let summary = registry.revoke_skill(
+    ///     "dangerous-op",
+    ///     Some("CVE-2024-0001: skill can execute arbitrary code; do not use."),
+    /// ).unwrap();
+    ///
+    /// assert_eq!(summary.status, SkillStatus::Revoked);
+    /// assert!(summary.status_reason.as_deref().unwrap().contains("CVE"));
+    ///
+    /// // Version history is preserved — the skill is still readable for audit.
+    /// assert_eq!(summary.version_count, 1);
+    ///
+    /// // Uploading a new version does NOT clear the Revoked status.
+    /// registry.upload_skill(
+    ///     SkillUpload::new("agent-1", SkillFormat::Markdown,
+    ///         "# Dangerous Op\n\nUpdated content (still revoked).")
+    ///         .with_skill_id("dangerous-op"),
+    /// ).unwrap();
+    /// let after = registry.skill_summary("dangerous-op").unwrap();
+    /// assert_eq!(after.status, SkillStatus::Revoked); // still revoked!
+    /// ```
     pub fn revoke_skill(
         &mut self,
         skill_id: &str,
@@ -1044,7 +1743,13 @@ impl SkillRegistry {
         entry.status_reason = normalize_optional(reason);
         entry.updated_at = Utc::now();
         let summary = summarize_entry(entry)?;
-        self.rebuild_indexes();
+        let entry = self
+            .skills
+            .get(skill_id)
+            .expect("revoked skill entry must exist");
+        self.indexes.replace_skill(skill_id, entry);
+        self.latest_summaries
+            .insert(skill_id.to_string(), summary.clone());
         self.persist()?;
         Ok(summary)
     }
@@ -1144,10 +1849,6 @@ impl SkillRegistry {
         fs::write(&temp_path, payload)?;
         fs::rename(&temp_path, path)?;
         Ok(())
-    }
-
-    fn rebuild_indexes(&mut self) {
-        self.indexes = SkillIndexes::from_entries(&self.skills);
     }
 }
 
@@ -1255,11 +1956,54 @@ pub fn migrate_skill_registry<P: AsRef<Path>>(
 // Public skill import/export adapters
 // ---------------------------------------------------------------------------
 
-/// Import a skill file through the requested adapter into the structured object model.
+/// Import a skill file through the requested adapter into the structured [`SkillDocument`] model.
+///
+/// This is the parsing entry-point for both Markdown and JSON skill source.
+/// For Markdown, the parser recognises an optional `---` … `---` YAML-like
+/// frontmatter block followed by heading-delimited sections.  For JSON, the
+/// content is deserialized directly into a [`SkillDocument`].
+///
+/// Use [`export_skill`] to render a `SkillDocument` back to either format,
+/// completing the round-trip.
 ///
 /// # Errors
 ///
 /// Returns `InvalidData` if the content cannot be parsed.
+///
+/// # Examples
+///
+/// ```rust
+/// use mentisdb::{import_skill, export_skill, SkillFormat};
+///
+/// // Markdown with frontmatter; section headings use ## so they are not
+/// // stripped by rustdoc's hidden-line logic (lines starting with `# `).
+/// let markdown = r#"---
+/// name: Code Style Guide
+/// description: Enforce consistent code style.
+/// tags: [rust, style]
+/// ---
+///
+/// ## Rules
+///
+/// - Use 4-space indentation.
+/// - Prefer `match` over long `if-else` chains.
+/// "#;
+///
+/// // Parse Markdown → SkillDocument.
+/// let doc = import_skill(markdown, SkillFormat::Markdown).unwrap();
+/// assert_eq!(doc.name, "Code Style Guide");
+/// assert!(doc.tags.contains(&"rust".to_string()));
+/// assert_eq!(doc.sections[0].heading, "Rules");
+///
+/// // Round-trip: export to JSON then re-import — document is identical.
+/// let json = export_skill(&doc, SkillFormat::Json).unwrap();
+/// let doc2 = import_skill(&json, SkillFormat::Json).unwrap();
+/// assert_eq!(doc, doc2);
+///
+/// // Cross-format: export back to Markdown from JSON.
+/// let md_again = export_skill(&doc2, SkillFormat::Markdown).unwrap();
+/// assert!(md_again.contains("Code Style Guide"));
+/// ```
 pub fn import_skill(content: &str, format: SkillFormat) -> io::Result<SkillDocument> {
     match format {
         SkillFormat::Markdown => parse_markdown_skill(content),
@@ -1272,12 +2016,62 @@ pub fn import_skill(content: &str, format: SkillFormat) -> io::Result<SkillDocum
     }
 }
 
-/// Export a structured skill document through the requested adapter.
+/// Export a structured [`SkillDocument`] through the requested adapter.
+///
+/// Renders the `SkillDocument` to a raw string in the target `format`.  The
+/// Markdown renderer emits a frontmatter block followed by the section
+/// headings and bodies.  The JSON renderer uses `serde_json::to_string_pretty`.
+///
+/// Use [`import_skill`] to parse raw text back into a `SkillDocument`,
+/// completing the round-trip.
 ///
 /// # Errors
 ///
-/// Returns `InvalidInput` if the document fails validation, or an error if
-/// JSON serialization fails.
+/// Returns `InvalidInput` if the document fails validation (e.g. empty name
+/// or description), or an `io::Error` if JSON serialization fails.
+///
+/// # Examples
+///
+/// ```rust
+/// use mentisdb::{import_skill, export_skill, SkillFormat, SkillDocument, SkillSection};
+/// use mentisdb::MENTISDB_SKILL_CURRENT_SCHEMA_VERSION;
+///
+/// // Build a document programmatically and export it.
+/// let doc = SkillDocument {
+///     schema_version: MENTISDB_SKILL_CURRENT_SCHEMA_VERSION,
+///     name: "Greeter".into(),
+///     description: "Greet users warmly.".into(),
+///     tags: vec!["greeting".into()],
+///     triggers: vec!["say hello".into()],
+///     warnings: vec![],
+///     sections: vec![
+///         SkillSection {
+///             level: 1,
+///             heading: "Greeter".into(),
+///             body: "Greet users warmly.".into(),
+///         },
+///         SkillSection {
+///             level: 2,
+///             heading: "Examples".into(),
+///             body: "Hello, world!".into(),
+///         },
+///     ],
+/// };
+///
+/// // Export to Markdown.
+/// let md = export_skill(&doc, SkillFormat::Markdown).unwrap();
+/// assert!(md.starts_with("---\n"));
+/// assert!(md.contains("# Greeter"));
+///
+/// // Export to JSON.
+/// let json = export_skill(&doc, SkillFormat::Json).unwrap();
+/// assert!(json.contains("\"name\": \"Greeter\""));
+///
+/// // Round-trip through Markdown: re-import gives an equivalent document.
+/// let doc2 = import_skill(&md, SkillFormat::Markdown).unwrap();
+/// assert_eq!(doc.name, doc2.name);
+/// assert_eq!(doc.tags, doc2.tags);
+/// ```
 pub fn export_skill(skill: &SkillDocument, format: SkillFormat) -> io::Result<String> {
     skill.validate()?;
     match format {
@@ -1336,6 +2130,41 @@ fn reconstruct_raw_content(entry: &SkillEntry, version_index: usize) -> io::Resu
         }
     }
     Ok(current)
+}
+
+pub(crate) struct SkillReadSnapshot {
+    pub version: SkillVersion,
+    pub content: String,
+    pub schema_version: u32,
+}
+
+pub(crate) fn read_skill_from_entry(
+    skill_id: &str,
+    entry: &SkillEntry,
+    version_id: Option<Uuid>,
+    format: SkillFormat,
+) -> io::Result<SkillReadSnapshot> {
+    let version_index = match version_id {
+        Some(vid) => entry
+            .versions
+            .iter()
+            .position(|v| v.version_id == vid)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("No version \'{vid}\' found for skill \'{skill_id}'"),
+                )
+            })?,
+        None => entry.versions.len().saturating_sub(1),
+    };
+    let version = entry.versions[version_index].clone();
+    let raw = reconstruct_raw_content(entry, version_index)?;
+    let document = import_skill(&raw, version.source_format)?;
+    Ok(SkillReadSnapshot {
+        version,
+        content: export_skill(&document, format)?,
+        schema_version: document.schema_version,
+    })
 }
 
 /// Computes the SHA-256 hex digest of the given raw skill content string.
@@ -1662,6 +2491,26 @@ fn push_skill_index<K: Eq + std::hash::Hash>(
     if !values.iter().any(|existing| existing == &skill_id) {
         values.push(skill_id);
     }
+}
+
+fn remove_skill_id_from_index<K: Eq + std::hash::Hash>(
+    index: &mut HashMap<K, Vec<String>>,
+    skill_id: &str,
+) {
+    index.retain(|_, values| {
+        values.retain(|existing| existing != skill_id);
+        !values.is_empty()
+    });
+}
+
+fn build_latest_summaries(
+    skills: &BTreeMap<String, SkillEntry>,
+) -> io::Result<BTreeMap<String, SkillSummary>> {
+    let mut summaries = BTreeMap::new();
+    for (skill_id, entry) in skills {
+        summaries.insert(skill_id.clone(), summarize_entry(entry)?);
+    }
+    Ok(summaries)
 }
 
 fn union_skill_id_lists<'a, I>(lists: I) -> Vec<String>
