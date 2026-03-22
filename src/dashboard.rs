@@ -1120,19 +1120,14 @@ async fn api_copy_agent_to_chain(
         )
         .map_err(|e| internal_error(format!("open target chain '{target_chain_key}': {e}")))?;
         let arc = Arc::new(RwLock::new(chain));
-        state
-            .chains
-            .insert(target_chain_key.clone(), arc.clone());
+        state.chains.insert(target_chain_key.clone(), arc.clone());
         arc
     };
 
     let mut dst_chain = dst_arc.write().await;
 
     // Guard: reject if the agent already has thoughts on the target chain.
-    let already_exists = dst_chain
-        .thoughts()
-        .iter()
-        .any(|t| t.agent_id == agent_id);
+    let already_exists = dst_chain.thoughts().iter().any(|t| t.agent_id == agent_id);
     if already_exists {
         return Err((
             StatusCode::CONFLICT,

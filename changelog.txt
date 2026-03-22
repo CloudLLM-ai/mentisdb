@@ -1,4 +1,4 @@
-0.5.1.2 MAR/22/2026
+0.5.1.10 MAR/22/2026
  - feat(dashboard): copy agent memories to another chain
    - New "📋 Copy to Chain…" button on the Agent detail page (next to "Export Memory…")
    - Opens a modal showing only chains where the agent does NOT already have thoughts (preventing diverged history)
