@@ -973,13 +973,18 @@ pub enum ThoughtType {
     Handoff,
     /// A summary view of prior thoughts was recorded.
     Summary,
+    /// An unexpected outcome or mismatch was observed.
+    Surprise,
     /// The agent recontextualised a prior thought, negative pattern, or anchoring
     /// error without denying or deleting it.  Use `Reframe` when the original
     /// thought was accurate but its framing was unhelpful, and a durable shift in
     /// interpretation should be recorded alongside the original.
+    ///
+    /// # NOTE FOR MAINTAINERS
+    /// New variants must ALWAYS be appended at the END of this enum.
+    /// Bincode encodes variants by their integer index; inserting mid-enum
+    /// shifts all subsequent indices and silently corrupts persisted data.
     Reframe,
-    /// An unexpected outcome or mismatch was observed.
-    Surprise,
 }
 
 /// Operational role of a thought inside the system.
@@ -3337,10 +3342,7 @@ impl MentisDb {
             let Some(parsed) = parse_memory_markdown_line(line) else {
                 continue;
             };
-            let agent_id = parsed
-                .agent_id
-                .as_deref()
-                .unwrap_or(default_agent_id);
+            let agent_id = parsed.agent_id.as_deref().unwrap_or(default_agent_id);
             let mut input = ThoughtInput::new(parsed.thought_type, parsed.content)
                 .with_role(parsed.role)
                 .with_importance(parsed.importance)
@@ -3631,13 +3633,12 @@ fn load_mentisdb_registry(chain_dir: &Path) -> io::Result<MentisDbRegistry> {
     }
 
     let file = fs::File::open(path)?;
-    let mut registry: MentisDbRegistry =
-        serde_json::from_reader(file).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Failed to deserialize MentisDB registry: {error}"),
-            )
-        })?;
+    let mut registry: MentisDbRegistry = serde_json::from_reader(file).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Failed to deserialize MentisDB registry: {error}"),
+        )
+    })?;
     // Always normalise the in-memory version to the current schema version so
     // callers that compare against `MENTISDB_CURRENT_VERSION` see a consistent
     // value regardless of when the file was last written.
@@ -4311,7 +4312,11 @@ fn migrate_legacy_thoughts(legacy_thoughts: Vec<LegacyThoughtV0>) -> (Vec<Though
             tags: legacy.tags,
             concepts: legacy.concepts,
             refs: legacy.refs,
-            relations: legacy.relations.into_iter().map(ThoughtRelation::from).collect(),
+            relations: legacy
+                .relations
+                .into_iter()
+                .map(ThoughtRelation::from)
+                .collect(),
             prev_hash: prev_hash.clone(),
             hash: String::new(),
         };
@@ -4494,8 +4499,7 @@ fn parse_memory_markdown_line(line: &str) -> Option<MarkdownThoughtLine> {
             let content = content_and_meta[..meta_start].trim();
             // Strip the leading " (" and trailing ")".
             let meta_inner = &content_and_meta[meta_start + 2..content_and_meta.len() - 1];
-            let (agent_id, role, importance, confidence, tags) =
-                parse_metadata_block(meta_inner);
+            let (agent_id, role, importance, confidence, tags) = parse_metadata_block(meta_inner);
             (content, agent_id, role, importance, confidence, tags)
         } else {
             (
