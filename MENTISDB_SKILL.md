@@ -107,6 +107,62 @@ Use the semantic type that matches the memory's job:
 - `Wonder`: aspirational engineering wish or desired future that is not yet committed enough for `Plan`; captures genuine uncertainty about direction
 - `TaskComplete`: write when a leaf task finishes to mark completion durably; prefer over `Summary` when the unit of work is a concrete deliverable rather than a status snapshot
 - `Mistake`: write when you (or the PM) made a wrong decision and want to flag it for the record; captures orchestration failures, wrong design choices, or costly misdirections — distinct from `Correction`, which replaces a wrong *fact*; `Mistake` records a wrong *action*
+- `Reframe` *(0.5.2)*: records a durable shift in interpretation when an original thought was *accurate but unhelpfully framed* — e.g. an overly broad `Constraint`, an anchoring error, or an unnecessarily risk-averse chain. The original thought stays in the chain for audit; retrieval tools treat it as lower-priority once superseded. Use `Correction` instead when the original thought was factually *wrong*.
+
+## Back-Referencing Prior Thoughts
+
+MentisDB has two reference mechanisms. Use both deliberately.
+
+### `refs` — positional back-references
+
+`refs` is a `Vec<u64>` of zero-based chain indices. Simple, compact, and intra-chain only. Use when you want to say "this thought relates to thought at index 42."
+
+### `relations` — typed semantic edges
+
+`relations` is a `Vec<ThoughtRelation>`. Each relation has:
+
+- `kind`: one of `References`, `Summarizes`, `Corrects`, `Invalidates`, `CausedBy`, `Supports`, `Contradicts`, `DerivedFrom`, `ContinuesFrom`, `RelatedTo`, `Supersedes` *(0.5.2)*
+- `target_id`: stable UUID of the referenced thought
+- `chain_key` *(optional, 0.5.2)*: when set, this is a cross-chain reference pointing to a thought on another chain
+
+**When to use relations on specific types:**
+
+- `LessonLearned` SHOULD include `relations` with `kind: CausedBy` or `kind: DerivedFrom` pointing to the `Mistake` or `Finding` that generated the lesson. Without this, `LessonLearned` thoughts float disconnected from their context and are harder to audit.
+- `Correction` SHOULD include `relations` with `kind: Corrects` pointing to the thought being corrected.
+- `Reframe` SHOULD include `relations` with `kind: Supersedes` pointing to the thought being reframed.
+
+**MCP usage example:**
+
+```json
+{
+  "thought_type": "LessonLearned",
+  "content": "Never call persist_registries() before pushing to self.thoughts — the count will be N-1.",
+  "refs": [14],
+  "relations": [{ "kind": "CausedBy", "target_id": "<UUID-of-mistake-thought>" }],
+  "importance": 0.9,
+  "tags": ["registry", "off-by-one"]
+}
+```
+
+### Supersedes vs. Corrects vs. Invalidates
+
+Use these relation kinds precisely:
+
+- `Corrects`: the source thought fixes a factual error in the target. The target was *wrong*.
+- `Invalidates`: the source thought makes the target no longer applicable. The target may have been correct but is now stale.
+- `Supersedes`: the source thought replaces the target's framing or approach. The target was accurate but suboptimal. Pair with `Reframe` thoughts.
+
+## Cross-Chain References
+
+When you need to reference a thought on a different chain, set `chain_key` on the relation:
+
+```json
+{
+  "relations": [{ "kind": "DerivedFrom", "target_id": "<UUID>", "chain_key": "borganism-brain" }]
+}
+```
+
+Cross-chain refs are stored in the source chain only — the target chain is unaware. Use this for knowledge graphs that span projects or workspaces.
 
 ## Choosing Roles
 
@@ -416,6 +472,34 @@ Tags: ["identity","canonicalization","agent"]
 Concepts: ["shared-chain-identity"]
 Content: Canonical producer identity is agent_id=canuto, agent_name=Canuto, agent_owner=@gubatron. Do not write future memories under borganism-brain as the producer id.
 ```
+
+### Example: Reframe Superseding An Overly Broad Constraint
+
+Bad pattern — implicit, disconnected:
+
+```text
+// Just append a positive thought hoping it overrides the negative one
+ThoughtType: FactLearned
+Content: Actually I am confident about X
+```
+
+Good pattern — explicit superseding with `Reframe`:
+
+```text
+// Step 1: find the original thought's UUID (e.g. via mentisdb_search or mentisdb_traverse_thoughts)
+// Step 2: append the Reframe with a Supersedes relation
+ThoughtType: Reframe
+Tags: ["constraint", "reframe", "scope"]
+Relations: [{ kind: "Supersedes", target_id: "<UUID-of-original-constraint>" }]
+Importance: 0.8
+Content: The over-hedging Constraint chain from session 2 was correct in spirit but applied too broadly. Scope it to prod deployments only, not local dev.
+```
+
+Why the second is better:
+
+- preserves the original thought for audit
+- makes the superseding relationship explicit and traversable
+- scopes the correction precisely so future agents know the original was not wrong, just too broad
 
 ### Example: Security Memory Worth Keeping
 
