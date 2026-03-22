@@ -406,7 +406,7 @@ where
     })
 }
 
-fn thought_counts_by_agent<'a>(thoughts: &'a [Thought]) -> HashMap<&'a str, u64> {
+fn thought_counts_by_agent(thoughts: &[Thought]) -> HashMap<&str, u64> {
     let mut counts = HashMap::new();
     for thought in thoughts {
         *counts.entry(thought.agent_id.as_str()).or_insert(0) += 1;

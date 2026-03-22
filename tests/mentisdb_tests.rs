@@ -468,7 +468,7 @@ fn genesis_and_head_thought_return_first_and_last_records() {
 fn traverse_thoughts_moves_forward_from_anchor_in_chunks() {
     let dir = unique_chain_dir();
     let mut chain = MentisDb::open_with_key(&dir, "traverse-forward").unwrap();
-    let thoughts = vec![
+    let thoughts = [
         append_test_thought(
             &mut chain,
             "astro",
@@ -528,7 +528,7 @@ fn traverse_thoughts_moves_forward_from_anchor_in_chunks() {
 fn traverse_thoughts_moves_backward_from_anchor_in_chunks() {
     let dir = unique_chain_dir();
     let mut chain = MentisDb::open_with_key(&dir, "traverse-backward").unwrap();
-    let thoughts = vec![
+    let thoughts = [
         append_test_thought(
             &mut chain,
             "astro",
@@ -588,7 +588,7 @@ fn traverse_thoughts_moves_backward_from_anchor_in_chunks() {
 fn traverse_thoughts_can_include_anchor() {
     let dir = unique_chain_dir();
     let mut chain = MentisDb::open_with_key(&dir, "traverse-anchor").unwrap();
-    let thoughts = vec![
+    let thoughts = [
         append_test_thought(
             &mut chain,
             "astro",
@@ -786,7 +786,7 @@ fn traverse_thoughts_filters_by_tag_and_concept_in_indexed_order() {
 fn traverse_thoughts_limit_one_supports_next_and_previous() {
     let dir = unique_chain_dir();
     let mut chain = MentisDb::open_with_key(&dir, "traverse-single").unwrap();
-    let thoughts = vec![
+    let thoughts = [
         append_test_thought(
             &mut chain,
             "astro",
