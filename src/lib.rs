@@ -3388,6 +3388,17 @@ impl MentisDb {
         self.auto_flush = auto_flush;
     }
 
+    /// Detach this chain from on-disk registry synchronization.
+    ///
+    /// This is used when a chain is being deleted while live handles still
+    /// exist in memory. Without detaching persistence metadata first, the
+    /// final live handle could re-register the chain during [`Drop`].
+    pub fn detach_persistence(&mut self) {
+        self.persistence = None;
+        self.pending_chain_registration_sync = false;
+        self.pending_chain_registration_updates = 0;
+    }
+
     fn persist_agent_registry(&self) -> io::Result<()> {
         if let Some(metadata) = &self.persistence {
             save_agent_registry(
@@ -3726,6 +3737,11 @@ pub fn deregister_chain<P: AsRef<Path>>(chain_dir: P, chain_key: &str) -> io::Re
         let storage_path = PathBuf::from(&entry.storage_location);
         if storage_path.exists() {
             fs::remove_file(&storage_path)?;
+        }
+        let agent_registry_path =
+            chain_agent_registry_path(chain_dir, chain_key, entry.storage_adapter);
+        if agent_registry_path.exists() {
+            fs::remove_file(agent_registry_path)?;
         }
     }
     Ok(())

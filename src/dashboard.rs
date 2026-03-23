@@ -32,7 +32,7 @@ use axum::{
 use dashmap::DashMap;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -297,6 +297,21 @@ fn not_found(msg: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
     )
 }
 
+/// Return `true` when a cached chain has been deleted on disk and should no
+/// longer be served from the dashboard cache.
+async fn evict_deleted_cached_chain(
+    state: &DashboardState,
+    chain_key: &str,
+    _arc: &Arc<RwLock<MentisDb>>,
+) -> Result<bool, (StatusCode, Json<Value>)> {
+    let registry = load_registered_chains(&state.mentisdb_dir).map_err(internal_error)?;
+    if !registry.chains.contains_key(chain_key) {
+        state.chains.remove(chain_key);
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 /// Look up a chain in the live cache; fall back to opening it from disk.
 ///
 /// The opened chain is inserted into `state.chains` so subsequent requests
@@ -305,32 +320,39 @@ async fn get_or_open_chain(
     state: &DashboardState,
     chain_key: &str,
 ) -> Result<Arc<RwLock<MentisDb>>, (StatusCode, Json<Value>)> {
+    let registry = load_registered_chains(&state.mentisdb_dir).map_err(internal_error)?;
+    let registered_storage = registry.chains.get(chain_key).map(|entry| {
+        entry
+            .storage_adapter
+            .for_chain_key(&state.mentisdb_dir, chain_key)
+    });
+
     // Try the live cache first (clone the Arc to avoid holding the DashMap shard lock across an await).
     if let Some(arc) = state.chains.get(chain_key).map(|r| r.value().clone()) {
         if state.auto_flush {
-            if let Ok(mut refreshed) = MentisDb::open_with_key_and_storage_kind(
-                &state.mentisdb_dir,
-                chain_key,
-                state.default_storage_adapter,
-            ) {
-                refreshed.set_auto_flush(state.auto_flush);
-                let refreshed = Arc::new(RwLock::new(refreshed));
-                state
-                    .chains
-                    .insert(chain_key.to_string(), refreshed.clone());
-                return Ok(refreshed);
+            if let Some(storage) = registered_storage {
+                if let Ok(mut refreshed) = MentisDb::open_with_storage(storage) {
+                    refreshed.set_auto_flush(state.auto_flush);
+                    let refreshed = Arc::new(RwLock::new(refreshed));
+                    state
+                        .chains
+                        .insert(chain_key.to_string(), refreshed.clone());
+                    return Ok(refreshed);
+                }
             }
+        }
+        if evict_deleted_cached_chain(state, chain_key, &arc).await? {
+            return Err(not_found(format!("chain '{chain_key}' not found")));
         }
         return Ok(arc);
     }
 
-    // Open from disk.
-    let mut chain = MentisDb::open_with_key_and_storage_kind(
-        &state.mentisdb_dir,
-        chain_key,
-        state.default_storage_adapter,
-    )
-    .map_err(|e| not_found(format!("chain '{chain_key}': {e}")))?;
+    let Some(storage) = registered_storage else {
+        return Err(not_found(format!("chain '{chain_key}' not found")));
+    };
+
+    let mut chain = MentisDb::open_with_storage(storage)
+        .map_err(|e| not_found(format!("chain '{chain_key}': {e}")))?;
     chain.set_auto_flush(state.auto_flush);
 
     let arc = Arc::new(RwLock::new(chain));
@@ -475,7 +497,7 @@ async fn api_chains(
     State(state): State<DashboardState>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     // Collect all known chain keys: disk registry ∪ live DashMap.
-    let mut chain_keys: std::collections::BTreeSet<String> = {
+    let mut chain_keys: BTreeSet<String> = {
         let registry = load_registered_chains(&state.mentisdb_dir).map_err(internal_error)?;
         registry.chains.into_keys().collect()
     };
@@ -487,7 +509,11 @@ async fn api_chains(
 
     for chain_key in &chain_keys {
         // Open (or retrieve from cache) to guarantee live counts.
-        let arc = get_or_open_chain(&state, chain_key).await?;
+        let arc = match get_or_open_chain(&state, chain_key).await {
+            Ok(arc) => arc,
+            Err((StatusCode::NOT_FOUND, _)) => continue,
+            Err(err) => return Err(err),
+        };
         let chain = arc.read().await;
         chains.push(json!({
             "chain_key": chain_key,
@@ -528,7 +554,22 @@ async fn api_bootstrap_chain(
             Json(json!({"error": "chain_key must not be empty"})),
         ));
     }
-    let arc = get_or_open_chain(&state, &chain_key).await?;
+    let arc = match get_or_open_chain(&state, &chain_key).await {
+        Ok(arc) => arc,
+        Err((StatusCode::NOT_FOUND, _)) => {
+            let mut chain = MentisDb::open_with_key_and_storage_kind(
+                &state.mentisdb_dir,
+                &chain_key,
+                state.default_storage_adapter,
+            )
+            .map_err(internal_error)?;
+            chain.set_auto_flush(state.auto_flush);
+            let arc = Arc::new(RwLock::new(chain));
+            state.chains.insert(chain_key.clone(), arc.clone());
+            arc
+        }
+        Err(err) => return Err(err),
+    };
     let mut chain = arc.write().await;
     let bootstrapped = if chain.thoughts().is_empty() {
         let agent_id = body.agent_id.as_deref().unwrap_or("system");
@@ -560,7 +601,12 @@ async fn api_delete_chain(
     Path(chain_key): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     // Evict from in-memory cache first so no new writes can sneak in.
-    state.chains.remove(&chain_key);
+    if let Some((_, arc)) = state.chains.remove(&chain_key) {
+        // Detach registry persistence before deleting files so any surviving
+        // Arc clones cannot resurrect the chain during Drop.
+        let mut chain = arc.write().await;
+        chain.detach_persistence();
+    }
     // Deregister + delete storage file.
     deregister_chain(&state.mentisdb_dir, &chain_key).map_err(internal_error)?;
     Ok(Json(json!({ "deleted": true, "chain_key": chain_key })))
@@ -672,11 +718,17 @@ async fn api_agent_thoughts(
 async fn api_agents_all(
     State(state): State<DashboardState>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let registry = load_registered_chains(&state.mentisdb_dir).map_err(internal_error)?;
+    let mut chain_keys: BTreeSet<String> = {
+        let registry = load_registered_chains(&state.mentisdb_dir).map_err(internal_error)?;
+        registry.chains.into_keys().collect()
+    };
+    for entry in state.chains.iter() {
+        chain_keys.insert(entry.key().clone());
+    }
 
     let mut result: BTreeMap<String, Vec<Value>> = BTreeMap::new();
 
-    for chain_key in registry.chains.keys() {
+    for chain_key in &chain_keys {
         match get_or_open_chain(&state, chain_key).await {
             Ok(arc) => {
                 let chain = arc.read().await;
@@ -699,6 +751,9 @@ async fn api_agents_all(
                     })
                     .collect();
                 result.insert(chain_key.to_string(), agents);
+            }
+            Err((StatusCode::NOT_FOUND, _)) => {
+                continue;
             }
             Err(_) => {
                 result.insert(chain_key.to_string(), Vec::new());
