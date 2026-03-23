@@ -1,3 +1,8 @@
+0.6.2.15 MAR/23/2026
+ - fix(daemon): defer update prompt until startup output is complete
+   - The update check still runs in the background, but it now waits to print until after the banner, configuration, and resolved endpoints are shown
+   - The install question is rendered inside the ASCII dialog so the prompt is readable instead of colliding with startup logs
+
 0.6.1.14 MAR/23/2026
  - change(daemon): enable update checks by default
    - `MENTISDB_UPDATE_CHECK` now defaults to `true`
