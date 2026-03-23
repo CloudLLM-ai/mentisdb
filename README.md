@@ -205,10 +205,11 @@ make install
 cargo install --path . --locked
 ```
 
-When it starts, it serves both:
+When it starts, it serves:
 
 - an MCP server
 - a REST server
+- an HTTPS web dashboard
 
 Before serving traffic, it:
 
@@ -218,7 +219,7 @@ Before serving traffic, it:
 
 Once startup completes, it prints:
 
-- the active chain directory, default chain key, and bound MCP/REST addresses
+- the active chain directory, default chain key, and bound MCP/REST/dashboard addresses
 - a catalog of all exposed HTTP endpoints with one-line descriptions
 - a per-chain summary with version, adapter, thought count, and per-agent counts
 
@@ -251,6 +252,10 @@ Once startup completes, it prints:
   MCP server port. Default: `9471`
 - `MENTISDB_REST_PORT`
   REST server port. Default: `9472`
+- `MENTISDB_DASHBOARD_PORT`
+  HTTPS dashboard port. Default: `9475`. Set to `0` to disable the web dashboard.
+- `MENTISDB_DASHBOARD_PIN`
+  Optional PIN required to access the dashboard. Leave unset only for trusted localhost use.
 - `MENTISDB_AUTO_FLUSH`
   Controls per-write durability of the `binary` storage adapter.
   - `true` (default): every `append_thought` flushes to disk immediately. Full durability.
@@ -258,6 +263,11 @@ Once startup completes, it prints:
     thoughts may be lost on a hard crash or power failure, but write throughput increases
     significantly for multi-agent hubs with many concurrent writers.
   Supported values: `1`, `0`, `true`, `false`. Has no effect on the `jsonl` adapter.
+- `MENTISDB_UPDATE_CHECK`
+  Opt-in background GitHub release check for `mentisdbd`. Set `1`, `true`, `yes`, or `on`
+  to check for newer releases after startup. Default: `false`
+- `MENTISDB_UPDATE_REPO`
+  Optional GitHub `owner/repo` override used by the updater. Default: `CloudLLM-ai/mentisdb`
 
 Example — full durability (production default):
 
@@ -270,6 +280,7 @@ MENTISDB_LOG_FILE=/tmp/mentisdb/mentisdbd.log \
 MENTISDB_BIND_HOST=127.0.0.1 \
 MENTISDB_MCP_PORT=9471 \
 MENTISDB_REST_PORT=9472 \
+MENTISDB_DASHBOARD_PIN=change-me \
 MENTISDB_AUTO_FLUSH=true \
 cargo run --bin mentisdbd
 ```
@@ -280,6 +291,25 @@ Example — high-throughput write mode (multi-agent hub):
 MENTISDB_DIR=/var/lib/mentisdb \
 MENTISDB_AUTO_FLUSH=false \
 MENTISDB_BIND_HOST=0.0.0.0 \
+mentisdbd
+```
+
+### Opt-In Self-Update
+
+`mentisdbd` can check GitHub releases in the background after startup and offer
+to update itself with `cargo install`.
+
+- checks are disabled by default
+- version comparison uses only the first three numeric components, so a tag like
+  `0.6.0.13` is treated as core version `0.6.0`
+- interactive terminals get an ASCII prompt window with `Y` / `N`
+- non-interactive terminals never block; they print the exact manual `cargo install` command instead
+
+Example:
+
+```bash
+MENTISDB_UPDATE_CHECK=1 \
+MENTISDB_UPDATE_REPO=CloudLLM-ai/mentisdb \
 mentisdbd
 ```
 
@@ -326,6 +356,32 @@ REST endpoints:
 - `POST /v1/skills/deprecate`
 - `POST /v1/skills/revoke`
 - `POST /v1/head`
+
+---
+
+## Web Dashboard
+
+The daemon includes an embedded browser UI at:
+
+```text
+https://127.0.0.1:9475/dashboard
+```
+
+The dashboard is served over HTTPS with the same self-signed certificate used by
+the HTTPS MCP and REST surfaces.
+
+Dashboard capabilities:
+
+- live chain listing with thought and agent counts
+- thought exploration with grouped ThoughtType filters, refs, and typed relations
+- agent detail management for display name, description, owner, status, and signing keys
+- latest agent-thought browsing without restarting the daemon after new thoughts are appended
+- chain import from `MEMORY.md`
+- cross-chain agent-memory copy with agent metadata preserved on the target chain
+- skill browsing, diffing, deprecation, and revocation
+
+Protect the dashboard with `MENTISDB_DASHBOARD_PIN` whenever the daemon is reachable
+outside localhost.
 
 ---
 
@@ -692,6 +748,39 @@ The retrospective helper:
 - always stores the thought with `role = Retrospective`
 - still supports tags, concepts, confidence, importance, and `refs` to earlier
   thoughts such as the original mistake or correction
+
+---
+
+## Thought Types And Roles
+
+MentisDB currently defines 29 semantic `ThoughtType` values and 8 operational
+`ThoughtRole` values.
+
+Thought types:
+
+- `PreferenceUpdate`, `UserTrait`, `RelationshipUpdate`
+- `Finding`, `Insight`, `FactLearned`, `PatternDetected`, `Hypothesis`, `Surprise`
+- `Mistake`, `Correction`, `LessonLearned`, `AssumptionInvalidated`, `Reframe`
+- `Constraint`, `Plan`, `Subgoal`, `Decision`, `StrategyShift`
+- `Wonder`, `Question`, `Idea`, `Experiment`
+- `ActionTaken`, `TaskComplete`
+- `Checkpoint`, `StateSnapshot`, `Handoff`, `Summary`
+
+Thought roles:
+
+- `Memory`
+- `WorkingMemory`
+- `Summary`
+- `Compression`
+- `Checkpoint`
+- `Handoff`
+- `Audit`
+- `Retrospective`
+
+Use `ThoughtType` to say what the memory means semantically, and `ThoughtRole`
+to say how the system should treat it operationally. The crate rustdoc is the
+authoritative source for per-variant semantics, and the Agent Guide on the docs
+site contains a human-oriented explanation of when to use each one.
 
 ---
 
