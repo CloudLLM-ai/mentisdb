@@ -1,3 +1,18 @@
+0.6.3.16 MAR/23/2026
+ - fix(dashboard): deleted chains no longer linger or reappear
+   - Dashboard reads now treat the on-disk chain registry as the source of truth for existence, so a deleted chain returns `404` instead of being silently reopened from a stale cached handle
+   - Chain deletion now detaches persistence from any surviving in-memory handle before deregistering the chain, preventing the last drop from re-registering the chain after it was deleted
+   - `deregister_chain()` now removes the per-chain agent-registry sidecar alongside the main chain storage file
+   - The Chains and Agents dashboard views now skip chains that were externally deleted while still present in the live cache
+   - Added regression tests for cached-handle deletion, external deregistration, stale reads after delete, and live-cached chain visibility
+ - feat(dashboard): chain-level stats on the Agents page
+   - Each `CHAIN: <chain_name>` section on `#/agents` now shows `Total Agents` and `Total Thoughts` above the table
+   - `GET /dashboard/api/agents` now returns a per-chain summary envelope with `chain_key`, `total_agents`, `total_thoughts`, and the chain `agents` list
+   - Cross-chain agent links, memory export, and copy-to-chain dialogs were updated to consume the richer response shape without breaking existing agent lookups
+ - fix(ci): restore Linux workflow reliability for audio-enabled builds
+   - GitHub Actions Linux jobs now install `pkg-config` and `libasound2-dev`, fixing `rodio` / ALSA build failures in `build`, `test`, and `clippy`
+   - The release build workflow now explicitly grants `contents: write` so tagged builds can attach release artifacts
+
 0.6.2.15 MAR/23/2026
  - fix(daemon): defer update prompt until startup output is complete
    - The update check still runs in the background, but it now waits to print until after the banner, configuration, and resolved endpoints are shown
