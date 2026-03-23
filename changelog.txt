@@ -1,3 +1,22 @@
+0.6.0.13 MAR/23/2026
+ - feat(daemon): opt-in GitHub release update checks for `mentisdbd`
+   - New `MENTISDB_UPDATE_CHECK=1` enables a background check against the latest GitHub release for `CloudLLM-ai/mentisdb`
+   - Version comparison intentionally uses only the first three numeric components, ignoring the fourth monotone release counter
+   - When a newer core version is found on an interactive terminal, `mentisdbd` shows an ASCII prompt window and accepts `Y`/`N`
+   - Accepting the prompt runs `cargo install --git ... --tag ... --locked --force --bin mentisdbd mentisdb`, then gracefully shuts down and restarts the daemon
+   - Non-interactive sessions never block on stdin; they print the manual cargo command instead
+   - New `MENTISDB_UPDATE_REPO` env var allows overriding the GitHub repository used for update checks
+ - fix(dashboard): Agent detail description rendering and freshness
+   - Agent detail form fields (`Display Name`, `Description`, `Owner`) are now populated via DOM `.value` assignment after insertion, fixing the missing-description regression in the textarea
+   - Dashboard chain reads now refresh cached chains from disk when auto-flush is enabled, so the Chains explorer and agent latest-thoughts panels show externally appended thoughts without requiring a daemon restart
+ - fix(agent-registry): preserve agent metadata during append and copy flows
+   - Cross-chain agent copy now upserts `description` into the target chain registry in addition to `display_name` and `owner`
+   - Appending a thought without `agent_name` no longer downgrades a registered agent display name back to the raw `agent_id`
+   - Case-only display-name corrections (for example `astro` -> `Astro`) no longer create alias churn
+ - test: expand dashboard and daemon updater regression coverage
+   - Added dashboard integration tests under `tests/dashboard_tests.rs` for agent detail hydration, copy-to-chain description preservation, and live thought refresh without daemon restart
+   - Added updater tests under `tests/mentisdbd_tests.rs` for release-tag parsing, version comparison, opt-in env configuration, cargo install command construction, and startup-sound scheduler spacing
+
 0.5.3.12 MAR/23/2026
  - feat(branding): real MentisDB infinity-M logo
    - Vectorized the official MentisDB logo (infinity/M mark) from JPEG source using potrace
@@ -387,4 +406,3 @@ This release also records the project rename from ThoughtChain to MentisDB.
  - test: Dedicated crate test coverage
    - Separate tests under `thoughtchain/tests`
    - Coverage for persistence, integrity, querying, export behavior, and server routing
-
