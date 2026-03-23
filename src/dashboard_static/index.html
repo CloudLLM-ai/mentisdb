@@ -1046,15 +1046,15 @@
           <div class="card-title">Metadata</div>
           <div class="form-group">
             <label>Display Name</label>
-            <input type="text" id="ad-name" value="${esc(agent.display_name || '')}">
+            <input type="text" id="ad-name">
           </div>
           <div class="form-group">
             <label>Description</label>
-            <textarea id="ad-desc">${esc(agent.description || '')}</textarea>
+            <textarea id="ad-desc"></textarea>
           </div>
           <div class="form-group">
             <label>Owner</label>
-            <input type="text" id="ad-owner" value="${esc(agent.owner || '')}">
+            <input type="text" id="ad-owner">
           </div>
           <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
             <button class="btn btn-primary btn-sm" id="ad-save">Save Changes</button>
@@ -1120,6 +1120,12 @@
         <div id="ad-thoughts"><div class="spinner-wrap"><div class="spinner"></div></div></div>
       </div>
     `;
+
+    // Populate form control values after insertion so textarea/input state does
+    // not depend on HTML string interpolation.
+    document.getElementById('ad-name').value = agent.display_name || '';
+    document.getElementById('ad-desc').value = agent.description || '';
+    document.getElementById('ad-owner').value = agent.owner || '';
 
     // Save
     document.getElementById('ad-save').addEventListener('click', () => {

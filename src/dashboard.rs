@@ -307,16 +307,31 @@ async fn get_or_open_chain(
 ) -> Result<Arc<RwLock<MentisDb>>, (StatusCode, Json<Value>)> {
     // Try the live cache first (clone the Arc to avoid holding the DashMap shard lock across an await).
     if let Some(arc) = state.chains.get(chain_key).map(|r| r.value().clone()) {
+        if state.auto_flush {
+            if let Ok(mut refreshed) = MentisDb::open_with_key_and_storage_kind(
+                &state.mentisdb_dir,
+                chain_key,
+                state.default_storage_adapter,
+            ) {
+                refreshed.set_auto_flush(state.auto_flush);
+                let refreshed = Arc::new(RwLock::new(refreshed));
+                state
+                    .chains
+                    .insert(chain_key.to_string(), refreshed.clone());
+                return Ok(refreshed);
+            }
+        }
         return Ok(arc);
     }
 
     // Open from disk.
-    let chain = MentisDb::open_with_key_and_storage_kind(
+    let mut chain = MentisDb::open_with_key_and_storage_kind(
         &state.mentisdb_dir,
         chain_key,
         state.default_storage_adapter,
     )
     .map_err(|e| not_found(format!("chain '{chain_key}': {e}")))?;
+    chain.set_auto_flush(state.auto_flush);
 
     let arc = Arc::new(RwLock::new(chain));
     state.chains.insert(chain_key.to_string(), arc.clone());
@@ -683,10 +698,10 @@ async fn api_agents_all(
                         v
                     })
                     .collect();
-                result.insert(chain_key.clone(), agents);
+                result.insert(chain_key.to_string(), agents);
             }
             Err(_) => {
-                result.insert(chain_key.clone(), Vec::new());
+                result.insert(chain_key.to_string(), Vec::new());
             }
         }
     }
@@ -1092,6 +1107,9 @@ async fn api_import_markdown(
 ///   source chain and are meaningless on the target chain.
 /// - The agent's display name and owner are propagated via the first appended
 ///   thought so the agent registry on the target chain is populated correctly.
+/// - The agent's description is copied directly into the target chain's agent
+///   registry so the Agent detail page continues to show the same metadata
+///   after a cross-chain copy.
 ///
 /// # Response
 ///
@@ -1114,14 +1132,26 @@ async fn api_copy_agent_to_chain(
     let src_chain = src_arc.read().await;
 
     // Collect thoughts belonging to this agent (oldest first).
-    let agent_thoughts: Vec<ThoughtInput> = {
+    let (agent_thoughts, agent_name, agent_owner, agent_description): (
+        Vec<ThoughtInput>,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = {
         // Retrieve agent metadata for name/owner propagation.
-        let (agent_name, agent_owner): (String, Option<String>) = src_chain
-            .get_agent(&agent_id)
-            .map(|a| (a.display_name.clone(), a.owner.clone()))
-            .unwrap_or_else(|| (String::new(), None));
+        let (agent_name, agent_owner, agent_description): (String, Option<String>, Option<String>) =
+            src_chain
+                .get_agent(&agent_id)
+                .map(|a| {
+                    (
+                        a.display_name.clone(),
+                        a.owner.clone(),
+                        a.description.clone(),
+                    )
+                })
+                .unwrap_or_else(|| (String::new(), None, None));
 
-        src_chain
+        let inputs = src_chain
             .thoughts()
             .iter()
             .filter(|t| t.agent_id == agent_id)
@@ -1150,7 +1180,8 @@ async fn api_copy_agent_to_chain(
                 // source chain; they cannot be meaningfully carried over.
                 input
             })
-            .collect()
+            .collect::<Vec<_>>();
+        (inputs, agent_name, agent_owner, agent_description)
     };
     drop(src_chain);
 
@@ -1186,6 +1217,18 @@ async fn api_copy_agent_to_chain(
                 )
             })),
         ));
+    }
+
+    if !agent_name.is_empty() || agent_owner.is_some() || agent_description.is_some() {
+        dst_chain
+            .upsert_agent(
+                &agent_id,
+                (!agent_name.is_empty()).then_some(agent_name.as_str()),
+                agent_owner.as_deref(),
+                agent_description.as_deref(),
+                None,
+            )
+            .map_err(|e| internal_error(format!("upsert target agent metadata: {e}")))?;
     }
 
     let mut copied = 0usize;
