@@ -2425,3 +2425,56 @@ Always verify signatures before trusting skill content.
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn server_config_multitenant_defaults_to_false() {
+    let _guard = env_mutex().lock().unwrap();
+    let original = std::env::var("MENTISDB_MULTITENANT").ok();
+
+    std::env::remove_var("MENTISDB_MULTITENANT");
+    assert!(
+        !MentisDbServerConfig::from_env().multitenant,
+        "multitenant must default to false when env var is absent"
+    );
+
+    if let Some(original) = original {
+        std::env::set_var("MENTISDB_MULTITENANT", original);
+    } else {
+        std::env::remove_var("MENTISDB_MULTITENANT");
+    }
+}
+
+#[test]
+fn server_config_parses_mentisdb_multitenant_env_values() {
+    let _guard = env_mutex().lock().unwrap();
+    let original = std::env::var("MENTISDB_MULTITENANT").ok();
+
+    for (raw_value, expected) in [
+        ("1", true),
+        ("0", false),
+        ("true", true),
+        ("false", false),
+        ("TRUE", true),
+        ("FALSE", false),
+        ("unexpected", false),
+    ] {
+        std::env::set_var("MENTISDB_MULTITENANT", raw_value);
+        let config = MentisDbServerConfig::from_env();
+        assert_eq!(
+            config.multitenant, expected,
+            "MENTISDB_MULTITENANT={raw_value:?} should parse to {expected}"
+        );
+    }
+
+    std::env::remove_var("MENTISDB_MULTITENANT");
+    assert!(
+        !MentisDbServerConfig::from_env().multitenant,
+        "multitenant must default to false when env var is removed"
+    );
+
+    if let Some(original) = original {
+        std::env::set_var("MENTISDB_MULTITENANT", original);
+    } else {
+        std::env::remove_var("MENTISDB_MULTITENANT");
+    }
+}

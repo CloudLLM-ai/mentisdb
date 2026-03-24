@@ -12,6 +12,7 @@ pub(crate) mod dashboard;
 #[cfg(feature = "server")]
 pub mod server;
 mod skills;
+pub mod tenancy;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize, Serializer};

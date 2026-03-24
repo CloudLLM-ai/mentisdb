@@ -425,6 +425,7 @@ impl MentisDbServiceConfig {
 /// | `MENTISDB_TLS_KEY` | `<MENTISDB_DIR>/tls/key.pem` | Path to the TLS private-key PEM. |
 /// | `MENTISDB_DASHBOARD_PORT` | `9475` | Port for the HTTPS web dashboard (set to `0` to disable). |
 /// | `MENTISDB_DASHBOARD_PIN` | *(none)* | Optional PIN that protects dashboard access. |
+/// | `MENTISDB_MULTITENANT` | `false` | Enable multi-tenant mode. When `true`, all MCP and REST requests require a valid tenant API key. |
 ///
 /// ## Examples
 ///
@@ -513,6 +514,14 @@ pub struct MentisDbServerConfig {
     /// reach its port. Set `MENTISDB_DASHBOARD_PIN` to require a PIN. An empty
     /// string is treated as absent (no PIN).
     pub dashboard_pin: Option<String>,
+    /// Enable multi-tenant mode.
+    ///
+    /// When `true`, all MCP and REST requests must carry a valid tenant API key
+    /// and are isolated to the authenticated tenant's chains.
+    ///
+    /// Defaults to `false` to preserve the current single-tenant local/self-hosted
+    /// workflow. Enable via `MENTISDB_MULTITENANT=true` in the daemon environment.
+    pub multitenant: bool,
 }
 
 impl MentisDbServerConfig {
@@ -598,6 +607,10 @@ impl MentisDbServerConfig {
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty());
+        let multitenant = env_var(&["MENTISDB_MULTITENANT"])
+            .ok()
+            .and_then(|v| parse_bool_flag(&v))
+            .unwrap_or(false);
 
         Self {
             service: MentisDbServiceConfig::new(
@@ -619,6 +632,7 @@ impl MentisDbServerConfig {
             tls_key_path,
             dashboard_addr,
             dashboard_pin,
+            multitenant,
         }
     }
 }
