@@ -34,8 +34,11 @@ fn temp_chain(label: &str) -> (MentisDb, TempDir) {
         .tempdir()
         .expect("failed to create tempdir for benchmark");
     let adapter = BinaryStorageAdapter::for_chain_key(dir.path(), label);
-    let chain =
+    let mut chain =
         MentisDb::open_with_storage(Box::new(adapter)).expect("failed to open chain for benchmark");
+    chain
+        .set_auto_flush(true)
+        .expect("failed to prime strict writer for benchmark");
     (chain, dir)
 }
 
@@ -314,8 +317,11 @@ pub fn bench_import_memory_markdown(c: &mut Criterion) {
                     .tempdir()
                     .expect("failed to create tempdir for import benchmark destination");
                 let adapter = BinaryStorageAdapter::for_chain_key(dir.path(), "import-dst");
-                let chain = MentisDb::open_with_storage(Box::new(adapter))
+                let mut chain = MentisDb::open_with_storage(Box::new(adapter))
                     .expect("failed to open destination chain");
+                chain
+                    .set_auto_flush(true)
+                    .expect("failed to prime strict writer for import benchmark");
                 (chain, dir)
             },
             |(mut chain, _dir)| {

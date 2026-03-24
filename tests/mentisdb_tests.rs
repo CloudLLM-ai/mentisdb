@@ -1181,6 +1181,127 @@ fn binary_storage_adapter_persists_and_reloads() {
 }
 
 #[test]
+fn mentisdb_buffered_auto_flush_false_still_persists_on_drop() {
+    let dir = unique_chain_dir();
+    let chain_key = "buffered-drop";
+
+    {
+        let mut chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+        chain.set_auto_flush(false).unwrap();
+        chain
+            .append(
+                "agent1",
+                ThoughtType::Checkpoint,
+                "Persist this through the background writer.",
+            )
+            .unwrap();
+    }
+
+    let reloaded = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(reloaded.thoughts().len(), 1);
+    assert_eq!(
+        reloaded.thoughts()[0].content,
+        "Persist this through the background writer."
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn mentisdb_switching_back_to_auto_flush_drains_background_writer() {
+    let dir = unique_chain_dir();
+    let chain_key = "buffered-switch";
+
+    {
+        let mut chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+        chain.set_auto_flush(false).unwrap();
+        chain
+            .append(
+                "agent1",
+                ThoughtType::Checkpoint,
+                "Buffered before switching back.",
+            )
+            .unwrap();
+        chain.set_auto_flush(true).unwrap();
+        chain
+            .append(
+                "agent1",
+                ThoughtType::Checkpoint,
+                "Immediate after switching back.",
+            )
+            .unwrap();
+    }
+
+    let reloaded = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(reloaded.thoughts().len(), 2);
+    assert_eq!(
+        reloaded.thoughts()[0].content,
+        "Buffered before switching back."
+    );
+    assert_eq!(
+        reloaded.thoughts()[1].content,
+        "Immediate after switching back."
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn mentisdb_auto_flush_true_persists_before_drop_via_group_commit() {
+    let dir = unique_chain_dir();
+    let chain_key = "durable-group-commit";
+
+    let mut chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    chain.set_auto_flush(true).unwrap();
+    chain
+        .append(
+            "agent1",
+            ThoughtType::Checkpoint,
+            "Durably acknowledged before drop.",
+        )
+        .unwrap();
+
+    let reloaded = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(reloaded.thoughts().len(), 1);
+    assert_eq!(
+        reloaded.thoughts()[0].content,
+        "Durably acknowledged before drop."
+    );
+
+    drop(chain);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn mentisdb_buffered_auto_flush_false_flushes_agent_registry_metadata_on_drop() {
+    let dir = unique_chain_dir();
+    let chain_key = "buffered-agent-registry";
+
+    {
+        let mut chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+        chain.set_auto_flush(false).unwrap();
+        chain
+            .append_thought(
+                "agent1",
+                ThoughtInput::new(
+                    ThoughtType::Checkpoint,
+                    "Persist agent metadata through buffered mode.",
+                )
+                .with_agent_name("Buffered Agent")
+                .with_agent_owner("ops"),
+            )
+            .unwrap();
+    }
+
+    let reloaded = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    let agent = reloaded.get_agent("agent1").unwrap();
+    assert_eq!(agent.display_name, "Buffered Agent");
+    assert_eq!(agent.owner.as_deref(), Some("ops"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn shared_chain_queries_can_filter_by_agent_identity() {
     let dir = unique_chain_dir();
     let mut chain = MentisDb::open_with_key(&dir, "shared-project").unwrap();

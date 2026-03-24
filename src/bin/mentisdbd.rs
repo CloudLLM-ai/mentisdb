@@ -10,7 +10,7 @@
 //! - `MENTISDB_DIR`
 //! - `MENTISDB_DEFAULT_CHAIN_KEY` (deprecated alias: `MENTISDB_DEFAULT_KEY`)
 //! - `MENTISDB_STORAGE_ADAPTER`
-//! - `MENTISDB_AUTO_FLUSH` (defaults to `true`; set `false` for buffered writes)
+//! - `MENTISDB_AUTO_FLUSH` (defaults to `true`; set `false` for buffered writes instead of durable group commit)
 //! - `MENTISDB_VERBOSE` (defaults to `true` when unset)
 //! - `MENTISDB_LOG_FILE`
 //! - `MENTISDB_BIND_HOST`

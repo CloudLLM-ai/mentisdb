@@ -22,7 +22,12 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Mutex;
+use std::sync::{
+    mpsc::{self, SyncSender},
+    Arc, Mutex,
+};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 pub use skills::{
@@ -56,6 +61,22 @@ pub trait StorageAdapter: Send + Sync {
 
     /// Persist a newly appended thought.
     fn append_thought(&self, thought: &Thought) -> io::Result<()>;
+
+    /// Flush any pending buffered writes to the backing store.
+    ///
+    /// Adapters that do not buffer writes may leave the default no-op
+    /// implementation.
+    fn flush(&self) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// Reconfigure whether appends should be flushed immediately.
+    ///
+    /// Adapters that do not support write-mode reconfiguration may leave the
+    /// default no-op implementation.
+    fn set_auto_flush(&self, _auto_flush: bool) -> io::Result<()> {
+        Ok(())
+    }
 
     /// Return a human-readable storage location or descriptor.
     fn storage_location(&self) -> String;
@@ -258,22 +279,24 @@ impl StorageAdapter for JsonlStorageAdapter {
 ///
 /// ## Write buffering
 ///
-/// When `auto_flush = true` (the default), the adapter keeps the backing file
-/// open between writes using a [`BufWriter`] and flushes to the OS after every
-/// individual append.  This preserves full durability while eliminating the
-/// file-open/close overhead that previously dominated single-append latency.
+/// When `auto_flush = true` (the default), appends are queued to a dedicated
+/// background writer and the caller blocks until the writer flushes them to the
+/// OS. Concurrent requests can share a short group-commit window, preserving
+/// durable-ack semantics while reducing contention on highly concurrent write
+/// workloads.
 ///
-/// When `auto_flush = false`, serialized thought bytes are accumulated in an
-/// in-memory write buffer and flushed to disk only when the buffer reaches
-/// [`FLUSH_THRESHOLD`] entries (or when the adapter is dropped).  This mode
-/// dramatically increases batch-append throughput at the cost of potentially
-/// losing the last `< FLUSH_THRESHOLD` thoughts on a hard crash.
+/// When `auto_flush = false`, appends are handed to a bounded background-writer
+/// queue. The worker batches records and flushes them to disk every
+/// [`FLUSH_THRESHOLD`] entries (or when the adapter is explicitly flushed or
+/// dropped). This mode dramatically increases batch-append throughput at the
+/// cost of potentially losing the current in-memory batch plus any queued
+/// acknowleded appends on a hard crash.
 ///
 /// ## Clone behaviour
 ///
 /// Cloning creates a *new* adapter for the same file path with a fresh, empty
-/// write state (no open file handle, empty buffer, zero dirty count).  The
-/// clone is suitable for use by a second independent reader/writer.
+/// write state (no background writer). The clone is suitable for use by a
+/// second independent reader/writer.
 ///
 /// # Example
 ///
@@ -286,20 +309,22 @@ impl StorageAdapter for JsonlStorageAdapter {
 /// ```
 pub struct BinaryStorageAdapter {
     file_path: PathBuf,
-    /// When `true` (default), every `append_thought` call flushes to the OS.
-    /// When `false`, writes are batched and flushed every [`FLUSH_THRESHOLD`]
-    /// appends (or on `Drop`).
-    auto_flush: bool,
     /// Interior-mutable write state.  The `Mutex` allows `&self` calls in the
-    /// [`StorageAdapter`] trait to mutate the file handle and buffer.
+    /// [`StorageAdapter`] trait to mutate the file handle and background writer.
     state: Mutex<WriterState>,
+    background_error: Arc<Mutex<Option<BackgroundWriteError>>>,
 }
 
 impl std::fmt::Debug for BinaryStorageAdapter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let auto_flush = self
+            .state
+            .lock()
+            .expect("BinaryStorageAdapter state mutex poisoned")
+            .auto_flush;
         f.debug_struct("BinaryStorageAdapter")
             .field("file_path", &self.file_path)
-            .field("auto_flush", &self.auto_flush)
+            .field("auto_flush", &auto_flush)
             .finish_non_exhaustive()
     }
 }
@@ -311,7 +336,7 @@ impl std::fmt::Debug for BinaryStorageAdapter {
 /// adapter.
 impl Clone for BinaryStorageAdapter {
     fn clone(&self) -> Self {
-        Self::with_auto_flush(self.file_path.clone(), self.auto_flush)
+        Self::with_auto_flush(self.file_path.clone(), self.is_auto_flush())
     }
 }
 
@@ -320,63 +345,390 @@ impl Clone for BinaryStorageAdapter {
 /// Only relevant when `BinaryStorageAdapter::auto_flush = false`.
 pub const FLUSH_THRESHOLD: usize = 16;
 
+/// Number of queued append requests allowed before writers backpressure callers.
+const BACKGROUND_WRITE_QUEUE_CAPACITY: usize = FLUSH_THRESHOLD * 4;
+
+/// Maximum time a durable append waits for more work before forcing a flush.
+const GROUP_COMMIT_WINDOW: Duration = Duration::from_millis(2);
+
 /// Number of append-driven chain-registration count updates to batch before
 /// rewriting the global registry file.
 const CHAIN_REGISTRATION_FLUSH_THRESHOLD: usize = FLUSH_THRESHOLD;
 
+/// Number of append-driven agent-registry sidecar updates to batch before
+/// rewriting the per-chain registry JSON when buffered writes are enabled.
+const AGENT_REGISTRY_FLUSH_THRESHOLD: usize = FLUSH_THRESHOLD;
+
+#[derive(Debug, Clone)]
+struct BackgroundWriteError {
+    kind: io::ErrorKind,
+    message: String,
+}
+
+impl BackgroundWriteError {
+    fn from_io_error(error: &io::Error) -> Self {
+        Self {
+            kind: error.kind(),
+            message: error.to_string(),
+        }
+    }
+
+    fn to_io_error(&self) -> io::Error {
+        io::Error::new(self.kind, self.message.clone())
+    }
+}
+
+enum WriteCommand {
+    Append {
+        payload: Vec<u8>,
+        ack_tx: Option<mpsc::Sender<io::Result<()>>>,
+    },
+    Flush(mpsc::Sender<io::Result<()>>),
+    Shutdown(mpsc::Sender<io::Result<()>>),
+}
+
+struct BackgroundWriter {
+    tx: SyncSender<WriteCommand>,
+    join: JoinHandle<()>,
+}
+
 /// Mutable write state held inside [`BinaryStorageAdapter`].
 struct WriterState {
-    /// Lazily opened, persistent file handle.  `None` until the first write.
-    file: Option<BufWriter<File>>,
-    /// Serialized thought bytes accumulated when `auto_flush = false`.
-    write_buffer: Vec<u8>,
-    /// Number of appended thoughts not yet flushed to the OS.
-    dirty_count: usize,
+    auto_flush: bool,
+    /// Background writer used for both strict and buffered modes.
+    background_writer: Option<BackgroundWriter>,
 }
 
 impl WriterState {
-    fn new() -> Self {
+    fn new(auto_flush: bool) -> Self {
         Self {
-            file: None,
-            write_buffer: Vec::new(),
-            dirty_count: 0,
+            auto_flush,
+            background_writer: None,
         }
     }
 
-    /// Open the backing file in create+append mode if not already open.
-    fn open_file(&mut self, file_path: &Path) -> io::Result<&mut BufWriter<File>> {
-        if self.file.is_none() {
-            if let Some(parent) = file_path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    fs::create_dir_all(parent)?;
+    fn ensure_background_writer(
+        &mut self,
+        file_path: &Path,
+        error_state: &Arc<Mutex<Option<BackgroundWriteError>>>,
+    ) -> io::Result<&BackgroundWriter> {
+        if self.background_writer.is_none() {
+            clear_background_error(error_state);
+            self.background_writer = Some(BackgroundWriter::spawn(
+                file_path.to_path_buf(),
+                error_state.clone(),
+            )?);
+        }
+        Ok(self.background_writer.as_ref().unwrap())
+    }
+}
+
+fn open_append_writer(file_path: &Path) -> io::Result<BufWriter<File>> {
+    if let Some(parent) = file_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file_path)?;
+    Ok(BufWriter::new(file))
+}
+
+fn flush_background_buffer(
+    file: &mut Option<BufWriter<File>>,
+    file_path: &Path,
+    write_buffer: &mut Vec<u8>,
+    dirty_count: &mut usize,
+) -> io::Result<()> {
+    if write_buffer.is_empty() {
+        return Ok(());
+    }
+    if file.is_none() {
+        *file = Some(open_append_writer(file_path)?);
+    }
+    let writer = file.as_mut().unwrap();
+    writer.write_all(write_buffer)?;
+    writer.flush()?;
+    write_buffer.clear();
+    *dirty_count = 0;
+    Ok(())
+}
+
+fn set_background_error(error_state: &Arc<Mutex<Option<BackgroundWriteError>>>, error: &io::Error) {
+    if let Ok(mut slot) = error_state.lock() {
+        if slot.is_none() {
+            *slot = Some(BackgroundWriteError::from_io_error(error));
+        }
+    }
+}
+
+fn clear_background_error(error_state: &Arc<Mutex<Option<BackgroundWriteError>>>) {
+    if let Ok(mut slot) = error_state.lock() {
+        *slot = None;
+    }
+}
+
+fn current_background_error(
+    error_state: &Arc<Mutex<Option<BackgroundWriteError>>>,
+) -> Option<io::Error> {
+    error_state
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().map(BackgroundWriteError::to_io_error))
+}
+
+fn clone_io_error(error: &io::Error) -> io::Error {
+    io::Error::new(error.kind(), error.to_string())
+}
+
+fn clone_io_result(result: &io::Result<()>) -> io::Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => Err(clone_io_error(error)),
+    }
+}
+
+impl BackgroundWriter {
+    fn spawn(
+        file_path: PathBuf,
+        error_state: Arc<Mutex<Option<BackgroundWriteError>>>,
+    ) -> io::Result<Self> {
+        let (tx, rx) = mpsc::sync_channel(BACKGROUND_WRITE_QUEUE_CAPACITY);
+        let join = thread::Builder::new()
+            .name("mentisdb-binary-writer".to_string())
+            .spawn(move || {
+                enum PostFlushAction {
+                    Flush(mpsc::Sender<io::Result<()>>),
+                    Shutdown(Option<mpsc::Sender<io::Result<()>>>),
                 }
-            }
-            let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(file_path)?;
-            self.file = Some(BufWriter::new(file));
-        }
-        Ok(self.file.as_mut().unwrap())
+
+                let mut file = None;
+                let mut write_buffer = Vec::new();
+                let mut dirty_count = 0usize;
+                let mut durable_acks: Vec<mpsc::Sender<io::Result<()>>> = Vec::new();
+                while let Ok(command) = rx.recv() {
+                    let result = match command {
+                        WriteCommand::Append { payload, ack_tx } => {
+                            write_buffer.extend_from_slice(&payload);
+                            dirty_count += 1;
+                            if let Some(ack_tx) = ack_tx {
+                                durable_acks.push(ack_tx);
+                                let deadline = Instant::now() + GROUP_COMMIT_WINDOW;
+                                let mut follow_up: Option<PostFlushAction> = None;
+                                loop {
+                                    let remaining =
+                                        deadline.saturating_duration_since(Instant::now());
+                                    if remaining.is_zero() {
+                                        break;
+                                    }
+                                    match rx.recv_timeout(remaining) {
+                                        Ok(WriteCommand::Append { payload, ack_tx }) => {
+                                            write_buffer.extend_from_slice(&payload);
+                                            dirty_count += 1;
+                                            if let Some(ack_tx) = ack_tx {
+                                                durable_acks.push(ack_tx);
+                                            }
+                                        }
+                                        Ok(WriteCommand::Flush(ack_tx)) => {
+                                            follow_up = Some(PostFlushAction::Flush(ack_tx));
+                                            break;
+                                        }
+                                        Ok(WriteCommand::Shutdown(ack_tx)) => {
+                                            follow_up =
+                                                Some(PostFlushAction::Shutdown(Some(ack_tx)));
+                                            break;
+                                        }
+                                        Err(mpsc::RecvTimeoutError::Timeout) => break,
+                                        Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                            follow_up = Some(PostFlushAction::Shutdown(None));
+                                            break;
+                                        }
+                                    }
+                                }
+                                let result = flush_background_buffer(
+                                    &mut file,
+                                    &file_path,
+                                    &mut write_buffer,
+                                    &mut dirty_count,
+                                );
+                                if let Err(error) = &result {
+                                    set_background_error(&error_state, error);
+                                }
+                                for ack in durable_acks.drain(..) {
+                                    let _ = ack.send(clone_io_result(&result));
+                                }
+                                match follow_up {
+                                    Some(PostFlushAction::Flush(ack_tx)) => {
+                                        let _ = ack_tx.send(clone_io_result(&result));
+                                        result
+                                    }
+                                    Some(PostFlushAction::Shutdown(ack_tx)) => {
+                                        if let Some(ack_tx) = ack_tx {
+                                            let _ = ack_tx.send(clone_io_result(&result));
+                                        }
+                                        break;
+                                    }
+                                    None => result,
+                                }
+                            } else if dirty_count >= FLUSH_THRESHOLD {
+                                flush_background_buffer(
+                                    &mut file,
+                                    &file_path,
+                                    &mut write_buffer,
+                                    &mut dirty_count,
+                                )
+                            } else {
+                                Ok(())
+                            }
+                        }
+                        WriteCommand::Flush(ack_tx) => {
+                            let result = flush_background_buffer(
+                                &mut file,
+                                &file_path,
+                                &mut write_buffer,
+                                &mut dirty_count,
+                            );
+                            let response = match &result {
+                                Ok(()) => Ok(()),
+                                Err(error) => {
+                                    set_background_error(&error_state, error);
+                                    Err(io::Error::new(error.kind(), error.to_string()))
+                                }
+                            };
+                            let _ = ack_tx.send(response);
+                            result
+                        }
+                        WriteCommand::Shutdown(ack_tx) => {
+                            let result = flush_background_buffer(
+                                &mut file,
+                                &file_path,
+                                &mut write_buffer,
+                                &mut dirty_count,
+                            );
+                            let response = match &result {
+                                Ok(()) => Ok(()),
+                                Err(error) => {
+                                    set_background_error(&error_state, error);
+                                    Err(io::Error::new(error.kind(), error.to_string()))
+                                }
+                            };
+                            let _ = ack_tx.send(response);
+                            break;
+                        }
+                    };
+                    if let Err(error) = result {
+                        set_background_error(&error_state, &error);
+                        break;
+                    }
+                }
+                if let Err(error) = flush_background_buffer(
+                    &mut file,
+                    &file_path,
+                    &mut write_buffer,
+                    &mut dirty_count,
+                ) {
+                    set_background_error(&error_state, &error);
+                }
+            })
+            .map_err(|error| io::Error::other(format!("Failed to spawn binary writer: {error}")))?;
+        Ok(Self { tx, join })
     }
 
-    /// Write all buffered bytes to the file and flush to the OS.
-    ///
-    /// Clears `write_buffer` and resets `dirty_count` on success.
-    fn flush_buffer(&mut self, file_path: &Path) -> io::Result<()> {
-        if self.write_buffer.is_empty() {
-            return Ok(());
+    fn append(
+        &self,
+        payload: Vec<u8>,
+        durable: bool,
+        error_state: &Arc<Mutex<Option<BackgroundWriteError>>>,
+    ) -> io::Result<()> {
+        if let Some(error) = current_background_error(error_state) {
+            return Err(error);
         }
-        // Take the buffer before calling `open_file` to avoid holding an
-        // immutable borrow on `self.write_buffer` while `open_file` takes a
-        // mutable borrow on `self.file`.
-        let to_write = std::mem::take(&mut self.write_buffer);
-        let file = self.open_file(file_path)?;
-        file.write_all(&to_write)?;
-        file.flush()?;
-        // write_buffer is already empty after `mem::take`; just reset the counter.
-        self.dirty_count = 0;
-        Ok(())
+        if durable {
+            let (ack_tx, ack_rx) = mpsc::channel();
+            self.tx
+                .send(WriteCommand::Append {
+                    payload,
+                    ack_tx: Some(ack_tx),
+                })
+                .map_err(|_| {
+                    current_background_error(error_state).unwrap_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "Binary background writer thread stopped",
+                        )
+                    })
+                })?;
+            ack_rx.recv().unwrap_or_else(|_| {
+                Err(current_background_error(error_state).unwrap_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "Binary background writer acknowledgement channel closed",
+                    )
+                }))
+            })
+        } else {
+            self.tx
+                .send(WriteCommand::Append {
+                    payload,
+                    ack_tx: None,
+                })
+                .map_err(|_| {
+                    current_background_error(error_state).unwrap_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "Binary background writer thread stopped",
+                        )
+                    })
+                })
+        }
+    }
+
+    fn flush(&self, error_state: &Arc<Mutex<Option<BackgroundWriteError>>>) -> io::Result<()> {
+        let (ack_tx, ack_rx) = mpsc::channel();
+        self.tx.send(WriteCommand::Flush(ack_tx)).map_err(|_| {
+            current_background_error(error_state).unwrap_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "Binary background writer thread stopped",
+                )
+            })
+        })?;
+        ack_rx.recv().unwrap_or_else(|_| {
+            Err(current_background_error(error_state).unwrap_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "Binary background writer acknowledgement channel closed",
+                )
+            }))
+        })
+    }
+
+    fn shutdown(self, error_state: &Arc<Mutex<Option<BackgroundWriteError>>>) -> io::Result<()> {
+        let (ack_tx, ack_rx) = mpsc::channel();
+        let send_result = self.tx.send(WriteCommand::Shutdown(ack_tx));
+        let ack_result = match send_result {
+            Ok(()) => ack_rx.recv().unwrap_or_else(|_| {
+                Err(current_background_error(error_state).unwrap_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "Binary background writer acknowledgement channel closed",
+                    )
+                }))
+            }),
+            Err(_) => Err(current_background_error(error_state).unwrap_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "Binary background writer thread stopped",
+                )
+            })),
+        };
+        let join_result = self.join.join();
+        if join_result.is_err() {
+            return Err(io::Error::other("Binary background writer thread panicked"));
+        }
+        ack_result
     }
 }
 
@@ -388,14 +740,15 @@ impl BinaryStorageAdapter {
 
     /// Create a binary adapter with an explicit `auto_flush` setting.
     ///
-    /// Pass `auto_flush = false` to enable write buffering for higher batch
-    /// throughput; call [`flush`][Self::flush] or rely on the `Drop` impl
-    /// to persist the final batch.
+    /// Pass `auto_flush = true` for durable group-commit acknowledgements or
+    /// `auto_flush = false` for fire-and-forget batching. Call
+    /// [`flush`][Self::flush] or rely on the `Drop` impl to persist the final
+    /// buffered batch before shutdown.
     pub fn with_auto_flush(file_path: PathBuf, auto_flush: bool) -> Self {
         Self {
             file_path,
-            auto_flush,
-            state: Mutex::new(WriterState::new()),
+            state: Mutex::new(WriterState::new(auto_flush)),
+            background_error: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -413,26 +766,37 @@ impl BinaryStorageAdapter {
         &self.file_path
     }
 
-    /// Return whether this adapter flushes to the OS after every append.
+    /// Return whether this adapter requires a durable flush acknowledgement for
+    /// every append.
     pub fn is_auto_flush(&self) -> bool {
-        self.auto_flush
+        self.state
+            .lock()
+            .expect("BinaryStorageAdapter state mutex poisoned")
+            .auto_flush
     }
 
-    /// Flush any buffered bytes to disk immediately.
+    /// Flush any queued or buffered bytes to disk immediately.
     ///
-    /// This is a no-op when `auto_flush = true` (the adapter always flushes
-    /// immediately in that mode).  When `auto_flush = false`, this writes all
-    /// pending bytes and calls `fsync`-equivalent on the OS buffer.
+    /// In both modes this blocks until the background writer drains its queue
+    /// and flushes all pending records to the OS. In `auto_flush = true`, each
+    /// append already waits for a durable flush, so this is usually only needed
+    /// as an explicit barrier before reads or shutdown.
     ///
     /// # Errors
     ///
     /// Returns an [`io::Error`] if the underlying write or flush fails.
     pub fn flush(&self) -> io::Result<()> {
-        let mut state = self
+        let state = self
             .state
             .lock()
             .expect("BinaryStorageAdapter state mutex poisoned");
-        state.flush_buffer(&self.file_path)
+        if let Some(worker) = state.background_writer.as_ref() {
+            return worker.flush(&self.background_error);
+        }
+        if let Some(error) = current_background_error(&self.background_error) {
+            return Err(error);
+        }
+        Ok(())
     }
 }
 
@@ -444,7 +808,9 @@ impl Drop for BinaryStorageAdapter {
     /// explicitly before dropping.
     fn drop(&mut self) {
         if let Ok(mut state) = self.state.lock() {
-            let _ = state.flush_buffer(&self.file_path);
+            if let Some(worker) = state.background_writer.take() {
+                let _ = worker.shutdown(&self.background_error);
+            }
         }
     }
 }
@@ -453,7 +819,7 @@ impl StorageAdapter for BinaryStorageAdapter {
     fn load_thoughts(&self) -> io::Result<Vec<Thought>> {
         // Flush any buffered writes so the file reflects the full chain state
         // before we re-read it.
-        self.flush()?;
+        BinaryStorageAdapter::flush(self)?;
         load_binary_thoughts(&self.file_path)
     }
 
@@ -467,25 +833,40 @@ impl StorageAdapter for BinaryStorageAdapter {
             .state
             .lock()
             .expect("BinaryStorageAdapter state mutex poisoned");
+        let durable = state.auto_flush;
+        let worker = state.ensure_background_writer(&self.file_path, &self.background_error)?;
+        let mut record = Vec::with_capacity(length_bytes.len() + payload.len());
+        record.extend_from_slice(&length_bytes);
+        record.extend_from_slice(&payload);
+        worker.append(record, durable, &self.background_error)
+    }
 
-        if self.auto_flush {
-            // --- Immediate-flush path (default) ---
-            // Write through a persistent BufWriter and flush after each record.
-            // This avoids the file-open/close overhead while preserving durability.
-            let file = state.open_file(&self.file_path)?;
-            file.write_all(&length_bytes)?;
-            file.write_all(&payload)?;
-            file.flush()?;
-        } else {
-            // --- Buffered path ---
-            // Accumulate serialized bytes and flush every FLUSH_THRESHOLD appends.
-            state.write_buffer.extend_from_slice(&length_bytes);
-            state.write_buffer.extend_from_slice(&payload);
-            state.dirty_count += 1;
-            if state.dirty_count >= FLUSH_THRESHOLD {
-                state.flush_buffer(&self.file_path)?;
+    fn flush(&self) -> io::Result<()> {
+        BinaryStorageAdapter::flush(self)
+    }
+
+    fn set_auto_flush(&self, auto_flush: bool) -> io::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("BinaryStorageAdapter state mutex poisoned");
+        if state.auto_flush == auto_flush {
+            if auto_flush {
+                state.ensure_background_writer(&self.file_path, &self.background_error)?;
             }
+            return Ok(());
         }
+
+        if auto_flush {
+            if let Some(worker) = state.background_writer.as_ref() {
+                worker.flush(&self.background_error)?;
+            }
+            state.auto_flush = true;
+            return Ok(());
+        }
+
+        state.ensure_background_writer(&self.file_path, &self.background_error)?;
+        state.auto_flush = false;
         Ok(())
     }
 
@@ -2082,6 +2463,8 @@ pub struct MentisDb {
     storage: Box<dyn StorageAdapter>,
     auto_flush: bool,
     persistence: Option<ChainPersistenceMetadata>,
+    pending_agent_registry_sync: bool,
+    pending_agent_registry_updates: usize,
     pending_chain_registration_sync: bool,
     pending_chain_registration_updates: usize,
 }
@@ -2175,6 +2558,8 @@ impl MentisDb {
             storage,
             auto_flush: true,
             persistence,
+            pending_agent_registry_sync: false,
+            pending_agent_registry_updates: 0,
             pending_chain_registration_sync: false,
             pending_chain_registration_updates: 0,
         };
@@ -2365,9 +2750,7 @@ impl MentisDb {
         let hash = compute_thought_hash(&thought);
         let thought = Thought { hash, ..thought };
 
-        if self.auto_flush {
-            self.storage.append_thought(&thought)?;
-        }
+        self.storage.append_thought(&thought)?;
 
         self.agent_registry.observe(
             agent_id,
@@ -2384,7 +2767,10 @@ impl MentisDb {
             .insert(thought.hash.clone(), self.thoughts.len());
         self.query_indexes.observe(self.thoughts.len(), &thought);
         self.thoughts.push(thought.clone());
-        self.persist_agent_registry()?;
+        self.mark_agent_registry_dirty();
+        self.maybe_flush_agent_registry(
+            self.auto_flush || self.thoughts.len() == 1 || agent_count_changed,
+        )?;
         self.mark_chain_registration_dirty();
         self.maybe_flush_chain_registration(self.thoughts.len() == 1 || agent_count_changed)?;
         Ok(self.thoughts.last().unwrap())
@@ -3384,8 +3770,22 @@ impl MentisDb {
     }
 
     /// Enable or disable immediate persistence on append.
-    pub fn set_auto_flush(&mut self, auto_flush: bool) {
+    ///
+    /// This also reconfigures the underlying storage adapter when the backend
+    /// supports buffered writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`io::Error`] if the underlying storage adapter cannot switch
+    /// modes or flush pending buffered writes during the transition.
+    pub fn set_auto_flush(&mut self, auto_flush: bool) -> io::Result<()> {
+        self.storage.set_auto_flush(auto_flush)?;
         self.auto_flush = auto_flush;
+        if auto_flush {
+            self.maybe_flush_agent_registry(true)?;
+            self.maybe_flush_chain_registration(true)?;
+        }
+        Ok(())
     }
 
     /// Detach this chain from on-disk registry synchronization.
@@ -3395,6 +3795,8 @@ impl MentisDb {
     /// final live handle could re-register the chain during [`Drop`].
     pub fn detach_persistence(&mut self) {
         self.persistence = None;
+        self.pending_agent_registry_sync = false;
+        self.pending_agent_registry_updates = 0;
         self.pending_chain_registration_sync = false;
         self.pending_chain_registration_updates = 0;
     }
@@ -3407,6 +3809,29 @@ impl MentisDb {
                 metadata.storage_kind,
                 &self.agent_registry,
             )?;
+        }
+        Ok(())
+    }
+
+    fn mark_agent_registry_dirty(&mut self) {
+        if self.persistence.is_some() {
+            self.pending_agent_registry_sync = true;
+            self.pending_agent_registry_updates =
+                self.pending_agent_registry_updates.saturating_add(1);
+        }
+    }
+
+    fn maybe_flush_agent_registry(&mut self, force: bool) -> io::Result<()> {
+        if !self.pending_agent_registry_sync {
+            return Ok(());
+        }
+        if force
+            || self.auto_flush
+            || self.pending_agent_registry_updates >= AGENT_REGISTRY_FLUSH_THRESHOLD
+        {
+            self.persist_agent_registry()?;
+            self.pending_agent_registry_sync = false;
+            self.pending_agent_registry_updates = 0;
         }
         Ok(())
     }
@@ -3432,7 +3857,8 @@ impl MentisDb {
     }
 
     fn persist_registries(&mut self) -> io::Result<()> {
-        self.persist_agent_registry()?;
+        self.mark_agent_registry_dirty();
+        self.maybe_flush_agent_registry(true)?;
         self.mark_chain_registration_dirty();
         self.maybe_flush_chain_registration(true)
     }
@@ -3468,6 +3894,7 @@ impl MentisDb {
 
 impl Drop for MentisDb {
     fn drop(&mut self) {
+        let _ = self.maybe_flush_agent_registry(true);
         let _ = self.maybe_flush_chain_registration(true);
     }
 }
@@ -3642,7 +4069,8 @@ fn save_agent_registry(
         fs::create_dir_all(parent)?;
     }
     let file = fs::File::create(path)?;
-    serde_json::to_writer_pretty(file, registry)
+    let writer = BufWriter::new(file);
+    serde_json::to_writer(writer, registry)
         .map_err(|error| io::Error::other(format!("Failed to serialize agent registry: {error}")))
 }
 

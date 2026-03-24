@@ -37,6 +37,13 @@
 //! The binary prints two Markdown tables to stdout and exits with code 0 on
 //! success, or 1 if the server failed to start.
 
+#[path = "support/http_concurrency_support.rs"]
+mod http_concurrency_support;
+
+use http_concurrency_support::{
+    baseline_path, compare_rows, load_report, save_report, HttpConcurrencyReport,
+    HttpConcurrencyRow, HttpConcurrencyRowDelta,
+};
 use mentisdb::server::{start_servers, MentisDbServerConfig, MentisDbServiceConfig};
 use mentisdb::StorageAdapterKind;
 use reqwest::Client;
@@ -63,6 +70,8 @@ const WARMUP_COUNT: usize = 10;
 /// `MENTISDB_BENCH_CONCURRENCY` to opt into larger stress levels.
 const DEFAULT_CONCURRENCY_LEVELS: &[usize] = &[100, 1_000];
 const CONCURRENCY_LEVELS_ENV: &str = "MENTISDB_BENCH_CONCURRENCY";
+const AUTO_FLUSH_ENV: &str = "MENTISDB_BENCH_AUTO_FLUSH";
+const BASELINE_ENV: &str = "MENTISDB_BENCH_BASELINE";
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -75,7 +84,10 @@ const CONCURRENCY_LEVELS_ENV: &str = "MENTISDB_BENCH_CONCURRENCY";
 #[tokio::main]
 async fn main() {
     let concurrency_levels = resolve_concurrency_levels();
+    let auto_flush = resolve_auto_flush();
+    let baseline_name = resolve_baseline_name();
     eprintln!("concurrency levels: {concurrency_levels:?}");
+    eprintln!("auto_flush: {auto_flush}");
 
     // Keep TempDir alive for the entire benchmark so the chain files on disk
     // are not cleaned up before the server finishes.
@@ -88,7 +100,8 @@ async fn main() {
             temp_dir.path().to_path_buf(),
             CHAIN_KEY,
             StorageAdapterKind::Binary,
-        ),
+        )
+        .with_auto_flush(auto_flush),
         mcp_addr: "127.0.0.1:0"
             .parse()
             .expect("static address literal must parse"),
@@ -140,6 +153,46 @@ async fn main() {
     print_table("Write  —  POST /v1/thoughts", &write_rows);
     println!();
     print_table("Read   —  POST /v1/head", &read_rows);
+
+    let report = HttpConcurrencyReport {
+        auto_flush,
+        concurrency_levels: concurrency_levels.clone(),
+        write_rows: snapshot_rows(&write_rows),
+        read_rows: snapshot_rows(&read_rows),
+    };
+    let baseline_file = baseline_path(&baseline_name, auto_flush);
+    match load_report(&baseline_file) {
+        Ok(Some(previous)) => {
+            println!();
+            print_delta_table(
+                "Write delta vs previous run",
+                &compare_rows(&previous.write_rows, &report.write_rows),
+            );
+            println!();
+            print_delta_table(
+                "Read delta vs previous run",
+                &compare_rows(&previous.read_rows, &report.read_rows),
+            );
+        }
+        Ok(None) => {
+            eprintln!(
+                "no previous HTTP concurrency baseline at {}; saving this run as the new baseline",
+                baseline_file.display()
+            );
+        }
+        Err(error) => {
+            eprintln!(
+                "failed to load previous HTTP concurrency baseline {}: {error}",
+                baseline_file.display()
+            );
+        }
+    }
+    if let Err(error) = save_report(&baseline_file, &report) {
+        eprintln!(
+            "failed to save HTTP concurrency baseline {}: {error}",
+            baseline_file.display()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +237,26 @@ fn resolve_concurrency_levels() -> Vec<usize> {
     parsed.sort_unstable();
     parsed.dedup();
     parsed
+}
+
+fn resolve_auto_flush() -> bool {
+    env::var(AUTO_FLUSH_ENV)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(true)
+}
+
+fn resolve_baseline_name() -> String {
+    env::var(BASELINE_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "latest".to_string())
 }
 
 /// Aggregated benchmark result for one concurrency level.
@@ -402,6 +475,49 @@ fn print_table(title: &str, rows: &[(usize, BenchRow)]) {
             row.p95.as_secs_f64() * 1000.0,
             row.p99.as_secs_f64() * 1000.0,
             row.errors,
+        );
+    }
+}
+
+fn snapshot_rows(rows: &[(usize, BenchRow)]) -> Vec<HttpConcurrencyRow> {
+    rows.iter()
+        .map(|(concurrent, row)| HttpConcurrencyRow {
+            concurrent: *concurrent,
+            wall_ms: row.wall_time.as_secs_f64() * 1000.0,
+            req_per_sec: row.throughput_rps,
+            p50_ms: row.p50.as_secs_f64() * 1000.0,
+            p95_ms: row.p95.as_secs_f64() * 1000.0,
+            p99_ms: row.p99.as_secs_f64() * 1000.0,
+            errors: row.errors,
+        })
+        .collect()
+}
+
+fn print_delta_table(title: &str, rows: &[HttpConcurrencyRowDelta]) {
+    println!("## {title}");
+    println!();
+    if rows.is_empty() {
+        println!("No matching baseline rows were found for this run.");
+        return;
+    }
+    println!(
+        "| {:>10} | {:>12} | {:>12} | {:>12} | {:>12} | {:>12} | {:>12} |",
+        "concurrent", "wall_ms %", "req/s %", "p50_ms %", "p95_ms %", "p99_ms %", "errors Δ"
+    );
+    println!(
+        "|{:->12}|{:->14}|{:->14}|{:->14}|{:->14}|{:->14}|{:->14}|",
+        "", "", "", "", "", "", ""
+    );
+    for row in rows {
+        println!(
+            "| {:>10} | {:>+11.1}% | {:>+11.1}% | {:>+11.1}% | {:>+11.1}% | {:>+11.1}% | {:>+12} |",
+            row.concurrent,
+            row.wall_ms_pct,
+            row.req_per_sec_pct,
+            row.p50_ms_pct,
+            row.p95_ms_pct,
+            row.p99_ms_pct,
+            row.errors_delta,
         );
     }
 }

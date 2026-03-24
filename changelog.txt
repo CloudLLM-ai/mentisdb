@@ -1,3 +1,19 @@
+0.6.4.17 MAR/24/2026
+ - feat(storage): durable group commit for strict binary writes
+   - `BinaryStorageAdapter` now routes `auto_flush=true` appends through the bounded background writer and acknowledges them only after the worker flushes to the OS
+   - Concurrent strict-mode appends can share a short group-commit window, reducing contention while preserving zero-loss semantics for acknowledged writes
+   - Added regression coverage to prove a strict append is already visible on disk before the original chain handle is dropped
+ - fix(storage): buffered writes now behave like real buffering instead of silent data loss
+   - `MENTISDB_AUTO_FLUSH=false` continues to persist thoughts through the background writer instead of skipping thought storage entirely
+   - Buffered mode now batches per-chain agent-registry sidecar rewrites instead of rewriting the JSON sidecar on every append
+   - The strict append hot path no longer pays the extra record-buffer allocation that had regressed single-append latency after the first background-writer refactor
+ - feat(bench): persist and compare HTTP concurrency runs automatically
+   - `benches/http_concurrency.rs` now saves per-mode baselines under `target/http_concurrency/` and prints delta tables on subsequent runs
+   - New `MENTISDB_BENCH_AUTO_FLUSH` and `MENTISDB_BENCH_BASELINE` env vars make it easy to compare durable and buffered modes without manual table diffing
+ - feat(dashboard): chain agent counts deep-link to per-chain agent registries
+   - The Chains page `Agents` column now links directly to the matching chain section on `#/agents`
+   - Agent registry section headers are linkable so the dashboard can auto-scroll to the right chain table
+
 0.6.3.16 MAR/23/2026
  - fix(dashboard): deleted chains no longer linger or reappear
    - Dashboard reads now treat the on-disk chain registry as the source of truth for existence, so a deleted chain returns `404` instead of being silently reopened from a stale cached handle

@@ -179,15 +179,18 @@ pub struct MentisDbServiceConfig {
     /// parent directory is created automatically if it does not exist.
     /// Controlled by `MENTISDB_LOG_FILE` in the daemon.
     pub log_file: Option<PathBuf>,
-    /// Controls whether [`BinaryStorageAdapter`] chains flush to disk after
-    /// **every** append (`true`) or batch writes until a threshold is reached
+    /// Controls whether [`BinaryStorageAdapter`] chains use durable
+    /// group-commit acknowledgements (`true`) or buffered batched writes
     /// (`false`).
     ///
-    /// * `true` (default) — full per-write durability; at most zero thoughts are
+    /// * `true` (default) — every append waits for the background writer to
+    ///   flush it durably before returning. Concurrent appends may share a
+    ///   short group-commit window, but at most zero acknowledged thoughts are
     ///   lost on a hard crash.
-    /// * `false` — batched writes; up to `FLUSH_THRESHOLD - 1` thoughts may be
-    ///   lost on a hard crash, but write throughput increases significantly for
-    ///   high-frequency multi-agent hubs.
+    /// * `false` — writes are queued to a bounded background worker and flushed
+    ///   in batches. This increases throughput for high-frequency multi-agent
+    ///   hubs, but a hard crash can still lose the current in-memory batch plus
+    ///   queued appends that were acknowledged before the worker flushed them.
     ///
     /// Controlled by `MENTISDB_AUTO_FLUSH=false` in the daemon.
     pub auto_flush: bool,
@@ -323,13 +326,16 @@ impl MentisDbServiceConfig {
 
     /// Override the per-write durability setting for chain storage adapters.
     ///
-    /// * `true` (default) — every append is immediately flushed to the OS page
-    ///   cache. At most zero committed thoughts are lost on a hard crash.
-    /// * `false` — writes are batched; the [`BinaryStorageAdapter`] flushes
-    ///   every `FLUSH_THRESHOLD` appends. This trades durability for
-    ///   significantly higher write throughput on multi-agent hubs. Up to
-    ///   `FLUSH_THRESHOLD - 1` thoughts may be unrecoverable after a sudden
-    ///   power failure or `SIGKILL`.
+    /// * `true` (default) — every append waits for the background writer to
+    ///   flush it durably before returning. Concurrent appends may share a
+    ///   short group-commit window, but at most zero acknowledged thoughts are
+    ///   lost on a hard crash.
+    /// * `false` — writes are queued to a bounded background worker; the
+    ///   [`BinaryStorageAdapter`] flushes batches roughly every
+    ///   `FLUSH_THRESHOLD` appends. This trades durability for significantly
+    ///   higher write throughput on multi-agent hubs. A sudden power failure or
+    ///   `SIGKILL` can still lose the current in-memory batch plus queued
+    ///   appends that were acknowledged before the worker flushed them.
     ///
     /// Equivalent to `MENTISDB_AUTO_FLUSH=false` in the daemon.
     ///
@@ -1905,9 +1911,9 @@ impl MentisDbService {
         let auto_flush = self.config.auto_flush;
         let entry = self.chains.entry(chain_key).or_try_insert_with(|| {
             MentisDb::open_with_key_and_storage_kind(&chain_dir, &chain_key_clone, storage_kind)
-                .map(|mut db| {
-                    db.set_auto_flush(auto_flush);
-                    Arc::new(RwLock::new(db))
+                .and_then(|mut db| {
+                    db.set_auto_flush(auto_flush)?;
+                    Ok(Arc::new(RwLock::new(db)))
                 })
                 .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
         })?;

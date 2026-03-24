@@ -332,12 +332,13 @@ async fn get_or_open_chain(
         if state.auto_flush {
             if let Some(storage) = registered_storage {
                 if let Ok(mut refreshed) = MentisDb::open_with_storage(storage) {
-                    refreshed.set_auto_flush(state.auto_flush);
-                    let refreshed = Arc::new(RwLock::new(refreshed));
-                    state
-                        .chains
-                        .insert(chain_key.to_string(), refreshed.clone());
-                    return Ok(refreshed);
+                    if refreshed.set_auto_flush(state.auto_flush).is_ok() {
+                        let refreshed = Arc::new(RwLock::new(refreshed));
+                        state
+                            .chains
+                            .insert(chain_key.to_string(), refreshed.clone());
+                        return Ok(refreshed);
+                    }
                 }
             }
         }
@@ -353,7 +354,9 @@ async fn get_or_open_chain(
 
     let mut chain = MentisDb::open_with_storage(storage)
         .map_err(|e| not_found(format!("chain '{chain_key}': {e}")))?;
-    chain.set_auto_flush(state.auto_flush);
+    chain
+        .set_auto_flush(state.auto_flush)
+        .map_err(internal_error)?;
 
     let arc = Arc::new(RwLock::new(chain));
     state.chains.insert(chain_key.to_string(), arc.clone());
@@ -563,7 +566,9 @@ async fn api_bootstrap_chain(
                 state.default_storage_adapter,
             )
             .map_err(internal_error)?;
-            chain.set_auto_flush(state.auto_flush);
+            chain
+                .set_auto_flush(state.auto_flush)
+                .map_err(internal_error)?;
             let arc = Arc::new(RwLock::new(chain));
             state.chains.insert(chain_key.clone(), arc.clone());
             arc

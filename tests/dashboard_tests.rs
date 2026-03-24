@@ -271,7 +271,7 @@ async fn deleting_a_cached_chain_does_not_reregister_it_on_last_drop() {
     let mut live =
         MentisDb::open_with_key_and_storage_kind(&dir, "source", StorageAdapterKind::Binary)
             .unwrap();
-    live.set_auto_flush(true);
+    live.set_auto_flush(true).unwrap();
     let storage_path = PathBuf::from(live.storage_location());
     let sidecar_path = dir.join(
         chain_storage_filename("source", StorageAdapterKind::Binary)
