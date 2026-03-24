@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 # Optional configuration overrides:
 # export MENTISDB_DIR="$HOME/.cloudllm/mentisdb"
 # export MENTISDB_DEFAULT_CHAIN_KEY="borganism-brain"   # MENTISDB_DEFAULT_KEY still accepted as deprecated alias
-# export MENTISDB_DEFAULT_STORAGE_ADAPTER="binary"   # binary | jsonl
+# export MENTISDB_STORAGE_ADAPTER="binary"   # binary | jsonl
 # export MENTISDB_BIND_HOST="127.0.0.1"
 # export MENTISDB_MCP_PORT="9471"
 # export MENTISDB_REST_PORT="9472"
