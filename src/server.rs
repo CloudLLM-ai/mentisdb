@@ -406,7 +406,7 @@ impl MentisDbServiceConfig {
 /// |---|---|---|
 /// | `MENTISDB_DIR` | `~/.cloudllm/mentisdb` | Root directory for all chain storage. |
 /// | `MENTISDB_DEFAULT_CHAIN_KEY` | `borganism-brain` | Default chain key for requests that omit one. (`MENTISDB_DEFAULT_KEY` accepted as a deprecated alias.) |
-/// | `MENTISDB_DEFAULT_STORAGE_ADAPTER` / `MENTISDB_STORAGE_ADAPTER` | `binary` | Storage format for new chains (`binary` or `jsonl`). |
+/// | `MENTISDB_STORAGE_ADAPTER` | `binary` | Storage format for new chains (`binary` or `jsonl`). |
 /// | `MENTISDB_VERBOSE` | `true` | Log each operation to the `mentisdb::interaction` target. |
 /// | `MENTISDB_LOG_FILE` | *(none)* | Optional file path for interaction logs. |
 /// | `MENTISDB_AUTO_FLUSH` | `true` | Set `false` for batched binary writes (higher throughput, reduced durability). |
@@ -459,7 +459,7 @@ pub struct MentisDbServerConfig {
     ///
     /// This is constructed from `MENTISDB_DIR`, `MENTISDB_DEFAULT_CHAIN_KEY` (or the
     /// deprecated `MENTISDB_DEFAULT_KEY`),
-    /// `MENTISDB_DEFAULT_STORAGE_ADAPTER`, `MENTISDB_VERBOSE`,
+    /// `MENTISDB_STORAGE_ADAPTER`, `MENTISDB_VERBOSE`,
     /// `MENTISDB_LOG_FILE`, and `MENTISDB_AUTO_FLUSH`.
     pub service: MentisDbServiceConfig,
     /// Socket address for the plain-HTTP MCP server.
@@ -539,13 +539,10 @@ impl MentisDbServerConfig {
             .ok()
             .and_then(|value| value.parse::<IpAddr>().ok())
             .unwrap_or(IpAddr::from([127, 0, 0, 1]));
-        let storage_adapter = env_var(&[
-            "MENTISDB_DEFAULT_STORAGE_ADAPTER",
-            "MENTISDB_STORAGE_ADAPTER",
-        ])
-        .ok()
-        .map(|value| value.parse().unwrap_or(StorageAdapterKind::Binary))
-        .unwrap_or(StorageAdapterKind::Binary);
+        let storage_adapter = env_var(&["MENTISDB_STORAGE_ADAPTER"])
+            .ok()
+            .map(|value| value.parse().unwrap_or(StorageAdapterKind::Binary))
+            .unwrap_or(StorageAdapterKind::Binary);
         let verbose = env_var(&["MENTISDB_VERBOSE"])
             .ok()
             .map(|value| parse_bool_flag(&value).unwrap_or(false))

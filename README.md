@@ -234,11 +234,9 @@ Once startup completes, it prints:
 - `MENTISDB_DEFAULT_CHAIN_KEY`
   Default `chain_key` used when requests omit one. Default: `borganism-brain`.
   `MENTISDB_DEFAULT_KEY` is accepted as a deprecated alias.
-- `MENTISDB_DEFAULT_STORAGE_ADAPTER`
+- `MENTISDB_STORAGE_ADAPTER`
   Default storage backend for newly created chains. Supported values: `binary`, `jsonl`.
   Default: `binary`
-- `MENTISDB_STORAGE_ADAPTER`
-  Optional short alias for `MENTISDB_DEFAULT_STORAGE_ADAPTER`.
 - `MENTISDB_VERBOSE`
   When unset, verbose interaction logging defaults to `true`. Supported explicit values:
   `1`, `0`, `true`, `false`.
@@ -274,7 +272,7 @@ Example — full durability (production default):
 ```bash
 MENTISDB_DIR=/tmp/mentisdb \
 MENTISDB_DEFAULT_CHAIN_KEY=borganism-brain \
-MENTISDB_DEFAULT_STORAGE_ADAPTER=binary \
+MENTISDB_STORAGE_ADAPTER=binary \
 MENTISDB_VERBOSE=true \
 MENTISDB_LOG_FILE=/tmp/mentisdb/mentisdbd.log \
 MENTISDB_BIND_HOST=127.0.0.1 \
