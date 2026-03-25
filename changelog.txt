@@ -1,3 +1,21 @@
+0.7.0.18 MAR/25/2026
+ - feat(bootstrap): surface active skills in bootstrap response
+   - `BootstrapResponse` now includes an `available_skills: Vec<SkillSummary>` field listing every active skill in the registry at spawn time
+   - Agents must call `mentisdb_read_skill` for each entry immediately after bootstrap to load operating instructions before proceeding with any work
+   - Bootstrap response field carries inline rustdoc guiding agents to verify provenance before loading unknown skills
+ - fix(bootstrap): correct lock ordering to eliminate future deadlock risk
+   - `bootstrap()` now captures `thought_count` and `head_hash`, drops the chain write-lock, then acquires the skills read-lock
+   - Previously both locks could be held simultaneously; the fix ensures only one unrelated lock is held at a time
+ - change(mcp): update tool descriptions to enforce eager spawn and checkpoint discipline
+   - `mentisdb_bootstrap`: marked as the first call on every agent spawn; instructs agents to call `mentisdb_skill_md` immediately after and then `mentisdb_read_skill` for each trusted skill in `available_skills`; adds guidance to write a Summary/Checkpoint thought before any compaction, context truncation, or handoff
+   - `mentisdb_skill_md`: marked as mandatory on every agent spawn immediately after bootstrap to load core MentisDB operating instructions
+   - `mentisdb_append`: emphasises saving a Summary/Checkpoint eagerly at every meaningful milestone and always before compaction, truncation, or agent handoff
+   - `mentisdb_append_retrospective`: clarifies scope as hard failures, repeated snags, and non-obvious fixes only; adds requirement to call before context compaction or handoff so lessons survive agent clearance
+   - `mentisdb_read_skill`: aligned to "trusted or relevant skills" language; references the `available_skills` bootstrap field and adds provenance warning for unknown skills
+ - test(server): add bootstrap `available_skills` regression tests
+   - New test: `bootstrap_response_includes_empty_available_skills_when_registry_is_empty` — asserts the field is present and empty when no skills are registered
+   - New test: `bootstrap_response_includes_active_skills_after_skill_upload` — uploads a skill then bootstraps and asserts the skill appears in `available_skills` with the correct `skill_id` and `status`
+
 0.6.4.17 MAR/24/2026
  - feat(storage): durable group commit for strict binary writes
    - `BinaryStorageAdapter` now routes `auto_flush=true` appends through the bounded background writer and acknowledges them only after the worker flushes to the OS
