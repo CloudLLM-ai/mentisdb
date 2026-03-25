@@ -23,6 +23,8 @@
 
 ## Phase 1: Lexical And BM25 Search
 
+Status: complete on `master` as of March 25, 2026.
+
 ### Objective
 
 Replace substring-only text search with real lexical retrieval and ranking.
@@ -68,6 +70,8 @@ Replace substring-only text search with real lexical retrieval and ranking.
 
 - `search/lexical.rs` or equivalent module for tokenization and scoring
 - ranked lexical query execution in the core crate
+- ranked hit explanations via `matched_terms` and `match_sources`
+- REST lexical ranking at `POST /v1/lexical-search`
 - regression tests for:
   - synonym-free keyword retrieval
   - multi-term ranking

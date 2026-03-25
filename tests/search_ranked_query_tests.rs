@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use mentisdb::search::lexical::LexicalMatchSource;
 use mentisdb::{
     MentisDb, RankedSearchBackend, RankedSearchQuery, ThoughtInput, ThoughtQuery, ThoughtType,
 };
@@ -134,6 +135,89 @@ fn ranked_query_without_text_falls_back_to_heuristic_ordering() {
     assert_eq!(ranked.hits[0].thought.content, "Older but more important.");
     assert_eq!(ranked.hits[1].thought.content, "Newer but lower signal.");
     assert_eq!(ranked.hits[0].score.lexical, 0.0);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ranked_query_surfaces_lexical_match_explanations() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "ranked-query-match-explanations").unwrap();
+
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(
+                ThoughtType::Plan,
+                "Use BM25 lexical search after the structured filter step.",
+            )
+            .with_tags(["search"])
+            .with_concepts(["bm25"]),
+        )
+        .unwrap();
+
+    let ranked = chain.query_ranked(&RankedSearchQuery::new().with_text("bm25 search"));
+
+    assert_eq!(ranked.backend, RankedSearchBackend::Lexical);
+    assert_eq!(ranked.total_candidates, 1);
+    assert_eq!(ranked.hits.len(), 1);
+    assert_eq!(ranked.hits[0].matched_terms, vec!["bm25", "search"]);
+    assert!(ranked.hits[0]
+        .match_sources
+        .contains(&LexicalMatchSource::Content));
+    assert!(ranked.hits[0]
+        .match_sources
+        .contains(&LexicalMatchSource::Tags));
+    assert!(ranked.hits[0]
+        .match_sources
+        .contains(&LexicalMatchSource::Concepts));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ranked_query_scores_agent_registry_text_lexically() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "ranked-query-agent-registry").unwrap();
+
+    chain
+        .upsert_agent(
+            "planner",
+            Some("Systems Planner"),
+            Some("mentisdb"),
+            Some("Lexical architect for search quality"),
+            None,
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(
+                ThoughtType::Summary,
+                "Rebuildable retrieval state matters more than cached prompts.",
+            ),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "operator",
+            ThoughtInput::new(
+                ThoughtType::Summary,
+                "Operational dashboards are useful, but not about architecture.",
+            ),
+        )
+        .unwrap();
+
+    let ranked = chain.query_ranked(&RankedSearchQuery::new().with_text("architect"));
+
+    assert_eq!(ranked.backend, RankedSearchBackend::Lexical);
+    assert_eq!(ranked.total_candidates, 1);
+    assert_eq!(ranked.hits.len(), 1);
+    assert_eq!(ranked.hits[0].thought.agent_id, "planner");
+    assert_eq!(ranked.hits[0].matched_terms, vec!["architect"]);
+    assert!(ranked.hits[0]
+        .match_sources
+        .contains(&LexicalMatchSource::AgentRegistry));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

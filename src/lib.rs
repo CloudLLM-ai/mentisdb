@@ -2232,6 +2232,10 @@ pub struct RankedSearchHit<'a> {
     pub thought: &'a Thought,
     /// Score breakdown for this hit.
     pub score: RankedSearchScore,
+    /// Unique normalized query terms that matched this hit.
+    pub matched_terms: Vec<String>,
+    /// Indexed field sources that contributed to the lexical score.
+    pub match_sources: Vec<crate::search::lexical::LexicalMatchSource>,
 }
 
 /// Ranked-search response over committed thoughts.
@@ -3585,19 +3589,20 @@ impl MentisDb {
         &'a self,
         thought: &'a Thought,
         ranked_text: Option<&str>,
-        lexical_scores: &HashMap<usize, f32>,
+        lexical_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
     ) -> Option<RankedSearchHit<'a>> {
-        let lexical = if ranked_text.is_some() {
-            let indexed_score = lexical_scores
-                .get(&(thought.index as usize))
-                .copied()
-                .unwrap_or_default();
-            if indexed_score == 0.0 {
+        let (lexical, matched_terms, match_sources) = if ranked_text.is_some() {
+            let hit = lexical_hits.get(&(thought.index as usize))?;
+            if hit.score == 0.0 {
                 return None;
             }
-            indexed_score
+            (
+                hit.score,
+                hit.matched_terms.clone(),
+                hit.match_sources.clone(),
+            )
         } else {
-            0.0
+            (0.0, Vec::new(), Vec::new())
         };
         let importance = thought.importance * 0.2;
         let confidence = thought.confidence.unwrap_or_default() * 0.1;
@@ -3613,6 +3618,8 @@ impl MentisDb {
                 recency,
                 total,
             },
+            matched_terms,
+            match_sources,
         })
     }
 
@@ -3620,16 +3627,19 @@ impl MentisDb {
         &self,
         candidates: &[&Thought],
         text: &str,
-    ) -> HashMap<usize, f32> {
+    ) -> HashMap<usize, crate::search::lexical::LexicalHit> {
         let positions: Vec<usize> = candidates
             .iter()
             .map(|thought| thought.index as usize)
             .collect();
-        let index = crate::search::lexical::LexicalIndex::build(&self.thoughts);
+        let index = crate::search::lexical::LexicalIndex::build_with_registry(
+            &self.thoughts,
+            self.agent_registry(),
+        );
         index
             .search_in_positions(&crate::search::lexical::LexicalQuery::new(text), &positions)
             .into_iter()
-            .map(|hit| (hit.doc_position, hit.score))
+            .map(|hit| (hit.doc_position, hit))
             .collect()
     }
 

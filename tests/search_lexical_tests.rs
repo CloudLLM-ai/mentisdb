@@ -1,5 +1,5 @@
 use mentisdb::search::lexical::{
-    normalize_lexical_tokens, LexicalField, LexicalIndex, LexicalQuery,
+    normalize_lexical_tokens, LexicalField, LexicalIndex, LexicalMatchSource, LexicalQuery,
     LEXICAL_INDEX_FORMAT_VERSION, LEXICAL_NORMALIZER_VERSION,
 };
 use mentisdb::{MentisDb, ThoughtInput, ThoughtType};
@@ -172,4 +172,62 @@ fn lexical_search_returns_no_hits_for_empty_query_text() {
     let index = LexicalIndex::build(db.thoughts());
 
     assert!(index.search(&LexicalQuery::new("   ---   ")).is_empty());
+}
+
+#[test]
+fn lexical_search_indexes_agent_id_and_registry_text() {
+    let temp = tempdir().unwrap();
+    let chain_dir = temp.path().to_path_buf();
+    let mut db = MentisDb::open_with_key(&chain_dir, "search-lexical-agent-registry").unwrap();
+    db.upsert_agent(
+        "rust-backend-engineer",
+        Some("Rust Backend Engineer"),
+        Some("mentisdb"),
+        Some("BM25 and lexical retrieval specialist"),
+        None,
+    )
+    .unwrap();
+    db.append_thought(
+        "rust-backend-engineer",
+        ThoughtInput::new(
+            ThoughtType::Summary,
+            "Derived indexes should stay rebuildable and append-only.",
+        ),
+    )
+    .unwrap();
+
+    let index = LexicalIndex::build_with_registry(db.thoughts(), db.agent_registry());
+
+    let agent_id_hits = index.search(&LexicalQuery::new("backend engineer"));
+    assert_eq!(agent_id_hits.len(), 1);
+    assert_eq!(agent_id_hits[0].thought_index, 0);
+    assert_eq!(agent_id_hits[0].matched_terms, vec!["backend", "engineer"]);
+    assert!(agent_id_hits[0]
+        .match_sources
+        .contains(&LexicalMatchSource::AgentId));
+
+    let registry_hits = index.search(&LexicalQuery::new("specialist"));
+    assert_eq!(registry_hits.len(), 1);
+    assert_eq!(registry_hits[0].thought_index, 0);
+    assert_eq!(registry_hits[0].matched_terms, vec!["specialist"]);
+    assert!(registry_hits[0]
+        .match_sources
+        .contains(&LexicalMatchSource::AgentRegistry));
+}
+
+#[test]
+fn lexical_hits_report_all_matching_sources() {
+    let db = build_test_chain();
+    let index = LexicalIndex::build(db.thoughts());
+
+    let hits = index.search(&LexicalQuery::new("bm25 search retrieval"));
+
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0].thought_index, 0);
+    assert_eq!(hits[0].matched_terms, vec!["bm25", "search", "retrieval"]);
+    assert!(hits[0].match_sources.contains(&LexicalMatchSource::Content));
+    assert!(hits[0].match_sources.contains(&LexicalMatchSource::Tags));
+    assert!(hits[0]
+        .match_sources
+        .contains(&LexicalMatchSource::Concepts));
 }

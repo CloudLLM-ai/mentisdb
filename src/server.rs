@@ -18,6 +18,7 @@
 //! - `POST /v1/thoughts`
 //! - `POST /v1/retrospectives`
 //! - `POST /v1/search`
+//! - `POST /v1/lexical-search`
 //! - `POST /v1/recent-context`
 //! - `POST /v1/memory-markdown`
 //! - `POST /v1/thought`
@@ -38,9 +39,9 @@
 
 use crate::{
     load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus, MentisDb, PublicKeyAlgorithm,
-    SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus, SkillSummary,
-    SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery,
-    ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor, ThoughtTraversalCursor,
+    RankedSearchQuery, SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus,
+    SkillSummary, SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput,
+    ThoughtQuery, ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor, ThoughtTraversalCursor,
     ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType, TimeWindowUnit,
     MENTISDB_CURRENT_VERSION,
 };
@@ -2135,9 +2136,9 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
-        let query = build_query(&SearchRequest {
+        let filter = build_query(&SearchRequest {
             chain_key: Some(chain_key.clone()),
-            text: Some(request.text.clone()),
+            text: None,
             thought_types: request.thought_types.clone(),
             agent_ids: request.agent_ids.clone(),
             agent_names: None,
@@ -2149,25 +2150,34 @@ impl MentisDbService {
             min_confidence: None,
             since: None,
             until: None,
-            limit: request.limit,
+            limit: None,
         })?;
-        let matched = chain.query(&query);
-        let total = matched.len();
         let offset = request.offset.unwrap_or(0);
-        let limit = request.limit.unwrap_or(total);
-        let sliced = matched
+        let page_size = request
+            .limit
+            .unwrap_or_else(|| chain.thoughts().len().max(1));
+        let ranked_limit = offset.saturating_add(page_size).max(1);
+        let ranked = chain.query_ranked(
+            &RankedSearchQuery::new()
+                .with_filter(filter)
+                .with_text(request.text.clone())
+                .with_limit(ranked_limit),
+        );
+        let total = ranked.total_candidates;
+        let results = ranked
+            .hits
             .into_iter()
             .skip(offset)
-            .take(limit)
-            .collect::<Vec<_>>();
-        let results = sliced
-            .into_iter()
-            .map(|thought| {
-                let score = lexical_score(&request.text, &thought.content);
-                LexicalSearchResult {
-                    thought: thought_to_json(&chain, thought),
-                    score,
-                }
+            .take(page_size)
+            .map(|hit| LexicalSearchResult {
+                thought: thought_to_json(&chain, hit.thought),
+                score: hit.score.lexical,
+                matched_terms: hit.matched_terms,
+                match_sources: hit
+                    .match_sources
+                    .into_iter()
+                    .map(|source| source.as_str().to_string())
+                    .collect(),
             })
             .collect();
         Ok(LexicalSearchResponse { results, total })
@@ -3216,6 +3226,8 @@ struct LexicalSearchRequest {
 struct LexicalSearchResult {
     thought: Value,
     score: f32,
+    matched_terms: Vec<String>,
+    match_sources: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -4424,29 +4436,6 @@ fn build_query(request: &SearchRequest) -> Result<ThoughtQuery, Box<dyn Error + 
     }
 
     Ok(query)
-}
-
-fn lexical_score(query: &str, content: &str) -> f32 {
-    if query.is_empty() || content.is_empty() {
-        return 0.0;
-    }
-    let query = query.to_ascii_lowercase();
-    let content = content.to_ascii_lowercase();
-    if content.contains(&query) {
-        1.0
-    } else {
-        let matches = query
-            .split_whitespace()
-            .filter(|token| !token.is_empty())
-            .filter(|token| content.contains(token))
-            .count();
-        (matches as f32)
-            / (query
-                .split_whitespace()
-                .filter(|token| !token.is_empty())
-                .count() as f32)
-                .max(1.0)
-    }
 }
 
 fn build_markdown_query(

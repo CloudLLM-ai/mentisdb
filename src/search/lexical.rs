@@ -4,7 +4,7 @@
 //! chain, and it can be rebuilt at any time from a slice of committed
 //! [`Thought`](crate::Thought) records.
 
-use crate::Thought;
+use crate::{AgentRegistry, Thought};
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
@@ -24,6 +24,10 @@ pub enum LexicalField {
     Tags,
     /// The thought's semantic concepts.
     Concepts,
+    /// The producing agent's stable id.
+    AgentId,
+    /// The producing agent's registry metadata.
+    AgentRegistry,
 }
 
 /// Metadata describing one rebuildable lexical index snapshot.
@@ -78,6 +82,10 @@ pub struct LexicalDocumentStats {
     pub tag_len: u32,
     /// Normalized token count derived from `concepts`.
     pub concept_len: u32,
+    /// Normalized token count derived from `agent_id`.
+    pub agent_id_len: u32,
+    /// Normalized token count derived from agent registry text.
+    pub agent_registry_len: u32,
     /// Total normalized token count across all indexed fields.
     pub total_len: u32,
 }
@@ -89,6 +97,8 @@ impl LexicalDocumentStats {
             LexicalField::Content => self.content_len,
             LexicalField::Tags => self.tag_len,
             LexicalField::Concepts => self.concept_len,
+            LexicalField::AgentId => self.agent_id_len,
+            LexicalField::AgentRegistry => self.agent_registry_len,
         }
     }
 }
@@ -104,6 +114,10 @@ pub struct LexicalPosting {
     pub tag_term_frequency: u32,
     /// Term frequency contributed by `concepts`.
     pub concept_term_frequency: u32,
+    /// Term frequency contributed by `agent_id`.
+    pub agent_id_term_frequency: u32,
+    /// Term frequency contributed by agent registry text.
+    pub agent_registry_term_frequency: u32,
 }
 
 impl LexicalPosting {
@@ -113,12 +127,18 @@ impl LexicalPosting {
             LexicalField::Content => self.content_term_frequency,
             LexicalField::Tags => self.tag_term_frequency,
             LexicalField::Concepts => self.concept_term_frequency,
+            LexicalField::AgentId => self.agent_id_term_frequency,
+            LexicalField::AgentRegistry => self.agent_registry_term_frequency,
         }
     }
 
     /// Return the total frequency across all indexed fields.
     pub fn total_term_frequency(&self) -> u32 {
-        self.content_term_frequency + self.tag_term_frequency + self.concept_term_frequency
+        self.content_term_frequency
+            + self.tag_term_frequency
+            + self.concept_term_frequency
+            + self.agent_id_term_frequency
+            + self.agent_registry_term_frequency
     }
 }
 
@@ -135,6 +155,10 @@ pub struct LexicalScoringConfig {
     pub tag_weight: f32,
     /// Relative weight for concept matches.
     pub concept_weight: f32,
+    /// Relative weight for agent-id matches.
+    pub agent_id_weight: f32,
+    /// Relative weight for agent-registry text matches.
+    pub agent_registry_weight: f32,
 }
 
 impl Default for LexicalScoringConfig {
@@ -145,6 +169,36 @@ impl Default for LexicalScoringConfig {
             content_weight: 1.0,
             tag_weight: 1.6,
             concept_weight: 1.4,
+            agent_id_weight: 1.5,
+            agent_registry_weight: 1.1,
+        }
+    }
+}
+
+/// Indexed field types that contributed to one lexical hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LexicalMatchSource {
+    /// Match derived from the thought content.
+    Content,
+    /// Match derived from the thought tags.
+    Tags,
+    /// Match derived from the thought concepts.
+    Concepts,
+    /// Match derived from the thought agent id.
+    AgentId,
+    /// Match derived from registered agent metadata.
+    AgentRegistry,
+}
+
+impl LexicalMatchSource {
+    /// Return the stable lowercase name of this match source.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Content => "content",
+            Self::Tags => "tags",
+            Self::Concepts => "concepts",
+            Self::AgentId => "agent_id",
+            Self::AgentRegistry => "agent_registry",
         }
     }
 }
@@ -199,6 +253,10 @@ pub struct LexicalHit {
     pub thought_id: Uuid,
     /// Final BM25-style score after field weighting.
     pub score: f32,
+    /// Unique normalized query terms that matched this hit.
+    pub matched_terms: Vec<String>,
+    /// Indexed field sources that contributed to the score.
+    pub match_sources: Vec<LexicalMatchSource>,
 }
 
 /// Derived lexical index built from committed thoughts.
@@ -210,16 +268,26 @@ pub struct LexicalIndex {
     average_content_len: f32,
     average_tag_len: f32,
     average_concept_len: f32,
+    average_agent_id_len: f32,
+    average_agent_registry_len: f32,
 }
 
 impl LexicalIndex {
     /// Build a rebuildable lexical index from committed thoughts.
     pub fn build(thoughts: &[Thought]) -> Self {
+        let empty_registry = AgentRegistry::default();
+        Self::build_with_registry(thoughts, &empty_registry)
+    }
+
+    /// Build a rebuildable lexical index from committed thoughts plus agent metadata.
+    pub fn build_with_registry(thoughts: &[Thought], registry: &AgentRegistry) -> Self {
         let mut document_stats = Vec::with_capacity(thoughts.len());
         let mut postings = HashMap::<String, Vec<LexicalPosting>>::new();
         let mut total_content_len = 0_u64;
         let mut total_tag_len = 0_u64;
         let mut total_concept_len = 0_u64;
+        let mut total_agent_id_len = 0_u64;
+        let mut total_agent_registry_len = 0_u64;
 
         for (doc_position, thought) in thoughts.iter().enumerate() {
             let content_tokens = normalize_lexical_tokens(&thought.content);
@@ -233,13 +301,23 @@ impl LexicalIndex {
                 .iter()
                 .flat_map(|concept| normalize_lexical_tokens(concept))
                 .collect::<Vec<_>>();
+            let agent_id_tokens = normalize_lexical_tokens(&thought.agent_id);
+            let agent_registry_tokens = registry
+                .agents
+                .get(&thought.agent_id)
+                .map(agent_registry_tokens)
+                .unwrap_or_default();
 
             let content_len = content_tokens.len() as u32;
             let tag_len = tag_tokens.len() as u32;
             let concept_len = concept_tokens.len() as u32;
+            let agent_id_len = agent_id_tokens.len() as u32;
+            let agent_registry_len = agent_registry_tokens.len() as u32;
             total_content_len += u64::from(content_len);
             total_tag_len += u64::from(tag_len);
             total_concept_len += u64::from(concept_len);
+            total_agent_id_len += u64::from(agent_id_len);
+            total_agent_registry_len += u64::from(agent_registry_len);
 
             document_stats.push(LexicalDocumentStats {
                 doc_position,
@@ -251,7 +329,9 @@ impl LexicalIndex {
                 content_len,
                 tag_len,
                 concept_len,
-                total_len: content_len + tag_len + concept_len,
+                agent_id_len,
+                agent_registry_len,
+                total_len: content_len + tag_len + concept_len + agent_id_len + agent_registry_len,
             });
 
             let mut frequencies = HashMap::<String, LexicalPosting>::new();
@@ -271,6 +351,18 @@ impl LexicalIndex {
                 doc_position,
                 &concept_tokens,
                 LexicalField::Concepts,
+                &mut frequencies,
+            );
+            observe_tokens(
+                doc_position,
+                &agent_id_tokens,
+                LexicalField::AgentId,
+                &mut frequencies,
+            );
+            observe_tokens(
+                doc_position,
+                &agent_registry_tokens,
+                LexicalField::AgentRegistry,
                 &mut frequencies,
             );
 
@@ -298,6 +390,8 @@ impl LexicalIndex {
             average_content_len: average_length(total_content_len, thought_count),
             average_tag_len: average_length(total_tag_len, thought_count),
             average_concept_len: average_length(total_concept_len, thought_count),
+            average_agent_id_len: average_length(total_agent_id_len, thought_count),
+            average_agent_registry_len: average_length(total_agent_registry_len, thought_count),
         }
     }
 
@@ -327,6 +421,8 @@ impl LexicalIndex {
             LexicalField::Content => self.average_content_len,
             LexicalField::Tags => self.average_tag_len,
             LexicalField::Concepts => self.average_concept_len,
+            LexicalField::AgentId => self.average_agent_id_len,
+            LexicalField::AgentRegistry => self.average_agent_registry_len,
         }
     }
 
@@ -374,6 +470,8 @@ impl LexicalIndex {
 
         let doc_count = self.document_stats.len() as f32;
         let mut scores = HashMap::<usize, f32>::new();
+        let mut matched_terms = HashMap::<usize, Vec<String>>::new();
+        let mut match_sources = HashMap::<usize, Vec<LexicalMatchSource>>::new();
 
         for term in terms {
             let Some(postings) = self.postings.get(&term) else {
@@ -389,33 +487,74 @@ impl LexicalIndex {
                     continue;
                 }
                 let stats = &self.document_stats[posting.doc_position];
-                let score = bm25_field_score(
+                let content_score = bm25_field_score(
                     posting.content_term_frequency,
                     stats.content_len,
                     self.average_content_len,
                     idf,
                     query.scoring.k1,
                     query.scoring.b,
-                ) * query.scoring.content_weight
-                    + bm25_field_score(
-                        posting.tag_term_frequency,
-                        stats.tag_len,
-                        self.average_tag_len,
-                        idf,
-                        query.scoring.k1,
-                        query.scoring.b,
-                    ) * query.scoring.tag_weight
-                    + bm25_field_score(
-                        posting.concept_term_frequency,
-                        stats.concept_len,
-                        self.average_concept_len,
-                        idf,
-                        query.scoring.k1,
-                        query.scoring.b,
-                    ) * query.scoring.concept_weight;
+                ) * query.scoring.content_weight;
+                let tag_score = bm25_field_score(
+                    posting.tag_term_frequency,
+                    stats.tag_len,
+                    self.average_tag_len,
+                    idf,
+                    query.scoring.k1,
+                    query.scoring.b,
+                ) * query.scoring.tag_weight;
+                let concept_score = bm25_field_score(
+                    posting.concept_term_frequency,
+                    stats.concept_len,
+                    self.average_concept_len,
+                    idf,
+                    query.scoring.k1,
+                    query.scoring.b,
+                ) * query.scoring.concept_weight;
+                let agent_id_score = bm25_field_score(
+                    posting.agent_id_term_frequency,
+                    stats.agent_id_len,
+                    self.average_agent_id_len,
+                    idf,
+                    query.scoring.k1,
+                    query.scoring.b,
+                ) * query.scoring.agent_id_weight;
+                let agent_registry_score = bm25_field_score(
+                    posting.agent_registry_term_frequency,
+                    stats.agent_registry_len,
+                    self.average_agent_registry_len,
+                    idf,
+                    query.scoring.k1,
+                    query.scoring.b,
+                ) * query.scoring.agent_registry_weight;
+                let score = content_score
+                    + tag_score
+                    + concept_score
+                    + agent_id_score
+                    + agent_registry_score;
 
                 if score > 0.0 {
                     *scores.entry(posting.doc_position).or_insert(0.0) += score;
+                    push_unique_string(
+                        matched_terms.entry(posting.doc_position).or_default(),
+                        &term,
+                    );
+                    let sources = match_sources.entry(posting.doc_position).or_default();
+                    if content_score > 0.0 {
+                        push_unique_match_source(sources, LexicalMatchSource::Content);
+                    }
+                    if tag_score > 0.0 {
+                        push_unique_match_source(sources, LexicalMatchSource::Tags);
+                    }
+                    if concept_score > 0.0 {
+                        push_unique_match_source(sources, LexicalMatchSource::Concepts);
+                    }
+                    if agent_id_score > 0.0 {
+                        push_unique_match_source(sources, LexicalMatchSource::AgentId);
+                    }
+                    if agent_registry_score > 0.0 {
+                        push_unique_match_source(sources, LexicalMatchSource::AgentRegistry);
+                    }
                 }
             }
         }
@@ -429,6 +568,8 @@ impl LexicalIndex {
                     thought_index: stats.thought_index,
                     thought_id: stats.thought_id,
                     score,
+                    matched_terms: matched_terms.remove(&doc_position).unwrap_or_default(),
+                    match_sources: match_sources.remove(&doc_position).unwrap_or_default(),
                 }
             })
             .collect::<Vec<_>>();
@@ -491,13 +632,41 @@ fn observe_tokens(
                 content_term_frequency: 0,
                 tag_term_frequency: 0,
                 concept_term_frequency: 0,
+                agent_id_term_frequency: 0,
+                agent_registry_term_frequency: 0,
             });
         match field {
             LexicalField::Content => posting.content_term_frequency += 1,
             LexicalField::Tags => posting.tag_term_frequency += 1,
             LexicalField::Concepts => posting.concept_term_frequency += 1,
+            LexicalField::AgentId => posting.agent_id_term_frequency += 1,
+            LexicalField::AgentRegistry => posting.agent_registry_term_frequency += 1,
         }
     }
+}
+
+fn push_unique_string(values: &mut Vec<String>, value: &str) {
+    if !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
+    }
+}
+
+fn push_unique_match_source(values: &mut Vec<LexicalMatchSource>, value: LexicalMatchSource) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
+}
+
+fn agent_registry_tokens(record: &crate::AgentRecord) -> Vec<String> {
+    let mut text_parts = vec![record.display_name.clone()];
+    if let Some(owner) = &record.owner {
+        text_parts.push(owner.clone());
+    }
+    if let Some(description) = &record.description {
+        text_parts.push(description.clone());
+    }
+    text_parts.extend(record.aliases.iter().cloned());
+    normalize_lexical_tokens(&text_parts.join(" "))
 }
 
 fn unique_normalized_terms(text: &str) -> Vec<String> {

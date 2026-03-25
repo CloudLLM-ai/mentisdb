@@ -2482,4 +2482,88 @@ async fn rest_lexical_search_returns_ranked_scores() {
     assert!(!results.is_empty());
     assert_eq!(parsed["total"].as_u64(), Some(2));
     assert!(results[0]["score"].as_f64().unwrap_or(0.0) > 0.0);
+    assert_eq!(results[0]["matched_terms"], json!(["latency"]));
+    assert!(results[0]["match_sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "content"));
+}
+
+#[tokio::test]
+async fn rest_lexical_search_can_match_agent_registry_text() {
+    let dir = unique_chain_dir();
+    let router = rest_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        "server-test-registry",
+        StorageAdapterKind::Jsonl,
+    ));
+    let chain_key = "server-test-registry";
+
+    let upsert = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/agents/upsert")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": chain_key,
+                        "agent_id": "planner",
+                        "display_name": "Systems Planner",
+                        "description": "Architect for lexical retrieval",
+                        "status": "active"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(upsert.status(), StatusCode::OK);
+
+    let _ = append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "planner",
+        "Summary",
+        None,
+        "Keep ranked retrieval deterministic and rebuildable.",
+    )
+    .await;
+
+    let payload = json!({
+        "chain_key": chain_key,
+        "text": "architect",
+        "limit": 5,
+        "offset": 0
+    });
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/lexical-search")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let results = parsed["results"].as_array().unwrap();
+    assert_eq!(parsed["total"].as_u64(), Some(1));
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["matched_terms"], json!(["architect"]));
+    assert!(results[0]["match_sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "agent_registry"));
 }

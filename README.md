@@ -445,10 +445,11 @@ Current ranked-search behavior:
 
 - `RankedSearchQuery.filter` uses the same deterministic semantics as `MentisDb::query`
 - when `text` normalizes to a non-empty query, the backend is `lexical`
-- lexical ranking scores indexed thought text from the filtered candidate set
+- lexical ranking scores indexed thought text plus agent metadata from the filtered candidate set
 - when `text` is absent or blank, the backend falls back to `heuristic`
 - heuristic ordering uses lightweight importance, confidence, and recency signals
 - `total_candidates` counts the hits after filter application and lexical gating, before final `limit` truncation
+- each ranked hit includes `matched_terms` plus `match_sources` such as `content`, `tags`, `concepts`, `agent_id`, and `agent_registry`
 
 Example:
 
@@ -481,6 +482,39 @@ Product rule:
 - treat registry-aware filtering and future transport exposure as additive work on top of the current crate API
 
 The ranked-search benchmark `benches/search_ranked.rs` and evaluation tests in `tests/search_ranked_eval_tests.rs` are the guardrails for that additive surface.
+
+### REST Lexical Search
+
+The daemon also exposes the Phase 1 ranked lexical surface over REST at `POST /v1/lexical-search`.
+
+Request shape:
+
+```json
+{
+  "chain_key": "mentisdb",
+  "text": "latency ranking",
+  "agent_ids": ["planner"],
+  "thought_types": ["Decision"],
+  "offset": 0,
+  "limit": 10
+}
+```
+
+Response shape:
+
+```json
+{
+  "total": 2,
+  "results": [
+    {
+      "thought": { "index": 42, "agent_id": "planner", "content": "..." },
+      "score": 3.14,
+      "matched_terms": ["latency", "ranking"],
+      "match_sources": ["content", "tags", "agent_registry"]
+    }
+  ]
+}
+```
 
 ---
 
