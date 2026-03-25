@@ -941,9 +941,86 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
+pub(crate) fn daemon_help_text() -> &'static str {
+    "\
+mentisdbd daemon
+
+Usage:
+  mentisdbd
+  mentisdbd --help
+
+Role:
+  Start the MentisDB MCP server, REST server, and web dashboard.
+
+Setup and onboarding:
+  The interactive setup and integration commands live in the separate `mentisdb` binary:
+    mentisdb --help
+    mentisdb setup <agent|all>
+    mentisdb wizard
+
+Important environment variables:
+  MENTISDB_DIR
+    Root storage directory. Default: ~/.cloudllm/mentisdb
+
+  MENTISDB_DEFAULT_CHAIN_KEY
+    Default chain key when requests omit one.
+
+  MENTISDB_STORAGE_ADAPTER
+    New-chain storage format: binary or jsonl
+
+  MENTISDB_BIND_HOST
+    Bind address host. Default: 127.0.0.1
+
+  MENTISDB_MCP_PORT
+    HTTP MCP port. Default: 9471
+
+  MENTISDB_REST_PORT
+    HTTP REST port. Default: 9472
+
+  MENTISDB_HTTPS_MCP_PORT
+    HTTPS MCP port. Default: 9473, set 0 to disable
+
+  MENTISDB_HTTPS_REST_PORT
+    HTTPS REST port. Default: 9474, set 0 to disable
+
+  MENTISDB_DASHBOARD_PORT
+    HTTPS dashboard port. Set 0 to disable
+
+  MENTISDB_TLS_CERT
+  MENTISDB_TLS_KEY
+    TLS certificate and private-key paths
+
+  MENTISDB_UPDATE_CHECK
+  MENTISDB_UPDATE_REPO
+    Release update check controls
+
+  MENTISDB_STARTUP_SOUND
+  MENTISDB_THOUGHT_SOUNDS
+    Startup and per-thought audio controls
+
+Examples:
+  MENTISDB_DIR=~/.cloudllm/mentisdb mentisdbd
+  MENTISDB_MCP_PORT=9471 MENTISDB_REST_PORT=9472 mentisdbd
+"
+}
+
+pub(crate) fn args_request_help<I, T>(args: I) -> bool
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    args.into_iter()
+        .map(|arg| arg.into().to_string_lossy().into_owned())
+        .any(|arg| matches!(arg.as_str(), "--help" | "-h" | "help"))
+}
+
 #[allow(dead_code)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if args_request_help(std::env::args_os().skip(1)) {
+        println!("{}", daemon_help_text());
+        return Ok(());
+    }
     run().await
 }
 

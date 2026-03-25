@@ -91,6 +91,25 @@ fn update_config_respects_false_flag_and_trimmed_repo_override() {
     std::env::remove_var("MENTISDB_UPDATE_REPO");
 }
 
+#[test]
+fn mentisdbd_help_mentions_separate_setup_and_wizard_binary() {
+    let help = mentisdbd_impl::daemon_help_text();
+    assert!(help.contains("mentisdb setup <agent|all>"));
+    assert!(help.contains("mentisdb wizard"));
+    assert!(help.contains("mentisdbd --help"));
+}
+
+#[test]
+fn mentisdbd_help_flags_are_detected_without_starting_the_server() {
+    assert!(mentisdbd_impl::args_request_help([OsString::from(
+        "--help"
+    ),]));
+    assert!(mentisdbd_impl::args_request_help([OsString::from("-h")]));
+    assert!(!mentisdbd_impl::args_request_help([OsString::from(
+        "--version"
+    )]));
+}
+
 #[cfg(feature = "startup-sound")]
 #[test]
 fn scheduler_spaces_bursts_without_overlap() {
