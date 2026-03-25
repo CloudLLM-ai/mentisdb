@@ -113,6 +113,17 @@ Use the semantic type that matches the memory's job:
 
 MentisDB has two reference mechanisms. Use both deliberately.
 
+When you append a thought that depends on, corrects, summarizes, or was caused by an earlier thought, include back-references. A chain with isolated thoughts is searchable, but a chain with explicit references is both searchable and navigable.
+
+As a default rule:
+
+- If you are reacting to a specific earlier thought, include `refs`.
+- If you know the semantic relationship, include `relations` too.
+- Prefer referencing the exact prior `Mistake`, `Decision`, `Constraint`, `Checkpoint`, or `Summary` that gave rise to the new thought.
+- Prefer a small number of high-signal references, usually `1` to `3`, over dumping many weak links.
+
+Before appending, take the extra step to identify the earlier thought index or id you are building on. That one step makes later retrieval, audit, and handoff much stronger.
+
 ### `refs` — positional back-references
 
 `refs` is a `Vec<u64>` of zero-based chain indices. Simple, compact, and intra-chain only. Use when you want to say "this thought relates to thought at index 42."
@@ -151,6 +162,38 @@ Use these relation kinds precisely:
 - `Corrects`: the source thought fixes a factual error in the target. The target was *wrong*.
 - `Invalidates`: the source thought makes the target no longer applicable. The target may have been correct but is now stale.
 - `Supersedes`: the source thought replaces the target's framing or approach. The target was accurate but suboptimal. Pair with `Reframe` thoughts.
+
+### Strong Append Pattern
+
+When a new thought is not standalone, do not append it naked. Append it with the references that explain where it came from.
+
+Good:
+
+```json
+{
+  "thought_type": "Summary",
+  "role": "Checkpoint",
+  "content": "Resuming dashboard integration work. Keeping the setup CLI separate from mentisdbd and continuing on the feature branch.",
+  "refs": [182, 193],
+  "relations": [
+    { "kind": "ContinuesFrom", "target_id": "<UUID-of-earlier-checkpoint>" },
+    { "kind": "DerivedFrom", "target_id": "<UUID-of-earlier-plan>" }
+  ],
+  "tags": ["checkpoint", "dashboard", "setup"],
+  "concepts": ["session-resumption", "feature-branch"]
+}
+```
+
+Weak:
+
+```json
+{
+  "thought_type": "Summary",
+  "content": "Continuing dashboard work."
+}
+```
+
+The first version gives future agents a path to traverse. The second leaves them guessing.
 
 ## Cross-Chain References
 
@@ -1067,11 +1110,14 @@ mentisdb_append(
   agent_id="apollo",
   thought_type="LessonLearned",
   content="Bincode 2.x encodes structs as ordered sequences — field names are ignored, field order is everything. Mirror structs for migration must match the original field order exactly.",
+  refs=[41],
   tags=["bincode", "migration", "serialization"],
   concepts=["binary-serialization", "struct-ordering"],
   importance=0.85
 )
 ```
+
+If the lesson came from a specific earlier mistake, finding, checkpoint, or decision, include that earlier thought in `refs` and, when available, add a typed relation such as `CausedBy`, `DerivedFrom`, `Corrects`, or `Summarizes`.
 
 The lesson should be written **before** returning the result summary, not left only in the return value. Return values are ephemeral; MentisDB thoughts are durable.
 
@@ -1276,5 +1322,6 @@ During work:
 After work:
 
 - write the lesson, correction, decision, or checkpoint that will make the next session faster
+- if the new thought came from an earlier thought, append it with `refs` and, when helpful, typed `relations`
 
 That is the real use of MentisDB: preserving the exact semantic knowledge that should outlive the current model invocation.
