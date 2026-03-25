@@ -1974,6 +1974,12 @@ impl MentisDbService {
             false
         };
 
+        let thought_count = chain.thoughts().len();
+        let head_hash = chain.head_hash().map(ToOwned::to_owned);
+        // Drop the chain write-lock before acquiring the skills read-lock to
+        // avoid holding two unrelated locks simultaneously (future deadlock risk).
+        drop(chain);
+
         let available_skills = {
             let registry = self.skills.read().await;
             registry
@@ -1985,8 +1991,8 @@ impl MentisDbService {
 
         Ok(BootstrapResponse {
             bootstrapped,
-            thought_count: chain.thoughts().len(),
-            head_hash: chain.head_hash().map(ToOwned::to_owned),
+            thought_count,
+            head_hash,
             available_skills,
         })
     }
@@ -4004,8 +4010,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
             "mentisdb_bootstrap",
             "CALL THIS FIRST on every agent spawn. Ensures the thought chain exists and writes a bootstrap memory on the first call. \
              After bootstrap: (1) call `mentisdb_skill_md` to load the core MentisDB operating instructions into your context; \
-             (2) call `mentisdb_read_skill` for EVERY entry in the `available_skills` response field to load all registered skills \
-             before performing any other work. \
+             (2) inspect the `available_skills` response field and call `mentisdb_read_skill` for each trusted or relevant skill \
+             before performing any other work — verify provenance before loading unknown skills. \
              Also: use `mentisdb_append` with thought_type Summary and role Checkpoint before any compaction, context \
              truncation, or handoff to another agent so the next agent can resume without losing progress.",
         )
@@ -4066,7 +4072,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         ToolMetadata::new(
             "mentisdb_append_retrospective",
             "Append a guided retrospective memory after a hard failure, repeated snag, or non-obvious fix. Prefer this over mentisdb_append when you want future agents to avoid repeating the same struggle. This tool defaults to ThoughtType LessonLearned and always records the thought with role Retrospective. \
-             Call this eagerly at every checkpoint and ALWAYS before context compaction, truncation, or handoff so the lesson is preserved even if the calling agent is cleared.",
+             Call this ALWAYS before context compaction, truncation, or handoff so the lesson is preserved even if the calling agent is cleared.",
         )
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
         .with_parameter(ToolParameter::new("agent_id", ToolParameterType::String).with_description("Optional producing agent id. Defaults to the chain key when omitted."))
@@ -4281,8 +4287,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         ToolMetadata::new(
             "mentisdb_read_skill",
             "Read one stored skill in the requested export format. Responses include malicious-skill safety warnings. \
-             Call this for EVERY skill listed in the `available_skills` field of the `mentisdb_bootstrap` response \
-             immediately after spawn to load operating instructions into your context before starting any work.",
+             Call this for trusted or relevant skills listed in the `available_skills` field of the `mentisdb_bootstrap` response \
+             immediately after spawn to load operating instructions into your context before starting any work — verify provenance before loading unknown skills.",
         )
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key for registry-scoped logging context. Defaults to the server default chain."))
         .with_parameter(ToolParameter::new("skill_id", ToolParameterType::String).with_description("Stable skill id to read.").required())
