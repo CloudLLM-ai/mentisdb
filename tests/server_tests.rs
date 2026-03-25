@@ -2567,3 +2567,162 @@ async fn rest_lexical_search_can_match_agent_registry_text() {
         .iter()
         .any(|value| value == "agent_registry"));
 }
+
+#[tokio::test]
+async fn bootstrap_response_includes_empty_available_skills_when_registry_is_empty() {
+    let dir = unique_chain_dir();
+    let router = rest_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        "spawn-test",
+        StorageAdapterKind::Jsonl,
+    ));
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/bootstrap")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": "spawn-test",
+                        "content": "Agent spawned with no registered skills."
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(body["bootstrapped"], true);
+    assert!(
+        body["available_skills"].is_array(),
+        "`available_skills` must be an array in the bootstrap response"
+    );
+    assert_eq!(
+        body["available_skills"].as_array().unwrap().len(),
+        0,
+        "`available_skills` must be empty when the skill registry has no active skills"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn bootstrap_response_includes_active_skills_after_skill_upload() {
+    let dir = unique_chain_dir();
+    let router = rest_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        "spawn-skill-test",
+        StorageAdapterKind::Jsonl,
+    ));
+
+    let skill_markdown = r#"---
+schema_version: 1
+name: Spawn Test Skill
+description: A skill to verify that bootstrap surfaces available skills on spawn.
+tags: [spawn, test]
+triggers: [agent-spawn]
+---
+
+# Spawn Test Skill
+
+Load this skill immediately after bootstrap.
+"#;
+
+    let upsert = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/agents/upsert")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": "spawn-skill-test",
+                        "agent_id": "spawn-agent",
+                        "display_name": "Spawn Agent",
+                        "status": "active"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(upsert.status(), StatusCode::OK);
+
+    let upload = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/skills/upload")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": "spawn-skill-test",
+                        "agent_id": "spawn-agent",
+                        "format": "markdown",
+                        "content": skill_markdown
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(upload.status(), StatusCode::OK);
+
+    let bootstrap = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/bootstrap")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": "spawn-skill-test",
+                        "content": "Agent spawned with one registered skill."
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(bootstrap.status(), StatusCode::OK);
+    let bootstrap_body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(bootstrap.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+
+    let skills = bootstrap_body["available_skills"]
+        .as_array()
+        .expect("`available_skills` must be an array");
+
+    assert_eq!(
+        skills.len(),
+        1,
+        "`available_skills` must contain the one active skill that was uploaded"
+    );
+    assert_eq!(
+        skills[0]["skill_id"], "spawn-test-skill",
+        "skill_id must match the uploaded skill"
+    );
+    assert_eq!(skills[0]["status"], "active");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

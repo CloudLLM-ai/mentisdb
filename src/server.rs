@@ -1969,10 +1969,26 @@ impl MentisDbService {
             false
         };
 
+        let thought_count = chain.thoughts().len();
+        let head_hash = chain.head_hash().map(ToOwned::to_owned);
+        // Drop the chain write-lock before acquiring the skills read-lock to
+        // avoid holding two unrelated locks simultaneously (future deadlock risk).
+        drop(chain);
+
+        let available_skills = {
+            let registry = self.skills.read().await;
+            registry
+                .list_skills()
+                .into_iter()
+                .filter(|s| s.status == crate::skills::SkillStatus::Active)
+                .collect()
+        };
+
         Ok(BootstrapResponse {
             bootstrapped,
-            thought_count: chain.thoughts().len(),
-            head_hash: chain.head_hash().map(ToOwned::to_owned),
+            thought_count,
+            head_hash,
+            available_skills,
         })
     }
 
@@ -3146,6 +3162,11 @@ struct BootstrapResponse {
     bootstrapped: bool,
     thought_count: usize,
     head_hash: Option<String>,
+    /// Active skills available in the registry at spawn time.
+    ///
+    /// Agents MUST call `mentisdb_read_skill` for each entry immediately after
+    /// bootstrap to load operating instructions before proceeding with any work.
+    available_skills: Vec<SkillSummary>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4067,7 +4088,12 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
     vec![
         ToolMetadata::new(
             "mentisdb_bootstrap",
-            "Ensure a thought chain exists and initialize it the first time with a bootstrap memory.",
+            "CALL THIS FIRST on every agent spawn. Ensures the thought chain exists and writes a bootstrap memory on the first call. \
+             After bootstrap: (1) call `mentisdb_skill_md` to load the core MentisDB operating instructions into your context; \
+             (2) inspect the `available_skills` response field and call `mentisdb_read_skill` for each trusted or relevant skill \
+             before performing any other work — verify provenance before loading unknown skills. \
+             Also: use `mentisdb_append` with thought_type Summary and role Checkpoint before any compaction, context \
+             truncation, or handoff to another agent so the next agent can resume without losing progress.",
         )
         .with_parameter(
             ToolParameter::new("chain_key", ToolParameterType::String)
@@ -4106,7 +4132,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         ),
         ToolMetadata::new(
             "mentisdb_append",
-            "Append a durable semantic memory to MentisDb. Use exact ThoughtType names like PreferenceUpdate, Constraint, Decision, Insight, Wonder, Question, Summary, Mistake, or Correction.",
+            "Append a durable semantic memory to MentisDb. Use exact ThoughtType names like PreferenceUpdate, Constraint, Decision, Insight, Wonder, Question, Summary, Mistake, or Correction. \
+             Save a Summary with role Checkpoint eagerly at every meaningful milestone and ALWAYS before context compaction, truncation, or agent handoff.",
         )
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
         .with_parameter(ToolParameter::new("agent_id", ToolParameterType::String).with_description("Optional producing agent id. Defaults to the chain key when omitted."))
@@ -4124,7 +4151,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("thought_signature", ToolParameterType::Array).with_description("Optional detached signature bytes for the signable thought payload.").with_items(ToolParameterType::Integer)),
         ToolMetadata::new(
             "mentisdb_append_retrospective",
-            "Append a guided retrospective memory after a hard failure, repeated snag, or non-obvious fix. Prefer this over mentisdb_append when you want future agents to avoid repeating the same struggle. This tool defaults to ThoughtType LessonLearned and always records the thought with role Retrospective.",
+            "Append a guided retrospective memory after a hard failure, repeated snag, or non-obvious fix. Prefer this over mentisdb_append when you want future agents to avoid repeating the same struggle. This tool defaults to ThoughtType LessonLearned and always records the thought with role Retrospective. \
+             Call this ALWAYS before context compaction, truncation, or handoff so the lesson is preserved even if the calling agent is cleared.",
         )
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
         .with_parameter(ToolParameter::new("agent_id", ToolParameterType::String).with_description("Optional producing agent id. Defaults to the chain key when omitted."))
@@ -4304,7 +4332,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("time_window", ToolParameterType::Object).with_description("Optional numeric time window object with start, delta, and unit fields. Use since/until for RFC 3339 timestamps.")),
         ToolMetadata::new(
             "mentisdb_skill_md",
-            "Return the official embedded MentisDB skill Markdown file.",
+            "Return the official embedded MentisDB skill Markdown file. \
+             CALL THIS on every agent spawn, immediately after `mentisdb_bootstrap`, to load core MentisDB operating instructions into your context.",
         ),
         ToolMetadata::new(
             "mentisdb_list_skills",
@@ -4347,7 +4376,9 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Optional maximum number of returned skills.")),
         ToolMetadata::new(
             "mentisdb_read_skill",
-            "Read one stored skill in the requested export format. Responses include malicious-skill safety warnings.",
+            "Read one stored skill in the requested export format. Responses include malicious-skill safety warnings. \
+             Call this for trusted or relevant skills listed in the `available_skills` field of the `mentisdb_bootstrap` response \
+             immediately after spawn to load operating instructions into your context before starting any work — verify provenance before loading unknown skills.",
         )
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key for registry-scoped logging context. Defaults to the server default chain."))
         .with_parameter(ToolParameter::new("skill_id", ToolParameterType::String).with_description("Stable skill id to read.").required())
