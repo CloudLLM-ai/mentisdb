@@ -1045,9 +1045,9 @@ where
 
     let first = &args[0];
     if matches!(first.as_str(), "setup" | "wizard") {
+        let forwarded = args.join(" ");
         return Err(format!(
-            "`mentisdbd {}` is not a valid daemon command. Use `mentisdb {}` instead.",
-            first, first
+            "`mentisdbd {forwarded}` is not a valid daemon command. Use `mentisdb {forwarded}` instead."
         ));
     }
 

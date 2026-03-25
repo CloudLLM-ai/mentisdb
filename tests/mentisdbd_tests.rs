@@ -135,10 +135,11 @@ fn parse_daemon_args_accepts_only_help_or_no_args() {
 
 #[test]
 fn parse_daemon_args_rejects_setup_and_wizard_subcommands() {
-    let setup = mentisdbd_impl::parse_daemon_args([OsString::from("setup"), OsString::from("all")])
-        .unwrap_err();
-    assert!(setup.contains("mentisdbd setup"));
-    assert!(setup.contains("mentisdb setup"));
+    let setup =
+        mentisdbd_impl::parse_daemon_args([OsString::from("setup"), OsString::from("opencode")])
+            .unwrap_err();
+    assert!(setup.contains("mentisdbd setup opencode"));
+    assert!(setup.contains("mentisdb setup opencode"));
 
     let wizard = mentisdbd_impl::parse_daemon_args([OsString::from("wizard")]).unwrap_err();
     assert!(wizard.contains("mentisdbd wizard"));
