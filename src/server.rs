@@ -1355,6 +1355,7 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
             post(rest_append_retrospective_handler),
         )
         .route("/v1/search", post(rest_search_handler))
+        .route("/v1/lexical-search", post(rest_lexical_search_handler))
         .route("/v1/recent-context", post(rest_recent_context_handler))
         .route("/v1/memory-markdown", post(rest_memory_markdown_handler))
         .route("/v1/import-markdown", post(rest_import_markdown_handler))
@@ -1577,6 +1578,7 @@ pub fn rest_router(config: MentisDbServiceConfig) -> Router {
             post(rest_append_retrospective_handler),
         )
         .route("/v1/search", post(rest_search_handler))
+        .route("/v1/lexical-search", post(rest_lexical_search_handler))
         .route("/v1/recent-context", post(rest_recent_context_handler))
         .route("/v1/memory-markdown", post(rest_memory_markdown_handler))
         .route("/v1/import-markdown", post(rest_import_markdown_handler))
@@ -2124,6 +2126,51 @@ impl MentisDbService {
             .map(|thought| thought_to_json(&chain, thought))
             .collect::<Vec<_>>();
         Ok(SearchResponse { thoughts })
+    }
+
+    async fn lexical_search(
+        &self,
+        request: LexicalSearchRequest,
+    ) -> Result<LexicalSearchResponse, Box<dyn Error + Send + Sync>> {
+        let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
+        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let chain = chain.read().await;
+        let query = build_query(&SearchRequest {
+            chain_key: Some(chain_key.clone()),
+            text: Some(request.text.clone()),
+            thought_types: request.thought_types.clone(),
+            agent_ids: request.agent_ids.clone(),
+            agent_names: None,
+            agent_owners: None,
+            tags_any: None,
+            concepts_any: None,
+            roles: None,
+            min_importance: None,
+            min_confidence: None,
+            since: None,
+            until: None,
+            limit: request.limit,
+        })?;
+        let matched = chain.query(&query);
+        let total = matched.len();
+        let offset = request.offset.unwrap_or(0);
+        let limit = request.limit.unwrap_or(total);
+        let sliced = matched
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
+        let results = sliced
+            .into_iter()
+            .map(|thought| {
+                let score = lexical_score(&request.text, &thought.content);
+                LexicalSearchResult {
+                    thought: thought_to_json(&chain, thought),
+                    score,
+                }
+            })
+            .collect();
+        Ok(LexicalSearchResponse { results, total })
     }
 
     async fn list_chains_json(&self) -> Result<Value, Box<dyn Error + Send + Sync>> {
@@ -3156,6 +3203,28 @@ struct SearchResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct LexicalSearchRequest {
+    chain_key: Option<String>,
+    text: String,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    agent_ids: Option<Vec<String>>,
+    thought_types: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+struct LexicalSearchResult {
+    thought: Value,
+    score: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct LexicalSearchResponse {
+    results: Vec<LexicalSearchResult>,
+    total: usize,
+}
+
+#[derive(Debug, Deserialize)]
 struct GetThoughtRequest {
     chain_key: Option<String>,
     thought_id: Option<Uuid>,
@@ -3702,6 +3771,13 @@ async fn rest_search_handler(
     service_call(service.search(request).await)
 }
 
+async fn rest_lexical_search_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<LexicalSearchRequest>,
+) -> Result<Json<LexicalSearchResponse>, (StatusCode, Json<Value>)> {
+    service_call(service.lexical_search(request).await)
+}
+
 async fn rest_list_chains_handler(
     State(service): State<Arc<MentisDbService>>,
 ) -> Result<Json<ListChainsResponse>, (StatusCode, Json<Value>)> {
@@ -4068,7 +4144,17 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("min_confidence", ToolParameterType::Number).with_description("Optional minimum confidence threshold."))
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
-        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Optional maximum number of results.")),
+            .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Optional maximum number of results.")),
+        ToolMetadata::new(
+            "mentisdb_lexical_search",
+            "Run a lexical-ranked search over thread text and return scored results with offset/limit paging.",
+        )
+        .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
+        .with_parameter(ToolParameter::new("text", ToolParameterType::String).with_description("Text to rank against.").required())
+        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of results to return."))
+        .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Result offset for paging."))
+        .with_parameter(ToolParameter::new("agent_ids", ToolParameterType::Array).with_description("Optional producing agent ids to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String)),
         ToolMetadata::new(
             "mentisdb_list_chains",
             "List the durable chain keys currently available in MentisDb storage, together with the server default chain key.",
@@ -4338,6 +4424,29 @@ fn build_query(request: &SearchRequest) -> Result<ThoughtQuery, Box<dyn Error + 
     }
 
     Ok(query)
+}
+
+fn lexical_score(query: &str, content: &str) -> f32 {
+    if query.is_empty() || content.is_empty() {
+        return 0.0;
+    }
+    let query = query.to_ascii_lowercase();
+    let content = content.to_ascii_lowercase();
+    if content.contains(&query) {
+        1.0
+    } else {
+        let matches = query
+            .split_whitespace()
+            .filter(|token| !token.is_empty())
+            .filter(|token| content.contains(token))
+            .count();
+        (matches as f32)
+            / (query
+                .split_whitespace()
+                .filter(|token| !token.is_empty())
+                .count() as f32)
+                .max(1.0)
+    }
 }
 
 fn build_markdown_query(
