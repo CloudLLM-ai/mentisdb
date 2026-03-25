@@ -96,7 +96,21 @@ fn mentisdbd_help_mentions_separate_setup_and_wizard_binary() {
     let help = mentisdbd_impl::daemon_help_text();
     assert!(help.contains("mentisdb setup <agent|all>"));
     assert!(help.contains("mentisdb wizard"));
+    assert!(help.contains("mentisdb setup --help"));
     assert!(help.contains("mentisdbd --help"));
+    for agent in [
+        "codex",
+        "claude-code",
+        "claude-desktop",
+        "gemini",
+        "opencode",
+        "qwen",
+        "copilot",
+        "vscode-copilot",
+        "all",
+    ] {
+        assert!(help.contains(agent), "missing {agent} from daemon help");
+    }
 }
 
 #[test]

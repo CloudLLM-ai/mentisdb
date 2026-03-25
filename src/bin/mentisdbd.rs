@@ -958,6 +958,20 @@ Setup and onboarding:
     mentisdb --help
     mentisdb setup <agent|all>
     mentisdb wizard
+    mentisdb setup --help
+
+  Valid values for `mentisdb setup <agent>`:
+    codex
+    claude-code
+    claude-desktop
+    gemini
+    opencode
+    qwen
+    copilot
+    vscode-copilot
+
+  Special setup target:
+    all
 
 Important environment variables:
   MENTISDB_DIR
