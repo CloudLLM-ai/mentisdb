@@ -7,6 +7,7 @@ use crate::paths::{HostPlatform, PathEnvironment};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
+use toml_edit::DocumentMut;
 
 /// High-level detection result for one integration target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -154,9 +155,7 @@ fn config_contains_mentisdb_entry(spec: &IntegrationSpec) -> bool {
     }
 
     match spec.integration {
-        IntegrationKind::Codex => fs::read_to_string(path)
-            .map(|content| content.contains("[mcp_servers.mentisdb]"))
-            .unwrap_or(false),
+        IntegrationKind::Codex => toml_has_entry(path, &["mcp_servers", "mentisdb"]),
         IntegrationKind::ClaudeCode => path.is_file(),
         IntegrationKind::GeminiCli
         | IntegrationKind::Qwen
@@ -165,6 +164,24 @@ fn config_contains_mentisdb_entry(spec: &IntegrationSpec) -> bool {
         IntegrationKind::OpenCode => json_has_entry(path, &["mcp", "mentisdb"]),
         IntegrationKind::VsCodeCopilot => json_has_entry(path, &["servers", "mentisdb"]),
     }
+}
+
+fn toml_has_entry(path: &std::path::Path, keys: &[&str]) -> bool {
+    let Ok(content) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(document) = content.parse::<DocumentMut>() else {
+        return false;
+    };
+
+    let mut current = document.as_item();
+    for key in keys {
+        let Some(next) = current.get(key) else {
+            return false;
+        };
+        current = next;
+    }
+    !current.is_none()
 }
 
 fn json_has_entry(path: &std::path::Path, keys: &[&str]) -> bool {

@@ -275,7 +275,7 @@ fn target_from_path_target(target: &IntegrationPathTarget, exists: bool) -> Setu
     }
 }
 
-fn default_url_for_integration(integration: IntegrationKind) -> &'static str {
+pub(crate) fn default_url_for_integration(integration: IntegrationKind) -> &'static str {
     match integration {
         IntegrationKind::ClaudeDesktop => "https://my.mentisdb.com:9473",
         _ => "http://127.0.0.1:9471",

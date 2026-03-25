@@ -1,3 +1,4 @@
+use crate::integrations::plan::default_url_for_integration;
 use crate::integrations::IntegrationKind;
 use std::ffi::OsString;
 
@@ -102,6 +103,7 @@ Commands:
     Behavior:
       - Detects whether a mentisdb integration already exists per client
       - Lets you skip or overwrite existing mentisdb entries
+      - `--yes` accepts default selections but still skips existing mentisdb entries
       - Uses per-integration default URLs unless you override them
       - For Claude Desktop, checks for npm and installs mcp-remote if needed
 
@@ -205,8 +207,5 @@ pub(super) fn parse_integration(value: &str) -> Option<IntegrationKind> {
 }
 
 pub(super) fn default_url(integration: IntegrationKind) -> &'static str {
-    match integration {
-        IntegrationKind::ClaudeDesktop => "https://my.mentisdb.com:9473",
-        _ => "http://127.0.0.1:9471",
-    }
+    default_url_for_integration(integration)
 }

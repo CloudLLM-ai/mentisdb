@@ -86,6 +86,34 @@ fn apply_setup_supports_jsonc_and_preserves_existing_keys() {
 }
 
 #[test]
+fn apply_setup_respects_https_url_override_for_non_claude_desktop() {
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    let env = PathEnvironment {
+        home_dir: Some(home.clone()),
+        current_dir: Some(temp.path().to_path_buf()),
+        ..PathEnvironment::default()
+    };
+
+    let result = apply_setup_with_environment(
+        IntegrationKind::OpenCode,
+        "https://my.mentisdb.com:9473".to_string(),
+        HostPlatform::Macos,
+        &env,
+    )
+    .unwrap();
+
+    assert!(result.changed);
+    let config_path = home.join(".config").join("opencode").join("opencode.json");
+    let parsed: Value =
+        serde_json::from_str(&std::fs::read_to_string(config_path).unwrap()).unwrap();
+    assert_eq!(
+        parsed["mcp"]["mentisdb"]["url"],
+        "https://my.mentisdb.com:9473"
+    );
+}
+
+#[test]
 fn apply_setup_is_idempotent_for_qwen() {
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");

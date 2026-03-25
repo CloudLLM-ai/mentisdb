@@ -147,6 +147,54 @@ fn macos_detection_distinguishes_configured_and_installed() {
 }
 
 #[test]
+fn codex_detection_requires_exact_mentisdb_table_name() {
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    std::fs::write(
+        home.join(".codex").join("config.toml"),
+        "[mcp_servers.mentisdb_backup]\nurl = \"http://127.0.0.1:9471\"\n",
+    )
+    .unwrap();
+
+    let env = PathEnvironment {
+        home_dir: Some(home),
+        current_dir: Some(root.path().to_path_buf()),
+        ..PathEnvironment::default()
+    };
+    let report = detect_integrations_with_environment(HostPlatform::Macos, env);
+
+    assert_eq!(
+        report.integration(IntegrationKind::Codex).unwrap().status,
+        DetectionStatus::InstalledOrUsed
+    );
+}
+
+#[test]
+fn codex_detection_ignores_similarly_named_toml_sections() {
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    std::fs::write(
+        home.join(".codex").join("config.toml"),
+        "[mcp_servers.mentisdb_backup]\nurl = \"http://127.0.0.1:9471\"\n",
+    )
+    .unwrap();
+
+    let env = PathEnvironment {
+        home_dir: Some(home),
+        current_dir: Some(root.path().to_path_buf()),
+        ..PathEnvironment::default()
+    };
+    let report = detect_integrations_with_environment(HostPlatform::Macos, env);
+
+    assert_eq!(
+        report.integration(IntegrationKind::Codex).unwrap().status,
+        DetectionStatus::InstalledOrUsed
+    );
+}
+
+#[test]
 fn linux_and_windows_catalogs_follow_expected_roots() {
     let linux_env = PathEnvironment {
         home_dir: Some("/home/tester".into()),

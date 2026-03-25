@@ -186,6 +186,20 @@ impl TomlPatch {
         });
         self
     }
+
+    #[allow(dead_code)]
+    pub(crate) fn ensure_path<I, S>(mut self, path: I, value: TomlValue) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.ops.push(TomlPatchOp {
+            path: path.into_iter().map(Into::into).collect(),
+            value,
+            mode: PatchMode::IfMissing,
+        });
+        self
+    }
 }
 
 /// Managed append-or-replace text block for Markdown instruction files.
@@ -318,9 +332,17 @@ fn render_toml(existing: Option<&str>, patch: &TomlPatch) -> io::Result<String> 
     };
 
     for op in &patch.ops {
-        let exists = toml_path_exists(document.as_item(), &op.path);
-        if op.mode == PatchMode::IfMissing && exists {
-            continue;
+        if op.mode == PatchMode::IfMissing {
+            match toml_path_state(document.as_item(), &op.path) {
+                TomlPathState::Exists => continue,
+                TomlPathState::Missing => {}
+                TomlPathState::Blocked(segment) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("TOML path segment '{segment}' collides with a non-table value"),
+                    ));
+                }
+            }
         }
         set_toml_path(&mut document, &op.path, &op.value)?;
     }
@@ -332,18 +354,32 @@ fn render_toml(existing: Option<&str>, patch: &TomlPatch) -> io::Result<String> 
     Ok(rendered)
 }
 
-fn toml_path_exists(root: &Item, path: &[String]) -> bool {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TomlPathState {
+    Exists,
+    Missing,
+    Blocked(String),
+}
+
+fn toml_path_state(root: &Item, path: &[String]) -> TomlPathState {
     let mut current = root;
-    for segment in path {
+    for (index, segment) in path.iter().enumerate() {
         match current.as_table_like() {
             Some(table) => match table.get(segment) {
                 Some(next) => current = next,
-                None => return false,
+                None => return TomlPathState::Missing,
             },
-            None => return false,
+            None => {
+                let blocked_at = if index == 0 {
+                    segment.clone()
+                } else {
+                    path[index - 1].clone()
+                };
+                return TomlPathState::Blocked(blocked_at);
+            }
         }
     }
-    true
+    TomlPathState::Exists
 }
 
 fn set_toml_path(document: &mut DocumentMut, path: &[String], value: &TomlValue) -> io::Result<()> {

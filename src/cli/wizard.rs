@@ -7,7 +7,7 @@ use crate::paths::{HostPlatform, PathEnvironment};
 use std::io::{self, BufRead, Write};
 
 use super::args::{default_url, parse_integration};
-use super::setup::{ensure_prerequisites, persist_wizard_state};
+use super::setup::ensure_prerequisites;
 use super::{render_setup_plan, WizardCommand};
 
 pub(super) fn run_wizard(
@@ -40,7 +40,7 @@ pub(super) fn run_wizard(
 
     if selected.is_empty() {
         writeln!(out, "\nNothing selected.")?;
-        return persist_wizard_state(&env);
+        return Ok(());
     }
 
     let url_override = if let Some(url) = &command.url {
@@ -71,7 +71,16 @@ pub(super) fn run_wizard(
 
     let mut final_plans = Vec::new();
     for plan in planned {
-        if plan.detection_status == DetectionStatus::Configured && !command.assume_yes {
+        if plan.detection_status == DetectionStatus::Configured {
+            if command.assume_yes {
+                writeln!(
+                    out,
+                    "{} already has a mentisdb integration. Skipping because --yes does not overwrite existing config.\n",
+                    plan.integration.display_name()
+                )?;
+                continue;
+            }
+
             write!(
                 out,
                 "{} already has a mentisdb integration. [s]kip/[o]verwrite (default: skip): ",
@@ -92,7 +101,7 @@ pub(super) fn run_wizard(
     }
 
     if final_plans.is_empty() {
-        return persist_wizard_state(&env);
+        return Ok(());
     }
 
     if !command.assume_yes {
@@ -104,7 +113,7 @@ pub(super) fn run_wizard(
             "n" | "no"
         ) {
             writeln!(out, "\nCancelled.")?;
-            return persist_wizard_state(&env);
+            return Ok(());
         }
     }
 
@@ -130,7 +139,7 @@ pub(super) fn run_wizard(
         )?;
     }
 
-    persist_wizard_state(&env)
+    Ok(())
 }
 
 fn render_catalog_summary(catalog: &SetupCatalogPlan, out: &mut dyn Write) -> io::Result<()> {

@@ -47,9 +47,6 @@ pub(super) fn run_setup(command: &SetupCommand, out: &mut dyn Write) -> io::Resu
         )?;
     }
 
-    if !command.dry_run {
-        persist_wizard_state(&env)?;
-    }
     Ok(())
 }
 
@@ -118,20 +115,6 @@ pub(super) fn ensure_prerequisites(
         )));
     }
     Ok(())
-}
-
-pub(super) fn persist_wizard_state(env: &PathEnvironment) -> io::Result<()> {
-    let root = env.default_mentisdb_dir();
-    std::fs::create_dir_all(&root)?;
-    let state_path = root.join("cli-wizard-state.json");
-    let content = serde_json::json!({
-        "seen": true,
-        "updated_at": chrono::Utc::now().to_rfc3339(),
-    });
-    let rendered = serde_json::to_string_pretty(&content)
-        .map(|text| format!("{text}\n"))
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    std::fs::write(state_path, rendered)
 }
 
 fn command_on_path(candidates: &[&str]) -> Option<PathBuf> {
