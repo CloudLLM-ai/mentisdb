@@ -4003,8 +4003,9 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         ToolMetadata::new(
             "mentisdb_bootstrap",
             "CALL THIS FIRST on every agent spawn. Ensures the thought chain exists and writes a bootstrap memory on the first call. \
-             The response includes an `available_skills` list — call `mentisdb_read_skill` for EVERY entry immediately after \
-             bootstrap, before performing any other work, to load operating instructions into your context. \
+             After bootstrap: (1) call `mentisdb_skill_md` to load the core MentisDB operating instructions into your context; \
+             (2) call `mentisdb_read_skill` for EVERY entry in the `available_skills` response field to load all registered skills \
+             before performing any other work. \
              Also: use `mentisdb_append` with thought_type Summary and role Checkpoint before any compaction, context \
              truncation, or handoff to another agent so the next agent can resume without losing progress.",
         )
@@ -4235,7 +4236,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("time_window", ToolParameterType::Object).with_description("Optional numeric time window object with start, delta, and unit fields. Use since/until for RFC 3339 timestamps.")),
         ToolMetadata::new(
             "mentisdb_skill_md",
-            "Return the official embedded MentisDB skill Markdown file.",
+            "Return the official embedded MentisDB skill Markdown file. \
+             CALL THIS on every agent spawn, immediately after `mentisdb_bootstrap`, to load core MentisDB operating instructions into your context.",
         ),
         ToolMetadata::new(
             "mentisdb_list_skills",
