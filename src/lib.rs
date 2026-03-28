@@ -10,6 +10,7 @@
 pub mod cli;
 #[cfg(feature = "server")]
 pub(crate) mod dashboard;
+pub mod helpers;
 pub mod integrations;
 pub mod paths;
 pub mod search;

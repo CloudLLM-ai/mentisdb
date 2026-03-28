@@ -5,6 +5,39 @@ description: Use this skill when you need to store, retrieve, or reason over dur
 
 # MentisDB Skill
 
+## When to Use This Skill (IMPORTANT)
+
+You **MUST** use this skill whenever:
+
+- The task spans multiple steps or tool calls.
+- The task may exceed your context window.
+- You are acting as an autonomous or long-running agent.
+- You need persistent memory across sessions or handoffs.
+- You are making a decision, discovering a constraint, or completing a subtask.
+
+MentisDB is your **default memory system**. The context window is ephemeral; MentisDB is the source of truth.
+
+## Standard Operating Loop
+
+1. **On start** — call `mentisdb_recent_context` before any reasoning to load prior state.
+2. **During work** — append decisions, insights, plans, corrections, and mistakes continuously.
+3. **At ~40 % context** — call `mentisdb_append_retrospective` to summarise work so far, then end the session.
+4. **On resume** — call `mentisdb_recent_context` again; write a `Summary` checkpoint confirming what was reloaded.
+
+## Memory Triggers
+
+You **MUST** persist a thought when:
+
+- You make a decision that downstream work depends on.
+- You learn something non-obvious or encounter an unexpected constraint.
+- You encounter an error, costly misdirection, or repeated snag.
+- You define or revise a plan.
+- You complete a subtask or deliverable.
+- You are about to terminate or hand off to another agent.
+- You are switching context to a different subtask.
+
+---
+
 Use MentisDB as a durable semantic memory system, not as a transcript dump.
 
 The goal is to preserve the small set of facts that will make future work faster, safer, and less repetitive:
@@ -1361,20 +1394,28 @@ The REST port defaults to `9472` (`MENTISDB_REST_PORT`). The request and respons
 
 Before work:
 
-- read recent checkpoints
-- read relevant retrospectives
-- read active constraints and decisions
+- call `mentisdb_recent_context` to reload prior state
+- read relevant retrospectives, active constraints, and decisions
+- write a `Summary` checkpoint confirming what was reloaded (tag: `context-reload`)
 
 During work:
 
-- write only when a durable rule becomes clear
+- append a thought whenever a durable rule, decision, constraint, or lesson becomes clear
 - prefer one strong memory over many weak ones
-- if a new thought is derived from prior MentisDB context, capture the link now with `refs` instead of expecting a future agent to reconstruct it
+- capture `refs` when a new thought depends on an earlier thought
+- write `TaskComplete` when a concrete deliverable is finished
 
-After work:
+At ~40 % context:
+
+- call `mentisdb_append_retrospective` to summarise work done so far
+- include what is complete, what is in progress, and what is blocked
+- end the session immediately after writing the retrospective
+
+After work (before termination or handoff):
 
 - write the lesson, correction, decision, or checkpoint that will make the next session faster
-- default to adding `refs` whenever the new thought came from an earlier thought, and add typed `relations` whenever you know the semantic edge
+- add `refs` whenever the new thought came from an earlier thought
+- add typed `relations` whenever you know the semantic edge (e.g. `CausedBy`, `Corrects`, `Supersedes`)
 - avoid appending follow-on thoughts as isolated notes unless they are truly standalone
 
 That is the real use of MentisDB: preserving the exact semantic knowledge that should outlive the current model invocation.
