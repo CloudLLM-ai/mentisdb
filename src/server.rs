@@ -2347,8 +2347,10 @@ impl MentisDbService {
             ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
         }
 
+        let mut total_query = ranked_query.clone();
+        total_query.limit = chain.thoughts().len().max(1);
+        let total_bundles = chain.query_context_bundles(&total_query).bundles.len();
         let bundled = chain.query_context_bundles(&ranked_query);
-        let total_bundles = bundled.bundles.len();
         let bundles = bundled
             .bundles
             .into_iter()

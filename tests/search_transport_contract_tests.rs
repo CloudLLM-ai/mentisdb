@@ -258,6 +258,223 @@ async fn phase4_rest_context_bundle_contract_returns_seed_anchored_groups() {
 }
 
 #[tokio::test]
+async fn phase4_rest_context_bundles_report_full_total_across_pages() {
+    let dir = unique_chain_dir();
+    let chain_key = "transport-bundle-pages";
+    let router = rest_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        chain_key,
+        StorageAdapterKind::Jsonl,
+    ));
+
+    for (seed_content, support_content) in [
+        ("Alpha seed for bundle paging pagerank.", "Alpha support"),
+        ("Beta seed for bundle paging pagerank.", "Beta support"),
+        ("Gamma seed for bundle paging pagerank.", "Gamma support"),
+    ] {
+        let seed = append_thought_via_rest(
+            router.clone(),
+            chain_key,
+            json!({
+                "agent_id": "planner",
+                "thought_type": "Decision",
+                "content": seed_content
+            }),
+        )
+        .await;
+        let seed_index = seed["thought"]["index"].as_u64().unwrap();
+        append_thought_via_rest(
+            router.clone(),
+            chain_key,
+            json!({
+                "agent_id": "planner",
+                "thought_type": "Summary",
+                "content": support_content,
+                "refs": [seed_index]
+            }),
+        )
+        .await;
+    }
+
+    let payload = json!({
+        "chain_key": chain_key,
+        "text": "bundle paging pagerank",
+        "limit": 1,
+        "offset": 1,
+        "thought_types": ["Decision"],
+        "graph": {
+            "mode": "incoming_only",
+            "max_depth": 1
+        }
+    });
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/context-bundles")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(parsed["total_bundles"], 3);
+    let bundles = parsed["bundles"].as_array().unwrap();
+    assert_eq!(bundles.len(), 1);
+    assert_eq!(
+        bundles[0]["seed"]["thought"]["content"],
+        "Beta seed for bundle paging pagerank."
+    );
+    assert!(bundles[0]["support"].as_array().unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn phase4_rest_ranked_and_bundle_contracts_honor_agent_filters() {
+    let dir = unique_chain_dir();
+    let chain_key = "transport-agent-filters";
+    let router = rest_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        chain_key,
+        StorageAdapterKind::Jsonl,
+    ));
+
+    let alpha_seed = append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        json!({
+            "agent_id": "alpha",
+            "thought_type": "Decision",
+            "content": "Shared transport search topic."
+        }),
+    )
+    .await;
+    let alpha_index = alpha_seed["thought"]["index"].as_u64().unwrap();
+    append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        json!({
+            "agent_id": "alpha",
+            "thought_type": "Summary",
+            "content": "Alpha-only linked support.",
+            "refs": [alpha_index]
+        }),
+    )
+    .await;
+
+    let beta_seed = append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        json!({
+            "agent_id": "beta",
+            "thought_type": "Decision",
+            "content": "Shared transport search topic."
+        }),
+    )
+    .await;
+    let beta_index = beta_seed["thought"]["index"].as_u64().unwrap();
+    append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        json!({
+            "agent_id": "beta",
+            "thought_type": "Summary",
+            "content": "Beta-only linked support.",
+            "refs": [beta_index]
+        }),
+    )
+    .await;
+
+    let ranked_payload = json!({
+        "chain_key": chain_key,
+        "text": "transport search topic",
+        "agent_ids": ["beta"],
+        "graph": {
+            "mode": "incoming_only",
+            "max_depth": 1
+        }
+    });
+    let ranked_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ranked-search")
+                .header("content-type", "application/json")
+                .body(Body::from(ranked_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ranked_response.status(), StatusCode::OK);
+    let ranked_json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(ranked_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(ranked_json["total"], 2);
+    assert!(ranked_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|hit| hit["thought"]["agent_id"] == "beta"));
+
+    let bundle_payload = json!({
+        "chain_key": chain_key,
+        "text": "transport search topic",
+        "agent_ids": ["beta"],
+        "graph": {
+            "mode": "incoming_only",
+            "max_depth": 1
+        }
+    });
+    let bundle_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/context-bundles")
+                .header("content-type", "application/json")
+                .body(Body::from(bundle_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bundle_response.status(), StatusCode::OK);
+    let bundle_json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(bundle_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let bundles = bundle_json["bundles"].as_array().unwrap();
+    assert!(!bundles.is_empty());
+    assert!(bundles
+        .iter()
+        .all(|bundle| bundle["seed"]["thought"]["agent_id"] == "beta"));
+    assert!(bundles.iter().all(|bundle| {
+        bundle["support"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|support| support["thought"]["agent_id"] == "beta")
+    }));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn phase4_mcp_tool_catalog_exposes_ranked_and_bundle_search_tools() {
     let dir = unique_chain_dir();
     let router = mcp_router(MentisDbServiceConfig::new(
@@ -302,6 +519,9 @@ async fn phase4_mcp_tool_catalog_exposes_ranked_and_bundle_search_tools() {
     assert!(ranked_parameters
         .iter()
         .any(|parameter| parameter["name"] == "graph"));
+    assert!(ranked_parameters
+        .iter()
+        .any(|parameter| parameter["name"] == "agent_ids"));
 
     let bundle_tool = tools
         .iter()
@@ -320,6 +540,161 @@ async fn phase4_mcp_tool_catalog_exposes_ranked_and_bundle_search_tools() {
     assert!(bundle_parameters
         .iter()
         .any(|parameter| parameter["name"] == "graph"));
+    assert!(bundle_parameters
+        .iter()
+        .any(|parameter| parameter["name"] == "agent_ids"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn phase4_mcp_execute_honors_agent_filters_for_ranked_and_bundle_search() {
+    let dir = unique_chain_dir();
+    let chain_key = "transport-mcp-agent-filters";
+    let rest = rest_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        chain_key,
+        StorageAdapterKind::Jsonl,
+    ));
+    let mcp = mcp_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        chain_key,
+        StorageAdapterKind::Jsonl,
+    ));
+
+    let alpha_seed = append_thought_via_rest(
+        rest.clone(),
+        chain_key,
+        json!({
+            "agent_id": "alpha",
+            "thought_type": "Decision",
+            "content": "Shared MCP transport topic."
+        }),
+    )
+    .await;
+    let alpha_index = alpha_seed["thought"]["index"].as_u64().unwrap();
+    append_thought_via_rest(
+        rest.clone(),
+        chain_key,
+        json!({
+            "agent_id": "alpha",
+            "thought_type": "Summary",
+            "content": "Alpha linked note",
+            "refs": [alpha_index]
+        }),
+    )
+    .await;
+
+    let beta_seed = append_thought_via_rest(
+        rest.clone(),
+        chain_key,
+        json!({
+            "agent_id": "beta",
+            "thought_type": "Decision",
+            "content": "Shared MCP transport topic."
+        }),
+    )
+    .await;
+    let beta_index = beta_seed["thought"]["index"].as_u64().unwrap();
+    append_thought_via_rest(
+        rest.clone(),
+        chain_key,
+        json!({
+            "agent_id": "beta",
+            "thought_type": "Summary",
+            "content": "Beta linked note",
+            "refs": [beta_index]
+        }),
+    )
+    .await;
+
+    let ranked = mcp
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tools/execute")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "tool": "mentisdb_ranked_search",
+                        "parameters": {
+                            "chain_key": chain_key,
+                            "text": "shared MCP transport topic",
+                            "agent_ids": ["beta"],
+                            "graph": {
+                                "mode": "incoming_only",
+                                "max_depth": 1
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ranked.status(), StatusCode::OK);
+    let ranked_json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(ranked.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let ranked_results = ranked_json["result"]["output"]["results"]
+        .as_array()
+        .unwrap();
+    assert_eq!(ranked_json["result"]["output"]["total"], 2);
+    assert!(ranked_results
+        .iter()
+        .all(|hit| hit["thought"]["agent_id"] == "beta"));
+
+    let bundles = mcp
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tools/execute")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "tool": "mentisdb_context_bundles",
+                        "parameters": {
+                            "chain_key": chain_key,
+                            "text": "shared MCP transport topic",
+                            "agent_ids": ["beta"],
+                            "graph": {
+                                "mode": "incoming_only",
+                                "max_depth": 1
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bundles.status(), StatusCode::OK);
+    let bundles_json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(bundles.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let bundle_items = bundles_json["result"]["output"]["bundles"]
+        .as_array()
+        .unwrap();
+    assert!(!bundle_items.is_empty());
+    assert!(bundle_items
+        .iter()
+        .all(|bundle| bundle["seed"]["thought"]["agent_id"] == "beta"));
+    assert!(bundle_items.iter().all(|bundle| {
+        bundle["support"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|support| support["thought"]["agent_id"] == "beta")
+    }));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
