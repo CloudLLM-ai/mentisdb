@@ -2293,6 +2293,10 @@ pub struct RankedSearchScore {
     pub lexical: f32,
     /// Score contributed by graph proximity to a lexical seed.
     pub graph: f32,
+    /// Score contributed by semantic relation kinds along the chosen graph path.
+    pub relation: f32,
+    /// Score contributed by multiple distinct lexical seeds reaching this hit.
+    pub seed_support: f32,
     /// Score contributed by the thought's importance value.
     pub importance: f32,
     /// Score contributed by the thought's confidence value.
@@ -2312,6 +2316,10 @@ pub struct RankedSearchHit<'a> {
     pub score: RankedSearchScore,
     /// Graph distance from the lexical seed that surfaced this hit.
     pub graph_distance: Option<usize>,
+    /// Number of distinct lexical seeds whose expansion reached this hit.
+    pub graph_seed_paths: usize,
+    /// Distinct relation kinds observed along supporting graph paths.
+    pub graph_relation_kinds: Vec<ThoughtRelationKind>,
     /// Provenance path from the originating lexical seed to this hit.
     pub graph_path: Option<crate::search::GraphExpansionPath>,
     /// Unique normalized query terms that matched this hit.
@@ -2329,6 +2337,14 @@ pub struct RankedSearchResult<'a> {
     pub total_candidates: usize,
     /// Top ranked hits in descending score order.
     pub hits: Vec<RankedSearchHit<'a>>,
+}
+
+#[derive(Debug, Clone)]
+struct RankedGraphHit {
+    best_hit: crate::search::GraphExpansionHit,
+    seed_paths: usize,
+    relation_kinds: Vec<ThoughtRelationKind>,
+    relation_score: f32,
 }
 
 /// Direction for append-order thought traversal.
@@ -2607,6 +2623,17 @@ impl From<LegacyThoughtRelation> for ThoughtRelation {
             kind: l.kind,
             target_id: l.target_id,
             chain_key: None,
+        }
+    }
+}
+
+fn merge_relation_kinds(
+    existing: &mut Vec<ThoughtRelationKind>,
+    additional: &[ThoughtRelationKind],
+) {
+    for kind in additional {
+        if !existing.contains(kind) {
+            existing.push(*kind);
         }
     }
 }
@@ -3655,6 +3682,8 @@ impl MentisDb {
                 .total_cmp(&left.score.total)
                 .then_with(|| right.score.lexical.total_cmp(&left.score.lexical))
                 .then_with(|| right.score.graph.total_cmp(&left.score.graph))
+                .then_with(|| right.score.relation.total_cmp(&left.score.relation))
+                .then_with(|| right.score.seed_support.total_cmp(&left.score.seed_support))
                 .then_with(|| right.thought.importance.total_cmp(&left.thought.importance))
                 .then_with(|| {
                     right
@@ -3677,58 +3706,143 @@ impl MentisDb {
         }
     }
 
+    /// Query the chain and return grouped context bundles anchored on lexical seeds.
+    ///
+    /// This is the grouped counterpart to [`MentisDb::query_ranked`]. It keeps
+    /// the same deterministic filter semantics as [`ThoughtQuery`], derives
+    /// lexical seeds from the ranked text query, then groups supporting
+    /// graph-expanded context beneath each seed in lexical rank order.
+    ///
+    /// When `request.graph` is `None`, bundles still return lexical seed
+    /// ordering but contain no supporting graph hits.
+    pub fn query_context_bundles(
+        &self,
+        request: &RankedSearchQuery,
+    ) -> crate::search::ContextBundleResult {
+        let candidates = self.query(&request.filter);
+        let ranked_text = request
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty());
+        let Some(ranked_text) = ranked_text else {
+            return crate::search::ContextBundleResult {
+                bundles: Vec::new(),
+                consumed_hits: 0,
+            };
+        };
+
+        let lexical_scores = self.rank_candidates_lexically(&candidates, ranked_text);
+        let seeds = self.context_bundle_seeds(&lexical_scores, request.limit);
+        if seeds.is_empty() {
+            return crate::search::ContextBundleResult {
+                bundles: Vec::new(),
+                consumed_hits: 0,
+            };
+        }
+
+        let graph_hits = request
+            .graph
+            .as_ref()
+            .map(|graph| self.expand_ranked_candidate_paths(&candidates, graph, &lexical_scores))
+            .unwrap_or_default();
+
+        crate::search::build_context_bundles(
+            &seeds,
+            &graph_hits,
+            crate::search::ContextBundleOptions::default(),
+        )
+    }
+
     fn rank_search_hit<'a>(
         &'a self,
         thought: &'a Thought,
         ranked_text: Option<&str>,
         lexical_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
-        graph_hits: &HashMap<usize, crate::search::GraphExpansionHit>,
+        graph_hits: &HashMap<usize, RankedGraphHit>,
     ) -> Option<RankedSearchHit<'a>> {
-        let (lexical, graph, graph_distance, graph_path, matched_terms, match_sources) =
-            if ranked_text.is_some() {
-                let lexical_hit = lexical_hits.get(&(thought.index as usize));
-                let graph_hit = graph_hits.get(&(thought.index as usize));
+        let (
+            lexical,
+            graph,
+            relation,
+            seed_support,
+            graph_distance,
+            graph_seed_paths,
+            graph_relation_kinds,
+            graph_path,
+            matched_terms,
+            match_sources,
+        ) = if ranked_text.is_some() {
+            let lexical_hit = lexical_hits.get(&(thought.index as usize));
+            let graph_hit = graph_hits.get(&(thought.index as usize));
 
-                match (lexical_hit, graph_hit) {
-                    (Some(hit), graph_hit) if hit.score > 0.0 => (
-                        hit.score,
-                        graph_hit
-                            .map(|hit| self.graph_proximity_score(hit.depth))
-                            .unwrap_or_default(),
-                        graph_hit.map(|hit| hit.depth),
-                        graph_hit.map(|hit| hit.path.clone()),
-                        hit.matched_terms.clone(),
-                        hit.match_sources.clone(),
-                    ),
-                    (None, Some(hit)) => (
-                        0.0,
-                        self.graph_proximity_score(hit.depth),
-                        Some(hit.depth),
-                        Some(hit.path.clone()),
-                        Vec::new(),
-                        Vec::new(),
-                    ),
-                    _ => return None,
-                }
-            } else {
-                (0.0, 0.0, None, None, Vec::new(), Vec::new())
-            };
+            match (lexical_hit, graph_hit) {
+                (Some(hit), graph_hit) if hit.score > 0.0 => (
+                    hit.score,
+                    graph_hit
+                        .map(|hit| self.graph_proximity_score(hit.best_hit.depth))
+                        .unwrap_or_default(),
+                    graph_hit.map(|hit| hit.relation_score).unwrap_or_default(),
+                    graph_hit
+                        .map(|hit| self.graph_seed_support_score(hit.seed_paths))
+                        .unwrap_or_default(),
+                    graph_hit.map(|hit| hit.best_hit.depth),
+                    graph_hit.map(|hit| hit.seed_paths).unwrap_or(0),
+                    graph_hit
+                        .map(|hit| hit.relation_kinds.clone())
+                        .unwrap_or_default(),
+                    graph_hit.map(|hit| hit.best_hit.path.clone()),
+                    hit.matched_terms.clone(),
+                    hit.match_sources.clone(),
+                ),
+                (None, Some(hit)) => (
+                    0.0,
+                    self.graph_proximity_score(hit.best_hit.depth),
+                    hit.relation_score,
+                    self.graph_seed_support_score(hit.seed_paths),
+                    Some(hit.best_hit.depth),
+                    hit.seed_paths,
+                    hit.relation_kinds.clone(),
+                    Some(hit.best_hit.path.clone()),
+                    Vec::new(),
+                    Vec::new(),
+                ),
+                _ => return None,
+            }
+        } else {
+            (
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                None,
+                0,
+                Vec::new(),
+                None,
+                Vec::new(),
+                Vec::new(),
+            )
+        };
         let importance = thought.importance * 0.2;
         let confidence = thought.confidence.unwrap_or_default() * 0.1;
         let recency = self.recency_score(thought);
-        let total = lexical + graph + importance + confidence + recency;
+        let total = lexical + graph + relation + seed_support + importance + confidence + recency;
 
         Some(RankedSearchHit {
             thought,
             score: RankedSearchScore {
                 lexical,
                 graph,
+                relation,
+                seed_support,
                 importance,
                 confidence,
                 recency,
                 total,
             },
             graph_distance,
+            graph_seed_paths,
+            graph_relation_kinds,
             graph_path,
             matched_terms,
             match_sources,
@@ -3755,14 +3869,79 @@ impl MentisDb {
             .collect()
     }
 
+    fn context_bundle_seeds(
+        &self,
+        lexical_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
+        limit: usize,
+    ) -> Vec<crate::search::ContextBundleSeed> {
+        self.sorted_lexical_seed_hits(lexical_hits)
+            .into_iter()
+            .take(limit.max(1))
+            .filter_map(|hit| {
+                self.thoughts
+                    .get(hit.doc_position)
+                    .map(crate::search::ThoughtLocator::local)
+                    .map(|locator| {
+                        crate::search::ContextBundleSeed::new(locator, hit.score)
+                            .with_matched_terms(hit.matched_terms.iter().cloned())
+                    })
+            })
+            .collect()
+    }
+
     fn expand_ranked_candidates(
         &self,
         candidates: &[&Thought],
         graph: &RankedSearchGraph,
         lexical_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
-    ) -> HashMap<usize, crate::search::GraphExpansionHit> {
+    ) -> HashMap<usize, RankedGraphHit> {
+        let raw_hits = self.expand_ranked_candidate_paths(candidates, graph, lexical_hits);
+        let mut aggregates = HashMap::<usize, RankedGraphHit>::new();
+
+        for hit in raw_hits {
+            let Some(position) = hit.locator.thought_index.map(|index| index as usize) else {
+                continue;
+            };
+            let relation_kinds = self.graph_path_relation_kinds(&hit.path);
+            let relation_score = self.graph_relation_score(&relation_kinds, hit.depth);
+
+            match aggregates.entry(position) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(RankedGraphHit {
+                        best_hit: hit,
+                        seed_paths: 1,
+                        relation_kinds,
+                        relation_score,
+                    });
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let aggregate = entry.get_mut();
+                    aggregate.seed_paths += 1;
+                    merge_relation_kinds(&mut aggregate.relation_kinds, &relation_kinds);
+                    if self.is_better_graph_hit(
+                        &hit,
+                        relation_score,
+                        &aggregate.best_hit,
+                        aggregate.relation_score,
+                    ) {
+                        aggregate.best_hit = hit;
+                        aggregate.relation_score = relation_score;
+                    }
+                }
+            }
+        }
+
+        aggregates
+    }
+
+    fn expand_ranked_candidate_paths(
+        &self,
+        candidates: &[&Thought],
+        graph: &RankedSearchGraph,
+        lexical_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
+    ) -> Vec<crate::search::GraphExpansionHit> {
         if lexical_hits.is_empty() {
-            return HashMap::new();
+            return Vec::new();
         }
 
         let adjacency = crate::search::ThoughtAdjacencyIndex::from_thoughts(&self.thoughts);
@@ -3770,16 +3949,8 @@ impl MentisDb {
             .iter()
             .map(|thought| thought.index as usize)
             .collect();
-        let mut lexical_seed_hits: Vec<&crate::search::lexical::LexicalHit> =
-            lexical_hits.values().collect();
-        lexical_seed_hits.sort_by(|left, right| {
-            right
-                .score
-                .total_cmp(&left.score)
-                .then_with(|| left.doc_position.cmp(&right.doc_position))
-        });
-
-        let seeds: Vec<crate::search::ThoughtLocator> = lexical_seed_hits
+        let seeds: Vec<crate::search::ThoughtLocator> = self
+            .sorted_lexical_seed_hits(lexical_hits)
             .into_iter()
             .filter_map(|hit| {
                 adjacency
@@ -3788,26 +3959,54 @@ impl MentisDb {
             })
             .collect();
         if seeds.is_empty() {
-            return HashMap::new();
+            return Vec::new();
+        }
+        let seed_positions: HashSet<usize> = seeds
+            .iter()
+            .filter_map(|seed| seed.thought_index.map(|index| index as usize))
+            .collect();
+
+        let mut hits = Vec::new();
+        for seed in seeds {
+            let seed_position = seed.thought_index.map(|index| index as usize);
+            let seed_result = crate::search::GraphExpansionResult::expand(
+                &adjacency,
+                &crate::search::GraphExpansionQuery::new(vec![seed])
+                    .with_max_depth(graph.max_depth)
+                    .with_max_visited(graph.max_visited)
+                    .with_include_seeds(graph.include_seeds)
+                    .with_mode(graph.mode),
+            );
+
+            hits.extend(seed_result.hits.into_iter().filter(|hit| {
+                hit.locator
+                    .thought_index
+                    .map(|index| {
+                        let position = index as usize;
+                        candidate_positions.contains(&position)
+                            && (!seed_positions.contains(&position)
+                                || Some(position) == seed_position)
+                    })
+                    .unwrap_or(false)
+            }));
         }
 
-        crate::search::GraphExpansionResult::expand(
-            &adjacency,
-            &crate::search::GraphExpansionQuery::new(seeds)
-                .with_max_depth(graph.max_depth)
-                .with_max_visited(graph.max_visited)
-                .with_include_seeds(graph.include_seeds)
-                .with_mode(graph.mode),
-        )
-        .hits
-        .into_iter()
-        .filter_map(|hit| {
-            let position = hit.locator.thought_index? as usize;
-            candidate_positions
-                .contains(&position)
-                .then_some((position, hit))
-        })
-        .collect()
+        hits
+    }
+
+    fn sorted_lexical_seed_hits<'a>(
+        &self,
+        lexical_hits: &'a HashMap<usize, crate::search::lexical::LexicalHit>,
+    ) -> Vec<&'a crate::search::lexical::LexicalHit> {
+        let mut lexical_seed_hits: Vec<&crate::search::lexical::LexicalHit> =
+            lexical_hits.values().collect();
+        lexical_seed_hits.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.doc_position.cmp(&right.doc_position))
+        });
+        lexical_seed_hits
     }
 
     fn graph_proximity_score(&self, depth: usize) -> f32 {
@@ -3816,6 +4015,68 @@ impl MentisDb {
         } else {
             0.3 / depth as f32
         }
+    }
+
+    fn graph_seed_support_score(&self, seed_paths: usize) -> f32 {
+        seed_paths.saturating_sub(1).min(3) as f32 * 0.05
+    }
+
+    fn graph_path_relation_kinds(
+        &self,
+        path: &crate::search::GraphExpansionPath,
+    ) -> Vec<ThoughtRelationKind> {
+        let mut kinds = Vec::new();
+        for hop in &path.hops {
+            for provenance in &hop.edge.provenances {
+                if let crate::search::GraphEdgeProvenance::Relation { kind, .. } = provenance {
+                    if !kinds.contains(kind) {
+                        kinds.push(*kind);
+                    }
+                }
+            }
+        }
+        kinds
+    }
+
+    fn graph_relation_score(&self, relation_kinds: &[ThoughtRelationKind], depth: usize) -> f32 {
+        if relation_kinds.is_empty() {
+            return 0.0;
+        }
+        let strongest = relation_kinds
+            .iter()
+            .map(|kind| self.graph_relation_kind_boost(*kind))
+            .fold(0.0_f32, f32::max);
+        strongest / depth.max(1) as f32
+    }
+
+    fn graph_relation_kind_boost(&self, kind: ThoughtRelationKind) -> f32 {
+        match kind {
+            ThoughtRelationKind::Corrects => 0.18,
+            ThoughtRelationKind::Invalidates => 0.18,
+            ThoughtRelationKind::Supersedes => 0.16,
+            ThoughtRelationKind::DerivedFrom => 0.14,
+            ThoughtRelationKind::ContinuesFrom => 0.12,
+            ThoughtRelationKind::Summarizes => 0.11,
+            ThoughtRelationKind::CausedBy => 0.11,
+            ThoughtRelationKind::Supports => 0.09,
+            ThoughtRelationKind::Contradicts => 0.09,
+            ThoughtRelationKind::RelatedTo => 0.05,
+            ThoughtRelationKind::References => 0.04,
+        }
+    }
+
+    fn is_better_graph_hit(
+        &self,
+        candidate: &crate::search::GraphExpansionHit,
+        candidate_relation_score: f32,
+        current: &crate::search::GraphExpansionHit,
+        current_relation_score: f32,
+    ) -> bool {
+        candidate.depth < current.depth
+            || (candidate.depth == current.depth
+                && (candidate_relation_score > current_relation_score
+                    || (candidate_relation_score == current_relation_score
+                        && candidate.locator < current.locator)))
     }
 
     fn recency_score(&self, thought: &Thought) -> f32 {

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use mentisdb::search::{lexical::LexicalMatchSource, GraphExpansionMode};
+use mentisdb::search::{lexical::LexicalMatchSource, GraphExpansionMode, ThoughtLocator};
 use mentisdb::{
     MentisDb, RankedSearchBackend, RankedSearchGraph, RankedSearchQuery, ThoughtInput,
     ThoughtQuery, ThoughtRelation, ThoughtRelationKind, ThoughtType,
@@ -580,6 +580,338 @@ fn ranked_query_graph_without_seed_hits_still_keeps_lexical_match() {
     assert_eq!(ranked.hits[0].graph_distance, None);
     assert!(ranked.hits[0].graph_path.is_none());
     assert_eq!(ranked.hits[1].graph_distance, Some(1));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ranked_query_relation_weighting_prefers_derived_context_over_related_context() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "ranked-query-relation-weighting").unwrap();
+
+    let seed = chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(
+                ThoughtType::Decision,
+                "Latency ranking seed for relation weighting.",
+            )
+            .with_tags(["search"]),
+        )
+        .unwrap()
+        .clone();
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(
+                ThoughtType::Summary,
+                "Derived support context should rank first.",
+            )
+            .with_tags(["search"])
+            .with_relations(vec![ThoughtRelation {
+                kind: ThoughtRelationKind::DerivedFrom,
+                target_id: seed.id,
+                chain_key: None,
+            }]),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(
+                ThoughtType::Summary,
+                "Related support context should rank after derived.",
+            )
+            .with_tags(["search"])
+            .with_relations(vec![ThoughtRelation {
+                kind: ThoughtRelationKind::RelatedTo,
+                target_id: seed.id,
+                chain_key: None,
+            }]),
+        )
+        .unwrap();
+
+    let ranked = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_filter(ThoughtQuery::new().with_tags_any(["search"]))
+            .with_text("latency ranking")
+            .with_graph(
+                RankedSearchGraph::new()
+                    .with_mode(GraphExpansionMode::IncomingOnly)
+                    .with_max_depth(1),
+            ),
+    );
+
+    let derived_index = ranked
+        .hits
+        .iter()
+        .position(|hit| hit.thought.content == "Derived support context should rank first.")
+        .unwrap();
+    let related_index = ranked
+        .hits
+        .iter()
+        .position(|hit| hit.thought.content == "Related support context should rank after derived.")
+        .unwrap();
+    let derived = &ranked.hits[derived_index];
+    let related = &ranked.hits[related_index];
+
+    assert!(derived_index < related_index);
+    assert_eq!(derived.graph_distance, Some(1));
+    assert_eq!(related.graph_distance, Some(1));
+    assert!(derived.score.relation > related.score.relation);
+    assert!(derived
+        .graph_relation_kinds
+        .contains(&ThoughtRelationKind::DerivedFrom));
+    assert!(related
+        .graph_relation_kinds
+        .contains(&ThoughtRelationKind::RelatedTo));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ranked_query_multi_seed_support_counts_distinct_seed_paths() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "ranked-query-multi-seed-support").unwrap();
+
+    let seed_a = chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Decision, "Memory cap seed alpha.")
+                .with_tags(["search"]),
+        )
+        .unwrap()
+        .clone();
+    let seed_b = chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Decision, "Memory cap seed beta.").with_tags(["search"]),
+        )
+        .unwrap()
+        .clone();
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(
+                ThoughtType::Summary,
+                "Shared support context reached from both seeds.",
+            )
+            .with_tags(["search"])
+            .with_relations(vec![
+                ThoughtRelation {
+                    kind: ThoughtRelationKind::DerivedFrom,
+                    target_id: seed_a.id,
+                    chain_key: None,
+                },
+                ThoughtRelation {
+                    kind: ThoughtRelationKind::DerivedFrom,
+                    target_id: seed_b.id,
+                    chain_key: None,
+                },
+            ]),
+        )
+        .unwrap();
+
+    let ranked = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_filter(ThoughtQuery::new().with_tags_any(["search"]))
+            .with_text("memory cap")
+            .with_graph(
+                RankedSearchGraph::new()
+                    .with_mode(GraphExpansionMode::IncomingOnly)
+                    .with_max_depth(1),
+            ),
+    );
+
+    let shared = ranked
+        .hits
+        .iter()
+        .find(|hit| hit.thought.content == "Shared support context reached from both seeds.")
+        .unwrap();
+    assert_eq!(shared.graph_distance, Some(1));
+    assert_eq!(shared.graph_seed_paths, 2);
+    assert!(shared.score.seed_support > 0.0);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn query_context_bundles_group_support_without_cross_seed_leakage() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "query-context-bundles").unwrap();
+
+    let seed_a = chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Decision, "Incident memory seed alpha.")
+                .with_tags(["search"]),
+        )
+        .unwrap()
+        .clone();
+    let seed_b = chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Decision, "Incident memory seed beta.")
+                .with_tags(["search"]),
+        )
+        .unwrap()
+        .clone();
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Summary, "Alpha-only support note.")
+                .with_tags(["search"])
+                .with_relations(vec![ThoughtRelation {
+                    kind: ThoughtRelationKind::DerivedFrom,
+                    target_id: seed_a.id,
+                    chain_key: None,
+                }]),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Summary, "Beta-only support note.")
+                .with_tags(["search"])
+                .with_relations(vec![ThoughtRelation {
+                    kind: ThoughtRelationKind::DerivedFrom,
+                    target_id: seed_b.id,
+                    chain_key: None,
+                }]),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Summary, "Shared support note.")
+                .with_tags(["search"])
+                .with_relations(vec![
+                    ThoughtRelation {
+                        kind: ThoughtRelationKind::DerivedFrom,
+                        target_id: seed_a.id,
+                        chain_key: None,
+                    },
+                    ThoughtRelation {
+                        kind: ThoughtRelationKind::DerivedFrom,
+                        target_id: seed_b.id,
+                        chain_key: None,
+                    },
+                ]),
+        )
+        .unwrap();
+
+    let bundles = chain.query_context_bundles(
+        &RankedSearchQuery::new()
+            .with_filter(ThoughtQuery::new().with_tags_any(["search"]))
+            .with_text("incident memory")
+            .with_graph(
+                RankedSearchGraph::new()
+                    .with_mode(GraphExpansionMode::IncomingOnly)
+                    .with_max_depth(1),
+            )
+            .with_limit(2),
+    );
+
+    assert_eq!(bundles.bundles.len(), 2);
+    let alpha_bundle = &bundles.bundles[0];
+    let beta_bundle = &bundles.bundles[1];
+    assert_eq!(alpha_bundle.seed.locator, ThoughtLocator::local(&seed_a));
+    assert_eq!(beta_bundle.seed.locator, ThoughtLocator::local(&seed_b));
+    assert!(alpha_bundle
+        .support
+        .iter()
+        .any(|hit| hit.locator.thought_index == Some(2)));
+    assert!(alpha_bundle
+        .support
+        .iter()
+        .any(|hit| hit.locator.thought_index == Some(4)));
+    assert!(!alpha_bundle
+        .support
+        .iter()
+        .any(|hit| hit.locator == ThoughtLocator::local(&seed_b)));
+    assert!(beta_bundle
+        .support
+        .iter()
+        .any(|hit| hit.locator.thought_index == Some(3)));
+    assert!(beta_bundle
+        .support
+        .iter()
+        .any(|hit| hit.locator.thought_index == Some(4)));
+    assert!(!beta_bundle
+        .support
+        .iter()
+        .any(|hit| hit.locator == ThoughtLocator::local(&seed_a)));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ranked_query_graph_tracks_multiple_supporting_seeds() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "ranked-query-graph-multi-seed").unwrap();
+
+    let seed_a = chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Decision, "Latency ranking seed.").with_tags(["search"]),
+        )
+        .unwrap()
+        .clone();
+    let seed_b = chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Decision, "Security ranking seed.")
+                .with_tags(["search"]),
+        )
+        .unwrap()
+        .clone();
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(
+                ThoughtType::Summary,
+                "Shared rollout context reachable from both seeds.",
+            )
+            .with_tags(["search"])
+            .with_relations(vec![
+                ThoughtRelation {
+                    kind: ThoughtRelationKind::DerivedFrom,
+                    target_id: seed_a.id,
+                    chain_key: None,
+                },
+                ThoughtRelation {
+                    kind: ThoughtRelationKind::ContinuesFrom,
+                    target_id: seed_b.id,
+                    chain_key: None,
+                },
+            ]),
+        )
+        .unwrap();
+
+    let ranked = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_filter(ThoughtQuery::new().with_tags_any(["search"]))
+            .with_text("ranking seed")
+            .with_graph(
+                RankedSearchGraph::new()
+                    .with_mode(GraphExpansionMode::IncomingOnly)
+                    .with_max_depth(1),
+            ),
+    );
+
+    let shared = ranked
+        .hits
+        .iter()
+        .find(|hit| hit.thought.content == "Shared rollout context reachable from both seeds.")
+        .unwrap();
+    assert_eq!(shared.graph_seed_paths, 2);
+    assert!(shared.score.seed_support > 0.0);
+    assert!(shared
+        .graph_relation_kinds
+        .contains(&ThoughtRelationKind::DerivedFrom));
+    assert!(shared
+        .graph_relation_kinds
+        .contains(&ThoughtRelationKind::ContinuesFrom));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

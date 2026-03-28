@@ -3,6 +3,8 @@
 //! These modules build rebuildable indexes over committed thoughts without
 //! changing the append-only chain itself.
 
+/// Seed-anchored context bundle rendering over graph-expansion hits.
+pub mod bundle;
 /// Deterministic breadth-first expansion helpers built on top of the adjacency
 /// layer.
 pub mod expansion;
@@ -14,6 +16,10 @@ pub mod lexical;
 /// Provenance path structures for graph expansion starting from lexical seeds.
 pub mod provenance;
 
+pub use bundle::{
+    build_context_bundles, ContextBundle, ContextBundleHit, ContextBundleOptions,
+    ContextBundleResult, ContextBundleSeed,
+};
 pub use expansion::{
     GraphExpansionHit, GraphExpansionMode, GraphExpansionQuery, GraphExpansionResult,
     GraphExpansionStats,
