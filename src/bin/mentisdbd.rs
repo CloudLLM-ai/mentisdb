@@ -848,6 +848,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     print_agent_registry_summary(&config)?;
     print_skill_registry_summary(&config)?;
     print_tls_tip(&config, &handles);
+    print_memory_policy_notice(&config);
     println!("Press Ctrl+C to stop.");
 
     // ── Startup summary at the bottom ────────────────────────────────────────
@@ -2083,4 +2084,36 @@ fn print_tls_tip(config: &MentisDbServerConfig, handles: &MentisDbServerHandles)
         config.tls_cert_path.display()
     );
     println!();
+}
+
+/// Print the MentisDB memory policy notice so it is visible at daemon startup.
+///
+/// This reminds operators and agents connecting for the first time that
+/// MentisDB is the authoritative, durable memory layer and the context window
+/// is ephemeral.
+pub(crate) fn build_memory_policy_lines(mcp_addr: std::net::SocketAddr) -> Vec<String> {
+    vec![
+        format!("MentisDB is the PRIMARY persistent memory system for all agents."),
+        format!("The context window is ephemeral; MentisDB is the source of truth."),
+        String::new(),
+        format!("Agent startup sequence (mandatory):"),
+        format!("  1. Call mentisdb_bootstrap  — initialise chain, load skills"),
+        format!("  2. Call mentisdb_recent_context — reload prior durable state"),
+        format!("  3. Write a Summary checkpoint tagged context-reload"),
+        String::new(),
+        format!("Ongoing:"),
+        format!("  • Append thoughts after every decision, plan, discovery, or error."),
+        format!("  • At ~40% context: call mentisdb_append_retrospective, then respawn."),
+        format!("  • Before handoff: write a Summary checkpoint."),
+        String::new(),
+        format!("MCP endpoint: http://{mcp_addr}"),
+        format!("Skill doc:    GET http://{}/mentisdb_skill_md  (or resources/read mentisdb://skill/core)", mcp_addr),
+    ]
+}
+
+fn print_memory_policy_notice(config: &MentisDbServerConfig) {
+    ascii_notice_box(
+        "MentisDB Memory Policy",
+        &build_memory_policy_lines(config.mcp_addr),
+    );
 }
