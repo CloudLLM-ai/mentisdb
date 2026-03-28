@@ -636,6 +636,9 @@ Dashboard capabilities:
 
 - live chain listing with thought and agent counts
 - thought exploration with grouped ThoughtType filters, refs, and typed relations
+- chain-scoped ranked search with text and live-agent filters
+- grouped context bundles for seed-anchored supporting search context
+- ranked result inspection in the thought modal, including score breakdowns, matched terms, graph distance, relation kinds, and bundle support preview
 - agent detail management for display name, description, owner, status, and signing keys
 - latest agent-thought browsing without restarting the daemon after new thoughts are appended
 - chain import from `MEMORY.md`

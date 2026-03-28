@@ -210,6 +210,57 @@
     .filter-item label { font-size: 0.78rem; color: #8b949e; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
     .filter-item select { width: auto; min-width: 70px; }
 
+    .search-note {
+      margin: 0 0 12px;
+      color: #8b949e;
+      font-size: 0.84rem;
+    }
+    .ranked-hit-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .ranked-hit-meta .badge {
+      font-size: 0.68rem;
+    }
+    .bundle-stack {
+      display: grid;
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .bundle-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .bundle-card h3 {
+      font-size: 0.96rem;
+      margin-bottom: 8px;
+    }
+    .bundle-seed-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .bundle-support-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .bundle-support-item {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 10px 12px;
+    }
+    .bundle-support-item.clickable:hover {
+      background: #1c2128;
+      cursor: pointer;
+    }
+
     /* === Multi-select dropdown === */
     .ms-wrap { position: relative; }
     .ms-btn {
@@ -248,6 +299,10 @@
     .type-cb-row input[type="checkbox"] { width: auto; margin: 0; accent-color: #58a6ff; cursor: pointer; flex-shrink: 0; }
     .type-cb-row span { font-size: 0.85rem; color: #e6edf3; }
     .selected-types { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; min-height: 4px; }
+    .search-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+    .search-subtle { color: #8b949e; font-size: 0.76rem; line-height: 1.35; }
+    .search-support-list { margin: 4px 0 0; padding-left: 18px; }
+    .search-support-list li { margin-bottom: 3px; color: #c9d1d9; font-size: 0.83rem; }
 
     /* === Pagination === */
     .pagination { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
@@ -489,6 +544,98 @@
     return `<span class="badge badge-gray">${esc(s)}</span>`;
   }
 
+  function thoughtKeyFromThought(thought) {
+    if (!thought || typeof thought !== 'object') return null;
+    const id = thought.id || thought.thought_id;
+    if (id) return `id:${id}`;
+    if (typeof thought.index === 'number') return `idx:${thought.index}`;
+    return null;
+  }
+
+  function thoughtKeyFromLocator(locator) {
+    if (!locator || typeof locator !== 'object') return null;
+    if (locator.thought_id) return `id:${locator.thought_id}`;
+    if (typeof locator.thought_index === 'number') return `idx:${locator.thought_index}`;
+    return null;
+  }
+
+  function normalizeSearchMetaNumber(value, digits = 3) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+    return value.toFixed(digits);
+  }
+
+  function normalizeExplorerSearchPayload(data, fallbackPage, fallbackPerPage) {
+    if (!data || typeof data !== 'object') {
+      return {
+        thoughts: [],
+        bundles: [],
+        total: 0,
+        pages: 1,
+        page: fallbackPage,
+        perPage: fallbackPerPage,
+        isRanked: false,
+        backend: null,
+      };
+    }
+
+    // Canonical ranked/bundle-backed dashboard shape.
+    if (Array.isArray(data.results)) {
+      const page = Number(data.page || fallbackPage) || fallbackPage;
+      const perPage = Number(data.per_page || fallbackPerPage) || fallbackPerPage;
+      const total = Number(data.total || 0) || 0;
+      const pages = Number(data.pages || Math.max(1, Math.ceil(total / Math.max(1, perPage)))) || 1;
+      const backend = typeof data.backend === 'string' ? data.backend : null;
+      const bundles = Array.isArray(data.bundles) ? data.bundles : [];
+      const bundleBySeed = new Map();
+      bundles.forEach(bundle => {
+        const seed = bundle && typeof bundle === 'object' ? bundle.seed : null;
+        const locator = seed && typeof seed === 'object' ? seed.locator : null;
+        const thought = seed && typeof seed === 'object' ? seed.thought : null;
+        const key = thoughtKeyFromLocator(locator) || thoughtKeyFromThought(thought);
+        if (key) bundleBySeed.set(key, bundle);
+      });
+
+      const thoughts = data.results.map((hit, idx) => {
+        const thought = hit && typeof hit === 'object' && hit.thought && typeof hit.thought === 'object'
+          ? hit.thought
+          : {};
+        const thoughtKey = thoughtKeyFromThought(thought);
+        const bundle = thoughtKey ? bundleBySeed.get(thoughtKey) : null;
+        const support = Array.isArray(bundle?.support) ? bundle.support : [];
+        const supportPreview = support
+          .slice(0, 3)
+          .map(item => item?.thought?.content)
+          .filter(text => typeof text === 'string' && text.trim().length > 0)
+          .map(text => text.trim());
+        return {
+          ...thought,
+          __search: {
+            rank: ((page - 1) * perPage) + idx + 1,
+            backend,
+            score: hit && typeof hit === 'object' ? (hit.score || null) : null,
+            matchedTerms: Array.isArray(hit?.matched_terms) ? hit.matched_terms : [],
+            matchSources: Array.isArray(hit?.match_sources) ? hit.match_sources : [],
+            graphDistance: typeof hit?.graph_distance === 'number' ? hit.graph_distance : null,
+            graphSeedPaths: Number.isFinite(hit?.graph_seed_paths) ? hit.graph_seed_paths : 0,
+            graphRelationKinds: Array.isArray(hit?.graph_relation_kinds) ? hit.graph_relation_kinds : [],
+            supportCount: support.length,
+            supportPreview,
+          },
+        };
+      });
+
+      return { thoughts, bundles, total, pages, page, perPage, isRanked: true, backend };
+    }
+
+    // Legacy paginated dashboard search shape.
+    const thoughts = Array.isArray(data.thoughts) ? data.thoughts : [];
+    const total = Number(data.total || 0) || 0;
+    const pages = Number(data.pages || 1) || 1;
+    const page = Number(data.page || fallbackPage) || fallbackPage;
+    const perPage = Number(data.per_page || fallbackPerPage) || fallbackPerPage;
+    return { thoughts, bundles: [], total, pages, page, perPage, isRanked: false, backend: null };
+  }
+
   function agentsFromChainEntry(entry) {
     if (Array.isArray(entry)) return entry;
     return Array.isArray(entry?.agents) ? entry.agents : [];
@@ -554,6 +701,43 @@
           }).join('')
         }</ul>`
       : null;
+    const searchMeta = thought.__search && typeof thought.__search === 'object' ? thought.__search : null;
+    const searchScore = searchMeta && searchMeta.score && typeof searchMeta.score === 'object' ? searchMeta.score : null;
+    const searchTerms = searchMeta && Array.isArray(searchMeta.matchedTerms) ? searchMeta.matchedTerms : [];
+    const searchSources = searchMeta && Array.isArray(searchMeta.matchSources) ? searchMeta.matchSources : [];
+    const searchRelations = searchMeta && Array.isArray(searchMeta.graphRelationKinds) ? searchMeta.graphRelationKinds : [];
+    const searchSupport = searchMeta && Array.isArray(searchMeta.supportPreview) ? searchMeta.supportPreview : [];
+    const searchTermsHtml = searchTerms.length
+      ? searchTerms.slice(0, 8).map(term => `<span class="badge badge-blue">${esc(term)}</span>`).join(' ')
+      : '<span style="color:#484f58">none</span>';
+    const searchSourcesHtml = searchSources.length
+      ? searchSources.slice(0, 8).map(source => `<span class="badge badge-gray">${esc(source)}</span>`).join(' ')
+      : '<span style="color:#484f58">none</span>';
+    const searchRelationsHtml = searchRelations.length
+      ? searchRelations.map(kind => `<span class="badge badge-purple">${esc(kind)}</span>`).join(' ')
+      : '<span style="color:#484f58">none</span>';
+    const searchSupportHtml = searchSupport.length
+      ? `<ul class="search-support-list">${searchSupport.map(text => `<li>${esc(text.length > 180 ? `${text.slice(0, 180)}…` : text)}</li>`).join('')}</ul>`
+      : '<span style="color:#484f58">none</span>';
+    const searchMetaHtml = searchMeta
+      ? `
+        <div class="field-label" style="margin-top:16px">Search Context</div>
+        <dl class="t-fields">
+          <dt>Rank</dt><dd>${esc(String(searchMeta.rank ?? '—'))}</dd>
+          <dt>Backend</dt><dd>${searchMeta.backend ? `<span class="badge badge-gray">${esc(searchMeta.backend)}</span>` : '<span style="color:#484f58">—</span>'}</dd>
+          <dt>Total Score</dt><dd>${searchScore ? `<code class="mono">${esc(normalizeSearchMetaNumber(searchScore.total))}</code>` : '<span style="color:#484f58">—</span>'}</dd>
+          <dt>Components</dt><dd>${searchScore
+            ? `<span class="search-subtle">lexical ${esc(normalizeSearchMetaNumber(searchScore.lexical))} · graph ${esc(normalizeSearchMetaNumber(searchScore.graph))} · relation ${esc(normalizeSearchMetaNumber(searchScore.relation))}</span>`
+            : '<span style="color:#484f58">—</span>'}
+          </dd>
+          <dt>Matched Terms</dt><dd>${searchTermsHtml}</dd>
+          <dt>Match Sources</dt><dd>${searchSourcesHtml}</dd>
+          <dt>Graph</dt><dd><span class="search-subtle">distance ${esc(String(searchMeta.graphDistance ?? '—'))} · seed paths ${esc(String(searchMeta.graphSeedPaths ?? 0))}</span></dd>
+          <dt>Relations</dt><dd>${searchRelationsHtml}</dd>
+          <dt>Bundle Support</dt><dd><span class="search-subtle">${esc(String(searchMeta.supportCount ?? 0))} supporting hit(s)</span>${searchSupportHtml}</dd>
+        </dl>
+      `
+      : '';
 
     document.getElementById('modal-body').innerHTML = `
       <dl class="t-fields">
@@ -572,6 +756,7 @@
         ${refsHtml ? `<dt>References</dt><dd>${refsHtml}</dd>` : ''}
         ${relHtml  ? `<dt>Relations</dt><dd>${relHtml}</dd>` : ''}
       </dl>
+      ${searchMetaHtml}
       <div class="field-label" style="margin-top:16px">Content</div>
       <pre>${esc(thought.content || '')}</pre>
     `;
@@ -859,7 +1044,9 @@
         </div>
       </div>
       <div id="ex-sel-row" class="selected-types"></div>
+      <div id="ex-search-note" class="search-note"></div>
       <div id="ex-body"></div>
+      <div id="ex-bundles"></div>
       <div id="ex-page" class="pagination"></div>
     `;
 
@@ -868,20 +1055,21 @@
     });
 
     document.getElementById('ex-order-btn').addEventListener('click', () => {
+      if (explorerHasTextSearch()) return;
       EX.order = EX.order === 'desc' ? 'asc' : 'desc';
-      document.getElementById('ex-order-btn').textContent = EX.order === 'desc' ? '⬇ Newest first' : '⬆ Oldest first';
+      updateExplorerOrderUi();
       EX.page = 1; loadThoughts();
     });
 
     document.getElementById('ex-genesis-btn').addEventListener('click', () => {
       EX.order = 'asc'; EX.page = 1;
-      document.getElementById('ex-order-btn').textContent = '⬆ Oldest first';
+      updateExplorerOrderUi();
       loadThoughts(); window.scrollTo(0,0);
     });
 
     document.getElementById('ex-head-btn').addEventListener('click', () => {
       EX.order = 'desc'; EX.page = 1;
-      document.getElementById('ex-order-btn').textContent = '⬇ Newest first';
+      updateExplorerOrderUi();
       loadThoughts(); window.scrollTo(0,0);
     });
 
@@ -895,6 +1083,7 @@
       document.getElementById('ex-search-text').value = '';
       document.getElementById('ex-agent-select').value = '';
       EX.page = 1;
+      updateExplorerOrderUi();
       loadThoughts();
     });
 
@@ -908,6 +1097,7 @@
     document.getElementById('ex-agent-select').addEventListener('change', e => {
       EX.searchAgentId = e.target.value;
       EX.page = 1;
+      updateExplorerOrderUi();
       loadThoughts();
     });
 
@@ -939,7 +1129,7 @@
       EX.page = 1; exUpdateLabel(); exRenderSel(); loadThoughts();
     });
 
-    exUpdateLabel(); exRenderSel(); populateExplorerSearchAgents(); loadThoughts();
+    exUpdateLabel(); exRenderSel(); populateExplorerSearchAgents(); updateExplorerOrderUi(); loadThoughts();
 
     document.getElementById('ex-import-md-btn').addEventListener('click', () => {
       openImportMarkdownModal(chainKey);
@@ -985,10 +1175,38 @@
     return !!(EX.searchText.trim() || EX.searchAgentId);
   }
 
+  function explorerHasTextSearch() {
+    return !!EX.searchText.trim();
+  }
+
+  function updateExplorerOrderUi() {
+    const btn = document.getElementById('ex-order-btn');
+    const note = document.getElementById('ex-search-note');
+    if (!btn) return;
+    if (explorerHasTextSearch()) {
+      btn.disabled = true;
+      btn.textContent = '★ Best matches';
+      btn.title = 'Ranked search always sorts by best match first.';
+      if (note) {
+        note.textContent = 'Search text uses ranked lexical + graph retrieval. The order toggle is disabled while ranked search is active.';
+      }
+      return;
+    }
+    btn.disabled = false;
+    btn.textContent = EX.order === 'desc' ? '⬇ Newest first' : '⬆ Oldest first';
+    btn.title = '';
+    if (note) {
+      note.textContent = explorerHasSearchFilters()
+        ? 'Filtering without search text keeps the normal chronological explorer order.'
+        : '';
+    }
+  }
+
   function applyExplorerSearch() {
     EX.searchText = document.getElementById('ex-search-text').value.trim();
     EX.searchAgentId = document.getElementById('ex-agent-select').value;
     EX.page = 1;
+    updateExplorerOrderUi();
     loadThoughts();
   }
 
@@ -1021,11 +1239,74 @@
       });
   }
 
+  function renderExplorerBundles(bundles, bodyEl) {
+    if (!bodyEl) return;
+    const rows = Array.isArray(bundles) ? bundles : [];
+    if (!rows.length) {
+      bodyEl.innerHTML = '';
+      return;
+    }
+    bodyEl.innerHTML = `
+      <div class="section-label">Context Bundles</div>
+      <div class="bundle-stack">
+        ${rows.map((bundle, index) => {
+          const seedThought = bundle?.seed?.thought && typeof bundle.seed.thought === 'object' ? bundle.seed.thought : null;
+          const seedTitle = seedThought?.content
+            ? esc(seedThought.content.length > 160 ? `${seedThought.content.slice(0, 160)}…` : seedThought.content)
+            : `Seed ${index + 1}`;
+          const matchedTerms = Array.isArray(bundle?.seed?.matched_terms) ? bundle.seed.matched_terms : [];
+          const support = Array.isArray(bundle?.support) ? bundle.support : [];
+          return `
+            <div class="bundle-card">
+              <h3>${seedTitle}</h3>
+              <div class="bundle-seed-meta">
+                <span class="badge badge-blue">lexical ${esc(normalizeSearchMetaNumber(bundle?.seed?.lexical_score))}</span>
+                <span class="badge badge-green">${esc(String(support.length))} support</span>
+                ${matchedTerms.slice(0, 4).map(term => `<span class="badge badge-gray">${esc(term)}</span>`).join('')}
+              </div>
+              <div class="bundle-support-list">
+                ${support.length
+                  ? support.map((item, supportIndex) => {
+                      const thought = item?.thought && typeof item.thought === 'object' ? item.thought : null;
+                      const text = thought?.content
+                        ? esc(thought.content.length > 180 ? `${thought.content.slice(0, 180)}…` : thought.content)
+                        : 'Supporting thought unavailable';
+                      const relationKinds = Array.isArray(item?.relation_kinds) ? item.relation_kinds : [];
+                      return `
+                        <div class="bundle-support-item ${thought ? 'clickable' : ''}" data-bundle-index="${index}" data-support-index="${supportIndex}">
+                          <div>${text}</div>
+                          <div class="bundle-seed-meta">
+                            <span class="badge badge-purple">depth ${esc(String(item?.depth ?? '—'))}</span>
+                            <span class="badge badge-gray">paths ${esc(String(item?.seed_path_count ?? 0))}</span>
+                            ${relationKinds.slice(0, 3).map(kind => `<span class="badge badge-gray">${esc(kind)}</span>`).join('')}
+                          </div>
+                        </div>
+                      `;
+                    }).join('')
+                  : '<div class="empty-state" style="padding:16px">No supporting context reached these seeds.</div>'}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+    bodyEl.querySelectorAll('.bundle-support-item.clickable').forEach(el => {
+      el.addEventListener('click', () => {
+        const bundleIndex = Number(el.getAttribute('data-bundle-index'));
+        const supportIndex = Number(el.getAttribute('data-support-index'));
+        const thought = rows?.[bundleIndex]?.support?.[supportIndex]?.thought;
+        if (thought) openModal(thought);
+      });
+    });
+  }
+
   function loadThoughts() {
     const body = document.getElementById('ex-body');
+    const bundlesEl = document.getElementById('ex-bundles');
     const pgEl = document.getElementById('ex-page');
     if (!body) return;
     spinner(body);
+    if (bundlesEl) bundlesEl.innerHTML = '';
     const { chainKey, page, perPage, sel, order, searchText, searchAgentId } = EX;
     const searching = explorerHasSearchFilters();
     let url = searching
@@ -1036,13 +1317,21 @@
     if (searching && searchAgentId) url += '&agent_id=' + encodeURIComponent(searchAgentId);
     api(url)
       .then(data => {
-        const thoughts = data.thoughts || [];
-        const total    = data.total    || 0;
-        const pages    = data.pages    || 1;
+        const normalized = searching
+          ? normalizeExplorerSearchPayload(data, page, perPage)
+          : normalizeExplorerSearchPayload(data, page, perPage);
+        const thoughts = normalized.thoughts;
+        const bundles = normalized.bundles || [];
+        const total = normalized.total;
+        const pages = normalized.pages;
+        const activePage = normalized.page || page;
+        const isRanked = searching && normalized.isRanked;
+        const rankBackend = normalized.backend;
         if (!thoughts.length) {
           body.innerHTML = searching
             ? '<div class="empty-state">No thoughts match this search in the current chain.</div>'
             : '<div class="empty-state">No thoughts match the current filter.</div>';
+          if (bundlesEl) bundlesEl.innerHTML = '';
           if (pgEl) pgEl.innerHTML = '';
           return;
         }
@@ -1050,33 +1339,61 @@
           <div class="table-wrap"><table>
             <thead><tr><th>#</th><th>Type</th><th>Role</th><th>Agent</th><th>Content</th><th>Date</th></tr></thead>
             <tbody>
-              ${thoughts.map((t, i) => `
-                <tr class="clickable" data-idx="${i}">
-                  <td class="mono" style="color:#8b949e;font-size:0.82rem">${esc(String(t.index ?? (EX.page-1)*EX.perPage+i+1))}</td>
-                  <td>${typeBadge(t.thought_type)}</td>
-                  <td>${t.role ? `<span class="badge badge-gray">${esc(t.role)}</span>` : '<span style="color:#484f58">—</span>'}</td>
-                  <td style="font-size:0.82rem">
-                    ${t.agent_id
-                      ? `<a class="mono" href="#agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(t.agent_id)}" onclick="event.stopPropagation()">${esc(t.agent_id)}</a>`
-                      : '<span style="color:#484f58">—</span>'}
-                  </td>
-                  <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9d1d9">
-                    ${esc((t.content || '').slice(0,100))}${(t.content||'').length>100?'…':''}
-                  </td>
-                  <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.timestamp||t.created_at))}</td>
-                </tr>
-              `).join('')}
+              ${thoughts.map((t, i) => {
+                const meta = t.__search && typeof t.__search === 'object' ? t.__search : null;
+                const rankOrIndex = meta && Number.isFinite(meta.rank)
+                  ? `<div class="mono" style="color:#58a6ff;font-size:0.84rem">${esc(String(meta.rank))}</div><div class="search-subtle mono">idx ${esc(String(t.index ?? '—'))}</div>`
+                  : `<span class="mono" style="color:#8b949e;font-size:0.82rem">${esc(String(t.index ?? (activePage-1)*EX.perPage+i+1))}</span>`;
+                const content = (t.content || '').trim();
+                const contentPreview = content.length > 120 ? `${content.slice(0, 120)}…` : content;
+                const scoreBadge = meta && meta.score && Number.isFinite(meta.score.total)
+                  ? `<span class="badge badge-blue" title="Rank score">score ${esc(normalizeSearchMetaNumber(meta.score.total))}</span>`
+                  : '';
+                const graphBadge = meta && meta.graphDistance != null
+                  ? `<span class="badge badge-purple" title="Graph distance">depth ${esc(String(meta.graphDistance))}</span>`
+                  : '';
+                const supportBadge = meta && Number.isFinite(meta.supportCount) && meta.supportCount > 0
+                  ? `<span class="badge badge-green" title="Context-bundle support">ctx ${esc(String(meta.supportCount))}</span>`
+                  : '';
+                const termsBadge = meta && Array.isArray(meta.matchedTerms) && meta.matchedTerms.length
+                  ? `<span class="badge badge-gray" title="${esc(meta.matchedTerms.join(', '))}">${esc(meta.matchedTerms.slice(0, 2).join(', '))}${meta.matchedTerms.length > 2 ? '…' : ''}</span>`
+                  : '';
+                const backendBadge = isRanked && rankBackend
+                  ? `<span class="badge badge-gray">${esc(rankBackend)}</span>`
+                  : '';
+                const metaLine = (scoreBadge || graphBadge || supportBadge || termsBadge || backendBadge)
+                  ? `<div class="search-meta">${scoreBadge}${graphBadge}${supportBadge}${termsBadge}${backendBadge}</div>`
+                  : '';
+                return `
+                  <tr class="clickable" data-idx="${i}">
+                    <td>${rankOrIndex}</td>
+                    <td>${typeBadge(t.thought_type)}</td>
+                    <td>${t.role ? `<span class="badge badge-gray">${esc(t.role)}</span>` : '<span style="color:#484f58">—</span>'}</td>
+                    <td style="font-size:0.82rem">
+                      ${t.agent_id
+                        ? `<a class="mono" href="#agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(t.agent_id)}" onclick="event.stopPropagation()">${esc(t.agent_id)}</a>`
+                        : '<span style="color:#484f58">—</span>'}
+                    </td>
+                    <td style="max-width:340px;overflow:hidden;color:#c9d1d9">
+                      <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(contentPreview)}</div>
+                      ${metaLine}
+                    </td>
+                    <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.timestamp||t.created_at))}</td>
+                  </tr>
+                `;
+              }).join('')}
             </tbody>
           </table></div>
         `;
         body.querySelectorAll('tbody tr').forEach((row, i) => {
           row.addEventListener('click', () => openModal(thoughts[i]));
         });
+        renderExplorerBundles(isRanked ? bundles : [], bundlesEl);
         if (pgEl) {
           pgEl.innerHTML = `
-            <button class="btn btn-secondary btn-sm" id="ex-prev" ${page<=1?'disabled':''}>← Prev</button>
-            <span class="pagination-info">Page ${page} of ${pages} &nbsp;·&nbsp; ${total.toLocaleString()} thought${total!==1?'s':''}</span>
-            <button class="btn btn-secondary btn-sm" id="ex-next" ${page>=pages?'disabled':''}>Next →</button>
+            <button class="btn btn-secondary btn-sm" id="ex-prev" ${activePage<=1?'disabled':''}>← Prev</button>
+            <span class="pagination-info">Page ${activePage} of ${pages} &nbsp;·&nbsp; ${total.toLocaleString()} thought${total!==1?'s':''}</span>
+            <button class="btn btn-secondary btn-sm" id="ex-next" ${activePage>=pages?'disabled':''}>Next →</button>
           `;
           document.getElementById('ex-prev')?.addEventListener('click', () => { EX.page--; loadThoughts(); window.scrollTo(0,0); });
           document.getElementById('ex-next')?.addEventListener('click', () => { EX.page++; loadThoughts(); window.scrollTo(0,0); });
@@ -1084,6 +1401,7 @@
       })
       .catch(err => {
         errBox(body, searching ? `Search failed: ${err.message}` : err.message);
+        if (bundlesEl) bundlesEl.innerHTML = '';
         if (pgEl) pgEl.innerHTML = '';
       });
   }

@@ -6,10 +6,12 @@ use std::sync::Arc;
 
 use axum::{body::Body, http::Request};
 use dashmap::DashMap;
+pub use mentisdb::search;
 pub use mentisdb::{
     chain_storage_filename, deregister_chain, load_registered_chains, AgentStatus,
-    BinaryStorageAdapter, MentisDb, PublicKeyAlgorithm, SkillFormat, SkillRegistry,
-    StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRole, ThoughtType,
+    BinaryStorageAdapter, MentisDb, PublicKeyAlgorithm, RankedSearchGraph, RankedSearchHit,
+    RankedSearchQuery, SkillFormat, SkillRegistry, StorageAdapterKind, Thought, ThoughtInput,
+    ThoughtQuery, ThoughtRelation, ThoughtRelationKind, ThoughtRole, ThoughtType,
 };
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -557,12 +559,199 @@ async fn chain_search_endpoint_filters_and_paginates_results() {
         .await
         .unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
+    let results = json["results"].as_array().unwrap();
     let thoughts = json["thoughts"].as_array().unwrap();
+    assert_eq!(json["mode"], "ranked");
+    assert_eq!(json["backend"], "lexical_graph");
+    assert_eq!(json["total"], 2);
+    assert_eq!(json["pages"], 2);
+    assert_eq!(results.len(), 1);
+    assert_eq!(thoughts.len(), 1);
+    assert_eq!(thoughts[0]["agent_id"], "astro");
+    assert!(results[0]["score"]["total"].as_f64().unwrap_or(0.0) > 0.0);
+    assert!(
+        thoughts[0]["content"] == "first dashboard search hit"
+            || thoughts[0]["content"] == "second dashboard search hit"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn chain_search_endpoint_includes_graph_supporting_context() {
+    let dir = unique_chain_dir();
+    let mut chain =
+        MentisDb::open_with_key_and_storage_kind(&dir, "source", StorageAdapterKind::Binary)
+            .unwrap();
+    let seed = chain
+        .append_thought(
+            "astro",
+            ThoughtInput::new(
+                ThoughtType::Decision,
+                "Latency ranking anchor for dashboard chain search.",
+            ),
+        )
+        .unwrap()
+        .clone();
+    chain
+        .append_thought(
+            "astro",
+            ThoughtInput::new(
+                ThoughtType::Summary,
+                "Operator rollout checklist linked from the anchor.",
+            )
+            .with_relations(vec![ThoughtRelation {
+                kind: ThoughtRelationKind::DerivedFrom,
+                target_id: seed.id,
+                chain_key: None,
+            }]),
+        )
+        .unwrap();
+    drop(chain);
+
+    let router = dashboard_router_for_dir(&dir);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/chains/source/search?text=latency%20ranking&page=1&per_page=10&order=desc")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let results = json["results"].as_array().unwrap();
+    let thoughts = json["thoughts"].as_array().unwrap();
+    assert_eq!(json["total"], 2);
+    assert_eq!(json["backend"], "lexical_graph");
+    assert_eq!(
+        thoughts[0]["content"],
+        "Latency ranking anchor for dashboard chain search."
+    );
+    assert_eq!(results[0]["thought"]["content"], thoughts[0]["content"]);
+    assert!(thoughts.iter().any(|thought| {
+        thought["content"] == "Operator rollout checklist linked from the anchor."
+    }));
+    assert!(results.iter().any(|hit| hit["graph_distance"] == 1));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn chain_search_bundles_endpoint_groups_support_under_seed() {
+    let dir = unique_chain_dir();
+    let mut chain =
+        MentisDb::open_with_key_and_storage_kind(&dir, "source", StorageAdapterKind::Binary)
+            .unwrap();
+    let seed = chain
+        .append_thought(
+            "astro",
+            ThoughtInput::new(
+                ThoughtType::Decision,
+                "Latency ranking seed for grouped dashboard bundles.",
+            ),
+        )
+        .unwrap()
+        .clone();
+    chain
+        .append_thought(
+            "astro",
+            ThoughtInput::new(
+                ThoughtType::Summary,
+                "Grouped support context without lexical overlap.",
+            )
+            .with_relations(vec![ThoughtRelation {
+                kind: ThoughtRelationKind::DerivedFrom,
+                target_id: seed.id,
+                chain_key: None,
+            }]),
+        )
+        .unwrap();
+    drop(chain);
+
+    let router = dashboard_router_for_dir(&dir);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/chains/source/search/bundles?text=latency%20ranking&page=1&per_page=10&order=desc")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let bundles = json["bundles"].as_array().unwrap();
+    let support = bundles[0]["support"].as_array().unwrap();
+
+    assert_eq!(json["total_bundles"], 1);
+    assert_eq!(bundles[0]["seed"]["thought"]["content"], seed.content);
+    assert_eq!(support.len(), 1);
+    assert_eq!(
+        support[0]["thought"]["content"],
+        "Grouped support context without lexical overlap."
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn chain_search_without_text_keeps_legacy_filtered_pagination() {
+    let dir = unique_chain_dir();
+    let mut chain =
+        MentisDb::open_with_key_and_storage_kind(&dir, "source", StorageAdapterKind::Binary)
+            .unwrap();
+    chain
+        .append_thought(
+            "astro",
+            ThoughtInput::new(ThoughtType::Summary, "older astro thought"),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "zeus",
+            ThoughtInput::new(ThoughtType::Summary, "zeus thought"),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "astro",
+            ThoughtInput::new(ThoughtType::Insight, "newer astro thought"),
+        )
+        .unwrap();
+    drop(chain);
+
+    let router = dashboard_router_for_dir(&dir);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/chains/source/search?agent_id=astro&page=1&per_page=1&order=desc")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let thoughts = json["thoughts"].as_array().unwrap();
+    assert!(json.get("results").is_none());
     assert_eq!(json["total"], 2);
     assert_eq!(json["pages"], 2);
     assert_eq!(thoughts.len(), 1);
-    assert_eq!(thoughts[0]["agent_id"], "astro");
-    assert_eq!(thoughts[0]["content"], "second dashboard search hit");
+    assert_eq!(thoughts[0]["content"], "newer astro thought");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -658,6 +847,8 @@ async fn dashboard_html_includes_chain_search_scaffolding() {
     let html = String::from_utf8(body.to_vec()).unwrap();
     assert!(html.contains("ex-search-text"));
     assert!(html.contains("/dashboard/api/chains/${encodeURIComponent(EX.chainKey)}/search/agents"));
+    assert!(html.contains("Context Bundles"));
+    assert!(html.contains("updateExplorerOrderUi"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

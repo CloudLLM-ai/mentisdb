@@ -18,8 +18,8 @@
 
 use crate::{
     deregister_chain, load_registered_chains, AgentStatus, MentisDb, PublicKeyAlgorithm,
-    SkillFormat, SkillRegistry, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery,
-    ThoughtRole, ThoughtType,
+    RankedSearchGraph, RankedSearchQuery, SkillFormat, SkillRegistry, StorageAdapterKind, Thought,
+    ThoughtInput, ThoughtQuery, ThoughtRelationKind, ThoughtRole, ThoughtType,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -30,7 +30,7 @@ use axum::{
     Form, Json, Router,
 };
 use dashmap::DashMap;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -89,6 +89,10 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
         // Thoughts for a chain
         .route("/chains/{chain_key}/thoughts", get(api_chain_thoughts))
         .route("/chains/{chain_key}/search", get(api_chain_search))
+        .route(
+            "/chains/{chain_key}/search/bundles",
+            get(api_chain_search_bundles),
+        )
         .route(
             "/chains/{chain_key}/search/agents",
             get(api_chain_search_agents),
@@ -500,6 +504,123 @@ fn paginated_thought_refs(
     })
 }
 
+fn dashboard_ranked_graph() -> RankedSearchGraph {
+    RankedSearchGraph::new()
+        .with_mode(crate::search::GraphExpansionMode::IncomingOnly)
+        .with_max_depth(2)
+        .with_max_visited(128)
+}
+
+fn dashboard_search_text(params: &DashboardSearchQuery) -> Option<String> {
+    params
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn dashboard_search_filter(params: &DashboardSearchQuery) -> ThoughtQuery {
+    let mut query = ThoughtQuery::new();
+    if let Some(agent_id) = params
+        .agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|agent_id| !agent_id.is_empty())
+    {
+        query = query.with_agent_ids([agent_id.to_string()]);
+    }
+    if let Some(types) = parse_type_filter(params.types.as_deref()) {
+        query = query.with_types(types);
+    }
+    query
+}
+
+fn dashboard_pages(total: usize, per_page: usize) -> usize {
+    total.div_ceil(per_page.max(1))
+}
+
+fn relation_kind_label(kind: ThoughtRelationKind) -> &'static str {
+    match kind {
+        ThoughtRelationKind::References => "references",
+        ThoughtRelationKind::Summarizes => "summarizes",
+        ThoughtRelationKind::Corrects => "corrects",
+        ThoughtRelationKind::Invalidates => "invalidates",
+        ThoughtRelationKind::CausedBy => "caused_by",
+        ThoughtRelationKind::Supports => "supports",
+        ThoughtRelationKind::Contradicts => "contradicts",
+        ThoughtRelationKind::DerivedFrom => "derived_from",
+        ThoughtRelationKind::ContinuesFrom => "continues_from",
+        ThoughtRelationKind::RelatedTo => "related_to",
+        ThoughtRelationKind::Supersedes => "supersedes",
+    }
+}
+
+fn thought_json_for_locator(
+    chain: &MentisDb,
+    locator: &crate::search::ThoughtLocator,
+) -> Option<Value> {
+    if locator.chain_key.is_some() {
+        return None;
+    }
+    if let Some(index) = locator.thought_index {
+        if let Some(thought) = chain.get_thought_by_index(index) {
+            if thought.id == locator.thought_id {
+                return Some(chain.thought_json(thought));
+            }
+        }
+    }
+    chain
+        .get_thought_by_id(locator.thought_id)
+        .map(|thought| chain.thought_json(thought))
+}
+
+fn graph_path_to_json(path: &crate::search::GraphExpansionPath) -> Value {
+    json!({
+        "seed": path.seed,
+        "hops": path.hops.iter().map(|hop| {
+            json!({
+                "direction": hop.direction,
+                "edge": hop.edge,
+            })
+        }).collect::<Vec<_>>(),
+    })
+}
+
+fn ranked_hit_response(
+    chain: &MentisDb,
+    hit: crate::RankedSearchHit<'_>,
+) -> DashboardRankedHitResponse {
+    DashboardRankedHitResponse {
+        thought: chain.thought_json(hit.thought),
+        score: DashboardRankedScoreResponse {
+            lexical: hit.score.lexical,
+            graph: hit.score.graph,
+            relation: hit.score.relation,
+            seed_support: hit.score.seed_support,
+            importance: hit.score.importance,
+            confidence: hit.score.confidence,
+            recency: hit.score.recency,
+            total: hit.score.total,
+        },
+        matched_terms: hit.matched_terms,
+        match_sources: hit
+            .match_sources
+            .into_iter()
+            .map(|source| source.as_str().to_string())
+            .collect(),
+        graph_distance: hit.graph_distance,
+        graph_seed_paths: hit.graph_seed_paths,
+        graph_relation_kinds: hit
+            .graph_relation_kinds
+            .into_iter()
+            .map(relation_kind_label)
+            .map(str::to_string)
+            .collect(),
+        graph_path: hit.graph_path.as_ref().map(graph_path_to_json),
+    }
+}
+
 fn thought_counts_by_agent(thoughts: &[Thought]) -> HashMap<&str, u64> {
     let mut counts = HashMap::new();
     for thought in thoughts {
@@ -538,6 +659,77 @@ struct DashboardSearchQuery {
     text: Option<String>,
     /// Optional producing agent id.
     agent_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DashboardRankedScoreResponse {
+    lexical: f32,
+    graph: f32,
+    relation: f32,
+    seed_support: f32,
+    importance: f32,
+    confidence: f32,
+    recency: f32,
+    total: f32,
+}
+
+#[derive(Serialize)]
+struct DashboardRankedHitResponse {
+    thought: Value,
+    score: DashboardRankedScoreResponse,
+    matched_terms: Vec<String>,
+    match_sources: Vec<String>,
+    graph_distance: Option<usize>,
+    graph_seed_paths: usize,
+    graph_relation_kinds: Vec<String>,
+    graph_path: Option<Value>,
+}
+
+#[derive(Serialize)]
+struct DashboardSearchResponse {
+    mode: String,
+    backend: Option<String>,
+    thoughts: Vec<Value>,
+    results: Vec<DashboardRankedHitResponse>,
+    bundles: Vec<DashboardContextBundleResponse>,
+    total: usize,
+    page: usize,
+    per_page: usize,
+    pages: usize,
+}
+
+#[derive(Serialize)]
+struct DashboardContextBundleSeedResponse {
+    locator: crate::search::ThoughtLocator,
+    lexical_score: f32,
+    matched_terms: Vec<String>,
+    thought: Option<Value>,
+}
+
+#[derive(Serialize)]
+struct DashboardContextBundleHitResponse {
+    locator: crate::search::ThoughtLocator,
+    thought: Option<Value>,
+    depth: usize,
+    seed_path_count: usize,
+    relation_kinds: Vec<String>,
+    path: Value,
+}
+
+#[derive(Serialize)]
+struct DashboardContextBundleResponse {
+    seed: DashboardContextBundleSeedResponse,
+    support: Vec<DashboardContextBundleHitResponse>,
+}
+
+#[derive(Serialize)]
+struct DashboardContextBundlesResponse {
+    total_bundles: usize,
+    consumed_hits: usize,
+    page: usize,
+    per_page: usize,
+    pages: usize,
+    bundles: Vec<DashboardContextBundleResponse>,
 }
 
 /// Query parameters for the skill-diff endpoint.
@@ -713,9 +905,11 @@ async fn api_chain_thoughts(
 
 /// `GET /dashboard/api/chains/:chain_key/search`
 ///
-/// Returns a paginated, chain-scoped dashboard search result. This keeps the
-/// explorer workflow stable while exposing text and agent-id filters without
-/// depending on the unpaginated generic REST search surface.
+/// Returns a paginated, chain-scoped dashboard search result.
+///
+/// When `text` is present this returns a canonical ranked payload with bundled
+/// context. Without `text`, it falls back to the explorer's legacy
+/// chronological filtering semantics.
 async fn api_chain_search(
     State(state): State<DashboardState>,
     Path(chain_key): Path<String>,
@@ -724,38 +918,158 @@ async fn api_chain_search(
     let arc = get_or_open_chain(&state, &chain_key).await?;
     let chain = arc.read().await;
 
-    let mut query = ThoughtQuery::new();
-    if let Some(text) = params
-        .text
-        .as_deref()
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-    {
-        query = query.with_text(text.to_string());
-    }
-    if let Some(agent_id) = params
-        .agent_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|agent_id| !agent_id.is_empty())
-    {
-        query = query.with_agent_ids([agent_id.to_string()]);
-    }
-    if let Some(types) = parse_type_filter(params.types.as_deref()) {
-        query = query.with_types(types);
-    }
-
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(50).max(1);
     let reverse = params.order.as_deref().unwrap_or("desc") != "asc";
-    let matched = chain.query(&query);
+    let filter = dashboard_search_filter(&params);
 
-    Ok(Json(paginated_thought_refs(
-        matched.as_slice(),
+    let Some(text) = dashboard_search_text(&params) else {
+        let matched = chain.query(&filter);
+        return Ok(Json(paginated_thought_refs(
+            matched.as_slice(),
+            page,
+            per_page,
+            reverse,
+        )));
+    };
+
+    let offset = (page.saturating_sub(1)).saturating_mul(per_page);
+    let ranked_limit = offset.saturating_add(per_page).max(1);
+    let ranked_query = RankedSearchQuery::new()
+        .with_filter(filter)
+        .with_text(text)
+        .with_graph(dashboard_ranked_graph())
+        .with_limit(ranked_limit);
+    let ranked = chain.query_ranked(&ranked_query);
+    let total = ranked.total_candidates;
+    let pages = dashboard_pages(total, per_page);
+    let results: Vec<DashboardRankedHitResponse> = ranked
+        .hits
+        .into_iter()
+        .skip(offset)
+        .take(per_page)
+        .map(|hit| ranked_hit_response(&chain, hit))
+        .collect();
+    let bundles: Vec<DashboardContextBundleResponse> = chain
+        .query_context_bundles(&ranked_query)
+        .bundles
+        .into_iter()
+        .skip(offset)
+        .take(per_page)
+        .map(|bundle| DashboardContextBundleResponse {
+            seed: DashboardContextBundleSeedResponse {
+                locator: bundle.seed.locator.clone(),
+                lexical_score: bundle.seed.lexical_score,
+                matched_terms: bundle.seed.matched_terms,
+                thought: thought_json_for_locator(&chain, &bundle.seed.locator),
+            },
+            support: bundle
+                .support
+                .into_iter()
+                .map(|support_hit| DashboardContextBundleHitResponse {
+                    locator: support_hit.locator.clone(),
+                    thought: thought_json_for_locator(&chain, &support_hit.locator),
+                    depth: support_hit.depth,
+                    seed_path_count: support_hit.seed_path_count,
+                    relation_kinds: support_hit
+                        .relation_kinds
+                        .into_iter()
+                        .map(relation_kind_label)
+                        .map(str::to_string)
+                        .collect(),
+                    path: graph_path_to_json(&support_hit.path),
+                })
+                .collect(),
+        })
+        .collect();
+    let response = DashboardSearchResponse {
+        mode: "ranked".to_string(),
+        backend: Some(ranked.backend.as_str().to_string()),
+        thoughts: results.iter().map(|hit| hit.thought.clone()).collect(),
+        results,
+        bundles,
+        total,
         page,
         per_page,
-        reverse,
-    )))
+        pages,
+    };
+    Ok(Json(
+        serde_json::to_value(response).map_err(internal_error)?,
+    ))
+}
+
+/// `GET /dashboard/api/chains/:chain_key/search/bundles`
+///
+/// Returns paginated seed-anchored supporting context bundles for the current
+/// dashboard search text query.
+async fn api_chain_search_bundles(
+    State(state): State<DashboardState>,
+    Path(chain_key): Path<String>,
+    Query(params): Query<DashboardSearchQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(text) = dashboard_search_text(&params) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "text query is required for context bundles"})),
+        ));
+    };
+    let arc = get_or_open_chain(&state, &chain_key).await?;
+    let chain = arc.read().await;
+    let page = params.page.unwrap_or(1).max(1);
+    let per_page = params.per_page.unwrap_or(50).max(1);
+    let offset = (page.saturating_sub(1)).saturating_mul(per_page);
+    let bundle_limit = offset.saturating_add(per_page).max(1);
+    let result = chain.query_context_bundles(
+        &RankedSearchQuery::new()
+            .with_filter(dashboard_search_filter(&params))
+            .with_text(text)
+            .with_graph(dashboard_ranked_graph())
+            .with_limit(bundle_limit),
+    );
+    let total_bundles = result.bundles.len();
+    let pages = dashboard_pages(total_bundles, per_page);
+    let bundles = result
+        .bundles
+        .into_iter()
+        .skip(offset)
+        .take(per_page)
+        .map(|bundle| DashboardContextBundleResponse {
+            seed: DashboardContextBundleSeedResponse {
+                locator: bundle.seed.locator.clone(),
+                lexical_score: bundle.seed.lexical_score,
+                matched_terms: bundle.seed.matched_terms,
+                thought: thought_json_for_locator(&chain, &bundle.seed.locator),
+            },
+            support: bundle
+                .support
+                .into_iter()
+                .map(|support_hit| DashboardContextBundleHitResponse {
+                    locator: support_hit.locator.clone(),
+                    thought: thought_json_for_locator(&chain, &support_hit.locator),
+                    depth: support_hit.depth,
+                    seed_path_count: support_hit.seed_path_count,
+                    relation_kinds: support_hit
+                        .relation_kinds
+                        .into_iter()
+                        .map(relation_kind_label)
+                        .map(str::to_string)
+                        .collect(),
+                    path: graph_path_to_json(&support_hit.path),
+                })
+                .collect(),
+        })
+        .collect();
+    let response = DashboardContextBundlesResponse {
+        total_bundles,
+        consumed_hits: result.consumed_hits,
+        page,
+        per_page,
+        pages,
+        bundles,
+    };
+    Ok(Json(
+        serde_json::to_value(response).map_err(internal_error)?,
+    ))
 }
 
 /// `GET /dashboard/api/chains/:chain_key/search/agents`

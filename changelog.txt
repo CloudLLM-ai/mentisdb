@@ -1,4 +1,9 @@
 0.7.0.18 MAR/25/2026
+ - feat(dashboard): wire chain explorer search to ranked retrieval and context bundles
+   - Dashboard chain search now uses canonical ranked lexical+graph retrieval when search text is present, while preserving chronological filtering for plain agent/type-only browsing
+   - Added grouped dashboard context-bundle inspection so operators can see seed-anchored supporting thoughts without flattening the entire graph into one list
+   - Thought modal now surfaces ranked-search metadata such as score breakdowns, matched terms, graph distance, relation kinds, and bundle support preview
+   - Added dashboard regression coverage for ranked search pagination, graph-support retrieval, grouped bundles, and legacy non-text filtering behavior
  - feat(search): add optional vector sidecars for semantic retrieval
    - Added `search::EmbeddingProvider`, `EmbeddingMetadata`, cosine-ranked `VectorIndex`, and deterministic vector validation helpers for provider-agnostic embedding pipelines
    - Added rebuildable per-chain vector sidecars with explicit integrity digests, model/version separation, and freshness states that distinguish fresh sidecars from stale or mismatched ones

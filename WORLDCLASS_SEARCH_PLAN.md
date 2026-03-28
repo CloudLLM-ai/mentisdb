@@ -14,7 +14,7 @@
 - Phase 2 is complete in the core crate.
 - Phase 3 is complete in the core crate.
 - Phase 4 is complete at the transport layer.
-- Phase 5 is pending for final dashboard wiring to the ranked core path.
+- Phase 5 is complete at the dashboard layer.
 
 ## Current Baseline
 
@@ -289,6 +289,8 @@ Expose one high-quality retrieval surface that can blend filters, lexical rankin
 
 ## Phase 5: Dashboard Integration
 
+Status: complete on `master` as of March 28, 2026.
+
 ### Objective
 
 Make search visible and useful to operators inside the current chain explorer workflow.
@@ -300,6 +302,8 @@ Make search visible and useful to operators inside the current chain explorer wo
   - text input
   - agent-id dropdown populated from the currently browsed chain
 - Reuse the existing table, thought modal, and pagination patterns.
+- Keep plain author/type filtering in chronological order when no search text is present.
+- Surface ranked-search metadata and grouped context bundles when search text is present.
 
 ### UX Design
 
@@ -317,6 +321,8 @@ Make search visible and useful to operators inside the current chain explorer wo
 - Add a dashboard-oriented chain search endpoint with pagination metadata.
 - Add a chain-scoped agent list endpoint suitable for the dropdown.
 - Ensure the dropdown reflects live authors in the chain, not only registry entries.
+- Return canonical ranked-search fields additively so the dashboard does not drift from MCP/REST vocabulary.
+- Expose a dashboard bundle endpoint for explicit grouped-context inspection.
 
 ### States
 
@@ -332,6 +338,9 @@ Make search visible and useful to operators inside the current chain explorer wo
 - tests for:
   - chain-scoped agent dropdown data
   - search pagination
+  - ranked result metadata
+  - grouped context bundles
+  - non-text legacy filtering behavior
   - empty and error states
 
 ### Parallel Slice
@@ -385,6 +394,7 @@ Make search visible and useful to operators inside the current chain explorer wo
 - graph expansion brings in the right supporting context without flooding the result set
 - vector hits are optional, attributable, and rebuildable
 - dashboard search is fast enough for interactive operator use
+- dashboard operators can inspect why a result surfaced without leaving the UI
 
 ## Concurrency Plan
 
