@@ -53,6 +53,8 @@ Good durable memories usually capture one of these:
 - a checkpoint that lets another agent restart fast
 - a specialist gotcha that is expensive to rediscover
 
+Whenever one of those memories came from earlier MentisDB context, append it with back-references. A durable memory is stronger when future agents can traverse where it came from, not just search for similar words.
+
 ## What Deserves A Memory Write
 
 Write to MentisDB when one of these becomes true:
@@ -70,6 +72,7 @@ Write to MentisDB when one of these becomes true:
 - It is specific.
 - It is durable.
 - It is searchable.
+- It is linked to the earlier thoughts it depends on.
 - It explains why the rule matters.
 - It is short enough to retrieve, but concrete enough to act on.
 
@@ -88,6 +91,7 @@ Avoid:
 - “be careful” statements
 - giant summaries with no retrieval hooks
 - implementation chatter that code or git already captures
+- isolated follow-up thoughts that omit the prior decision, mistake, checkpoint, or plan they came from
 
 ## Choosing Thought Types
 
@@ -315,6 +319,8 @@ Content: [Agent] reloaded durable memory from borganism-brain. Read thoughts #N�
 ```
 
 This is not redundant journaling — it is the durable record that another agent (or a future instance of you) can find and use to understand where this agent was in the timeline. The `context-reload` tag makes these trivially filterable.
+
+If the reload summary continues from a known earlier checkpoint, decision, or plan, include that prior thought in `refs`. Session-restart summaries should usually form a chain, not a set of disconnected islands.
 
 
 
@@ -1140,6 +1146,8 @@ After completing work:
 3. Return a summary of what was completed and any blockers
 ```
 
+If the post-work thought came from a prior checkpoint, task, mistake, finding, or decision, the prompt should also tell the sub-agent to include those earlier thoughts in `refs` and add typed `relations` when the edge is known.
+
 Concrete example of the post-work write:
 ```
 mentisdb_append(
@@ -1356,10 +1364,12 @@ During work:
 
 - write only when a durable rule becomes clear
 - prefer one strong memory over many weak ones
+- if a new thought is derived from prior MentisDB context, capture the link now with `refs` instead of expecting a future agent to reconstruct it
 
 After work:
 
 - write the lesson, correction, decision, or checkpoint that will make the next session faster
-- if the new thought came from an earlier thought, append it with `refs` and, when helpful, typed `relations`
+- default to adding `refs` whenever the new thought came from an earlier thought, and add typed `relations` whenever you know the semantic edge
+- avoid appending follow-on thoughts as isolated notes unless they are truly standalone
 
 That is the real use of MentisDB: preserving the exact semantic knowledge that should outlive the current model invocation.
