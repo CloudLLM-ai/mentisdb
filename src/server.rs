@@ -2214,9 +2214,7 @@ impl MentisDbService {
             limit: None,
         })?;
         let offset = request.offset.unwrap_or(0);
-        let page_size = request
-            .limit
-            .unwrap_or_else(|| chain.thoughts().len().max(1));
+        let page_size = request.limit.unwrap_or(50);
         let ranked_limit = offset.saturating_add(page_size).max(1);
         let ranked = chain.query_ranked(
             &RankedSearchQuery::new()
@@ -2253,10 +2251,7 @@ impl MentisDbService {
         let chain = chain.read().await;
         let filter = build_ranked_filter_query(&request, chain_key.clone())?;
         let offset = request.offset.unwrap_or(0);
-        let page_size = request
-            .limit
-            .unwrap_or_else(|| chain.thoughts().len().max(1))
-            .max(1);
+        let page_size = request.limit.unwrap_or(50).max(1);
         let ranked_limit = offset.saturating_add(page_size).max(1);
         let mut ranked_query = RankedSearchQuery::new()
             .with_filter(filter)
@@ -2329,10 +2324,7 @@ impl MentisDbService {
         let chain = chain.read().await;
         let filter = build_ranked_filter_query(&request, chain_key.clone())?;
         let offset = request.offset.unwrap_or(0);
-        let page_size = request
-            .limit
-            .unwrap_or_else(|| chain.thoughts().len().max(1))
-            .max(1);
+        let page_size = request.limit.unwrap_or(50).max(1);
         let bundle_limit = offset.saturating_add(page_size).max(1);
         let mut ranked_query = RankedSearchQuery::new()
             .with_filter(filter)
@@ -2351,13 +2343,17 @@ impl MentisDbService {
 
         let mut total_query = ranked_query.clone();
         total_query.limit = chain.thoughts().len().max(1);
-        let total_bundles = chain.query_context_bundles(&total_query).bundles.len();
-        let bundled = chain.query_context_bundles(&ranked_query);
-        let bundles = bundled
+        let all_bundles = chain.query_context_bundles(&total_query);
+        let total_bundles = all_bundles.bundles.len();
+        let paged_bundles: Vec<_> = all_bundles
             .bundles
             .into_iter()
             .skip(offset)
             .take(page_size)
+            .collect();
+        let consumed_hits = all_bundles.consumed_hits;
+        let bundles = paged_bundles
+            .into_iter()
             .map(|bundle| {
                 let seed_locator = transport_locator(&bundle.seed.locator);
                 let seed_thought = thought_json_for_locator(&chain, &bundle.seed.locator);
@@ -2395,7 +2391,7 @@ impl MentisDbService {
 
         Ok(ContextBundlesResponse {
             total_bundles,
-            consumed_hits: bundled.consumed_hits,
+            consumed_hits,
             bundles,
         })
     }
@@ -4110,10 +4106,53 @@ async fn rest_search_handler(
     service_call(service.search(request).await)
 }
 
+/// Maximum number of elements permitted in any single filter array on search endpoints.
+/// Requests exceeding this cap are rejected with 422 Unprocessable Entity before any
+/// chain lock is acquired, preventing allocation-based denial-of-service attacks.
+const MAX_FILTER_ARRAY_LEN: usize = 100;
+
+/// Returns `true` when any filter array on the lexical search request exceeds the cap.
+fn lexical_search_filter_arrays_exceed_limit(request: &LexicalSearchRequest) -> bool {
+    request
+        .thought_types
+        .as_deref()
+        .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
+        || request
+            .agent_ids
+            .as_deref()
+            .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
+}
+
+/// Returns `true` when any filter array on the ranked search request exceeds the cap.
+fn ranked_search_filter_arrays_exceed_limit(request: &RankedSearchRequest) -> bool {
+    request
+        .thought_types
+        .as_deref()
+        .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
+        || request
+            .tags_any
+            .as_deref()
+            .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
+        || request
+            .concepts_any
+            .as_deref()
+            .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
+        || request
+            .agent_ids
+            .as_deref()
+            .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
+}
+
 async fn rest_lexical_search_handler(
     State(service): State<Arc<MentisDbService>>,
     Json(request): Json<LexicalSearchRequest>,
 ) -> Result<Json<LexicalSearchResponse>, (StatusCode, Json<Value>)> {
+    if lexical_search_filter_arrays_exceed_limit(&request) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "filter array exceeds maximum length of 100"})),
+        ));
+    }
     service_call(service.lexical_search(request).await)
 }
 
@@ -4121,6 +4160,12 @@ async fn rest_ranked_search_handler(
     State(service): State<Arc<MentisDbService>>,
     Json(request): Json<RankedSearchRequest>,
 ) -> Result<Json<RankedSearchResponse>, (StatusCode, Json<Value>)> {
+    if ranked_search_filter_arrays_exceed_limit(&request) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "filter array exceeds maximum length of 100"})),
+        ));
+    }
     service_call(service.ranked_search(request).await)
 }
 
@@ -4128,6 +4173,12 @@ async fn rest_context_bundles_handler(
     State(service): State<Arc<MentisDbService>>,
     Json(request): Json<RankedSearchRequest>,
 ) -> Result<Json<ContextBundlesResponse>, (StatusCode, Json<Value>)> {
+    if ranked_search_filter_arrays_exceed_limit(&request) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "filter array exceeds maximum length of 100"})),
+        ));
+    }
     service_call(service.context_bundles(request).await)
 }
 
