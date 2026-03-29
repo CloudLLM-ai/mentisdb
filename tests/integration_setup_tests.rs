@@ -154,9 +154,10 @@ fn macos_detection_distinguishes_configured_and_installed() {
 fn claude_code_detection_requires_mcpservers_entry_in_settings_json() {
     let root = TempDir::new().unwrap();
     let home = root.path().join("home");
+    // ~/.claude directory is the detection probe; ~/.claude.json is the config target
     let claude_dir = home.join(".claude");
     std::fs::create_dir_all(&claude_dir).unwrap();
-    std::fs::write(claude_dir.join("settings.json"), "{}").unwrap();
+    // legacy mcp file in companion target is not sufficient for Configured status
     std::fs::create_dir_all(claude_dir.join("mcp")).unwrap();
     std::fs::write(
         claude_dir.join("mcp").join("mentisdb.json"),
@@ -178,8 +179,9 @@ fn claude_code_detection_requires_mcpservers_entry_in_settings_json() {
         DetectionStatus::InstalledOrUsed
     );
 
+    // Writing mcpServers to the actual config target (~/.claude.json) triggers Configured
     std::fs::write(
-        claude_dir.join("settings.json"),
+        home.join(".claude.json"),
         "{\"mcpServers\":{\"mentisdb\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:9471\"}}}",
     )
     .unwrap();
@@ -197,9 +199,10 @@ fn claude_code_detection_requires_mcpservers_entry_in_settings_json() {
 fn claude_code_detection_treats_realistic_settings_json_as_installed_not_configured() {
     let root = TempDir::new().unwrap();
     let home = root.path().join("home");
+    // ~/.claude directory is the detection probe; ~/.claude.json is the config target
     std::fs::create_dir_all(home.join(".claude")).unwrap();
     std::fs::write(
-        home.join(".claude").join("settings.json"),
+        home.join(".claude.json"),
         r#"{
   "theme": "dark",
   "projects": {
@@ -229,10 +232,7 @@ fn claude_code_detection_treats_realistic_settings_json_as_installed_not_configu
     let catalog = build_detected_setup_catalog(report);
     let claude = catalog.integration(IntegrationKind::ClaudeCode).unwrap();
     assert_eq!(claude.action, SetupAction::CreateCanonicalConfig);
-    assert_eq!(
-        claude.targets[0].path,
-        home.join(".claude").join("settings.json")
-    );
+    assert_eq!(claude.targets[0].path, home.join(".claude.json"));
     assert!(claude.targets[0].exists);
 }
 
