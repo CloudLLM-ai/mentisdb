@@ -355,6 +355,13 @@ Use the right read tool for the job:
 - use `head` when you want the latest thought at the current chain tip
 - use `traverse_thoughts` when you need deterministic append-order replay rather than ranked retrieval
 
+Important retrieval rule:
+
+- plain `search` stays deterministic and filter-first; use it when exact semantic filters matter more than ranked relevance
+- `ranked_search` is the default "best match" path for topical text queries; when the daemon has a managed vector sidecar enabled for the chain, ranked search becomes seamless hybrid retrieval that blends lexical exact-match signals, semantic vector similarity, and graph-aware support scoring
+- vector sidecars are additive acceleration state, not canonical memory; if they are missing, stale, disabled, or unavailable, ranked search should still be expected to degrade cleanly back toward lexical + graph behavior rather than fail
+- `context_bundles` are still the right tool when the user needs grouped supporting context under the best seed thoughts instead of one flat ranked list
+
 This distinction matters:
 
 - ranked search answers "what looks most relevant?"
@@ -847,7 +854,7 @@ Continue backward like this:
 
 A strong retrieval loop is:
 
-1. `mentisdb_ranked_search` for candidate thoughts when you have a topical text query
+1. `mentisdb_ranked_search` for candidate thoughts when you have a topical text query; this is the seamless hybrid path when managed vector sidecars are available
 2. choose one anchor thought from the results
 3. `mentisdb_get_thought` if you need the exact full record
 4. `mentisdb_traverse_thoughts` around that anchor to recover ordered context

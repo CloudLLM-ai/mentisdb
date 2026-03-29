@@ -1,3 +1,23 @@
+0.7.2.20 MAR/29/2026
+ - feat(search): managed vector sidecars and seamless hybrid ranked retrieval
+   - Added a built-in local text embedding provider plus persisted per-chain managed vector-sidecar settings for `mentisdbd`
+   - Managed sidecars now stay synchronized on append when enabled, and ranked search automatically blends lexical, graph, and vector signals through `hybrid` / `hybrid_graph` backends instead of requiring a separate semantic-search mode
+   - Ranked result payloads now expose a `vector` score component across crate, REST, MCP, and dashboard surfaces, and strong semantic hits can surface even when lexical overlap is weak or absent
+   - Vector sidecar writes now go through temp-file replacement, stale/corrupt sidecars degrade cleanly back to lexical+graph retrieval, and deleting a chain removes its sidecar/config artifacts
+ - feat(dashboard): per-chain vector-sidecar management and hybrid-search visibility
+   - Chain detail pages now show vector-sidecar status, freshness, indexed-thought counts, and the on-disk sidecar path for each managed provider
+   - Added dashboard actions to enable/disable append-time sidecar sync, run `Sync now`, and `Rebuild from scratch` with explicit delete-and-recreate confirmation
+   - The `Vector Sidecars` panel is now collapsible and collapsed by default so it does not get in the way of the search form
+   - Explorer search copy and ranked result metadata now reflect the fact that dashboard search transparently uses lexical, graph, and managed vector retrieval when available
+ - feat(setup): refresh first-run and integration-setup behavior
+   - `mentisdbd` can now launch the interactive setup wizard directly from the first-run daemon notice
+   - Claude Code setup now targets the global `~/.claude.json` / `%USERPROFILE%\\.claude.json` config (`mcpServers.mentisdb`), while the legacy `~/.claude/mcp/mentisdb.json` path remains detectable as a legacy companion file
+   - GitHub Copilot CLI setup remains `~/.copilot/mcp-config.json` by default and respects `XDG_CONFIG_HOME/copilot/mcp-config.json` on XDG hosts
+   - Expanded setup/apply/wizard regression coverage to lock the current path and detection behavior in place
+ - docs: refresh README and release-facing docs for the current system reality
+   - Updated README to document managed vector-sidecar APIs, default daemon behavior, transparent hybrid search, dashboard vector controls, and the current setup targets for Claude Code and Copilot
+   - Added/updated regression coverage that keeps the release docs aligned with the implemented search/vector behavior
+
 0.7.1.19 MAR/28/2026
  - feat(dashboard): wire chain explorer search to ranked retrieval and context bundles
    - Dashboard chain search now uses canonical ranked lexical+graph retrieval when search text is present, while preserving chronological filtering for plain agent/type-only browsing

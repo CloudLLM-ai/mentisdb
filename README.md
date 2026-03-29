@@ -455,7 +455,7 @@ let results = chain.query(&lexical);
 Design note:
 
 - treat this lexical/filter-first behavior as the baseline
-- keep ranked, vector, and future hybrid search as separate, explicitly documented surfaces
+- keep ranked, vector, and hybrid retrieval as additive, explicitly documented surfaces on top of that baseline
 - do not silently change the semantics of `ThoughtQuery` or `/v1/search` from append-order filtering to score-ranked retrieval
 
 The dedicated benchmark `benches/search_baseline.rs` and evaluation tests in `tests/search_eval_tests.rs` are intended to preserve that baseline while world-class search evolves.
@@ -477,7 +477,7 @@ This surface is intentionally separate from `ThoughtQuery`.
 Current ranked-search behavior:
 
 - `RankedSearchQuery.filter` uses the same deterministic semantics as `MentisDb::query`
-- when `text` normalizes to a non-empty query, the backend is `lexical`
+- when `text` normalizes to a non-empty query, the backend is `lexical` or `hybrid` depending on whether a managed vector sidecar is active for the current handle
 - lexical ranking scores indexed thought text plus agent metadata from the filtered candidate set
 - when a managed vector sidecar is active for the current handle, ranked search blends lexical scoring with vector similarity and the backend becomes `hybrid`
 - when `graph` is enabled alongside non-empty `text`, the backend becomes `lexical_graph` or `hybrid_graph` depending on whether vector scoring is available
@@ -705,6 +705,7 @@ Dashboard capabilities:
 - chain-scoped ranked search with text and live-agent filters
 - grouped context bundles for seed-anchored supporting search context
 - ranked result inspection in the thought modal, including score breakdowns, matched terms, graph distance, relation kinds, and bundle support preview
+- per-chain vector sidecar inspection plus enable/disable, sync, and rebuild controls
 - agent detail management for display name, description, owner, status, and signing keys
 - latest agent-thought browsing without restarting the daemon after new thoughts are appended
 - chain import from `MEMORY.md`
@@ -1021,7 +1022,9 @@ claude mcp get mentisdb
 ```
 
 `mentisdbd setup claude-code` merges the MCP server entry into
-`~/.claude/settings.json`, preserving your existing Claude Code settings. The
+`~/.claude.json` (or `%USERPROFILE%\.claude.json` on Windows), preserving your
+existing Claude Code settings. The older `~/.claude/mcp/mentisdb.json` path is
+treated as a legacy companion file, not the canonical config target. The
 MentisDB HTTP MCP block it writes looks like this:
 
 ```json
