@@ -38,6 +38,8 @@ pub use sidecar::{
 };
 pub use vector::{
     cosine_similarity, embed_batch_to_documents, EmbeddingBuildError, EmbeddingInput,
-    EmbeddingMetadata, EmbeddingProvider, EmbeddingVector, VectorDocument, VectorIndex,
-    VectorIndexError, VectorQuery, VectorSearchHit,
+    EmbeddingMetadata, EmbeddingProvider, EmbeddingVector, LocalTextEmbeddingError,
+    LocalTextEmbeddingProvider, VectorDocument, VectorIndex, VectorIndexError, VectorQuery,
+    VectorSearchHit, LOCAL_TEXT_EMBEDDING_DIMENSION, LOCAL_TEXT_EMBEDDING_MODEL_ID,
+    LOCAL_TEXT_EMBEDDING_VERSION,
 };

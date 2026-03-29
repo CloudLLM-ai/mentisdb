@@ -963,6 +963,172 @@
   // =====================================================================
   // THOUGHT EXPLORER
   // =====================================================================
+  function vectorPanelStorageKey(chainKey) {
+    return `mentisdb.vector-panel.${chainKey}`;
+  }
+
+  function isVectorPanelCollapsed(chainKey) {
+    try {
+      return localStorage.getItem(vectorPanelStorageKey(chainKey)) !== 'open';
+    } catch (_) {
+      return true;
+    }
+  }
+
+  function setVectorPanelCollapsed(chainKey, collapsed) {
+    try {
+      localStorage.setItem(vectorPanelStorageKey(chainKey), collapsed ? 'collapsed' : 'open');
+    } catch (_) {}
+  }
+
+  function updateVectorPanelVisibility(chainKey) {
+    const body = document.getElementById('ex-vector-body');
+    const btn = document.getElementById('ex-vector-toggle');
+    if (!body || !btn) return;
+    const collapsed = isVectorPanelCollapsed(chainKey);
+    body.style.display = collapsed ? 'none' : '';
+    btn.textContent = collapsed ? 'Show' : 'Hide';
+    btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    btn.title = collapsed ? 'Show vector sidecar controls' : 'Hide vector sidecar controls';
+  }
+
+  function vectorFreshnessName(freshness) {
+    if (!freshness) return null;
+    if (typeof freshness === 'string') return freshness;
+    const keys = Object.keys(freshness);
+    return keys.length ? keys[0] : null;
+  }
+
+  function vectorFreshnessBadge(status) {
+    if (status.load_error) return '<span class="badge badge-red">Corrupt</span>';
+    if (!status.sidecar_exists) return '<span class="badge badge-gray">Missing</span>';
+    const name = vectorFreshnessName(status.freshness);
+    if (name === 'Fresh') return '<span class="badge badge-green">Fresh</span>';
+    if (name) return `<span class="badge badge-yellow">${esc(name.replaceAll(/([A-Z])/g, ' $1').trim())}</span>`;
+    return '<span class="badge badge-gray">Unknown</span>';
+  }
+
+  function loadVectorPanel(chainKey) {
+    const panel = document.getElementById('ex-vector-card');
+    if (!panel) return;
+    panel.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
+        <div class="card-title" style="margin-bottom:0">Vector Sidecars</div>
+        <button class="btn btn-secondary btn-sm" id="ex-vector-toggle" style="padding:4px 10px;font-size:0.8rem;line-height:1.2">Show</button>
+      </div>
+      <div id="ex-vector-body"><div class="empty-state">Loading vector sidecars…</div></div>
+    `;
+    const toggle = document.getElementById('ex-vector-toggle');
+    if (toggle) {
+      toggle.addEventListener('click', () => {
+        const collapsed = !isVectorPanelCollapsed(chainKey);
+        setVectorPanelCollapsed(chainKey, collapsed);
+        updateVectorPanelVisibility(chainKey);
+      });
+    }
+    updateVectorPanelVisibility(chainKey);
+    const panelBody = document.getElementById('ex-vector-body');
+    if (!panelBody) return;
+    api(`/dashboard/api/chains/${encodeURIComponent(chainKey)}`)
+      .then(data => {
+        const sidecars = Array.isArray(data.vector_sidecars) ? data.vector_sidecars : [];
+        panelBody.innerHTML = `
+          <p style="color:#8b949e;margin:0 0 12px 0">The daemon uses the built-in local provider by default. Disabling auto-sync keeps the sidecar optional, but new thoughts can make it stale until you sync it again.</p>
+          <div id="ex-vector-feedback" class="feedback" style="margin-bottom:12px"></div>
+          ${sidecars.map(status => {
+            const freshnessName = vectorFreshnessName(status.freshness);
+            const needsSync = !!status.load_error || !status.sidecar_exists || freshnessName !== 'Fresh';
+            return `
+              <div style="border:1px solid #30363d;border-radius:10px;padding:14px;margin-bottom:12px">
+                <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+                  <div>
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+                      <strong>${esc(status.provider_key || 'vector')}</strong>
+                      ${status.enabled ? '<span class="badge badge-blue">Auto-sync enabled</span>' : '<span class="badge badge-gray">Auto-sync disabled</span>'}
+                      ${vectorFreshnessBadge(status)}
+                      ${needsSync ? '<span class="badge badge-yellow">Needs sync</span>' : '<span class="badge badge-green">Up to date</span>'}
+                    </div>
+                    <div class="mono" style="font-size:0.85rem;color:#8b949e">${esc(status.metadata?.model_id || '—')} · ${esc(String(status.metadata?.dimension || '—'))}d · ${esc(status.metadata?.embedding_version || '—')}</div>
+                    <div style="font-size:0.9rem;color:#8b949e;margin-top:6px">Indexed thoughts: ${esc(String(status.indexed_thought_count ?? 0))} / ${esc(String(status.thought_count ?? 0))}</div>
+                    <div style="font-size:0.82rem;color:#8b949e;margin-top:6px;word-break:break-all">${esc(status.sidecar_path || '')}</div>
+                    ${status.load_error ? `<div style="font-size:0.9rem;color:#f85149;margin-top:6px">${esc(status.load_error)}</div>` : ''}
+                  </div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <button class="btn btn-secondary btn-sm" data-vector-toggle="${esc(status.provider_key)}">${status.enabled ? 'Disable auto-sync' : 'Enable auto-sync'}</button>
+                    <button class="btn btn-secondary btn-sm" data-vector-sync="${esc(status.provider_key)}">Sync now</button>
+                    <button class="btn btn-danger btn-sm" data-vector-rebuild="${esc(status.provider_key)}">Rebuild from scratch</button>
+                  </div>
+                </div>
+              </div>
+            `;
+          }).join('') || '<div class="empty-state">No vector sidecars configured for this chain.</div>'}
+        `;
+        updateVectorPanelVisibility(chainKey);
+
+        const feedback = document.getElementById('ex-vector-feedback');
+        panelBody.querySelectorAll('[data-vector-toggle]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const key = btn.getAttribute('data-vector-toggle');
+            const current = sidecars.find(status => status.provider_key === key);
+            const action = current?.enabled ? 'disable' : 'enable';
+            btn.disabled = true;
+            api(`/dashboard/api/chains/${encodeURIComponent(chainKey)}/vectors/${encodeURIComponent(key)}/${action}`, { method: 'POST' })
+              .then(() => {
+                showFeedback(feedback, true, current?.enabled ? 'Auto-sync disabled' : 'Auto-sync enabled');
+                loadVectorPanel(chainKey);
+              })
+              .catch(err => {
+                showFeedback(feedback, false, err.message);
+                btn.disabled = false;
+              });
+          });
+        });
+
+        panelBody.querySelectorAll('[data-vector-sync]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const key = btn.getAttribute('data-vector-sync');
+            btn.disabled = true;
+            api(`/dashboard/api/chains/${encodeURIComponent(chainKey)}/vectors/${encodeURIComponent(key)}/sync`, { method: 'POST' })
+              .then(() => {
+                showFeedback(feedback, true, 'Vector sidecar synced to the latest chain state');
+                loadVectorPanel(chainKey);
+              })
+              .catch(err => {
+                showFeedback(feedback, false, err.message);
+                btn.disabled = false;
+              });
+          });
+        });
+
+        panelBody.querySelectorAll('[data-vector-rebuild]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const key = btn.getAttribute('data-vector-rebuild');
+            if (!window.confirm('This will delete the previous vector sidecar file and rebuild it from scratch. Continue?')) {
+              return;
+            }
+            btn.disabled = true;
+            api(`/dashboard/api/chains/${encodeURIComponent(chainKey)}/vectors/${encodeURIComponent(key)}/rebuild`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ confirm_delete: true })
+            })
+              .then(() => {
+                showFeedback(feedback, true, 'Vector sidecar rebuilt from scratch');
+                loadVectorPanel(chainKey);
+              })
+              .catch(err => {
+                showFeedback(feedback, false, err.message);
+                btn.disabled = false;
+              });
+          });
+        });
+      })
+      .catch(err => {
+        panelBody.innerHTML = `<div class="empty-state">${esc(err.message)}</div>`;
+        updateVectorPanelVisibility(chainKey);
+      });
+  }
+
   let EX = { chainKey: null, page: 1, perPage: 50, sel: [], order: 'desc', searchText: '', searchAgentId: '' };
 
   function renderExplorer(chainKey) {
@@ -974,6 +1140,7 @@
         <h1>Chain: <span class="mono" style="color:#58a6ff;font-size:1.4rem">${esc(chainKey)}</span></h1>
         <button class="btn btn-secondary btn-sm" id="ex-import-md-btn">📥 Import MEMORY.md</button>
       </div>
+      <div class="card" id="ex-vector-card" style="margin-bottom:16px"></div>
       <div class="filter-bar">
         <div class="filter-item">
           <label>Per page</label>
@@ -1129,7 +1296,7 @@
       EX.page = 1; exUpdateLabel(); exRenderSel(); loadThoughts();
     });
 
-    exUpdateLabel(); exRenderSel(); populateExplorerSearchAgents(); updateExplorerOrderUi(); loadThoughts();
+    exUpdateLabel(); exRenderSel(); populateExplorerSearchAgents(); updateExplorerOrderUi(); loadVectorPanel(chainKey); loadThoughts();
 
     document.getElementById('ex-import-md-btn').addEventListener('click', () => {
       openImportMarkdownModal(chainKey);
@@ -1188,7 +1355,7 @@
       btn.textContent = '★ Best matches';
       btn.title = 'Ranked search always sorts by best match first.';
       if (note) {
-        note.textContent = 'Search text uses ranked lexical + graph retrieval. The order toggle is disabled while ranked search is active.';
+        note.textContent = 'Search text uses ranked lexical, graph, and managed vector retrieval when available. The order toggle is disabled while ranked search is active.';
       }
       return;
     }

@@ -1,7 +1,7 @@
 use mentisdb::search::{
     cosine_similarity, embed_batch_to_documents, EmbeddingBuildError, EmbeddingInput,
-    EmbeddingMetadata, EmbeddingProvider, EmbeddingVector, VectorDocument, VectorIndex,
-    VectorIndexError, VectorQuery,
+    EmbeddingMetadata, EmbeddingProvider, EmbeddingVector, LocalTextEmbeddingProvider,
+    VectorDocument, VectorIndex, VectorIndexError, VectorQuery,
 };
 use std::error::Error;
 use std::fmt;
@@ -228,5 +228,35 @@ fn embed_batch_to_documents_rejects_provider_shape_errors() {
             input_index: 0,
             value_index: 1,
         }
+    );
+}
+
+#[test]
+fn local_text_embedding_provider_is_deterministic_and_topic_sensitive() {
+    let provider = LocalTextEmbeddingProvider::new();
+    let docs = embed_batch_to_documents(
+        &provider,
+        &[
+            EmbeddingInput::new("a", "Latency budget for database performance"),
+            EmbeddingInput::new("b", "Performance budget for database latency"),
+            EmbeddingInput::new("c", "Invoice reconciliation for vendor payments"),
+        ],
+    )
+    .unwrap();
+    let docs_repeat = embed_batch_to_documents(
+        &provider,
+        &[EmbeddingInput::new(
+            "a",
+            "Latency budget for database performance",
+        )],
+    )
+    .unwrap();
+
+    assert_eq!(docs[0].vector, docs_repeat[0].vector);
+    let similar = cosine_similarity(&docs[0].vector, &docs[1].vector).unwrap();
+    let different = cosine_similarity(&docs[0].vector, &docs[2].vector).unwrap();
+    assert!(
+        similar > different,
+        "expected topical overlap to score higher"
     );
 }

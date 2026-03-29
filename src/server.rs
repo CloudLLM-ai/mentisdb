@@ -1952,6 +1952,7 @@ impl MentisDbService {
             MentisDb::open_with_key_and_storage_kind(&chain_dir, &chain_key_clone, storage_kind)
                 .and_then(|mut db| {
                     db.set_auto_flush(auto_flush)?;
+                    db.apply_persisted_managed_vector_sidecars()?;
                     Ok(Arc::new(RwLock::new(db)))
                 })
                 .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
@@ -2283,6 +2284,7 @@ impl MentisDbService {
                 thought: thought_to_json(&chain, hit.thought),
                 score: RankedSearchScoreResponse {
                     lexical: hit.score.lexical,
+                    vector: hit.score.vector,
                     graph: hit.score.graph,
                     relation: hit.score.relation,
                     seed_support: hit.score.seed_support,
@@ -3487,6 +3489,7 @@ struct RankedSearchGraphRequest {
 #[derive(Debug, Serialize)]
 struct RankedSearchScoreResponse {
     lexical: f32,
+    vector: f32,
     graph: f32,
     relation: f32,
     seed_support: f32,

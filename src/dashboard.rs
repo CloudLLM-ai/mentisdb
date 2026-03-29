@@ -17,9 +17,10 @@
 //! If neither is present the request is redirected to `/dashboard/login`.
 
 use crate::{
-    deregister_chain, load_registered_chains, AgentStatus, MentisDb, PublicKeyAlgorithm,
-    RankedSearchGraph, RankedSearchQuery, SkillFormat, SkillRegistry, StorageAdapterKind, Thought,
-    ThoughtInput, ThoughtQuery, ThoughtRelationKind, ThoughtRole, ThoughtType,
+    deregister_chain, load_registered_chains, AgentStatus, ManagedVectorProviderKind, MentisDb,
+    PublicKeyAlgorithm, RankedSearchGraph, RankedSearchQuery, SkillFormat, SkillRegistry,
+    StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelationKind, ThoughtRole,
+    ThoughtType,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -85,7 +86,26 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
         // Chain listing
         .route("/chains", get(api_chains))
         .route("/chains", post(api_bootstrap_chain))
-        .route("/chains/{chain_key}", delete(api_delete_chain))
+        .route(
+            "/chains/{chain_key}",
+            get(api_chain_detail).delete(api_delete_chain),
+        )
+        .route(
+            "/chains/{chain_key}/vectors/{provider_key}/enable",
+            post(api_enable_vector_sidecar),
+        )
+        .route(
+            "/chains/{chain_key}/vectors/{provider_key}/disable",
+            post(api_disable_vector_sidecar),
+        )
+        .route(
+            "/chains/{chain_key}/vectors/{provider_key}/sync",
+            post(api_sync_vector_sidecar),
+        )
+        .route(
+            "/chains/{chain_key}/vectors/{provider_key}/rebuild",
+            post(api_rebuild_vector_sidecar),
+        )
         // Thoughts for a chain
         .route("/chains/{chain_key}/thoughts", get(api_chain_thoughts))
         .route("/chains/{chain_key}/search", get(api_chain_search))
@@ -342,11 +362,13 @@ async fn get_or_open_chain(
             if let Some(storage) = registered_storage {
                 if let Ok(mut refreshed) = MentisDb::open_with_storage(storage) {
                     if refreshed.set_auto_flush(state.auto_flush).is_ok() {
-                        let refreshed = Arc::new(RwLock::new(refreshed));
-                        state
-                            .chains
-                            .insert(chain_key.to_string(), refreshed.clone());
-                        return Ok(refreshed);
+                        if refreshed.apply_persisted_managed_vector_sidecars().is_ok() {
+                            let refreshed = Arc::new(RwLock::new(refreshed));
+                            state
+                                .chains
+                                .insert(chain_key.to_string(), refreshed.clone());
+                            return Ok(refreshed);
+                        }
                     }
                 }
             }
@@ -365,6 +387,9 @@ async fn get_or_open_chain(
         .map_err(|e| not_found(format!("chain '{chain_key}': {e}")))?;
     chain
         .set_auto_flush(state.auto_flush)
+        .map_err(internal_error)?;
+    chain
+        .apply_persisted_managed_vector_sidecars()
         .map_err(internal_error)?;
 
     let arc = Arc::new(RwLock::new(chain));
@@ -406,6 +431,13 @@ fn parse_thought_type(s: &str) -> Option<ThoughtType> {
         "Summary" => Some(ThoughtType::Summary),
         "Reframe" => Some(ThoughtType::Reframe),
         "Surprise" => Some(ThoughtType::Surprise),
+        _ => None,
+    }
+}
+
+fn parse_managed_vector_provider_kind(raw: &str) -> Option<ManagedVectorProviderKind> {
+    match raw.trim() {
+        "local-text-v1" => Some(ManagedVectorProviderKind::LocalTextV1),
         _ => None,
     }
 }
@@ -595,6 +627,7 @@ fn ranked_hit_response(
         thought: chain.thought_json(hit.thought),
         score: DashboardRankedScoreResponse {
             lexical: hit.score.lexical,
+            vector: hit.score.vector,
             graph: hit.score.graph,
             relation: hit.score.relation,
             seed_support: hit.score.seed_support,
@@ -664,6 +697,7 @@ struct DashboardSearchQuery {
 #[derive(Serialize)]
 struct DashboardRankedScoreResponse {
     lexical: f32,
+    vector: f32,
     graph: f32,
     relation: f32,
     seed_support: f32,
@@ -781,6 +815,113 @@ async fn api_chains(
     Ok(Json(json!(chains)))
 }
 
+/// `GET /dashboard/api/chains/:chain_key`
+///
+/// Returns one chain summary plus vector sidecar management state.
+async fn api_chain_detail(
+    State(state): State<DashboardState>,
+    Path(chain_key): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let arc = get_or_open_chain(&state, &chain_key).await?;
+    let chain = arc.read().await;
+    let vector_sidecars = chain
+        .managed_vector_sidecar_statuses()
+        .map_err(internal_error)?;
+    Ok(Json(json!({
+        "chain_key": chain_key,
+        "thought_count": chain.thoughts().len(),
+        "agent_count": chain.agent_registry().agents.len(),
+        "head_hash": chain.head_hash().map(ToString::to_string),
+        "vector_sidecars": vector_sidecars,
+    })))
+}
+
+async fn api_enable_vector_sidecar(
+    State(state): State<DashboardState>,
+    Path((chain_key, provider_key)): Path<(String, String)>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let provider_kind = parse_managed_vector_provider_kind(&provider_key).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("unknown vector provider '{provider_key}'") })),
+        )
+    })?;
+    let arc = get_or_open_chain(&state, &chain_key).await?;
+    let mut chain = arc.write().await;
+    let status = chain
+        .set_managed_vector_sidecar_enabled(provider_kind, true)
+        .map_err(internal_error)?;
+    Ok(Json(json!({ "status": status })))
+}
+
+async fn api_disable_vector_sidecar(
+    State(state): State<DashboardState>,
+    Path((chain_key, provider_key)): Path<(String, String)>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let provider_kind = parse_managed_vector_provider_kind(&provider_key).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("unknown vector provider '{provider_key}'") })),
+        )
+    })?;
+    let arc = get_or_open_chain(&state, &chain_key).await?;
+    let mut chain = arc.write().await;
+    let status = chain
+        .set_managed_vector_sidecar_enabled(provider_kind, false)
+        .map_err(internal_error)?;
+    Ok(Json(json!({ "status": status })))
+}
+
+async fn api_sync_vector_sidecar(
+    State(state): State<DashboardState>,
+    Path((chain_key, provider_key)): Path<(String, String)>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let provider_kind = parse_managed_vector_provider_kind(&provider_key).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("unknown vector provider '{provider_key}'") })),
+        )
+    })?;
+    let arc = get_or_open_chain(&state, &chain_key).await?;
+    let mut chain = arc.write().await;
+    let status = chain
+        .sync_managed_vector_sidecar_now(provider_kind)
+        .map_err(internal_error)?;
+    Ok(Json(json!({ "status": status })))
+}
+
+#[derive(Deserialize)]
+struct RebuildVectorSidecarBody {
+    confirm_delete: bool,
+}
+
+async fn api_rebuild_vector_sidecar(
+    State(state): State<DashboardState>,
+    Path((chain_key, provider_key)): Path<(String, String)>,
+    Json(body): Json<RebuildVectorSidecarBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !body.confirm_delete {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "confirm_delete=true is required to rebuild the vector sidecar from scratch"
+            })),
+        ));
+    }
+    let provider_kind = parse_managed_vector_provider_kind(&provider_key).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("unknown vector provider '{provider_key}'") })),
+        )
+    })?;
+    let arc = get_or_open_chain(&state, &chain_key).await?;
+    let mut chain = arc.write().await;
+    let status = chain
+        .rebuild_managed_vector_sidecar_from_scratch(provider_kind)
+        .map_err(internal_error)?;
+    Ok(Json(json!({ "status": status })))
+}
+
 // ── API: bootstrap chain ──────────────────────────────────────────────────────
 
 /// JSON body for `POST /dashboard/api/chains`.
@@ -820,6 +961,9 @@ async fn api_bootstrap_chain(
             .map_err(internal_error)?;
             chain
                 .set_auto_flush(state.auto_flush)
+                .map_err(internal_error)?;
+            chain
+                .apply_persisted_managed_vector_sidecars()
                 .map_err(internal_error)?;
             let arc = Arc::new(RwLock::new(chain));
             state.chains.insert(chain_key.clone(), arc.clone());
@@ -1744,6 +1888,13 @@ async fn api_copy_agent_to_chain(
             state.default_storage_adapter,
         )
         .map_err(|e| internal_error(format!("open target chain '{target_chain_key}': {e}")))?;
+        let mut chain = chain;
+        chain
+            .set_auto_flush(state.auto_flush)
+            .map_err(internal_error)?;
+        chain
+            .apply_persisted_managed_vector_sidecars()
+            .map_err(internal_error)?;
         let arc = Arc::new(RwLock::new(chain));
         state.chains.insert(target_chain_key.clone(), arc.clone());
         arc

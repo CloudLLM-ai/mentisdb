@@ -2146,9 +2146,14 @@ impl ThoughtQuery {
 pub enum RankedSearchBackend {
     /// In-process lexical scoring over thought and agent-registry text.
     Lexical,
+    /// Lexical scoring blended with vector sidecar similarity.
+    Hybrid,
     /// Lexical seed retrieval plus graph expansion over explicit refs and
     /// typed relations.
     LexicalGraph,
+    /// Lexical and vector scoring blended with graph expansion over explicit
+    /// refs and typed relations.
+    HybridGraph,
     /// Metadata-only fallback when no ranked text query is provided.
     Heuristic,
 }
@@ -2158,7 +2163,9 @@ impl RankedSearchBackend {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Lexical => "lexical",
+            Self::Hybrid => "hybrid",
             Self::LexicalGraph => "lexical_graph",
+            Self::HybridGraph => "hybrid_graph",
             Self::Heuristic => "heuristic",
         }
     }
@@ -2291,6 +2298,8 @@ impl Default for RankedSearchQuery {
 pub struct RankedSearchScore {
     /// Score contributed by lexical matching.
     pub lexical: f32,
+    /// Score contributed by vector-sidecar similarity.
+    pub vector: f32,
     /// Score contributed by graph proximity to a lexical seed.
     pub graph: f32,
     /// Score contributed by semantic relation kinds along the chosen graph path.
@@ -2333,7 +2342,7 @@ pub struct RankedSearchHit<'a> {
 pub struct RankedSearchResult<'a> {
     /// Ranking backend used to score the hits.
     pub backend: RankedSearchBackend,
-    /// Number of matching candidates considered after filtering and lexical gating.
+    /// Number of matching candidates considered after filtering and ranked-signal gating.
     pub total_candidates: usize,
     /// Top ranked hits in descending score order.
     pub hits: Vec<RankedSearchHit<'a>>,
@@ -2749,6 +2758,91 @@ where
         crate::search::embed_batch_to_documents(&self.provider, inputs)
             .map_err(|error| io::Error::other(format!("Failed to build embeddings: {error}")))
     }
+}
+
+const MANAGED_VECTOR_SIDECAR_CONFIG_VERSION: u32 = 1;
+
+/// Built-in provider kinds that MentisDB can manage persistently per chain.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub enum ManagedVectorProviderKind {
+    /// Deterministic in-process hashed text embeddings used by `mentisdbd`.
+    LocalTextV1,
+}
+
+impl ManagedVectorProviderKind {
+    fn key(self) -> &'static str {
+        match self {
+            Self::LocalTextV1 => "local-text-v1",
+        }
+    }
+
+    fn metadata(self) -> crate::search::EmbeddingMetadata {
+        <crate::search::LocalTextEmbeddingProvider as crate::search::EmbeddingProvider>::metadata(
+            &self.provider(),
+        )
+        .clone()
+    }
+
+    fn provider(self) -> crate::search::LocalTextEmbeddingProvider {
+        match self {
+            Self::LocalTextV1 => crate::search::LocalTextEmbeddingProvider::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct ManagedVectorSidecarConfig {
+    pub provider_kind: ManagedVectorProviderKind,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ManagedVectorSidecarConfigFile {
+    version: u32,
+    providers: Vec<ManagedVectorSidecarConfig>,
+}
+
+impl Default for ManagedVectorSidecarConfigFile {
+    fn default() -> Self {
+        Self {
+            version: MANAGED_VECTOR_SIDECAR_CONFIG_VERSION,
+            providers: vec![ManagedVectorSidecarConfig {
+                provider_kind: ManagedVectorProviderKind::LocalTextV1,
+                enabled: true,
+            }],
+        }
+    }
+}
+
+/// Runtime status for one persistently managed vector sidecar.
+#[derive(Debug, Clone, Serialize)]
+pub struct ManagedVectorSidecarStatus {
+    /// Stable provider kind identifier.
+    pub provider_kind: ManagedVectorProviderKind,
+    /// Stable lowercase provider key used by dashboard and REST-style routes.
+    pub provider_key: String,
+    /// Whether append-time auto-sync is enabled for this provider on the chain.
+    pub enabled: bool,
+    /// Whether this open handle is currently managing the provider in memory.
+    pub managed_in_memory: bool,
+    /// Embedding-space metadata for the sidecar.
+    pub metadata: crate::search::EmbeddingMetadata,
+    /// Deterministic on-disk path of the sidecar file.
+    pub sidecar_path: String,
+    /// Whether the sidecar file exists on disk.
+    pub sidecar_exists: bool,
+    /// Freshness state of the sidecar relative to the current chain, if it
+    /// could be loaded successfully.
+    pub freshness: Option<crate::search::VectorSidecarFreshness>,
+    /// Sidecar load error when the file exists but failed validation or parsing.
+    pub load_error: Option<String>,
+    /// Current thought count in the live chain.
+    pub thought_count: usize,
+    /// Number of thought vectors currently indexed in the sidecar, when loaded.
+    pub indexed_thought_count: Option<usize>,
+    /// Timestamp when the current sidecar file was generated, when loaded.
+    pub generated_at: Option<DateTime<Utc>>,
 }
 
 /// Legacy `ThoughtRelation` used when reading schema-v0 binary chains.
@@ -3795,8 +3889,9 @@ impl MentisDb {
     ///
     /// Ranked search is additive: it first applies the embedded
     /// [`ThoughtQuery`] with the same semantics as [`MentisDb::query`], then
-    /// reorders the matching candidates by lexical score, optional
-    /// graph-expansion proximity, or lightweight metadata heuristics.
+    /// reorders the matching candidates by lexical score, optional vector
+    /// sidecar similarity, optional graph-expansion proximity, or lightweight
+    /// metadata heuristics.
     pub fn query_ranked(&self, request: &RankedSearchQuery) -> RankedSearchResult<'_> {
         let candidates = self.query(&request.filter);
         let ranked_text = request
@@ -3807,21 +3902,35 @@ impl MentisDb {
         let lexical_scores = ranked_text
             .map(|text| self.rank_candidates_lexically(&candidates, text))
             .unwrap_or_default();
+        let vector_scores = ranked_text
+            .map(|text| self.rank_candidates_semantically(&candidates, text))
+            .unwrap_or_default();
         let graph_scores = ranked_text
             .and(request.graph.as_ref())
             .map(|graph| self.expand_ranked_candidates(&candidates, graph, &lexical_scores))
             .unwrap_or_default();
-        let backend = if ranked_text.is_some() && request.graph.is_some() {
-            RankedSearchBackend::LexicalGraph
-        } else if ranked_text.is_some() {
-            RankedSearchBackend::Lexical
-        } else {
-            RankedSearchBackend::Heuristic
-        };
+        let backend =
+            if ranked_text.is_some() && request.graph.is_some() && !vector_scores.is_empty() {
+                RankedSearchBackend::HybridGraph
+            } else if ranked_text.is_some() && request.graph.is_some() {
+                RankedSearchBackend::LexicalGraph
+            } else if ranked_text.is_some() && !vector_scores.is_empty() {
+                RankedSearchBackend::Hybrid
+            } else if ranked_text.is_some() {
+                RankedSearchBackend::Lexical
+            } else {
+                RankedSearchBackend::Heuristic
+            };
         let mut hits: Vec<RankedSearchHit<'_>> = candidates
             .into_iter()
             .filter_map(|thought| {
-                self.rank_search_hit(thought, ranked_text, &lexical_scores, &graph_scores)
+                self.rank_search_hit(
+                    thought,
+                    ranked_text,
+                    &lexical_scores,
+                    &vector_scores,
+                    &graph_scores,
+                )
             })
             .collect();
         let total_candidates = hits.len();
@@ -3832,6 +3941,7 @@ impl MentisDb {
                 .total
                 .total_cmp(&left.score.total)
                 .then_with(|| right.score.lexical.total_cmp(&left.score.lexical))
+                .then_with(|| right.score.vector.total_cmp(&left.score.vector))
                 .then_with(|| right.score.graph.total_cmp(&left.score.graph))
                 .then_with(|| right.score.relation.total_cmp(&left.score.relation))
                 .then_with(|| right.score.seed_support.total_cmp(&left.score.seed_support))
@@ -4019,7 +4129,21 @@ impl MentisDb {
         &mut self,
         provider: P,
     ) -> Result<crate::search::VectorSidecar, VectorSearchError<P::Error>> {
-        let sidecar = self.rebuild_vector_sidecar(&provider)?;
+        let sidecar = match self
+            .load_vector_sidecar(provider.metadata())
+            .map_err(VectorSearchError::Io)?
+        {
+            Some(sidecar)
+                if matches!(
+                    self.vector_sidecar_freshness(&sidecar, provider.metadata())
+                        .map_err(VectorSearchError::Io)?,
+                    crate::search::VectorSidecarFreshness::Fresh
+                ) =>
+            {
+                sidecar
+            }
+            _ => self.rebuild_vector_sidecar(&provider)?,
+        };
         self.managed_vector_sidecars.insert(
             provider.metadata().clone(),
             Box::new(RegisteredEmbeddingProvider { provider }),
@@ -4043,6 +4167,118 @@ impl MentisDb {
                 .then_with(|| left.dimension.cmp(&right.dimension))
         });
         managed
+    }
+
+    /// Load the persisted managed-vector settings for this chain and apply them
+    /// to the current handle.
+    ///
+    /// `mentisdbd` uses this when it opens a chain so vector sidecars remain
+    /// enabled across daemon restarts.
+    pub fn apply_persisted_managed_vector_sidecars(&mut self) -> io::Result<()> {
+        let config = self.persisted_managed_vector_sidecar_config()?;
+        for provider in config.providers {
+            let metadata = provider.provider_kind.metadata();
+            if provider.enabled {
+                self.manage_vector_sidecar(provider.provider_kind.provider())
+                    .map_err(vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>)?;
+            } else {
+                self.unmanage_vector_sidecar(&metadata);
+            }
+        }
+        Ok(())
+    }
+
+    /// Return runtime status for every persistently configured managed vector
+    /// sidecar on this chain.
+    pub fn managed_vector_sidecar_statuses(&self) -> io::Result<Vec<ManagedVectorSidecarStatus>> {
+        let mut statuses: Vec<_> = self
+            .persisted_managed_vector_sidecar_config()?
+            .providers
+            .into_iter()
+            .map(|config| self.managed_vector_sidecar_status(config.provider_kind, config.enabled))
+            .collect::<io::Result<Vec<_>>>()?;
+        statuses.sort_by(|left, right| left.provider_key.cmp(&right.provider_key));
+        Ok(statuses)
+    }
+
+    /// Enable or disable append-time auto-sync for one managed vector provider
+    /// on this chain and persist that setting.
+    pub fn set_managed_vector_sidecar_enabled(
+        &mut self,
+        provider_kind: ManagedVectorProviderKind,
+        enabled: bool,
+    ) -> io::Result<ManagedVectorSidecarStatus> {
+        let mut config = self.persisted_managed_vector_sidecar_config()?;
+        let mut updated = false;
+        for provider in &mut config.providers {
+            if provider.provider_kind == provider_kind {
+                provider.enabled = enabled;
+                updated = true;
+            }
+        }
+        if !updated {
+            config.providers.push(ManagedVectorSidecarConfig {
+                provider_kind,
+                enabled,
+            });
+        }
+        config.providers = normalize_managed_vector_sidecar_configs(config.providers);
+        self.save_managed_vector_sidecar_config(&config)?;
+        if enabled {
+            self.manage_vector_sidecar(provider_kind.provider())
+                .map_err(vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>)?;
+        } else {
+            self.unmanage_vector_sidecar(&provider_kind.metadata());
+        }
+        self.managed_vector_sidecar_status(provider_kind, enabled)
+    }
+
+    /// Rebuild one managed vector sidecar to match the current chain state
+    /// without changing whether append-time auto-sync is enabled.
+    pub fn sync_managed_vector_sidecar_now(
+        &mut self,
+        provider_kind: ManagedVectorProviderKind,
+    ) -> io::Result<ManagedVectorSidecarStatus> {
+        let enabled = self
+            .persisted_managed_vector_sidecar_config()?
+            .providers
+            .into_iter()
+            .find(|provider| provider.provider_kind == provider_kind)
+            .map(|provider| provider.enabled)
+            .unwrap_or(true);
+        let provider = provider_kind.provider();
+        let metadata =
+            <crate::search::LocalTextEmbeddingProvider as crate::search::EmbeddingProvider>::metadata(
+                &provider,
+            )
+            .clone();
+        self.rebuild_vector_sidecar(&provider)
+            .map_err(vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>)?;
+        if enabled {
+            self.managed_vector_sidecars
+                .insert(metadata, Box::new(RegisteredEmbeddingProvider { provider }));
+        } else {
+            self.unmanage_vector_sidecar(&metadata);
+        }
+        self.managed_vector_sidecar_status(provider_kind, enabled)
+    }
+
+    /// Delete one managed vector sidecar file, if it exists, and rebuild it
+    /// from the canonical chain log.
+    pub fn rebuild_managed_vector_sidecar_from_scratch(
+        &mut self,
+        provider_kind: ManagedVectorProviderKind,
+    ) -> io::Result<ManagedVectorSidecarStatus> {
+        let provider = provider_kind.provider();
+        let path = self.vector_sidecar_path(
+            <crate::search::LocalTextEmbeddingProvider as crate::search::EmbeddingProvider>::metadata(
+                &provider,
+            ),
+        )?;
+        if path.exists() {
+            fs::remove_file(&path)?;
+        }
+        self.sync_managed_vector_sidecar_now(provider_kind)
     }
 
     /// Query a persisted vector sidecar with provider-generated query embeddings.
@@ -4265,15 +4501,98 @@ impl MentisDb {
         )
     }
 
+    fn persisted_managed_vector_sidecar_config(
+        &self,
+    ) -> io::Result<ManagedVectorSidecarConfigFile> {
+        let persistence = self.persistence_metadata()?;
+        let config = load_managed_vector_sidecar_config(
+            &persistence.chain_dir,
+            &persistence.chain_key,
+            persistence.storage_kind,
+        )?;
+        save_managed_vector_sidecar_config(
+            &persistence.chain_dir,
+            &persistence.chain_key,
+            persistence.storage_kind,
+            &config,
+        )?;
+        Ok(config)
+    }
+
+    fn save_managed_vector_sidecar_config(
+        &self,
+        config: &ManagedVectorSidecarConfigFile,
+    ) -> io::Result<()> {
+        let persistence = self.persistence_metadata()?;
+        save_managed_vector_sidecar_config(
+            &persistence.chain_dir,
+            &persistence.chain_key,
+            persistence.storage_kind,
+            config,
+        )
+    }
+
+    fn persistence_metadata(&self) -> io::Result<&ChainPersistenceMetadata> {
+        self.persistence.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this MentisDb handle does not expose stable persistence metadata",
+            )
+        })
+    }
+
+    fn managed_vector_sidecar_status(
+        &self,
+        provider_kind: ManagedVectorProviderKind,
+        enabled: bool,
+    ) -> io::Result<ManagedVectorSidecarStatus> {
+        let metadata = provider_kind.metadata();
+        let sidecar_path = self.vector_sidecar_path(&metadata)?;
+        let sidecar_exists = sidecar_path.exists();
+        let mut freshness = None;
+        let mut load_error = None;
+        let mut indexed_thought_count = None;
+        let mut generated_at = None;
+
+        match self.load_vector_sidecar(&metadata) {
+            Ok(Some(sidecar)) => {
+                freshness = Some(self.vector_sidecar_freshness(&sidecar, &metadata)?);
+                indexed_thought_count = Some(sidecar.entries.len());
+                generated_at = Some(sidecar.generated_at);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                load_error = Some(error.to_string());
+            }
+        }
+
+        Ok(ManagedVectorSidecarStatus {
+            provider_kind,
+            provider_key: provider_kind.key().to_string(),
+            enabled,
+            managed_in_memory: self.managed_vector_sidecars.contains_key(&metadata),
+            metadata,
+            sidecar_path: sidecar_path.display().to_string(),
+            sidecar_exists,
+            freshness,
+            load_error,
+            thought_count: self.thoughts.len(),
+            indexed_thought_count,
+            generated_at,
+        })
+    }
+
     fn rank_search_hit<'a>(
         &'a self,
         thought: &'a Thought,
         ranked_text: Option<&str>,
         lexical_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
+        vector_scores: &HashMap<usize, f32>,
         graph_hits: &HashMap<usize, RankedGraphHit>,
     ) -> Option<RankedSearchHit<'a>> {
         let (
             lexical,
+            vector,
             graph,
             relation,
             seed_support,
@@ -4284,44 +4603,45 @@ impl MentisDb {
             matched_terms,
             match_sources,
         ) = if ranked_text.is_some() {
-            let lexical_hit = lexical_hits.get(&(thought.index as usize));
+            let lexical_hit = lexical_hits
+                .get(&(thought.index as usize))
+                .filter(|hit| hit.score > 0.0);
             let graph_hit = graph_hits.get(&(thought.index as usize));
+            let vector = vector_scores
+                .get(&(thought.index as usize))
+                .copied()
+                .unwrap_or_default();
 
-            match (lexical_hit, graph_hit) {
-                (Some(hit), graph_hit) if hit.score > 0.0 => (
-                    hit.score,
-                    graph_hit
-                        .map(|hit| self.graph_proximity_score(hit.best_hit.depth))
-                        .unwrap_or_default(),
-                    graph_hit.map(|hit| hit.relation_score).unwrap_or_default(),
-                    graph_hit
-                        .map(|hit| self.graph_seed_support_score(hit.seed_paths))
-                        .unwrap_or_default(),
-                    graph_hit.map(|hit| hit.best_hit.depth),
-                    graph_hit.map(|hit| hit.seed_paths).unwrap_or(0),
-                    graph_hit
-                        .map(|hit| hit.relation_kinds.clone())
-                        .unwrap_or_default(),
-                    graph_hit.map(|hit| hit.best_hit.path.clone()),
-                    hit.matched_terms.clone(),
-                    hit.match_sources.clone(),
-                ),
-                (None, Some(hit)) => (
-                    0.0,
-                    self.graph_proximity_score(hit.best_hit.depth),
-                    hit.relation_score,
-                    self.graph_seed_support_score(hit.seed_paths),
-                    Some(hit.best_hit.depth),
-                    hit.seed_paths,
-                    hit.relation_kinds.clone(),
-                    Some(hit.best_hit.path.clone()),
-                    Vec::new(),
-                    Vec::new(),
-                ),
-                _ => return None,
+            if lexical_hit.is_none() && graph_hit.is_none() && vector <= 0.0 {
+                return None;
             }
+
+            (
+                lexical_hit.map(|hit| hit.score).unwrap_or_default(),
+                vector,
+                graph_hit
+                    .map(|hit| self.graph_proximity_score(hit.best_hit.depth))
+                    .unwrap_or_default(),
+                graph_hit.map(|hit| hit.relation_score).unwrap_or_default(),
+                graph_hit
+                    .map(|hit| self.graph_seed_support_score(hit.seed_paths))
+                    .unwrap_or_default(),
+                graph_hit.map(|hit| hit.best_hit.depth),
+                graph_hit.map(|hit| hit.seed_paths).unwrap_or(0),
+                graph_hit
+                    .map(|hit| hit.relation_kinds.clone())
+                    .unwrap_or_default(),
+                graph_hit.map(|hit| hit.best_hit.path.clone()),
+                lexical_hit
+                    .map(|hit| hit.matched_terms.clone())
+                    .unwrap_or_default(),
+                lexical_hit
+                    .map(|hit| hit.match_sources.clone())
+                    .unwrap_or_default(),
+            )
         } else {
             (
+                0.0,
                 0.0,
                 0.0,
                 0.0,
@@ -4337,12 +4657,14 @@ impl MentisDb {
         let importance = thought.importance * 0.2;
         let confidence = thought.confidence.unwrap_or_default() * 0.1;
         let recency = self.recency_score(thought);
-        let total = lexical + graph + relation + seed_support + importance + confidence + recency;
+        let total =
+            lexical + vector + graph + relation + seed_support + importance + confidence + recency;
 
         Some(RankedSearchHit {
             thought,
             score: RankedSearchScore {
                 lexical,
+                vector,
                 graph,
                 relation,
                 seed_support,
@@ -4378,6 +4700,98 @@ impl MentisDb {
             .into_iter()
             .map(|hit| (hit.doc_position, hit))
             .collect()
+    }
+
+    fn rank_candidates_semantically(
+        &self,
+        candidates: &[&Thought],
+        text: &str,
+    ) -> HashMap<usize, f32> {
+        const FRESH_VECTOR_WEIGHT: f32 = 0.35;
+        const STALE_VECTOR_WEIGHT: f32 = 0.2;
+        const MIN_VECTOR_COSINE: f32 = 0.12;
+        const MAX_VECTOR_HITS: usize = 256;
+
+        if candidates.is_empty() || self.managed_vector_sidecars.is_empty() {
+            return HashMap::new();
+        }
+
+        let candidate_positions: HashMap<String, usize> = candidates
+            .iter()
+            .map(|thought| (thought.id.to_string(), thought.index as usize))
+            .collect();
+        let mut scores = HashMap::new();
+
+        for provider in self.managed_vector_sidecars.values() {
+            let metadata = provider.metadata().clone();
+            let sidecar = match self.load_vector_sidecar(&metadata) {
+                Ok(Some(sidecar)) => sidecar,
+                Ok(None) | Err(_) => continue,
+            };
+            let freshness_weight = match self.vector_sidecar_freshness(&sidecar, &metadata) {
+                Ok(crate::search::VectorSidecarFreshness::Fresh) => FRESH_VECTOR_WEIGHT,
+                Ok(
+                    crate::search::VectorSidecarFreshness::StaleThoughtCount { .. }
+                    | crate::search::VectorSidecarFreshness::StaleHeadHash { .. },
+                ) => STALE_VECTOR_WEIGHT,
+                Ok(_) | Err(_) => continue,
+            };
+
+            let mut query_documents = match provider
+                .embed_documents(&[crate::search::EmbeddingInput::new("__query__", text)])
+            {
+                Ok(documents) => documents,
+                Err(_) => continue,
+            };
+            let Some(query_vector) = query_documents.pop().map(|document| document.vector) else {
+                continue;
+            };
+
+            let documents: Vec<crate::search::VectorDocument> = sidecar
+                .entries
+                .iter()
+                .filter_map(|entry| {
+                    candidate_positions
+                        .contains_key(&entry.thought_id.to_string())
+                        .then(|| {
+                            crate::search::VectorDocument::new(
+                                entry.thought_id.to_string(),
+                                entry.vector.clone(),
+                            )
+                        })
+                })
+                .collect();
+            if documents.is_empty() {
+                continue;
+            }
+
+            let limit = documents.len().min(MAX_VECTOR_HITS).max(1);
+            let index = match crate::search::VectorIndex::from_documents(metadata, documents) {
+                Ok(index) => index,
+                Err(_) => continue,
+            };
+            let hits = match index
+                .search(&crate::search::VectorQuery::new(query_vector).with_limit(limit))
+            {
+                Ok(hits) => hits,
+                Err(_) => continue,
+            };
+
+            for hit in hits {
+                if hit.score < MIN_VECTOR_COSINE {
+                    break;
+                }
+                if let Some(position) = candidate_positions.get(&hit.document_id) {
+                    let weighted_score = hit.score * freshness_weight;
+                    scores
+                        .entry(*position)
+                        .and_modify(|existing: &mut f32| *existing = existing.max(weighted_score))
+                        .or_insert(weighted_score);
+                }
+            }
+        }
+
+        scores
     }
 
     fn context_bundle_seeds(
@@ -5244,6 +5658,17 @@ fn resolve_registry_path(chain_dir: &Path) -> io::Result<PathBuf> {
     Ok(mentisdb_path)
 }
 
+fn vector_search_error_to_io<E: fmt::Display>(error: VectorSearchError<E>) -> io::Error {
+    match error {
+        VectorSearchError::Io(error) => error,
+        VectorSearchError::MissingPersistenceMetadata => io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this MentisDb handle does not expose stable persistence metadata",
+        ),
+        other => io::Error::other(other.to_string()),
+    }
+}
+
 fn chain_agent_registry_path(
     chain_dir: &Path,
     chain_key: &str,
@@ -5274,6 +5699,18 @@ fn chain_vector_sidecar_path(
     ))
 }
 
+fn chain_vector_sidecar_config_path(
+    chain_dir: &Path,
+    chain_key: &str,
+    storage_kind: StorageAdapterKind,
+) -> PathBuf {
+    let storage_file = chain_storage_filename(chain_key, storage_kind);
+    let stem = storage_file
+        .strip_suffix(&format!(".{}", storage_kind.file_extension()))
+        .unwrap_or(&storage_file);
+    chain_dir.join(format!("{stem}.vectors.managed.json"))
+}
+
 fn sanitize_sidecar_component(value: &str) -> String {
     let safe: String = value
         .chars()
@@ -5288,6 +5725,74 @@ fn sanitize_sidecar_component(value: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn normalize_managed_vector_sidecar_configs(
+    providers: Vec<ManagedVectorSidecarConfig>,
+) -> Vec<ManagedVectorSidecarConfig> {
+    let mut normalized = BTreeMap::new();
+    for provider in providers {
+        normalized.insert(provider.provider_kind, provider.enabled);
+    }
+    if normalized.is_empty() {
+        normalized.insert(ManagedVectorProviderKind::LocalTextV1, true);
+    }
+    normalized
+        .into_iter()
+        .map(|(provider_kind, enabled)| ManagedVectorSidecarConfig {
+            provider_kind,
+            enabled,
+        })
+        .collect()
+}
+
+fn load_managed_vector_sidecar_config(
+    chain_dir: &Path,
+    chain_key: &str,
+    storage_kind: StorageAdapterKind,
+) -> io::Result<ManagedVectorSidecarConfigFile> {
+    let path = chain_vector_sidecar_config_path(chain_dir, chain_key, storage_kind);
+    if !path.exists() {
+        return Ok(ManagedVectorSidecarConfigFile::default());
+    }
+    let file = File::open(path)?;
+    let mut config: ManagedVectorSidecarConfigFile = serde_json::from_reader(BufReader::new(file))
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to deserialize managed vector sidecar config: {error}"),
+            )
+        })?;
+    if config.version != MANAGED_VECTOR_SIDECAR_CONFIG_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Unsupported managed vector sidecar config version {}",
+                config.version
+            ),
+        ));
+    }
+    config.providers = normalize_managed_vector_sidecar_configs(config.providers);
+    Ok(config)
+}
+
+fn save_managed_vector_sidecar_config(
+    chain_dir: &Path,
+    chain_key: &str,
+    storage_kind: StorageAdapterKind,
+    config: &ManagedVectorSidecarConfigFile,
+) -> io::Result<()> {
+    let path = chain_vector_sidecar_config_path(chain_dir, chain_key, storage_kind);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = File::create(path)?;
+    let writer = BufWriter::new(file);
+    serde_json::to_writer(writer, config).map_err(|error| {
+        io::Error::other(format!(
+            "Failed to serialize managed vector sidecar config: {error}"
+        ))
+    })
 }
 
 fn load_agent_registry(
@@ -5421,6 +5926,27 @@ pub fn deregister_chain<P: AsRef<Path>>(chain_dir: P, chain_key: &str) -> io::Re
             chain_agent_registry_path(chain_dir, chain_key, entry.storage_adapter);
         if agent_registry_path.exists() {
             fs::remove_file(agent_registry_path)?;
+        }
+        let vector_config_path =
+            chain_vector_sidecar_config_path(chain_dir, chain_key, entry.storage_adapter);
+        if vector_config_path.exists() {
+            fs::remove_file(vector_config_path)?;
+        }
+        let storage_file = chain_storage_filename(chain_key, entry.storage_adapter);
+        let stem = storage_file
+            .strip_suffix(&format!(".{}", entry.storage_adapter.file_extension()))
+            .unwrap_or(&storage_file);
+        let vector_prefix = format!("{stem}.vectors.");
+        for entry in fs::read_dir(chain_dir)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            if file_name.starts_with(&vector_prefix) && file_name.ends_with(".json") {
+                let path = entry.path();
+                if path.is_file() {
+                    fs::remove_file(path)?;
+                }
+            }
         }
     }
     Ok(())

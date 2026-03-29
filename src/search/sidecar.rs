@@ -69,7 +69,7 @@ impl VectorSidecarIntegrity {
 }
 
 /// Freshness state for one loaded vector sidecar relative to the live chain.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum VectorSidecarFreshness {
     /// Sidecar metadata matches the current chain and embedding space.
     Fresh,

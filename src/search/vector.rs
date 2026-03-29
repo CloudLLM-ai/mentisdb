@@ -1,7 +1,15 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+
+/// Stable model identifier for the built-in local text embedding provider.
+pub const LOCAL_TEXT_EMBEDDING_MODEL_ID: &str = "mentisdb-local-text";
+/// Stable version label for the built-in local text embedding provider.
+pub const LOCAL_TEXT_EMBEDDING_VERSION: &str = "v1";
+/// Fixed dimension for the built-in local text embedding provider.
+pub const LOCAL_TEXT_EMBEDDING_DIMENSION: usize = 256;
 
 /// Stable metadata describing one embedding space.
 ///
@@ -75,6 +83,102 @@ pub trait EmbeddingProvider {
 
     /// Embed a batch of inputs in the provider's declared vector space.
     fn embed_batch(&self, inputs: &[EmbeddingInput]) -> Result<Vec<EmbeddingVector>, Self::Error>;
+}
+
+/// Non-failing error type for the built-in local text embedding provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalTextEmbeddingError;
+
+impl fmt::Display for LocalTextEmbeddingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("local text embedding provider does not fail")
+    }
+}
+
+impl Error for LocalTextEmbeddingError {}
+
+/// Deterministic in-process embedding provider used by `mentisdbd`.
+///
+/// This provider hashes normalized tokens and trigrams into a fixed dense
+/// vector. It is lightweight, fully local, and requires no network calls or
+/// model downloads, which makes it suitable as the daemon's default sidecar
+/// provider.
+#[derive(Debug, Clone)]
+pub struct LocalTextEmbeddingProvider {
+    metadata: EmbeddingMetadata,
+}
+
+impl Default for LocalTextEmbeddingProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LocalTextEmbeddingProvider {
+    /// Create the built-in local text embedding provider.
+    pub fn new() -> Self {
+        Self {
+            metadata: EmbeddingMetadata::new(
+                LOCAL_TEXT_EMBEDDING_MODEL_ID,
+                LOCAL_TEXT_EMBEDDING_DIMENSION,
+                LOCAL_TEXT_EMBEDDING_VERSION,
+            ),
+        }
+    }
+
+    fn vector_for_text(&self, text: &str) -> Vec<f32> {
+        let mut vector = vec![0.0; self.metadata.dimension];
+        let normalized = text.to_ascii_lowercase();
+        let trimmed = normalized.trim();
+        let mut token_count = 0usize;
+
+        for token in normalized
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|token| !token.is_empty())
+        {
+            token_count += 1;
+            accumulate_hashed_feature(&mut vector, token.as_bytes(), 1.0);
+        }
+
+        let compact: Vec<u8> = normalized
+            .bytes()
+            .filter(|byte| byte.is_ascii_alphanumeric())
+            .collect();
+        for trigram in compact.windows(3) {
+            accumulate_hashed_feature(&mut vector, trigram, 0.35);
+        }
+
+        if token_count == 0 && !trimmed.is_empty() {
+            accumulate_hashed_feature(&mut vector, trimmed.as_bytes(), 1.0);
+        }
+        if vector.iter().all(|value| *value == 0.0) {
+            vector[0] = 1.0;
+            return vector;
+        }
+
+        let magnitude = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+        if magnitude > 0.0 {
+            for value in &mut vector {
+                *value /= magnitude;
+            }
+        }
+        vector
+    }
+}
+
+impl EmbeddingProvider for LocalTextEmbeddingProvider {
+    type Error = LocalTextEmbeddingError;
+
+    fn metadata(&self) -> &EmbeddingMetadata {
+        &self.metadata
+    }
+
+    fn embed_batch(&self, inputs: &[EmbeddingInput]) -> Result<Vec<EmbeddingVector>, Self::Error> {
+        Ok(inputs
+            .iter()
+            .map(|input| EmbeddingVector::new(self.vector_for_text(&input.text)))
+            .collect())
+    }
 }
 
 /// Failure while converting provider outputs into vector documents.
@@ -430,4 +534,18 @@ fn validate_vector(
         }
     }
     Ok(())
+}
+
+fn accumulate_hashed_feature(vector: &mut [f32], feature: &[u8], weight: f32) {
+    if vector.is_empty() {
+        return;
+    }
+    let digest = Sha256::digest(feature);
+    let primary =
+        u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]]) as usize % vector.len();
+    let secondary =
+        u32::from_le_bytes([digest[4], digest[5], digest[6], digest[7]]) as usize % vector.len();
+    let sign = if digest[8] & 1 == 0 { 1.0 } else { -1.0 };
+    vector[primary] += weight * sign;
+    vector[secondary] += (weight * 0.5) * -sign;
 }

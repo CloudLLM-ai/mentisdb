@@ -1,5 +1,7 @@
 use mentisdb::search::{EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector};
-use mentisdb::{MentisDb, ThoughtQuery, ThoughtType, VectorSearchQuery};
+use mentisdb::{
+    MentisDb, RankedSearchBackend, RankedSearchQuery, ThoughtQuery, ThoughtType, VectorSearchQuery,
+};
 use std::error::Error;
 use std::fmt;
 use std::path::PathBuf;
@@ -186,6 +188,42 @@ fn managed_vector_sidecar_stays_fresh_after_append() {
     assert_eq!(sidecar.entries.len(), 3);
     assert!(chain.unmanage_vector_sidecar(provider.metadata()));
     assert!(chain.managed_vector_sidecars().is_empty());
+}
+
+#[test]
+fn ranked_search_blends_managed_vector_sidecars_for_semantic_only_hits() {
+    let tempdir = TempDir::new().unwrap();
+    let chain_dir = PathBuf::from(tempdir.path());
+    let mut chain = MentisDb::open_with_key(&chain_dir, "semantic-ranked").unwrap();
+    chain
+        .append(
+            "planner",
+            ThoughtType::Decision,
+            "Tail latency ceiling for the Europe rollout.",
+        )
+        .unwrap();
+    chain
+        .append(
+            "accounting",
+            ThoughtType::Insight,
+            "Invoice reconciliation for vendor payments.",
+        )
+        .unwrap();
+
+    let provider = TestSemanticProvider::new("local-test", "v1");
+    chain.manage_vector_sidecar(provider).unwrap();
+
+    let ranked = chain.query_ranked(&RankedSearchQuery::new().with_text("performance budget"));
+
+    assert_eq!(ranked.backend, RankedSearchBackend::Hybrid);
+    assert_eq!(ranked.total_candidates, 1);
+    assert_eq!(ranked.hits.len(), 1);
+    assert_eq!(
+        ranked.hits[0].thought.content,
+        "Tail latency ceiling for the Europe rollout."
+    );
+    assert_eq!(ranked.hits[0].score.lexical, 0.0);
+    assert!(ranked.hits[0].score.vector > 0.0);
 }
 
 #[test]

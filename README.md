@@ -468,7 +468,7 @@ MentisDB now also exposes an additive ranked-search surface for direct crate use
 - `RankedSearchGraph`
 - `MentisDb::query_context_bundles(&RankedSearchQuery)`
 - `MentisDb::query_ranked(&RankedSearchQuery)`
-- `RankedSearchBackend::{Lexical, LexicalGraph, Heuristic}`
+- `RankedSearchBackend::{Lexical, Hybrid, LexicalGraph, HybridGraph, Heuristic}`
 
 This surface is intentionally separate from `ThoughtQuery`.
 
@@ -479,12 +479,14 @@ Current ranked-search behavior:
 - `RankedSearchQuery.filter` uses the same deterministic semantics as `MentisDb::query`
 - when `text` normalizes to a non-empty query, the backend is `lexical`
 - lexical ranking scores indexed thought text plus agent metadata from the filtered candidate set
-- when `graph` is enabled alongside non-empty `text`, the backend becomes `lexical_graph`
+- when a managed vector sidecar is active for the current handle, ranked search blends lexical scoring with vector similarity and the backend becomes `hybrid`
+- when `graph` is enabled alongside non-empty `text`, the backend becomes `lexical_graph` or `hybrid_graph` depending on whether vector scoring is available
 - graph expansion starts from lexical seed hits, walks `refs` and typed `relations`, and can surface supporting context that did not lexically match
 - when `text` is absent or blank, the backend falls back to `heuristic`
 - heuristic ordering uses lightweight importance, confidence, and recency signals
-- `total_candidates` counts the hits after filter application and lexical gating, before final `limit` truncation
+- `total_candidates` counts the hits after filter application and ranked-signal gating, before final `limit` truncation
 - each ranked hit includes `matched_terms` plus `match_sources` such as `content`, `tags`, `concepts`, `agent_id`, and `agent_registry`
+- each ranked hit also includes a `vector` score component when semantic sidecars contribute to the ranking
 - graph-expanded hits also expose `graph_distance`, `graph_seed_paths`, `graph_relation_kinds`, and `graph_path` provenance so callers can explain why a supporting thought surfaced
 - grouped context delivery is available through `query_context_bundles`, which anchors supporting graph hits beneath lexical seeds in deterministic order
 
@@ -568,6 +570,11 @@ MentisDB now exposes an additive Phase 3 vector sidecar surface for direct crate
 - `MentisDb::manage_vector_sidecar(provider)`
 - `MentisDb::unmanage_vector_sidecar(&EmbeddingMetadata)`
 - `MentisDb::managed_vector_sidecars()`
+- `MentisDb::apply_persisted_managed_vector_sidecars()`
+- `MentisDb::managed_vector_sidecar_statuses()`
+- `MentisDb::set_managed_vector_sidecar_enabled(kind, enabled)`
+- `MentisDb::sync_managed_vector_sidecar_now(kind)`
+- `MentisDb::rebuild_managed_vector_sidecar_from_scratch(kind)`
 - `MentisDb::query_vector(&provider, &VectorSearchQuery)`
 
 Contract:
@@ -586,6 +593,19 @@ Operational flow:
 - or register that provider as a managed vector sidecar and keep it fresh on future appends for that open handle
 - load or query that sidecar later with the same embedding metadata
 - if the chain head changes, the sidecar becomes stale and results report that freshness state until the sidecar is rebuilt
+
+### `mentisdbd` Default Vector Sidecar
+
+`mentisdbd` now applies a persisted managed-vector setting every time it opens a chain.
+
+- by default each chain gets the built-in local text embedding provider (`local-text-v1`)
+- the daemon keeps that sidecar synchronized on append unless the user disables auto-sync for that chain
+- ranked search in the daemon and dashboard now uses that managed sidecar transparently, blending lexical, graph, and vector signals whenever it is enabled and available
+- the web dashboard exposes per-chain controls to:
+  - enable or disable append-time auto-sync
+  - sync the sidecar to the latest chain state without changing the enable/disable setting
+  - rebuild the sidecar from scratch after an explicit confirmation that the previous file will be deleted and recreated
+- if auto-sync is disabled, new thoughts can make the sidecar stale until the user syncs or rebuilds it
 
 ### REST Lexical Search
 
@@ -615,7 +635,7 @@ compatibility and adds two additive endpoints:
 Ranked response contract fields:
 
 - `backend`
-- `results[].score.{lexical,graph,relation,seed_support,importance,confidence,recency,total}`
+- `results[].score.{lexical,vector,graph,relation,seed_support,importance,confidence,recency,total}`
 - `results[].matched_terms`
 - `results[].match_sources`
 - `results[].graph_distance`
@@ -649,6 +669,7 @@ Response shape:
       "thought": { "index": 42, "agent_id": "planner", "content": "..." },
       "score": {
         "lexical": 2.91,
+        "vector": 0.27,
         "graph": 0.18,
         "relation": 0.05,
         "seed_support": 0.0,

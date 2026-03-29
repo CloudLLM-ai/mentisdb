@@ -9,11 +9,12 @@ use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use chrono::DateTime;
+use mentisdb::search::{EmbeddingProvider, LocalTextEmbeddingProvider};
 use mentisdb::server::{
     adopt_legacy_default_mentisdb_dir, mcp_router, rest_router, standard_mcp_router,
     MentisDbServerConfig, MentisDbServiceConfig,
 };
-use mentisdb::StorageAdapterKind;
+use mentisdb::{MentisDb, StorageAdapterKind};
 use serde_json::json;
 use tower::util::ServiceExt;
 
@@ -73,6 +74,46 @@ async fn append_thought_via_rest(
             .unwrap(),
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn rest_router_loads_default_managed_vector_sidecar() {
+    let dir = unique_chain_dir();
+    let router = rest_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        "vector-default",
+        StorageAdapterKind::Binary,
+    ));
+
+    append_thought_via_rest(
+        router,
+        "vector-default",
+        "astro",
+        "Insight",
+        None,
+        "Latency budget for the rollout",
+    )
+    .await;
+
+    let provider = LocalTextEmbeddingProvider::new();
+    let chain = MentisDb::open_with_key_and_storage_kind(
+        &dir,
+        "vector-default",
+        StorageAdapterKind::Binary,
+    )
+    .unwrap();
+    let sidecar = chain
+        .load_vector_sidecar(provider.metadata())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        chain
+            .vector_sidecar_freshness(&sidecar, provider.metadata())
+            .unwrap(),
+        mentisdb::search::VectorSidecarFreshness::Fresh
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2756,11 +2797,12 @@ async fn rest_ranked_search_returns_graph_aware_results() {
         .await
         .unwrap();
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["backend"], "lexical_graph");
+    assert_eq!(parsed["backend"], "hybrid_graph");
     assert_eq!(parsed["total"], 2);
     let results = parsed["results"].as_array().unwrap();
     assert_eq!(results.len(), 2);
     assert!(results[0]["score"]["total"].as_f64().unwrap_or(0.0) > 0.0);
+    assert!(results[0]["score"]["vector"].as_f64().unwrap_or(0.0) > 0.0);
 
     let supporting = results
         .iter()
@@ -2951,7 +2993,7 @@ async fn mcp_ranked_search_and_context_bundles_are_executable() {
     )
     .unwrap();
     assert_eq!(ranked_json["result"]["success"], true);
-    assert_eq!(ranked_json["result"]["output"]["backend"], "lexical_graph");
+    assert_eq!(ranked_json["result"]["output"]["backend"], "hybrid_graph");
     assert!(
         ranked_json["result"]["output"]["results"]
             .as_array()

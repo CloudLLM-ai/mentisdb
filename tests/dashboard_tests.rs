@@ -9,9 +9,10 @@ use dashmap::DashMap;
 pub use mentisdb::search;
 pub use mentisdb::{
     chain_storage_filename, deregister_chain, load_registered_chains, AgentStatus,
-    BinaryStorageAdapter, MentisDb, PublicKeyAlgorithm, RankedSearchGraph, RankedSearchHit,
-    RankedSearchQuery, SkillFormat, SkillRegistry, StorageAdapterKind, Thought, ThoughtInput,
-    ThoughtQuery, ThoughtRelation, ThoughtRelationKind, ThoughtRole, ThoughtType,
+    BinaryStorageAdapter, ManagedVectorProviderKind, MentisDb, PublicKeyAlgorithm,
+    RankedSearchGraph, RankedSearchHit, RankedSearchQuery, SkillFormat, SkillRegistry,
+    StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelation, ThoughtRelationKind,
+    ThoughtRole, ThoughtType,
 };
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -253,6 +254,213 @@ async fn dashboard_reads_latest_chain_and_agent_thoughts_without_restart() {
     let latest_json: Value = serde_json::from_slice(&latest_body).unwrap();
     assert_eq!(latest_json["total"], 2);
     assert_eq!(latest_json["thoughts"][0]["content"], "second thought");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn dashboard_chain_detail_exposes_default_vector_sidecar_status() {
+    let dir = unique_chain_dir();
+    let mut chain =
+        MentisDb::open_with_key_and_storage_kind(&dir, "source", StorageAdapterKind::Binary)
+            .unwrap();
+    chain
+        .append_thought(
+            "astro",
+            ThoughtInput::new(ThoughtType::Summary, "first thought"),
+        )
+        .unwrap();
+    drop(chain);
+
+    let router = dashboard_router_for_dir(&dir);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/chains/source")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let sidecars = json["vector_sidecars"].as_array().unwrap();
+    assert_eq!(sidecars.len(), 1);
+    assert_eq!(sidecars[0]["provider_key"], "local-text-v1");
+    assert_eq!(sidecars[0]["enabled"], true);
+    assert_eq!(sidecars[0]["managed_in_memory"], true);
+    assert_eq!(sidecars[0]["freshness"], "Fresh");
+
+    let provider = search::LocalTextEmbeddingProvider::new();
+    let chain =
+        MentisDb::open_with_key_and_storage_kind(&dir, "source", StorageAdapterKind::Binary)
+            .unwrap();
+    let sidecar = chain
+        .load_vector_sidecar(search::EmbeddingProvider::metadata(&provider))
+        .unwrap();
+    assert!(sidecar.is_some());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn dashboard_can_disable_and_resync_vector_sidecar() {
+    let dir = unique_chain_dir();
+    let mut chain =
+        MentisDb::open_with_key_and_storage_kind(&dir, "source", StorageAdapterKind::Binary)
+            .unwrap();
+    chain
+        .append_thought(
+            "astro",
+            ThoughtInput::new(ThoughtType::Summary, "latency budget"),
+        )
+        .unwrap();
+    drop(chain);
+
+    let router = dashboard_router_for_dir(&dir);
+    let _ = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/chains/source")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let disabled = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/dashboard/api/chains/source/vectors/local-text-v1/disable")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(disabled.status(), axum::http::StatusCode::OK);
+
+    let mut external =
+        MentisDb::open_with_key_and_storage_kind(&dir, "source", StorageAdapterKind::Binary)
+            .unwrap();
+    external
+        .append_thought(
+            "astro",
+            ThoughtInput::new(ThoughtType::Idea, "tail latency mitigation"),
+        )
+        .unwrap();
+    drop(external);
+
+    let detail = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/chains/source")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let detail_body = axum::body::to_bytes(detail.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let detail_json: Value = serde_json::from_slice(&detail_body).unwrap();
+    assert_eq!(detail_json["vector_sidecars"][0]["enabled"], false);
+    assert_ne!(detail_json["vector_sidecars"][0]["freshness"], "Fresh");
+
+    let synced = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/dashboard/api/chains/source/vectors/local-text-v1/sync")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(synced.status(), axum::http::StatusCode::OK);
+
+    let detail = router
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/chains/source")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let detail_body = axum::body::to_bytes(detail.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let detail_json: Value = serde_json::from_slice(&detail_body).unwrap();
+    assert_eq!(detail_json["vector_sidecars"][0]["enabled"], false);
+    assert_eq!(detail_json["vector_sidecars"][0]["freshness"], "Fresh");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn deleting_chain_removes_vector_sidecar_and_config() {
+    let dir = unique_chain_dir();
+    let mut chain =
+        MentisDb::open_with_key_and_storage_kind(&dir, "source", StorageAdapterKind::Binary)
+            .unwrap();
+    chain
+        .append_thought(
+            "astro",
+            ThoughtInput::new(ThoughtType::Summary, "seed thought"),
+        )
+        .unwrap();
+    drop(chain);
+
+    let router = dashboard_router_for_dir(&dir);
+    let detail = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/chains/source")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.status(), axum::http::StatusCode::OK);
+
+    let provider = search::LocalTextEmbeddingProvider::new();
+    let chain =
+        MentisDb::open_with_key_and_storage_kind(&dir, "source", StorageAdapterKind::Binary)
+            .unwrap();
+    let sidecar_path = chain
+        .vector_sidecar_path(search::EmbeddingProvider::metadata(&provider))
+        .unwrap();
+    let vector_config_path = dir.join(
+        chain_storage_filename("source", StorageAdapterKind::Binary)
+            .trim_end_matches(".tcbin")
+            .to_string()
+            + ".vectors.managed.json",
+    );
+    assert!(sidecar_path.exists());
+    assert!(vector_config_path.exists());
+
+    let deleted = router
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/dashboard/api/chains/source")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), axum::http::StatusCode::OK);
+    assert!(!sidecar_path.exists());
+    assert!(!vector_config_path.exists());
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -562,13 +770,14 @@ async fn chain_search_endpoint_filters_and_paginates_results() {
     let results = json["results"].as_array().unwrap();
     let thoughts = json["thoughts"].as_array().unwrap();
     assert_eq!(json["mode"], "ranked");
-    assert_eq!(json["backend"], "lexical_graph");
+    assert_eq!(json["backend"], "hybrid_graph");
     assert_eq!(json["total"], 2);
     assert_eq!(json["pages"], 2);
     assert_eq!(results.len(), 1);
     assert_eq!(thoughts.len(), 1);
     assert_eq!(thoughts[0]["agent_id"], "astro");
     assert!(results[0]["score"]["total"].as_f64().unwrap_or(0.0) > 0.0);
+    assert!(results[0]["score"]["vector"].as_f64().unwrap_or(0.0) > 0.0);
     assert!(
         thoughts[0]["content"] == "first dashboard search hit"
             || thoughts[0]["content"] == "second dashboard search hit"
@@ -628,12 +837,13 @@ async fn chain_search_endpoint_includes_graph_supporting_context() {
     let results = json["results"].as_array().unwrap();
     let thoughts = json["thoughts"].as_array().unwrap();
     assert_eq!(json["total"], 2);
-    assert_eq!(json["backend"], "lexical_graph");
+    assert_eq!(json["backend"], "hybrid_graph");
     assert_eq!(
         thoughts[0]["content"],
         "Latency ranking anchor for dashboard chain search."
     );
     assert_eq!(results[0]["thought"]["content"], thoughts[0]["content"]);
+    assert!(results[0]["score"]["vector"].as_f64().unwrap_or(0.0) > 0.0);
     assert!(thoughts.iter().any(|thought| {
         thought["content"] == "Operator rollout checklist linked from the anchor."
     }));
@@ -846,7 +1056,10 @@ async fn dashboard_html_includes_chain_search_scaffolding() {
         .unwrap();
     let html = String::from_utf8(body.to_vec()).unwrap();
     assert!(html.contains("ex-search-text"));
+    assert!(html.contains("Vector Sidecars"));
+    assert!(html.contains("loadVectorPanel(chainKey)"));
     assert!(html.contains("/dashboard/api/chains/${encodeURIComponent(EX.chainKey)}/search/agents"));
+    assert!(html.contains("/dashboard/api/chains/${encodeURIComponent(chainKey)}/vectors/${encodeURIComponent(key)}/rebuild"));
     assert!(html.contains("Context Bundles"));
     assert!(html.contains("updateExplorerOrderUi"));
 

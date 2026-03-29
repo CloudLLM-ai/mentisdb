@@ -117,12 +117,13 @@ async fn phase4_rest_ranked_search_contract_exposes_graph_aware_fields() {
         .unwrap();
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(parsed["backend"], "lexical_graph");
+    assert_eq!(parsed["backend"], "hybrid_graph");
     let results = parsed["results"].as_array().unwrap();
     assert_eq!(parsed["total"], 2);
     assert_eq!(results.len(), 2);
     assert!(results[0]["score"].is_object());
     assert!(results[0]["score"]["lexical"].is_number());
+    assert!(results[0]["score"]["vector"].is_number());
     assert!(results[0]["score"]["graph"].is_number());
     assert!(results[0]["score"]["relation"].is_number());
     assert!(results[0]["score"]["seed_support"].is_number());
