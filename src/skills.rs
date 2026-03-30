@@ -6,6 +6,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::time::SystemTime;
 use uuid::Uuid;
 
 /// First supported version of the persisted skill registry file.
@@ -964,6 +965,7 @@ pub struct SkillRegistry {
     version: u32,
     skills: BTreeMap<String, SkillEntry>,
     storage_path: Option<PathBuf>,
+    last_modified: Option<SystemTime>,
     indexes: SkillIndexes,
     latest_summaries: BTreeMap<String, SkillSummary>,
 }
@@ -999,6 +1001,7 @@ impl SkillRegistry {
                 version: MENTISDB_SKILL_REGISTRY_CURRENT_VERSION,
                 skills: BTreeMap::new(),
                 storage_path: Some(path),
+                last_modified: None,
                 indexes: SkillIndexes::default(),
                 latest_summaries: BTreeMap::new(),
             });
@@ -1046,12 +1049,15 @@ impl SkillRegistry {
 
         verify_skill_registry_integrity(&persisted.skills)?;
 
+        let last_modified = fs::metadata(&path).and_then(|m| m.modified()).ok();
+
         Ok(Self {
             version: persisted.version,
             indexes: SkillIndexes::from_entries(&persisted.skills),
             latest_summaries: build_latest_summaries(&persisted.skills)?,
             skills: persisted.skills,
             storage_path: Some(path),
+            last_modified,
         })
     }
 
@@ -1828,7 +1834,7 @@ impl SkillRegistry {
         Some(filters.fold(first, |acc, values| intersect_skill_ids(&acc, &values)))
     }
 
-    fn persist(&self) -> io::Result<()> {
+    fn persist(&mut self) -> io::Result<()> {
         let Some(path) = &self.storage_path else {
             return Ok(());
         };
@@ -1848,7 +1854,31 @@ impl SkillRegistry {
         let temp_path = path.with_extension("bin.tmp");
         fs::write(&temp_path, payload)?;
         fs::rename(&temp_path, path)?;
+        self.last_modified = fs::metadata(path).and_then(|m| m.modified()).ok();
         Ok(())
+    }
+
+    /// Reload the registry from disk when the backing file has changed.
+    ///
+    /// Returns `Ok(true)` when a reload occurred, `Ok(false)` when the
+    /// in-memory registry was already up to date, and propagates I/O errors for
+    /// unexpected disk failures.
+    pub fn refresh_from_disk_if_stale(&mut self) -> io::Result<bool> {
+        let Some(path) = self.storage_path.clone() else {
+            return Ok(false);
+        };
+
+        let modified = fs::metadata(&path).and_then(|meta| meta.modified()).ok();
+        if modified.is_some() && self.last_modified.as_ref() == modified.as_ref() {
+            return Ok(false);
+        }
+        if modified.is_none() && self.last_modified.is_none() {
+            return Ok(false);
+        }
+
+        let fresh = SkillRegistry::open_at_path(&path)?;
+        *self = fresh;
+        Ok(true)
     }
 }
 

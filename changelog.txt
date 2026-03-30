@@ -1,4 +1,8 @@
 0.7.3.21 MAR/30/2026
+ - fix(skills): dashboard and service now refresh the skill registry without restart
+   - The shared in-process `SkillRegistry` now reloads itself when `mentisdb-skills.bin` changes on disk, so newly uploaded or updated skills appear immediately
+   - Dashboard skill list/detail/diff/version views and skill lifecycle actions now read against the refreshed registry instead of requiring a full `mentisdbd` console restart
+   - MCP/REST skill reads and writes also refresh before use, keeping agent uploads and the dashboard in sync even when skills are added from another surface
  - feat(wizard): interactive checkbox TUI for integration selection
    - Replaced the confusing text prompt ("default", "all", "none") with a
      live checkbox list rendered in raw terminal mode

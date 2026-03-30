@@ -2020,6 +2020,8 @@ impl MentisDbService {
         // avoid holding two unrelated locks simultaneously (future deadlock risk).
         drop(chain);
 
+        self.ensure_skill_registry_fresh().await?;
+
         let available_skills = {
             let registry = self.skills.read().await;
             registry
@@ -2909,6 +2911,7 @@ impl MentisDbService {
         &self,
         request: ListSkillsRequest,
     ) -> Result<SkillListResponse, Box<dyn Error + Send + Sync>> {
+        self.ensure_skill_registry_fresh().await?;
         let registry = self.skills.read().await;
         let skills = registry.list_skills();
         let chain_key = request
@@ -2989,6 +2992,8 @@ impl MentisDbService {
         }
         // --- End signature verification ---
 
+        self.ensure_skill_registry_fresh().await?;
+
         let mut registry = self.skills.write().await;
         let mut upload = SkillUpload::new(&agent.agent_id, format, &request.content)
             .with_agent_identity(Some(&agent.display_name), agent.owner.as_deref())
@@ -3027,6 +3032,7 @@ impl MentisDbService {
             .clone()
             .unwrap_or_else(|| "<skills>".to_string());
         let query = build_skill_query(&request)?;
+        self.ensure_skill_registry_fresh().await?;
         let registry = self.skills.read().await;
         let skills = registry.search_skills(&query);
         self.log_interaction(InteractionLogEntry {
@@ -3050,6 +3056,7 @@ impl MentisDbService {
             .unwrap_or_else(|| "<skills>".to_string());
         let format = parse_skill_format(request.format.as_deref())?;
         let (skill, entry) = {
+            self.ensure_skill_registry_fresh().await?;
             let registry = self.skills.read().await;
             (
                 registry.skill_summary(&request.skill_id)?,
@@ -3093,6 +3100,7 @@ impl MentisDbService {
             .chain_key
             .clone()
             .unwrap_or_else(|| "<skills>".to_string());
+        self.ensure_skill_registry_fresh().await?;
         let registry = self.skills.read().await;
         let versions = registry.skill_versions(&request.skill_id)?;
         self.log_interaction(InteractionLogEntry {
@@ -3117,6 +3125,7 @@ impl MentisDbService {
             .chain_key
             .clone()
             .unwrap_or_else(|| "<skills>".to_string());
+        self.ensure_skill_registry_fresh().await?;
         let mut registry = self.skills.write().await;
         let skill = registry.deprecate_skill(&request.skill_id, request.reason.as_deref())?;
         self.log_interaction(InteractionLogEntry {
@@ -3138,6 +3147,7 @@ impl MentisDbService {
             .chain_key
             .clone()
             .unwrap_or_else(|| "<skills>".to_string());
+        self.ensure_skill_registry_fresh().await?;
         let mut registry = self.skills.write().await;
         let skill = registry.revoke_skill(&request.skill_id, request.reason.as_deref())?;
         self.log_interaction(InteractionLogEntry {
@@ -3185,6 +3195,12 @@ impl MentisDbService {
 
     fn open_skill_registry(&self) -> Result<SkillRegistry, Box<dyn Error + Send + Sync>> {
         Ok(SkillRegistry::open(&self.config.chain_dir)?)
+    }
+
+    async fn ensure_skill_registry_fresh(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let mut registry = self.skills.write().await;
+        registry.refresh_from_disk_if_stale()?;
+        Ok(())
     }
 
     fn resolve_chain_key(&self, chain_key: Option<&str>) -> String {

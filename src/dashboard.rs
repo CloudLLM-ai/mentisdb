@@ -1575,12 +1575,21 @@ async fn api_delete_agent_key(
 
 // ── API: skills ───────────────────────────────────────────────────────────────
 
+async fn refresh_skill_registry(state: &DashboardState) -> Result<(), (StatusCode, Json<Value>)> {
+    let mut registry = state.skills.write().await;
+    registry
+        .refresh_from_disk_if_stale()
+        .map_err(internal_error)?;
+    Ok(())
+}
+
 /// `GET /dashboard/api/skills`
 ///
 /// Returns a summary list of all registered skills.
 async fn api_skills(
     State(state): State<DashboardState>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    refresh_skill_registry(&state).await?;
     let skills = state.skills.read().await;
     let list = skills.list_skills();
     Ok(Json(serde_json::to_value(list).map_err(internal_error)?))
@@ -1593,6 +1602,7 @@ async fn api_get_skill(
     State(state): State<DashboardState>,
     Path(skill_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    refresh_skill_registry(&state).await?;
     let skills = state.skills.read().await;
 
     let summary = skills
@@ -1615,6 +1625,7 @@ async fn api_skill_versions(
     State(state): State<DashboardState>,
     Path(skill_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    refresh_skill_registry(&state).await?;
     let skills = state.skills.read().await;
     let versions = skills.skill_versions(&skill_id).map_err(internal_error)?;
     Ok(Json(
@@ -1632,6 +1643,7 @@ async fn api_skill_diff(
     Path(skill_id): Path<String>,
     Query(params): Query<DiffQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    refresh_skill_registry(&state).await?;
     let skills = state.skills.read().await;
 
     let parse_version_id = |raw: Option<&str>| -> Result<Option<Uuid>, (StatusCode, Json<Value>)> {
@@ -1675,6 +1687,7 @@ async fn api_revoke_skill(
     Path(skill_id): Path<String>,
     Json(body): Json<SkillStatusBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    refresh_skill_registry(&state).await?;
     let mut skills = state.skills.write().await;
     let summary = skills
         .revoke_skill(&skill_id, body.reason.as_deref())
@@ -1690,6 +1703,7 @@ async fn api_deprecate_skill(
     Path(skill_id): Path<String>,
     Json(body): Json<SkillStatusBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    refresh_skill_registry(&state).await?;
     let mut skills = state.skills.write().await;
     let summary = skills
         .deprecate_skill(&skill_id, body.reason.as_deref())
