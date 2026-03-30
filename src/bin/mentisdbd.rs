@@ -397,7 +397,7 @@ pub(crate) fn build_update_available_lines(
         format!("Latest release tag : {latest_display}"),
         format!("Release page       : {release_url}"),
         String::new(),
-        format!("Install release {latest_display} and restart now? [Y/N]"),
+        format!("Install release {latest_display} and restart now? [y/N]"),
     ]
 }
 
@@ -561,19 +561,31 @@ fn maybe_run_first_run_setup(status: &FirstRunSetupStatus) -> io::Result<bool> {
     })
 }
 
-fn prompt_yes_no(prompt: &str) -> io::Result<bool> {
+pub(crate) fn prompt_yes_no_with_io(
+    prompt: &str,
+    reader: &mut dyn BufRead,
+    writer: &mut dyn Write,
+) -> io::Result<bool> {
     let mut input = String::new();
     loop {
-        print!("{prompt} [Y/N]: ");
-        io::stdout().flush()?;
+        write!(writer, "{prompt} [y/N]: ")?;
+        writer.flush()?;
         input.clear();
-        io::stdin().read_line(&mut input)?;
+        reader.read_line(&mut input)?;
         match input.trim().to_ascii_lowercase().as_str() {
             "y" | "yes" => return Ok(true),
-            "n" | "no" => return Ok(false),
-            _ => println!("Please type Y or N."),
+            "n" | "no" | "" => return Ok(false),
+            _ => writeln!(writer, "Please type Y or N.")?,
         }
     }
+}
+
+fn prompt_yes_no(prompt: &str) -> io::Result<bool> {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut reader = stdin.lock();
+    let mut writer = stdout.lock();
+    prompt_yes_no_with_io(prompt, &mut reader, &mut writer)
 }
 
 pub(crate) fn build_cargo_install_args(tag: &str, repo: &str) -> Vec<OsString> {
@@ -693,10 +705,21 @@ fn shutdown_all_servers(
 fn restart_installed_binary(
     request: &RestartRequest,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    Command::new(&request.exe_path)
-        .args(&request.args)
-        .spawn()?;
-    Ok(())
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let error = Command::new(&request.exe_path)
+            .args(&request.args)
+            .exec();
+        return Err(Box::new(error));
+    }
+    #[cfg(not(unix))]
+    {
+        Command::new(&request.exe_path)
+            .args(&request.args)
+            .spawn()?;
+        Ok(())
+    }
 }
 
 async fn run_update_check_task(
