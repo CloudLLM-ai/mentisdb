@@ -426,6 +426,34 @@ pub(crate) fn build_first_run_setup_lines() -> Vec<String> {
     ]
 }
 
+/// Builds the lines for the "Agent primer" notice box shown at daemon startup.
+///
+/// The returned lines contain the shortest copy-paste prompt a user can give
+/// their AI agent to self-initialize MentisDB memory: bootstrap, read the
+/// core skill, then write a Summary checkpoint so future sessions recover it
+/// automatically.
+///
+/// # Arguments
+///
+/// * `mcp_addr` - The local MCP base URL, e.g. `"http://127.0.0.1:9471"`.
+/// * `dashboard_url` - Optional dashboard URL; appended as an import hint when present.
+pub(crate) fn build_agent_primer_lines(mcp_addr: &str, dashboard_url: Option<&str>) -> Vec<String> {
+    let mut lines = vec![
+        "Paste into your AI chat to activate memory:".to_string(),
+        String::new(),
+        format!("  \"MentisDB is running at {mcp_addr}."),
+        "   Call mentisdb_bootstrap('<your-project>'), then".to_string(),
+        "   resources/read mentisdb://skill/core to load rules,".to_string(),
+        "   then write a Summary of what you just learned.\"".to_string(),
+        String::new(),
+        "Memory persists across resets and harnesses.".to_string(),
+    ];
+    if let Some(url) = dashboard_url {
+        lines.push(format!("Import/manage skills → {url}"));
+    }
+    lines
+}
+
 fn detect_first_run_setup_status(chain_dir: &Path) -> FirstRunSetupStatus {
     let has_registered_chains = load_registered_chains(chain_dir)
         .map(|registry| !registry.chains.is_empty())
@@ -1015,6 +1043,15 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let friendly = format!("https://my.mentisdb.com:{port}/dashboard");
         println!("  Dashboard    {local:<32}  {YELLOW}{friendly}{RESET}");
     }
+
+    let dashboard_url = handles
+        .dashboard
+        .as_ref()
+        .map(|h| format!("https://{}/dashboard", h.local_addr()));
+    ascii_notice_box(
+        "Agent primer",
+        &build_agent_primer_lines(&mcp_local, dashboard_url.as_deref()),
+    );
 
     if let Err(error) = maybe_run_first_run_setup(&first_run_setup_status) {
         eprintln!("Startup setup wizard failed: {error}");
@@ -2083,4 +2120,34 @@ fn print_tls_tip(config: &MentisDbServerConfig, handles: &MentisDbServerHandles)
         config.tls_cert_path.display()
     );
     println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that the primer lines include the MCP address, the bootstrap
+    /// call, the skill URI, and the dashboard URL when one is provided.
+    #[test]
+    fn agent_primer_lines_include_mcp_addr_and_dashboard_url() {
+        let lines = build_agent_primer_lines(
+            "http://127.0.0.1:9471",
+            Some("https://127.0.0.1:9475/dashboard"),
+        );
+        let joined = lines.join("\n");
+        assert!(joined.contains("127.0.0.1:9471"));
+        assert!(joined.contains("mentisdb://skill/core"));
+        assert!(joined.contains("mentisdb_bootstrap"));
+        assert!(joined.contains("9475/dashboard"));
+    }
+
+    /// Verifies that omitting the dashboard URL produces output that does not
+    /// mention "dashboard" at all.
+    #[test]
+    fn agent_primer_lines_no_dashboard() {
+        let lines = build_agent_primer_lines("http://127.0.0.1:9471", None);
+        let joined = lines.join("\n");
+        assert!(joined.contains("mentisdb://skill/core"));
+        assert!(!joined.contains("dashboard"));
+    }
 }

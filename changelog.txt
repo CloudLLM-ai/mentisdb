@@ -16,6 +16,22 @@
    - Added crossterm dependency for raw terminal key-event handling
  - fix(wizard): clippy implicit_saturating_sub lint in cursor navigation
    - Replaced guarded `cursor_idx -= 1` with `cursor_idx.saturating_sub(1)`
+ - feat(daemon): agent primer notice printed at startup
+   - `mentisdbd` now prints a copy-paste primer prompt after the endpoint
+     addresses at startup so users can immediately hand their AI agent the
+     exact one-liner needed to bootstrap memory for a project
+   - The primer box shows the MCP address (and dashboard URL when TLS is
+     enabled) and walks the agent through `mentisdb_bootstrap`, loading
+     `mentisdb://skill/core`, and writing a first Summary checkpoint
+   - Implemented as `build_agent_primer_lines(mcp_addr, dashboard_url)` with
+     two unit tests covering the with- and without-dashboard cases
+ - feat(docs): "Priming Your Agent" section on mentisdb.com
+   - New `<Priming/>` Leptos component with a 3-step visual walkthrough:
+     bootstrap the chain, load the skill rules, write a Summary checkpoint
+   - Includes a copyable primer prompt block matching the startup box wording
+     so users can grab it straight from the docs site
+   - Section positioned after the InstallBox and before the Problem section;
+     navbar gets a `#primer` anchor link between Rust Docs and Install CTA
 
 0.7.2.20 MAR/29/2026
  - feat(search): managed vector sidecars and seamless hybrid ranked retrieval
