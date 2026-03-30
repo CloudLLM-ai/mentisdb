@@ -66,7 +66,7 @@ fn update_dialog_box_contains_install_prompt_inside_the_frame() {
     let dialog = mentisdbd_impl::build_ascii_notice_box("mentisdbd update available", &lines);
 
     assert!(dialog.contains("mentisdbd update available"));
-    assert!(dialog.contains("Install release 0.6.1.14 and restart now? [Y/N]"));
+    assert!(dialog.contains("Install release 0.6.1.14 and restart now? [y/N]"));
     assert!(dialog.contains("+"));
 }
 
@@ -457,4 +457,45 @@ fn agent_primer_no_dashboard() {
     let joined = lines.join("\n");
     assert!(joined.contains("mentisdb://skill/core"));
     assert!(!joined.contains("dashboard"));
+}
+
+#[test]
+fn update_prompt_empty_input_defaults_to_no() {
+    let mut reader = std::io::Cursor::new("\n");
+    let mut writer = Vec::new();
+    let result = mentisdbd_impl::prompt_yes_no_with_io("Selection", &mut reader, &mut writer)
+        .expect("prompt_yes_no_with_io should succeed");
+    assert!(!result, "empty input should default to N (false)");
+    let output = String::from_utf8(writer).unwrap();
+    assert!(output.contains("[y/N]"));
+}
+
+#[test]
+fn update_prompt_y_returns_true() {
+    let mut reader = std::io::Cursor::new("y\n");
+    let mut writer = Vec::new();
+    let result = mentisdbd_impl::prompt_yes_no_with_io("Selection", &mut reader, &mut writer)
+        .expect("prompt_yes_no_with_io should succeed");
+    assert!(result, "y input should return true");
+}
+
+#[test]
+fn update_prompt_n_returns_false() {
+    let mut reader = std::io::Cursor::new("n\n");
+    let mut writer = Vec::new();
+    let result = mentisdbd_impl::prompt_yes_no_with_io("Selection", &mut reader, &mut writer)
+        .expect("prompt_yes_no_with_io should succeed");
+    assert!(!result, "n input should return false");
+}
+
+#[test]
+fn update_prompt_invalid_then_enter_returns_false() {
+    // First input is invalid ("maybe"), second is empty (default N)
+    let mut reader = std::io::Cursor::new("maybe\n\n");
+    let mut writer = Vec::new();
+    let result = mentisdbd_impl::prompt_yes_no_with_io("Selection", &mut reader, &mut writer)
+        .expect("prompt_yes_no_with_io should succeed");
+    assert!(!result, "empty input after invalid should default to N (false)");
+    let output = String::from_utf8(writer).unwrap();
+    assert!(output.contains("Please type Y or N."));
 }
