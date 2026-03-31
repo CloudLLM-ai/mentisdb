@@ -657,10 +657,34 @@ fn install_latest_release(
         return Err(format!("cargo install failed with status {status}").into());
     }
 
-    let current_exe = std::env::current_exe()?;
-    Ok(installed_binary_path()
-        .filter(|path| path.exists())
-        .unwrap_or(current_exe))
+    // Prefer the standard cargo bin dir. If it doesn't exist there, search
+    // PATH so non-standard CARGO_INSTALL_ROOT / CARGO_HOME layouts work too.
+    // Never fall back to current_exe() — that would silently re-exec the old
+    // binary and make the update appear to do nothing.
+    if let Some(path) = installed_binary_path().filter(|p| p.exists()) {
+        return Ok(path);
+    }
+    if let Some(path) = search_path_for_binary(UPDATE_BINARY_NAME) {
+        return Ok(path);
+    }
+    Err(format!(
+        "cargo install completed but '{UPDATE_BINARY_NAME}' was not found in \
+         the cargo bin directory or PATH; check CARGO_HOME or CARGO_INSTALL_ROOT"
+    )
+    .into())
+}
+
+/// Searches each directory in `PATH` for an executable named `name`.
+fn search_path_for_binary(name: &str) -> Option<PathBuf> {
+    let binary_name = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
+    let path_var = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_var)
+        .map(|dir| dir.join(&binary_name))
+        .find(|p| p.exists())
 }
 
 async fn fetch_latest_release(
@@ -708,8 +732,28 @@ fn restart_installed_binary(
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        let error = Command::new(&request.exe_path).args(&request.args).exec();
-        Err(Box::new(error))
+        // exec() replaces the current process image in-place (same PID, same
+        // terminal session) so the new binary inherits the controlling terminal
+        // without receiving SIGHUP.
+        let exec_err = Command::new(&request.exe_path).args(&request.args).exec();
+        // exec() only returns if it failed. Log prominently, then fall back to
+        // spawn() so the update is not silently lost.
+        eprintln!(
+            "mentisdbd: exec({}) failed: {exec_err}; falling back to spawn",
+            request.exe_path.display()
+        );
+        Command::new(&request.exe_path)
+            .args(&request.args)
+            .spawn()
+            .map_err(|e| {
+                format!(
+                    "spawn fallback also failed for {}: {e}",
+                    request.exe_path.display()
+                )
+            })?;
+        // Force-exit the old process so the child can own the ports and the
+        // terminal. We've already shut down all servers above.
+        std::process::exit(0);
     }
     #[cfg(not(unix))]
     {
@@ -1150,8 +1194,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "Update installed: restarting mentisdbd with release {}...",
                 normalize_release_tag_display(&restart.release_tag)
             );
-            shutdown_all_servers(&mut handles)?;
-            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+            // Shut down listeners so the new process can bind the same ports.
+            // Treat shutdown errors as warnings — a partially shut-down server
+            // is still better than aborting the restart entirely.
+            if let Err(e) = shutdown_all_servers(&mut handles) {
+                eprintln!("mentisdbd: warning — server shutdown error during restart: {e}");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             restart_installed_binary(&restart)?;
             return Ok(());
         }
