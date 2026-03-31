@@ -709,7 +709,7 @@ fn restart_installed_binary(
     {
         use std::os::unix::process::CommandExt;
         let error = Command::new(&request.exe_path).args(&request.args).exec();
-        return Err(Box::new(error));
+        Err(Box::new(error))
     }
     #[cfg(not(unix))]
     {
