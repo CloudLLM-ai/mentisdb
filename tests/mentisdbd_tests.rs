@@ -495,7 +495,10 @@ fn update_prompt_invalid_then_enter_returns_false() {
     let mut writer = Vec::new();
     let result = mentisdbd_impl::prompt_yes_no_with_io("Selection", &mut reader, &mut writer)
         .expect("prompt_yes_no_with_io should succeed");
-    assert!(!result, "empty input after invalid should default to N (false)");
+    assert!(
+        !result,
+        "empty input after invalid should default to N (false)"
+    );
     let output = String::from_utf8(writer).unwrap();
     assert!(output.contains("Please type Y or N."));
 }
