@@ -125,7 +125,7 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
             get(api_agent_thoughts),
         )
         // Agent listing — all chains
-        .route("/agents", get(api_agents_all))
+        .route("/agents", get(api_agents_all).post(api_create_agent))
         // Agent listing — single chain
         .route("/agents/{chain_key}", get(api_agents_by_chain))
         // Single-agent read + patch
@@ -1397,6 +1397,48 @@ async fn api_agents_all(
     }
 
     Ok(Json(serde_json::to_value(result).map_err(internal_error)?))
+}
+
+/// JSON body for `POST /dashboard/api/agents`.
+#[derive(Debug, Deserialize)]
+struct AgentCreateBody {
+    /// Target chain key — must already exist or be bootstrappable.
+    chain_key: String,
+    /// Stable agent identifier (e.g. `"orion"`, `"my-rust-agent"`).
+    agent_id: String,
+    /// Human-readable display name shown in the dashboard.
+    display_name: Option<String>,
+    /// Owner or team label (e.g. `"@alice"`).
+    agent_owner: Option<String>,
+    /// Free-form description of the agent's role and capabilities.
+    description: Option<String>,
+}
+
+/// `POST /dashboard/api/agents`
+///
+/// Creates or updates an agent registry entry on the specified chain.
+/// This is the dashboard counterpart to `mentisdb_upsert_agent`.
+///
+/// The agent is registered with [`AgentStatus::Active`] by default.  If the
+/// `agent_id` already exists the mutable fields (`display_name`,
+/// `agent_owner`, `description`) are updated in-place and the status is left
+/// unchanged.
+async fn api_create_agent(
+    State(state): State<DashboardState>,
+    Json(body): Json<AgentCreateBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let arc = get_or_open_chain(&state, &body.chain_key).await?;
+    let mut chain = arc.write().await;
+    let agent = chain
+        .upsert_agent(
+            &body.agent_id,
+            body.display_name.as_deref(),
+            body.agent_owner.as_deref(),
+            body.description.as_deref(),
+            None, // preserve existing status; newly registered agents default to Active
+        )
+        .map_err(internal_error)?;
+    Ok(Json(serde_json::to_value(agent).map_err(internal_error)?))
 }
 
 /// `GET /dashboard/api/agents/:chain_key`
