@@ -495,6 +495,92 @@
     </div>
   </div>
 
+  <!-- ================================================================ -->
+  <!-- ADD AGENT OVERLAY                                                -->
+  <!-- ================================================================ -->
+  <div id="add-agent-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:2000;overflow-y:auto;padding:24px 16px">
+    <div style="max-width:560px;margin:0 auto;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:24px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+        <h3 style="margin:0;color:#e6edf3">🤖 Add Agent</h3>
+        <button id="add-agent-close" style="background:none;border:none;color:#8b949e;font-size:1.4rem;cursor:pointer;line-height:1">&times;</button>
+      </div>
+      <div class="form-group">
+        <label style="color:#8b949e;font-size:0.85rem;display:block;margin-bottom:4px">Memory Chain <span style="color:#f85149">*</span></label>
+        <select id="add-agent-chain"
+          style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:0.88rem;width:100%;box-sizing:border-box">
+          <option value="">Loading chains…</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-top:12px">
+        <label style="color:#8b949e;font-size:0.85rem;display:block;margin-bottom:4px">Agent ID <span style="color:#f85149">*</span></label>
+        <input type="text" id="add-agent-id" placeholder="e.g. orion, my-rust-agent" autocomplete="off"
+          style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:0.88rem;width:100%;box-sizing:border-box">
+      </div>
+      <div class="form-group" style="margin-top:12px">
+        <label style="color:#8b949e;font-size:0.85rem;display:block;margin-bottom:4px">Display Name <span style="color:#484f58">(optional)</span></label>
+        <input type="text" id="add-agent-name" placeholder="e.g. Orion" autocomplete="off"
+          style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:0.88rem;width:100%;box-sizing:border-box">
+      </div>
+      <div class="form-group" style="margin-top:12px">
+        <label style="color:#8b949e;font-size:0.85rem;display:block;margin-bottom:4px">Owner <span style="color:#484f58">(optional)</span></label>
+        <input type="text" id="add-agent-owner" placeholder="e.g. @alice" autocomplete="off"
+          style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:0.88rem;width:100%;box-sizing:border-box">
+      </div>
+      <div class="form-group" style="margin-top:12px">
+        <label style="color:#8b949e;font-size:0.85rem;display:block;margin-bottom:4px">Description <span style="color:#484f58">(optional)</span></label>
+        <textarea id="add-agent-desc" placeholder="Describe this agent's role and capabilities…"
+          style="width:100%;box-sizing:border-box;height:100px;background:#0d1117;color:#c9d1d9;
+                 border:1px solid #30363d;border-radius:6px;padding:10px;font-family:inherit;
+                 font-size:0.88rem;resize:vertical;line-height:1.5"></textarea>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px">
+        <button id="add-agent-go" class="btn btn-primary btn-sm">Add Agent</button>
+        <span id="add-agent-fb" class="feedback"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================================================================ -->
+  <!-- UPLOAD SKILL OVERLAY                                             -->
+  <!-- ================================================================ -->
+  <div id="upload-skill-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:2000;overflow-y:auto;padding:24px 16px">
+    <div style="max-width:680px;margin:0 auto;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:24px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+        <h3 style="margin:0;color:#e6edf3">📤 Upload Skill</h3>
+        <button id="upload-skill-close" style="background:none;border:none;color:#8b949e;font-size:1.4rem;cursor:pointer;line-height:1">&times;</button>
+      </div>
+      <div class="form-group">
+        <label style="color:#8b949e;font-size:0.85rem;display:block;margin-bottom:4px">Agent ID <span style="color:#f85149">*</span></label>
+        <input type="text" id="upload-skill-agent" placeholder="agent-id" autocomplete="off"
+          style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:0.88rem;width:100%;box-sizing:border-box">
+      </div>
+      <div class="form-group" style="margin-top:12px">
+        <label style="color:#8b949e;font-size:0.85rem;display:block;margin-bottom:4px">Skill ID <span style="color:#484f58">(optional — leave blank to auto-derive from name)</span></label>
+        <input type="text" id="upload-skill-id" placeholder="leave blank to auto-derive from name" autocomplete="off"
+          style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:0.88rem;width:100%;box-sizing:border-box">
+      </div>
+      <div class="form-group" style="margin-top:12px">
+        <label style="color:#8b949e;font-size:0.85rem;display:block;margin-bottom:4px">Format</label>
+        <select id="upload-skill-format"
+          style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:0.88rem;width:auto">
+          <option value="markdown" selected>markdown</option>
+          <option value="json">json</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-top:12px">
+        <label style="color:#8b949e;font-size:0.85rem;display:block;margin-bottom:4px">Content <span style="color:#f85149">*</span></label>
+        <textarea id="upload-skill-content" placeholder="Paste skill Markdown or JSON here…"
+          style="width:100%;box-sizing:border-box;height:320px;background:#0d1117;color:#c9d1d9;
+                 border:1px solid #30363d;border-radius:6px;padding:12px;font-family:monospace;
+                 font-size:0.82rem;resize:vertical;line-height:1.5"></textarea>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px">
+        <button id="upload-skill-go" class="btn btn-primary btn-sm">Upload Skill</button>
+        <span id="upload-skill-fb" class="feedback"></span>
+      </div>
+    </div>
+  </div>
+
   <script>
   // =====================================================================
   // CONSTANTS
