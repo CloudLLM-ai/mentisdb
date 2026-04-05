@@ -1,3 +1,46 @@
+0.7.6.24 APR/04/2026
+ - feat(dashboard): clickable relation thought-id links in Thought Detail popup
+   - Relation target_id values in the Thought Detail modal are now styled
+     blue underlined buttons instead of plain <code> spans
+   - Clicking a relation target fetches the related thought via
+     GET /dashboard/api/thoughts/{chainKey}/{thoughtId} and opens it in a
+     new Thought Detail modal, enabling full navigation depth through
+     related thoughts
+   - Cross-chain relations resolve correctly using the relation's own
+     chain_key when set, falling back to the current modal's chain context
+   - All openModal() call sites updated to propagate chain key so relation
+     navigation works from every view (explorer, agent detail, agent
+     thoughts)
+ - feat(dashboard): Upload Skill form on Skills page
+   - Added POST /dashboard/api/skills endpoint (DashboardUploadSkillBody,
+     api_upload_skill handler) accepting agent_id, content, optional
+     skill_id, and format (markdown/json)
+   - Skills page now has a "+ Upload Skill" button that opens a modal with
+     Agent ID, Skill ID, Format, and Content textarea fields
+   - On success the skill list reloads automatically after 1.8 s
+ - feat(dashboard): Add Agent form on Agents page
+   - Added POST /dashboard/api/agents endpoint (AgentCreateBody,
+     api_create_agent handler) — creates or updates an agent registry
+     entry; preserves existing status on update
+   - Agents page now has a "+ Add Agent" button that opens a modal with a
+     chain dropdown (populated live from existing chains), Agent ID,
+     Display Name, Owner, and Description fields
+   - Chain dropdown auto-populates from GET /dashboard/api/chains on open;
+     on success the Agents page reloads scrolled to the correct chain
+ - feat(skill): MENTISDB_SKILL.md — Large Chain Context Budget section
+   - New section documenting index hierarchy table (6 levels from hybrid
+     ranked search down to full traversal), chain-size tiers with
+     recommended strategies (< 50 / 50-200 / 200-500 / > 500 thoughts),
+     Checkpoint-First Bootstrap pattern for chains > 100 thoughts, per-query
+     token budget caps, filter-before-load discipline rules, ranked_search
+     as the default for topical queries on large chains, guidance on
+     avoiding redundant context loads after search, and summarize-in-waves
+     pattern for historical audits
+   - Session Reload Summary section updated to reference Checkpoint-First
+     Bootstrap on large chains instead of a raw recent_context dump
+   - Operating Loop section updated to call mentisdb_head first and apply
+     the size-appropriate retrieval strategy
+
 0.7.5.23 MAR/31/2026
  - fix(auto-update): robust restart after cargo install
    - Removed the silent current_exe() fallback in install_latest_release():
