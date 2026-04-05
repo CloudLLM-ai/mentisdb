@@ -1681,7 +1681,14 @@
   // =====================================================================
   function renderAgentList(targetChainKey = null) {
     const app = document.getElementById('app');
-    app.innerHTML = `<div class="page-header"><h1>Agents</h1></div><div id="al-body"></div>`;
+    app.innerHTML = `
+      <div class="page-header" style="display:flex;align-items:center;justify-content:space-between">
+        <h1>Agents</h1>
+        <button class="btn btn-primary btn-sm" id="al-add-btn">+ Add Agent</button>
+      </div>
+      <div id="al-body"></div>
+    `;
+    document.getElementById('al-add-btn').addEventListener('click', () => openAddAgentModal());
     const el = document.getElementById('al-body');
     spinner(el);
     api('/dashboard/api/agents')
