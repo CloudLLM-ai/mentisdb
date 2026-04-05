@@ -2332,7 +2332,14 @@
   // =====================================================================
   function renderSkillList() {
     const app = document.getElementById('app');
-    app.innerHTML = `<div class="page-header"><h1>Skills</h1></div><div class="card"><div id="sl-body"></div></div>`;
+    app.innerHTML = `
+      <div class="page-header" style="display:flex;align-items:center;justify-content:space-between">
+        <h1>Skills</h1>
+        <button class="btn btn-primary btn-sm" id="sl-upload-btn">+ Upload Skill</button>
+      </div>
+      <div class="card"><div id="sl-body"></div></div>
+    `;
+    document.getElementById('sl-upload-btn').addEventListener('click', () => openUploadSkillModal());
     const el = document.getElementById('sl-body');
     spinner(el);
     api('/dashboard/api/skills')
