@@ -36,10 +36,10 @@ use uuid::Uuid;
 
 pub use skills::{
     export_skill, import_skill, migrate_skill_registry, SkillDocument, SkillEntry, SkillFormat,
-    SkillQuery, SkillRegistry, SkillRegistryManifest, SkillRegistryMigrationReport, SkillSection,
-    SkillStatus, SkillSummary, SkillUpload, SkillVersion, SkillVersionContent, SkillVersionSummary,
-    MENTISDB_SKILL_CURRENT_SCHEMA_VERSION, MENTISDB_SKILL_REGISTRY_CURRENT_VERSION,
-    MENTISDB_SKILL_REGISTRY_V1, MENTISDB_SKILL_REGISTRY_V2,
+    SkillQuery, SkillReadOutput, SkillRegistry, SkillRegistryManifest,
+    SkillRegistryMigrationReport, SkillSection, SkillStatus, SkillSummary, SkillUpload, SkillVersion,
+    SkillVersionContent, SkillVersionSummary, MENTISDB_SKILL_CURRENT_SCHEMA_VERSION,
+    MENTISDB_SKILL_REGISTRY_CURRENT_VERSION, MENTISDB_SKILL_REGISTRY_V1, MENTISDB_SKILL_REGISTRY_V2,
 };
 
 /// Persistence interface for MentisDb storage backends.
@@ -336,7 +336,7 @@ impl std::fmt::Debug for BinaryStorageAdapter {
 /// Manual `Clone`: produces a fresh adapter for the same path.
 ///
 /// The clone does **not** share the open file handle or any buffered bytes —
-/// it starts with a clean [`WriterState`], identical to a newly constructed
+/// it starts with a clean writer state, identical to a newly constructed
 /// adapter.
 impl Clone for BinaryStorageAdapter {
     fn clone(&self) -> Self {
@@ -1440,8 +1440,8 @@ pub enum ThoughtRelationKind {
     /// The source thought supersedes the target thought.
     ///
     /// Use when the source thought replaces a prior belief, plan, or fact
-    /// without the prior being a clear *error* (use [`Corrects`] or
-    /// [`Invalidates`] for errors).  The target thought is retained for
+    /// without the prior being a clear *error* (use [`ThoughtRelationKind::Corrects`] or
+    /// [`ThoughtRelationKind::Invalidates`] for errors).  The target thought is retained for
     /// audit; retrieval tooling should treat superseded thoughts as
     /// lower-priority.
     Supersedes,
@@ -5319,7 +5319,7 @@ impl MentisDb {
 
     /// Import thoughts from a MEMORY.md-formatted markdown string.
     ///
-    /// Each line matching the format produced by [`to_memory_markdown`] is
+    /// Each line matching the format produced by [`MentisDb::to_memory_markdown`] is
     /// parsed and appended as a new thought:
     ///
     /// ```text
@@ -5344,7 +5344,7 @@ impl MentisDb {
     ///
     /// # Errors
     ///
-    /// Returns an [`io::Error`] if any individual [`append_thought`] call fails.
+    /// Returns an [`io::Error`] if any individual [`MentisDb::append_thought`] call fails.
     ///
     /// # Examples
     ///
@@ -6501,7 +6501,7 @@ fn load_legacy_v0_binary_thoughts(file_path: &Path) -> io::Result<Vec<LegacyThou
             Err(error) => return Err(error),
         }
 
-        const MAX_THOUGHT_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
+        const MAX_THOUGHT_PAYLOAD_BYTES: u64 = 10 * 1024 * 1024; // DoS protection: 10 MB limit
         let length_u64 = u64::from_le_bytes(length_bytes);
         if length_u64 > MAX_THOUGHT_PAYLOAD_BYTES {
             return Err(io::Error::new(
@@ -6937,7 +6937,7 @@ fn load_binary_thoughts(file_path: &Path) -> io::Result<Vec<Thought>> {
             Err(error) => return Err(error),
         }
 
-        const MAX_THOUGHT_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
+        const MAX_THOUGHT_PAYLOAD_BYTES: u64 = 10 * 1024 * 1024; // DoS protection: 10 MB limit
         let length_u64 = u64::from_le_bytes(length_bytes);
         if length_u64 > MAX_THOUGHT_PAYLOAD_BYTES {
             return Err(io::Error::new(

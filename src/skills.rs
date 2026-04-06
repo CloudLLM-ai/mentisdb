@@ -21,6 +21,42 @@ pub const MENTISDB_SKILL_SCHEMA_V1: u32 = 1;
 pub const MENTISDB_SKILL_CURRENT_SCHEMA_VERSION: u32 = MENTISDB_SKILL_SCHEMA_V1;
 const MENTISDB_SKILL_REGISTRY_FILENAME: &str = "mentisdb-skills.bin";
 
+/// Output envelope for [`SkillRegistry::read_skill`][crate::SkillRegistry::read_skill].
+///
+/// Surfaces the rendered skill content alongside its current [`SkillStatus`]
+/// and any safety `warnings` that were declared in the skill document.
+/// Callers MUST check `warnings` before executing skill content — a non-empty
+/// warnings vector means the skill has been deprecated or revoked for a
+/// safety or correctness reason.
+///
+/// # Examples
+///
+/// ```no_run
+/// use mentisdb::{SkillRegistry, SkillFormat, SkillReadOutput};
+///
+/// let dir = std::env::temp_dir().join("mentisdb_read_example");
+/// std::fs::create_dir_all(&dir).unwrap();
+/// let registry = SkillRegistry::open(&dir).unwrap();
+///
+/// let output: SkillReadOutput = registry
+///     .read_skill("my-skill", None, SkillFormat::Markdown)
+///     .unwrap();
+///
+/// // Always check warnings before executing skill content.
+/// if !output.warnings.is_empty() {
+///     eprintln!("WARNING: skill has safety notices: {:?}", output.warnings);
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillReadOutput {
+    /// The rendered skill content in the requested format.
+    pub content: String,
+    /// Safety warnings declared in the skill document frontmatter.
+    pub warnings: Vec<String>,
+    /// The current lifecycle status of the skill.
+    pub status: SkillStatus,
+}
+
 /// Supported import and export formats for skill documents.
 ///
 /// MentisDB stores every skill as a [`SkillVersionContent::Full`] raw string in the
@@ -959,7 +995,7 @@ impl SkillIndexes {
 ///
 /// // ── Read back as Markdown ──────────────────────────────────────────────
 /// let rendered = registry.read_skill("pr-reviewer", None, SkillFormat::Markdown).unwrap();
-/// assert!(rendered.contains("PR Reviewer"));
+/// assert!(rendered.content.contains("PR Reviewer"));
 /// ```
 pub struct SkillRegistry {
     version: u32,
@@ -1507,7 +1543,7 @@ impl SkillRegistry {
     ///
     /// // The same content rendered as a string via read_skill.
     /// let markdown = registry.read_skill("borrow-checker", None, SkillFormat::Markdown).unwrap();
-    /// assert!(markdown.contains("Borrow Checker"));
+    /// assert!(markdown.content.contains("Borrow Checker"));
     /// ```
     pub fn skill_document(
         &self,
@@ -1551,10 +1587,10 @@ impl SkillRegistry {
     ///
     /// ## `read_skill` vs `skill_document`
     ///
-    /// | Method           | Returns               | Use when …                              |
-    /// |------------------|-----------------------|-----------------------------------------|
-    /// | `read_skill`     | `String`              | You need rendered text for display/LLM  |
-    /// | `skill_document` | `SkillDocument`       | You need structured fields (tags, …)    |
+    /// | Method           | Returns                    | Use when …                              |
+    /// |------------------|----------------------------|-----------------------------------------|
+    /// | `read_skill`     | `SkillReadOutput`          | You need rendered text + warnings status |
+    /// | `skill_document` | `SkillDocument`            | You need structured fields (tags, …)    |
     ///
     /// # Errors
     ///
@@ -1564,7 +1600,7 @@ impl SkillRegistry {
     /// # Examples
     ///
     /// ```no_run
-    /// use mentisdb::{SkillRegistry, SkillUpload, SkillFormat};
+    /// use mentisdb::{SkillRegistry, SkillUpload, SkillFormat, SkillStatus};
     ///
     /// let dir = std::env::temp_dir().join("mentisdb_read_example");
     /// std::fs::create_dir_all(&dir).unwrap();
@@ -1577,32 +1613,39 @@ impl SkillRegistry {
     /// ).unwrap();
     ///
     /// // Read back as Markdown (same format as uploaded).
-    /// let md = registry.read_skill("greeter", None, SkillFormat::Markdown).unwrap();
-    /// assert!(md.contains("Greeter"));
+    /// let output = registry.read_skill("greeter", None, SkillFormat::Markdown).unwrap();
+    /// assert!(output.content.contains("Greeter"));
+    /// assert!(output.warnings.is_empty()); // Always check warnings
+    /// assert_eq!(output.status, SkillStatus::Active);
     ///
     /// // Cross-format: read the same skill as JSON.
-    /// let json = registry.read_skill("greeter", None, SkillFormat::Json).unwrap();
-    /// assert!(json.contains("\"name\""));
+    /// let json_out = registry.read_skill("greeter", None, SkillFormat::Json).unwrap();
+    /// assert!(json_out.content.contains("\"name\""));
     ///
     /// // Read a specific historical version by its version_id.
     /// let versions = registry.skill_versions("greeter").unwrap();
     /// let v0_id = versions[0].version_id;
     /// let v0 = registry.read_skill("greeter", Some(v0_id), SkillFormat::Markdown).unwrap();
-    /// assert!(v0.contains("Greeter"));
+    /// assert!(v0.content.contains("Greeter"));
     /// ```
     pub fn read_skill(
         &self,
         skill_id: &str,
         version_id: Option<Uuid>,
         format: SkillFormat,
-    ) -> io::Result<String> {
+    ) -> io::Result<SkillReadOutput> {
         let entry = self.skills.get(skill_id).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 format!("No skill \'{skill_id}\' found"),
             )
         })?;
-        Ok(read_skill_from_entry(skill_id, entry, version_id, format)?.content)
+        let snapshot = read_skill_from_entry(skill_id, entry, version_id, format)?;
+        Ok(SkillReadOutput {
+            content: snapshot.content,
+            warnings: snapshot.warnings,
+            status: entry.status,
+        })
     }
 
     /// Mark one skill as deprecated while preserving all prior versions.
@@ -2035,6 +2078,16 @@ pub fn migrate_skill_registry<P: AsRef<Path>>(
 /// assert!(md_again.contains("Code Style Guide"));
 /// ```
 pub fn import_skill(content: &str, format: SkillFormat) -> io::Result<SkillDocument> {
+    const MAX_SKILL_SIZE_BYTES: usize = 1_000_000; // 1 MB — DoS protection
+    if content.len() > MAX_SKILL_SIZE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "skill content exceeds maximum size of {} bytes",
+                MAX_SKILL_SIZE_BYTES
+            ),
+        ));
+    }
     match format {
         SkillFormat::Markdown => parse_markdown_skill(content),
         SkillFormat::Json => serde_json::from_str(content).map_err(|error| {
@@ -2166,6 +2219,7 @@ pub(crate) struct SkillReadSnapshot {
     pub version: SkillVersion,
     pub content: String,
     pub schema_version: u32,
+    pub warnings: Vec<String>,
 }
 
 pub(crate) fn read_skill_from_entry(
@@ -2194,6 +2248,7 @@ pub(crate) fn read_skill_from_entry(
         version,
         content: export_skill(&document, format)?,
         schema_version: document.schema_version,
+        warnings: document.warnings,
     })
 }
 
@@ -2310,6 +2365,15 @@ fn parse_markdown_skill(content: &str) -> io::Result<SkillDocument> {
     })
 }
 
+/// Renders a [`SkillDocument`] to a Markdown string.
+///
+/// # Security Warning
+///
+/// The returned string is **raw Markdown text**, not HTML. If you render this
+/// output in an HTML context (e.g., in a web dashboard), you MUST sanitize it
+/// first to prevent XSS attacks. Strip `<script>` tags, event-handler attributes
+/// (onclick, onerror, etc.), and `javascript:` URIs. Use a well-tested HTML
+/// sanitizer library or enforce a strict Content-Security-Policy.
 fn render_markdown_skill(skill: &SkillDocument) -> String {
     let mut markdown = String::new();
     markdown.push_str("---\n");

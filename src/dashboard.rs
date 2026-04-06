@@ -36,6 +36,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -267,6 +268,13 @@ async fn serve_login() -> impl IntoResponse {
 
 // ── Login POST handler ────────────────────────────────────────────────────────
 
+/// Tracks failed login attempts per client IP: (attempt_count, first_attempt_time).
+static RATE_LIMIT_MAP: std::sync::LazyLock<std::sync::Mutex<HashMap<String, (u32, Instant)>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+const RATE_LIMIT_MAX_ATTEMPTS: u32 = 5;
+const RATE_LIMIT_WINDOW_SECS: u64 = 300; // 5 minutes
+
 /// Form body for the `/dashboard/login` POST.
 #[derive(Deserialize)]
 struct LoginForm {
@@ -277,17 +285,48 @@ struct LoginForm {
 ///
 /// On success sets the `mentisdb_pin` cookie and redirects to `/dashboard`.
 /// On failure redirects back to `/dashboard/login?error=1`.
+///
+/// Rate limiting is applied per source IP. Since the dashboard binds to localhost by
+/// default, all local users share the same IP — the limit primarily protects against
+/// automated brute-force attacks from the same machine.
 async fn handle_login(
     State(state): State<DashboardState>,
     Form(form): Form<LoginForm>,
 ) -> Response {
+    let ip_key = "localhost"; // Dashboard binds to 127.0.0.1; all clients share this key.
+
+    // Check rate limit before PIN comparison.
+    {
+        let now = Instant::now();
+        let map = RATE_LIMIT_MAP.lock().unwrap();
+        if let Some(&(count, first_attempt)) = map.get(ip_key) {
+            let elapsed = now.duration_since(first_attempt);
+            if count >= RATE_LIMIT_MAX_ATTEMPTS && elapsed.as_secs() < RATE_LIMIT_WINDOW_SECS {
+                return (StatusCode::TOO_MANY_REQUESTS, "Too many failed attempts. Try again later.")
+                    .into_response();
+            }
+        }
+        // Expire old entries outside the lock scope to avoid holding the lock too long.
+        drop(map);
+        let mut map = RATE_LIMIT_MAP.lock().unwrap();
+        if let Some(&(_count, first_attempt)) = map.get(ip_key) {
+            let elapsed = now.duration_since(first_attempt);
+            if elapsed.as_secs() >= RATE_LIMIT_WINDOW_SECS {
+                map.remove(ip_key);
+            }
+        }
+    }
+
     let pin_matches = state
         .dashboard_pin
         .as_deref()
-        .map(|required| form.pin == required)
+        .map(|required| {
+            subtle::ConstantTimeEq::ct_eq(form.pin.as_bytes(), required.as_bytes()).into()
+        })
         .unwrap_or(true); // No PIN configured → any submission succeeds.
 
     if pin_matches {
+        RATE_LIMIT_MAP.lock().unwrap().remove(ip_key);
         (
             StatusCode::SEE_OTHER,
             [
@@ -304,6 +343,11 @@ async fn handle_login(
         )
             .into_response()
     } else {
+        let now = Instant::now();
+        let mut map = RATE_LIMIT_MAP.lock().unwrap();
+        let entry = map.entry(ip_key.to_string()).or_insert_with(|| (0, now));
+        entry.0 += 1;
+        entry.1 = now;
         Redirect::to("/dashboard/login?error=1").into_response()
     }
 }
@@ -1653,11 +1697,11 @@ async fn api_get_skill(
         .find(|s| s.skill_id == skill_id)
         .ok_or_else(|| not_found(format!("skill '{skill_id}' not found")))?;
 
-    let markdown = skills
+    let output = skills
         .read_skill(&skill_id, None, SkillFormat::Markdown)
         .map_err(internal_error)?;
 
-    Ok(Json(json!({ "summary": summary, "markdown": markdown })))
+    Ok(Json(json!({ "summary": summary, "markdown": output.content, "warnings": output.warnings, "status": output.status })))
 }
 
 /// `GET /dashboard/api/skills/:skill_id/versions`
@@ -1711,7 +1755,7 @@ async fn api_skill_diff(
         .read_skill(&skill_id, to_id, SkillFormat::Markdown)
         .map_err(internal_error)?;
 
-    let patch = diffy::create_patch(&old_content, &new_content);
+    let patch = diffy::create_patch(&old_content.content, &new_content.content);
     Ok(Json(json!({ "diff": patch.to_string() })))
 }
 
