@@ -4840,61 +4840,257 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
     ]
 }
 
-fn build_query(request: &SearchRequest) -> Result<ThoughtQuery, Box<dyn Error + Send + Sync>> {
-    let mut query = ThoughtQuery::new();
+trait HasOptionalQueryFields {
+    fn text(&self) -> Option<String>;
+    fn thought_types(&self) -> Result<Option<Vec<ThoughtType>>, Box<dyn Error + Send + Sync>>;
+    fn roles(&self) -> Result<Option<Vec<ThoughtRole>>, Box<dyn Error + Send + Sync>>;
+    fn tags_any(&self) -> Option<Vec<String>>;
+    fn concepts_any(&self) -> Option<Vec<String>>;
+    fn agent_ids(&self) -> Option<Vec<String>>;
+    fn agent_names(&self) -> Option<Vec<String>>;
+    fn agent_owners(&self) -> Option<Vec<String>>;
+    fn min_importance(&self) -> Option<f32>;
+    fn min_confidence(&self) -> Option<f32>;
+    fn since(&self) -> Option<DateTime<Utc>>;
+    fn until(&self) -> Option<DateTime<Utc>>;
+    fn limit(&self) -> Option<usize>;
+}
 
-    if let Some(text) = &request.text {
-        query = query.with_text(text.clone());
+impl HasOptionalQueryFields for SearchRequest {
+    fn text(&self) -> Option<String> {
+        self.text.clone()
     }
-    if let Some(min_importance) = request.min_importance {
+    fn thought_types(&self) -> Result<Option<Vec<ThoughtType>>, Box<dyn Error + Send + Sync>> {
+        Ok(Some(
+            self.thought_types
+                .as_ref()
+                .map(|v| {
+                    v.iter()
+                        .map(|s| parse_thought_type(s))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
+        )
+        .flatten())
+    }
+    fn roles(&self) -> Result<Option<Vec<ThoughtRole>>, Box<dyn Error + Send + Sync>> {
+        Ok(Some(
+            self.roles
+                .as_ref()
+                .map(|v| {
+                    v.iter()
+                        .map(|s| parse_thought_role(s))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
+        )
+        .flatten())
+    }
+    fn tags_any(&self) -> Option<Vec<String>> {
+        self.tags_any.clone()
+    }
+    fn concepts_any(&self) -> Option<Vec<String>> {
+        self.concepts_any.clone()
+    }
+    fn agent_ids(&self) -> Option<Vec<String>> {
+        self.agent_ids.clone()
+    }
+    fn agent_names(&self) -> Option<Vec<String>> {
+        self.agent_names.clone()
+    }
+    fn agent_owners(&self) -> Option<Vec<String>> {
+        self.agent_owners.clone()
+    }
+    fn min_importance(&self) -> Option<f32> {
+        self.min_importance
+    }
+    fn min_confidence(&self) -> Option<f32> {
+        self.min_confidence
+    }
+    fn since(&self) -> Option<DateTime<Utc>> {
+        self.since
+    }
+    fn until(&self) -> Option<DateTime<Utc>> {
+        self.until
+    }
+    fn limit(&self) -> Option<usize> {
+        self.limit
+    }
+}
+
+impl HasOptionalQueryFields for RankedSearchRequest {
+    fn text(&self) -> Option<String> {
+        self.text.clone()
+    }
+    fn thought_types(&self) -> Result<Option<Vec<ThoughtType>>, Box<dyn Error + Send + Sync>> {
+        Ok(Some(
+            self.thought_types
+                .as_ref()
+                .map(|v| {
+                    v.iter()
+                        .map(|s| parse_thought_type(s))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
+        )
+        .flatten())
+    }
+    fn roles(&self) -> Result<Option<Vec<ThoughtRole>>, Box<dyn Error + Send + Sync>> {
+        Ok(Some(
+            self.roles
+                .as_ref()
+                .map(|v| {
+                    v.iter()
+                        .map(|s| parse_thought_role(s))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
+        )
+        .flatten())
+    }
+    fn tags_any(&self) -> Option<Vec<String>> {
+        self.tags_any.clone()
+    }
+    fn concepts_any(&self) -> Option<Vec<String>> {
+        self.concepts_any.clone()
+    }
+    fn agent_ids(&self) -> Option<Vec<String>> {
+        self.agent_ids.clone()
+    }
+    fn agent_names(&self) -> Option<Vec<String>> {
+        self.agent_names.clone()
+    }
+    fn agent_owners(&self) -> Option<Vec<String>> {
+        self.agent_owners.clone()
+    }
+    fn min_importance(&self) -> Option<f32> {
+        self.min_importance
+    }
+    fn min_confidence(&self) -> Option<f32> {
+        self.min_confidence
+    }
+    fn since(&self) -> Option<DateTime<Utc>> {
+        self.since
+    }
+    fn until(&self) -> Option<DateTime<Utc>> {
+        self.until
+    }
+    fn limit(&self) -> Option<usize> {
+        self.limit
+    }
+}
+
+impl HasOptionalQueryFields for MemoryMarkdownRequest {
+    fn text(&self) -> Option<String> {
+        self.text.clone()
+    }
+    fn thought_types(&self) -> Result<Option<Vec<ThoughtType>>, Box<dyn Error + Send + Sync>> {
+        Ok(Some(
+            self.thought_types
+                .as_ref()
+                .map(|v| {
+                    v.iter()
+                        .map(|s| parse_thought_type(s))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
+        )
+        .flatten())
+    }
+    fn roles(&self) -> Result<Option<Vec<ThoughtRole>>, Box<dyn Error + Send + Sync>> {
+        Ok(Some(
+            self.roles
+                .as_ref()
+                .map(|v| {
+                    v.iter()
+                        .map(|s| parse_thought_role(s))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
+        )
+        .flatten())
+    }
+    fn tags_any(&self) -> Option<Vec<String>> {
+        self.tags_any.clone()
+    }
+    fn concepts_any(&self) -> Option<Vec<String>> {
+        self.concepts_any.clone()
+    }
+    fn agent_ids(&self) -> Option<Vec<String>> {
+        self.agent_ids.clone()
+    }
+    fn agent_names(&self) -> Option<Vec<String>> {
+        self.agent_names.clone()
+    }
+    fn agent_owners(&self) -> Option<Vec<String>> {
+        self.agent_owners.clone()
+    }
+    fn min_importance(&self) -> Option<f32> {
+        self.min_importance
+    }
+    fn min_confidence(&self) -> Option<f32> {
+        self.min_confidence
+    }
+    fn since(&self) -> Option<DateTime<Utc>> {
+        self.since
+    }
+    fn until(&self) -> Option<DateTime<Utc>> {
+        self.until
+    }
+    fn limit(&self) -> Option<usize> {
+        self.limit
+    }
+}
+
+fn apply_optional_query_fields<T: HasOptionalQueryFields>(
+    mut query: ThoughtQuery,
+    request: &T,
+) -> Result<ThoughtQuery, Box<dyn Error + Send + Sync>> {
+    if let Some(text) = request.text() {
+        query = query.with_text(text);
+    }
+    if let Some(min_importance) = request.min_importance() {
         query = query.with_min_importance(min_importance);
     }
-    if let Some(min_confidence) = request.min_confidence {
+    if let Some(min_confidence) = request.min_confidence() {
         query = query.with_min_confidence(min_confidence);
     }
-    if let Some(limit) = request.limit {
-        query = query.with_limit(limit);
+    if let Some(thought_types) = request.thought_types()? {
+        query = query.with_types(thought_types);
     }
-    if let Some(since) = request.since {
+    if let Some(roles) = request.roles()? {
+        query = query.with_roles(roles);
+    }
+    if let Some(tags_any) = request.tags_any() {
+        query = query.with_tags_any(tags_any);
+    }
+    if let Some(concepts_any) = request.concepts_any() {
+        query = query.with_concepts_any(concepts_any);
+    }
+    if let Some(agent_ids) = request.agent_ids() {
+        query = query.with_agent_ids(agent_ids);
+    }
+    if let Some(agent_names) = request.agent_names() {
+        query = query.with_agent_names(agent_names);
+    }
+    if let Some(agent_owners) = request.agent_owners() {
+        query = query.with_agent_owners(agent_owners);
+    }
+    if let Some(since) = request.since() {
         query = query.with_since(since);
     }
-    if let Some(until) = request.until {
+    if let Some(until) = request.until() {
         query = query.with_until(until);
     }
-
-    if let Some(thought_types) = &request.thought_types {
-        query = query.with_types(
-            thought_types
-                .iter()
-                .map(|value| parse_thought_type(value))
-                .collect::<Result<Vec<_>, _>>()?,
-        );
+    if let Some(limit) = request.limit() {
+        query = query.with_limit(limit);
     }
-    if let Some(roles) = &request.roles {
-        query = query.with_roles(
-            roles
-                .iter()
-                .map(|value| parse_thought_role(value))
-                .collect::<Result<Vec<_>, _>>()?,
-        );
-    }
-    if let Some(tags_any) = &request.tags_any {
-        query = query.with_tags_any(tags_any.clone());
-    }
-    if let Some(concepts_any) = &request.concepts_any {
-        query = query.with_concepts_any(concepts_any.clone());
-    }
-    if let Some(agent_ids) = &request.agent_ids {
-        query = query.with_agent_ids(agent_ids.clone());
-    }
-    if let Some(agent_names) = &request.agent_names {
-        query = query.with_agent_names(agent_names.clone());
-    }
-    if let Some(agent_owners) = &request.agent_owners {
-        query = query.with_agent_owners(agent_owners.clone());
-    }
-
     Ok(query)
+}
+
+fn build_query(request: &SearchRequest) -> Result<ThoughtQuery, Box<dyn Error + Send + Sync>> {
+    let query = ThoughtQuery::new();
+    apply_optional_query_fields(query, request)
 }
 
 fn build_ranked_filter_query(
@@ -4959,59 +5155,57 @@ fn parse_graph_expansion_mode(
 fn build_markdown_query(
     request: &MemoryMarkdownRequest,
 ) -> Result<ThoughtQuery, Box<dyn Error + Send + Sync>> {
-    build_query(&SearchRequest {
-        chain_key: request.chain_key.clone(),
-        text: request.text.clone(),
-        thought_types: request.thought_types.clone(),
-        roles: request.roles.clone(),
-        tags_any: request.tags_any.clone(),
-        concepts_any: request.concepts_any.clone(),
-        agent_ids: request.agent_ids.clone(),
-        agent_names: request.agent_names.clone(),
-        agent_owners: request.agent_owners.clone(),
-        min_importance: request.min_importance,
-        min_confidence: request.min_confidence,
-        since: request.since,
-        until: request.until,
-        limit: request.limit,
-    })
+    let query = ThoughtQuery::new();
+    apply_optional_query_fields(query, request)
+}
+
+impl HasOptionalQueryFields for TraverseThoughtsRequest {
+    fn text(&self) -> Option<String> {
+        self.text.clone()
+    }
+    fn thought_types(&self) -> Result<Option<Vec<ThoughtType>>, Box<dyn Error + Send + Sync>> {
+        Ok(self.thought_types.clone())
+    }
+    fn roles(&self) -> Result<Option<Vec<ThoughtRole>>, Box<dyn Error + Send + Sync>> {
+        Ok(self.roles.clone())
+    }
+    fn tags_any(&self) -> Option<Vec<String>> {
+        self.tags_any.clone()
+    }
+    fn concepts_any(&self) -> Option<Vec<String>> {
+        self.concepts_any.clone()
+    }
+    fn agent_ids(&self) -> Option<Vec<String>> {
+        self.agent_ids.clone()
+    }
+    fn agent_names(&self) -> Option<Vec<String>> {
+        self.agent_names.clone()
+    }
+    fn agent_owners(&self) -> Option<Vec<String>> {
+        self.agent_owners.clone()
+    }
+    fn min_importance(&self) -> Option<f32> {
+        self.min_importance
+    }
+    fn min_confidence(&self) -> Option<f32> {
+        self.min_confidence
+    }
+    fn since(&self) -> Option<DateTime<Utc>> {
+        None
+    }
+    fn until(&self) -> Option<DateTime<Utc>> {
+        None
+    }
+    fn limit(&self) -> Option<usize> {
+        None
+    }
 }
 
 fn build_traversal_query(
     request: &TraverseThoughtsRequest,
 ) -> Result<ThoughtQuery, Box<dyn Error + Send + Sync>> {
-    let mut query = ThoughtQuery::new();
-
-    if let Some(text) = &request.text {
-        query = query.with_text(text.clone());
-    }
-    if let Some(min_importance) = request.min_importance {
-        query = query.with_min_importance(min_importance);
-    }
-    if let Some(min_confidence) = request.min_confidence {
-        query = query.with_min_confidence(min_confidence);
-    }
-    if let Some(thought_types) = &request.thought_types {
-        query = query.with_types(thought_types.clone());
-    }
-    if let Some(roles) = &request.roles {
-        query = query.with_roles(roles.clone());
-    }
-    if let Some(tags_any) = &request.tags_any {
-        query = query.with_tags_any(tags_any.clone());
-    }
-    if let Some(concepts_any) = &request.concepts_any {
-        query = query.with_concepts_any(concepts_any.clone());
-    }
-    if let Some(agent_ids) = &request.agent_ids {
-        query = query.with_agent_ids(agent_ids.clone());
-    }
-    if let Some(agent_names) = &request.agent_names {
-        query = query.with_agent_names(agent_names.clone());
-    }
-    if let Some(agent_owners) = &request.agent_owners {
-        query = query.with_agent_owners(agent_owners.clone());
-    }
+    let query = ThoughtQuery::new();
+    let query = apply_optional_query_fields(query, request)?;
 
     if request.time_window.is_some() && (request.since.is_some() || request.until.is_some()) {
         return Err(io::Error::new(
@@ -5022,17 +5216,18 @@ fn build_traversal_query(
     }
     if let Some(window) = &request.time_window {
         let (since, until) = window.to_bounds()?;
-        query = query.with_since(since).with_until(until);
+        let query = query.with_since(since).with_until(until);
+        Ok(query)
     } else {
+        let mut query = query;
         if let Some(since) = request.since {
             query = query.with_since(since);
         }
         if let Some(until) = request.until {
             query = query.with_until(until);
         }
+        Ok(query)
     }
-
-    Ok(query)
 }
 
 fn build_skill_query(
