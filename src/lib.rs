@@ -351,10 +351,24 @@ impl Clone for BinaryStorageAdapter {
 pub const FLUSH_THRESHOLD: usize = 16;
 
 /// Number of queued append requests allowed before writers backpressure callers.
-const BACKGROUND_WRITE_QUEUE_CAPACITY: usize = FLUSH_THRESHOLD * 4;
+///
+/// 8× FLUSH_THRESHOLD gives bursts of 128 queued records before back-pressure,
+/// reducing stalls when multiple callers append concurrently.
+const BACKGROUND_WRITE_QUEUE_CAPACITY: usize = FLUSH_THRESHOLD * 8;
 
 /// Maximum time a durable append waits for more work before forcing a flush.
-const GROUP_COMMIT_WINDOW: Duration = Duration::from_millis(2);
+///
+/// Defaults to 2 ms. Override with `MENTISDB_GROUP_COMMIT_MS` environment variable.
+/// Setting to 0 disables batching entirely (lowest latency, lowest throughput).
+const GROUP_COMMIT_WINDOW_DEFAULT_MS: u64 = 2;
+
+fn group_commit_window() -> Duration {
+    let ms = std::env::var("MENTISDB_GROUP_COMMIT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(GROUP_COMMIT_WINDOW_DEFAULT_MS);
+    Duration::from_millis(ms)
+}
 
 /// Number of append-driven chain-registration count updates to batch before
 /// rewriting the global registry file.
@@ -510,9 +524,13 @@ impl BackgroundWriter {
                 }
 
                 let mut file = None;
-                let mut write_buffer = Vec::new();
+                // Pre-reserve enough for a typical group commit (16 thoughts × ~512 bytes each).
+                let mut write_buffer = Vec::with_capacity(FLUSH_THRESHOLD * 512);
                 let mut dirty_count = 0usize;
                 let mut durable_acks: Vec<mpsc::Sender<io::Result<()>>> = Vec::new();
+                // Read once at thread start so every append in this writer uses
+                // the same window. Avoids env::var() calls in the hot path.
+                let commit_window = group_commit_window();
                 while let Ok(command) = rx.recv() {
                     let result = match command {
                         WriteCommand::Append { payload, ack_tx } => {
@@ -520,7 +538,7 @@ impl BackgroundWriter {
                             dirty_count += 1;
                             if let Some(ack_tx) = ack_tx {
                                 durable_acks.push(ack_tx);
-                                let deadline = Instant::now() + GROUP_COMMIT_WINDOW;
+                                let deadline = Instant::now() + commit_window;
                                 let mut follow_up: Option<PostFlushAction> = None;
                                 loop {
                                     let remaining =
@@ -829,10 +847,15 @@ impl StorageAdapter for BinaryStorageAdapter {
     }
 
     fn append_thought(&self, thought: &Thought) -> io::Result<()> {
-        // Serialize the thought to its length-prefixed wire format.
-        let payload = bincode::serde::encode_to_vec(thought, bincode::config::standard())
+        // Serialize directly into a length-prefixed wire record in one allocation.
+        // Reserve 8 bytes for the u64 length prefix, then write the bincode payload
+        // into the same buffer so we never copy bytes a second time.
+        let mut record = Vec::with_capacity(8 + 256); // 256 = typical thought size estimate
+        record.extend_from_slice(&[0u8; 8]); // placeholder for length prefix
+        bincode::serde::encode_into_std_write(thought, &mut record, bincode::config::standard())
             .map_err(|e| io::Error::other(format!("Failed to serialize thought: {e}")))?;
-        let length_bytes = (payload.len() as u64).to_le_bytes();
+        let payload_len = (record.len() - 8) as u64;
+        record[..8].copy_from_slice(&payload_len.to_le_bytes());
 
         let mut state = self
             .state
@@ -840,9 +863,6 @@ impl StorageAdapter for BinaryStorageAdapter {
             .expect("BinaryStorageAdapter state mutex poisoned");
         let durable = state.auto_flush;
         let worker = state.ensure_background_writer(&self.file_path, &self.background_error)?;
-        let mut record = Vec::with_capacity(length_bytes.len() + payload.len());
-        record.extend_from_slice(&length_bytes);
-        record.extend_from_slice(&payload);
         worker.append(record, durable, &self.background_error)
     }
 
@@ -6980,6 +7000,9 @@ fn persist_binary_thought(file_path: &Path, thought: &Thought) -> io::Result<()>
 }
 
 fn compute_thought_hash(thought: &Thought) -> String {
+    // Hash the canonical thought fields using bincode (same codec used for storage)
+    // to avoid a second, redundant serde_json serialization on every append.
+    // Bincode is ~3-5x faster to encode than JSON for struct-heavy payloads.
     #[derive(Serialize)]
     struct CanonicalThought<'a> {
         schema_version: u32,
@@ -7023,9 +7046,9 @@ fn compute_thought_hash(thought: &Thought) -> String {
         prev_hash: &thought.prev_hash,
     };
 
-    let bytes =
-        serde_json::to_vec(&canonical).expect("canonical thought serialization should not fail");
+    let bytes = bincode::serde::encode_to_vec(&canonical, bincode::config::standard())
+        .expect("canonical thought bincode serialization should not fail");
     let mut hasher = Sha256::new();
-    hasher.update(bytes);
+    hasher.update(&bytes);
     format!("{:x}", hasher.finalize())
 }
