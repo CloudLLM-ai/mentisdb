@@ -305,6 +305,16 @@ Once startup completes, it prints:
   or `off` to disable update checks after startup. Default: `true`
 - `MENTISDB_UPDATE_REPO`
   Optional GitHub `owner/repo` override used by the updater. Default: `CloudLLM-ai/mentisdb`
+- `MENTISDB_HTTPS_MCP_PORT`
+  HTTPS MCP server port. Default: `9473`. Set to `0` to disable HTTPS MCP.
+- `MENTISDB_HTTPS_REST_PORT`
+  HTTPS REST server port. Default: `9474`. Set to `0` to disable HTTPS REST.
+- `MENTISDB_TLS_CERT`
+  Path to a PEM-encoded TLS certificate for the HTTPS servers and dashboard.
+  Default: `<MENTISDB_DIR>/tls/cert.pem`
+- `MENTISDB_TLS_KEY`
+  Path to a PEM-encoded TLS private key for the HTTPS servers and dashboard.
+  Default: `<MENTISDB_DIR>/tls/key.pem`
 
 Example — full durability (production default):
 

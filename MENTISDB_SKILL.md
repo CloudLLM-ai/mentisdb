@@ -1460,7 +1460,7 @@ Agents with bash access to the daemon can write thoughts directly over HTTP with
 
 ```bash
 # Append a LessonLearned thought
-curl -s -X POST http://127.0.0.1:9472/v1/memories/append \
+curl -s -X POST http://127.0.0.1:9472/v1/thoughts \
   -H "Content-Type: application/json" \
   -d '{
     "agent_id": "dashboard-rust-infra",
@@ -1471,11 +1471,18 @@ curl -s -X POST http://127.0.0.1:9472/v1/memories/append \
     "concepts": ["lock-safety", "async-rust"]
   }'
 
-# Search by thought type + tag
-curl -s "http://127.0.0.1:9472/v1/memories/search?text=dashmap&thought_types=LessonLearned"
+# Search by text + thought type (POST, not GET)
+curl -s -X POST http://127.0.0.1:9472/v1/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "dashmap",
+    "thought_types": ["LessonLearned"]
+  }'
 
 # Get recent context (last 15 thoughts)
-curl -s "http://127.0.0.1:9472/v1/memories/recent?last_n=15"
+curl -s -X POST http://127.0.0.1:9472/v1/recent-context \
+  -H "Content-Type: application/json" \
+  -d '{ "last_n": 15 }'
 ```
 
 The REST port defaults to `9472` (`MENTISDB_REST_PORT`). The request and response shapes mirror the MCP tool parameters exactly — same field names, same JSON types.
