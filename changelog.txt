@@ -1,3 +1,9 @@
+0.7.7.25 APR/05/2026
+ - fix(dashboard): Add Agent modal Memory Chain dropdown showed numeric indices instead of chain names
+   - GET /dashboard/api/chains returns an array of objects; JS was calling Object.keys() on the array
+     which yielded "0", "1", etc. instead of chain_key values
+   - Fixed by checking Array.isArray and mapping c.chain_key before sorting
+
 0.7.6.24 APR/04/2026
  - feat(dashboard): clickable relation thought-id links in Thought Detail popup
    - Relation target_id values in the Thought Detail modal are now styled

@@ -2793,7 +2793,7 @@
         chainSel.innerHTML = '<option value="">Loading…</option>';
         api('/dashboard/api/chains')
           .then(chains => {
-            const keys = Object.keys(chains || {}).sort();
+            const keys = (Array.isArray(chains) ? chains.map(c => c.chain_key) : Object.keys(chains || {})).sort();
             chainSel.innerHTML = keys.length
               ? keys.map(k => `<option value="${esc(k)}" ${k === preselectedChain ? 'selected' : ''}>${esc(k)}</option>`).join('')
               : '<option value="">No chains found</option>';
