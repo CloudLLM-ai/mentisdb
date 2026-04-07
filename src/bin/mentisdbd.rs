@@ -486,9 +486,9 @@ pub(crate) fn build_agent_primer_lines(
             v.push(format!("   (or at {f})"));
         }
         v.extend([
-            "   Call mentisdb_bootstrap('<your-project>'), then".to_string(),
-            "   resources/read mentisdb://skill/core to load rules,".to_string(),
-            "   then write a Summary of what you just learned.\"".to_string(),
+            "   Call mentisdb_list_chains, then mentisdb_bootstrap('<project>'),".to_string(),
+            "   read mentisdb://skill/core, pick an agent with".to_string(),
+            "   mentisdb_list_agents, and call mentisdb_recent_context.\"".to_string(),
             String::new(),
             "Memory persists across resets and harnesses.".to_string(),
         ]);
@@ -504,9 +504,10 @@ pub(crate) fn build_agent_primer_lines(
             String::new(),
             "To resume a project, paste into your AI chat:".to_string(),
             String::new(),
-            "  \"Connect to MentisDB, then call".to_string(),
-            "   mentisdb_recent_context('<chain-key>') to reload".to_string(),
-            "   prior context and continue your work.\"".to_string(),
+            "  \"Connect to MentisDB. Call mentisdb_list_chains,".to_string(),
+            "   then mentisdb_bootstrap('<chain-key>'), read".to_string(),
+            "   mentisdb://skill/core, pick an agent identity with".to_string(),
+            "   mentisdb_list_agents, then mentisdb_recent_context.\"".to_string(),
         ]
     };
 
