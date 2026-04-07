@@ -134,6 +134,11 @@ def ranked_search(base_url: str, chain_key: str, query: str, limit: int) -> list
         "chain_key": chain_key,
         "text": query,
         "limit": limit,
+        "graph": {
+            "max_depth": 3,
+            "max_visited": 50,
+            "include_seeds": False,
+        },
     })
     # Each element: {"thought": {...}, "score": {lexical, vector, graph, ...}}
     return resp.get("results", [])
