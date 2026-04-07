@@ -2283,6 +2283,7 @@ dependencies = [
  "rcgen",
  "reqwest 0.13.2",
  "rodio",
+ "rustls",
  "rustls-pemfile",
  "serde",
  "serde_json",

@@ -846,6 +846,13 @@ Run `cargo install --git https://github.com/{} --tag {} --locked --force --bin {
 }
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // When `local-embeddings` is enabled, fastembed pulls in aws-lc-rs while
+    // the existing TLS stack (axum-server, rcgen) uses ring.  Rustls refuses to
+    // start if both providers are compiled in without an explicit default being
+    // installed.  Install ring — the provider already used by the rest of the
+    // stack — before any TLS operations.
+    #[cfg(feature = "local-embeddings")]
+    let _ = rustls::crypto::ring::default_provider().install_default();
     raise_fd_limit();
     init_logger();
     let storage_root_migration = if std::env::var_os("MENTISDB_DIR").is_none() {

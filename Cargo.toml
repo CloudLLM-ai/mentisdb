@@ -15,7 +15,7 @@ categories = ["data-structures", "development-tools", "asynchronous"]
 default = ["server", "startup-sound"]
 server = ["dep:axum", "dep:env_logger", "dep:log", "dep:tokio", "mcp/server", "dep:rcgen", "dep:axum-server", "dep:rustls-pemfile", "dep:reqwest"]
 startup-sound = ["dep:rodio"]
-local-embeddings = ["dep:fastembed"]
+local-embeddings = ["dep:fastembed", "dep:rustls"]
 
 [dependencies]
 async-trait = "0.1.89"
@@ -42,6 +42,9 @@ rustls-pemfile = { version = "2", optional = true }
 rodio = { version = "0.22", optional = true }
 tokio = { version = "1.50.0", features = ["full"], optional = true }
 fastembed = { version = "5.13.1", optional = true }
+# Needed to install an explicit rustls crypto provider when local-embeddings
+# is active (fastembed pulls in aws-lc-rs; the rest of the stack uses ring).
+rustls = { version = "0.23", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
