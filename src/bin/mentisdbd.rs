@@ -90,6 +90,10 @@ const GREEN: &str = "\x1b[38;5;82m";
 const YELLOW: &str = "\x1b[38;5;226m";
 const PINK: &str = "\x1b[38;5;213m";
 const CYAN: &str = "\x1b[38;5;87m";
+// Standard 8-color cyan — readable on both dark and light terminal backgrounds.
+const CYAN_STD: &str = "\x1b[36m";
+const BOLD: &str = "\x1b[1m";
+const REVERSE: &str = "\x1b[7m";
 const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 #[cfg(feature = "startup-sound")]
@@ -1128,9 +1132,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("No chain migrations required.");
     }
     println!("{skill_registry_msg}");
-    println!("mentisdbd running");
+    println!("{BOLD}mentisdbd{RESET} running\n");
 
-    // ── Resolved endpoints (local + friendly) ────────────────────────────────
+    // ── Resolved endpoints ───────────────────────────────────────────────────
     let mcp_local = format!("http://{}", handles.mcp.local_addr());
     let rest_local = format!("http://{}", handles.rest.local_addr());
     let mcp_port = handles.mcp.local_addr().port();
@@ -1138,27 +1142,27 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mcp_friendly = format!("http://my.mentisdb.com:{mcp_port}");
     let rest_friendly = format!("http://my.mentisdb.com:{rest_port}");
 
-    println!("Resolved endpoints:");
-    println!("  MCP  (HTTP)  {mcp_local:<32}  {YELLOW}{mcp_friendly}{RESET}");
-    println!("  REST (HTTP)  {rest_local:<32}  {YELLOW}{rest_friendly}{RESET}");
+    println!("{BOLD}Endpoints{RESET}");
+    println!("  MCP  (HTTP)  {mcp_local:<32}  {CYAN_STD}{mcp_friendly}{RESET}");
+    println!("  REST (HTTP)  {rest_local:<32}  {CYAN_STD}{rest_friendly}{RESET}");
 
     if let Some(ref h) = handles.https_mcp {
         let local = format!("https://{}", h.local_addr());
         let port = h.local_addr().port();
         let friendly = format!("https://my.mentisdb.com:{port}");
-        println!("  MCP  (TLS)   {local:<32}  {YELLOW}{friendly}{RESET}");
+        println!("  MCP  (TLS)   {local:<32}  {CYAN_STD}{friendly}{RESET}");
     }
     if let Some(ref h) = handles.https_rest {
         let local = format!("https://{}", h.local_addr());
         let port = h.local_addr().port();
         let friendly = format!("https://my.mentisdb.com:{port}");
-        println!("  REST (TLS)   {local:<32}  {YELLOW}{friendly}{RESET}");
+        println!("  REST (TLS)   {local:<32}  {CYAN_STD}{friendly}{RESET}");
     }
     if let Some(ref h) = handles.dashboard {
         let local = format!("https://{}/dashboard", h.local_addr());
         let port = h.local_addr().port();
         let friendly = format!("https://my.mentisdb.com:{port}/dashboard");
-        println!("  Dashboard    {local:<32}  {YELLOW}{friendly}{RESET}");
+        println!("  Dashboard    {local:<32}  {CYAN_STD}{friendly}{RESET}");
     }
 
     let dashboard_url = handles
@@ -1184,25 +1188,32 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         first_run_setup_status.has_registered_chains,
     );
 
-    // Print chain list (or "no chains yet" note).
+    // ── Chain list ───────────────────────────────────────────────────────────
     let registry = load_registered_chains(&config.service.chain_dir).unwrap_or_default();
+    println!();
     if registry.chains.is_empty() {
-        println!("No chains yet.\n");
+        println!("{BOLD}Chains{RESET}  {DIM}none yet{RESET}");
     } else {
-        println!("{} chain(s) loaded:", registry.chains.len());
+        println!("{BOLD}Chains{RESET}  {DIM}({}){RESET}", registry.chains.len());
         for (key, reg) in &registry.chains {
             println!(
-                "  {key}  ({} thought{}, {} agent{})",
+                "  {CYAN_STD}{key}{RESET}  {DIM}{} thought{}, {} agent{}{RESET}",
                 reg.thought_count,
                 if reg.thought_count == 1 { "" } else { "s" },
                 reg.agent_count,
                 if reg.agent_count == 1 { "" } else { "s" },
             );
         }
-        println!();
     }
 
-    println!("Paste into your AI chat to prime your agent:\n\n  {primer_paste_line}\n");
+    // ── Primer CTA ───────────────────────────────────────────────────────────
+    println!();
+    println!("{BOLD}▶  Paste into your AI chat to prime your agent:{RESET}");
+    println!();
+    println!("  {REVERSE}{BOLD} {primer_paste_line} {RESET}");
+    println!();
+
+    let _ = dashboard_url; // used elsewhere if needed
 
     if let Err(error) = maybe_run_first_run_setup(&first_run_setup_status) {
         eprintln!("Startup setup wizard failed: {error}");
