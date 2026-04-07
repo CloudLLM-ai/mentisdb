@@ -1176,13 +1176,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .as_ref()
         .map(|h| format!("https://{}", h.local_addr()))
         .unwrap_or_else(|| mcp_local.clone());
-    let primer_mcp_port = handles
-        .https_mcp
-        .as_ref()
-        .map(|h| h.local_addr().port())
-        .unwrap_or(mcp_port);
-    let primer_mcp_friendly = format!("https://my.mentisdb.com:{primer_mcp_port}");
-
     let primer_paste_line = build_agent_primer_paste_line(
         &primer_mcp_addr,
         first_run_setup_status.has_registered_chains,
@@ -1194,7 +1187,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if registry.chains.is_empty() {
         println!("{BOLD}Chains{RESET}  {DIM}none yet{RESET}");
     } else {
-        println!("{BOLD}Chains{RESET}  {DIM}({}){RESET}", registry.chains.len());
+        println!(
+            "{BOLD}Chains{RESET}  {DIM}({}){RESET}",
+            registry.chains.len()
+        );
         for (key, reg) in &registry.chains {
             println!(
                 "  {CYAN_STD}{key}{RESET}  {DIM}{} thought{}, {} agent{}{RESET}",
