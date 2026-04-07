@@ -195,7 +195,7 @@ def ingest(base_url: str, chain_key: str, instances: list[dict], workers: int) -
         for f in as_completed(futs):
             f.result()
             done += 1
-            if done % 500 == 0 or done == total:
+            if done % 200 == 0 or done == total:
                 elapsed = time.monotonic() - t0
                 rate = done / elapsed if elapsed > 0 else 0
                 eta = (total - done) / rate if rate > 0 else 0
