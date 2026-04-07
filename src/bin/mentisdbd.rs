@@ -492,16 +492,16 @@ pub(crate) fn build_agent_primer_lines(
 
     let paste_line = if has_chains {
         format!(
-            "\"Connect to MentisDB at {mcp_addr}. \
+            "Connect to MentisDB at {mcp_addr}. \
              Call mentisdb_list_chains, pick a chain, \
              call mentisdb_bootstrap('<chain-key>'), \
-             then read mentisdb://skill/core.\""
+             then read mentisdb://skill/core."
         )
     } else {
         format!(
-            "\"Connect to MentisDB at {mcp_addr}. \
+            "Connect to MentisDB at {mcp_addr}. \
              No chains yet — call mentisdb_bootstrap('<project-name>'), \
-             then read mentisdb://skill/core.\""
+             then read mentisdb://skill/core."
         )
     };
 
@@ -1220,7 +1220,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         dashboard_url.as_deref(),
         first_run_setup_status.has_registered_chains,
     );
-    ascii_notice_box("Agent primer", &primer_box_lines);
+    ascii_notice_box("mentisdbd", &primer_box_lines);
     println!("Paste into your AI chat:\n\n  {primer_paste_line}\n");
 
     if let Err(error) = maybe_run_first_run_setup(&first_run_setup_status) {
