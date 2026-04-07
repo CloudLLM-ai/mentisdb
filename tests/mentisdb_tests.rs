@@ -6,12 +6,13 @@ use std::time::Duration;
 
 use mentisdb::{
     chain_filename, chain_key_from_storage_filename, chain_storage_filename,
-    load_registered_chains, migrate_registered_chains, migrate_registered_chains_with_adapter,
-    signable_thought_payload, AgentStatus, BinaryStorageAdapter, MentisDb, PublicKeyAlgorithm,
-    StorageAdapter, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelation,
-    ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor,
-    ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType, TimeWindowUnit,
-    FLUSH_THRESHOLD, MENTISDB_CURRENT_VERSION,
+    load_registered_chains, migrate_chain_hash_algorithm, migrate_registered_chains,
+    migrate_registered_chains_with_adapter, signable_thought_payload, AgentStatus,
+    BinaryStorageAdapter, MentisDb, MentisDbMigrationEvent, PublicKeyAlgorithm, StorageAdapter,
+    StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelation, ThoughtRelationKind,
+    ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor, ThoughtTraversalDirection,
+    ThoughtTraversalRequest, ThoughtType, TimeWindowUnit, FLUSH_THRESHOLD,
+    MENTISDB_CURRENT_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -2203,4 +2204,143 @@ fn test_import_memory_markdown_partial() {
     assert_eq!(thoughts[0].agent_id, "alice");
     assert_eq!(thoughts[1].thought_type, ThoughtType::Insight);
     assert_eq!(thoughts[1].agent_id, "carol");
+}
+
+// ---------------------------------------------------------------------------
+// Hash algorithm migration tests (0.7.7 JSON hashes → 0.7.8 bincode hashes)
+// ---------------------------------------------------------------------------
+
+/// Recomputes thought hashes using the legacy JSON algorithm and patches both
+/// `hash` and `prev_hash` fields in the slice, then rewrites the binary file.
+/// Used only to simulate a 0.7.7 chain file for migration tests.
+fn patch_chain_file_to_legacy_hashes(path: &std::path::Path, thoughts: &mut [Thought]) {
+    use sha2::{Digest, Sha256};
+
+    // CanonicalThought must match the field order in compute_thought_hash_legacy exactly.
+    // JSON field order follows struct declaration order — any mismatch produces wrong hashes.
+    #[derive(serde::Serialize)]
+    struct CanonicalThought<'a> {
+        schema_version: u32,
+        id: uuid::Uuid,
+        index: u64,
+        timestamp: &'a chrono::DateTime<chrono::Utc>,
+        session_id: Option<uuid::Uuid>,
+        agent_id: &'a str,
+        signing_key_id: Option<&'a str>,
+        thought_signature: Option<&'a [u8]>,
+        thought_type: ThoughtType,
+        role: ThoughtRole,
+        content: &'a str,
+        confidence: Option<f32>,
+        importance: f32,
+        tags: &'a [String],
+        concepts: &'a [String],
+        refs: &'a [u64],
+        relations: &'a [ThoughtRelation],
+        prev_hash: &'a str,
+    }
+
+    let json_hash = |t: &Thought| -> String {
+        let canonical = CanonicalThought {
+            schema_version: t.schema_version,
+            id: t.id,
+            index: t.index,
+            timestamp: &t.timestamp,
+            session_id: t.session_id,
+            agent_id: &t.agent_id,
+            signing_key_id: t.signing_key_id.as_deref(),
+            thought_signature: t.thought_signature.as_deref(),
+            thought_type: t.thought_type,
+            role: t.role,
+            content: &t.content,
+            confidence: t.confidence,
+            importance: t.importance,
+            tags: &t.tags,
+            concepts: &t.concepts,
+            refs: &t.refs,
+            relations: &t.relations,
+            prev_hash: &t.prev_hash,
+        };
+        let bytes = serde_json::to_vec(&canonical).expect("json serialization");
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        format!("{:x}", hasher.finalize())
+    };
+
+    let mut prev = String::new();
+    for thought in thoughts.iter_mut() {
+        thought.prev_hash = prev.clone();
+        thought.hash = json_hash(thought);
+        prev = thought.hash.clone();
+    }
+
+    // Rewrite the binary file.
+    if path.exists() {
+        std::fs::remove_file(path).unwrap();
+    }
+    for thought in thoughts.iter() {
+        let payload =
+            bincode::serde::encode_to_vec(thought, bincode::config::standard()).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        use std::io::Write;
+        file.write_all(&(payload.len() as u64).to_le_bytes()).unwrap();
+        file.write_all(&payload).unwrap();
+    }
+}
+
+#[test]
+fn test_hash_rehash_migration_v077_to_v078() {
+    let dir = unique_chain_dir();
+    let chain_key = "legacy-chain";
+
+    // 1. Write a chain — file will have current bincode hashes.
+    {
+        let mut chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+        chain
+            .append("agent1", ThoughtType::Decision, "Use Redis for caching")
+            .unwrap();
+        chain
+            .append("agent1", ThoughtType::Insight, "Redis fits our latency needs")
+            .unwrap();
+    }
+
+    // 2. Load the thoughts and patch hashes back to legacy JSON algorithm,
+    //    simulating a chain file written by mentisdb ≤ 0.7.7.
+    let chain_path = dir.join(chain_storage_filename(chain_key, StorageAdapterKind::Binary));
+    {
+        let mut chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+        let mut thoughts: Vec<Thought> = chain.thoughts().to_vec();
+        patch_chain_file_to_legacy_hashes(&chain_path, &mut thoughts);
+    }
+
+    // 3. Run the migration — it detects the legacy-hashed file and rehashes it.
+    let mut started: Vec<String> = vec![];
+    let mut completed: Vec<String> = vec![];
+    let count = migrate_chain_hash_algorithm(&dir, |event| match event {
+        MentisDbMigrationEvent::StartedHashRehash { chain_key, .. } => {
+            started.push(chain_key);
+        }
+        MentisDbMigrationEvent::CompletedHashRehash { chain_key, .. } => {
+            completed.push(chain_key);
+        }
+        _ => {}
+    })
+    .unwrap();
+
+    assert_eq!(count, 1, "exactly one chain should have been rehashed");
+    assert_eq!(started, vec![chain_key]);
+    assert_eq!(completed, vec![chain_key]);
+
+    // 5. After migration the chain opens and passes integrity with bincode hashes.
+    let chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(chain.thoughts().len(), 2);
+    assert!(chain.verify_integrity(), "chain must pass bincode integrity after migration");
+
+    // 6. A second migration run is a no-op (no legacy hashes remain).
+    let count2 = migrate_chain_hash_algorithm(&dir, |_| {}).unwrap();
+    assert_eq!(count2, 0, "second migration run must be a no-op");
 }

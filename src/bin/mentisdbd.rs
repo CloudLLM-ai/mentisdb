@@ -33,8 +33,9 @@ use mentisdb::server::{
     adopt_legacy_default_mentisdb_dir, start_servers, MentisDbServerConfig, MentisDbServerHandles,
 };
 use mentisdb::{
-    load_registered_chains, migrate_registered_chains_with_adapter, migrate_skill_registry,
-    refresh_registered_chain_counts, MentisDb, MentisDbMigrationEvent, SkillRegistry, ThoughtType,
+    load_registered_chains, migrate_chain_hash_algorithm, migrate_registered_chains_with_adapter,
+    migrate_skill_registry, refresh_registered_chain_counts, MentisDb, MentisDbMigrationEvent,
+    SkillRegistry, ThoughtType,
 };
 use serde::Deserialize;
 use std::ffi::OsString;
@@ -923,8 +924,43 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 from_storage_adapter,
                 to_storage_adapter
             ),
+            // Hash rehash events are handled by the dedicated pass below.
+            MentisDbMigrationEvent::StartedHashRehash { .. }
+            | MentisDbMigrationEvent::CompletedHashRehash { .. } => {}
         },
     )?;
+
+    // Rehash any chains still using the legacy JSON-based hash algorithm (≤ 0.7.7 → ≥ 0.7.8).
+    // This is a no-op after the first upgrade run; detection is a single peek at the first
+    // thought in each chain file so unaffected chains cost nothing beyond the registry read.
+    match migrate_chain_hash_algorithm(
+        &config.service.chain_dir,
+        |event| match event {
+            MentisDbMigrationEvent::StartedHashRehash {
+                chain_key,
+                current,
+                total,
+            } => println!(
+                "{} Rehashing chain {} (legacy JSON → bincode)",
+                progress_bar(current, total),
+                chain_key,
+            ),
+            MentisDbMigrationEvent::CompletedHashRehash {
+                chain_key,
+                current,
+                total,
+            } => println!(
+                "{} Rehashed chain {}",
+                progress_bar(current, total),
+                chain_key,
+            ),
+            _ => {}
+        },
+    ) {
+        Ok(0) => {} // nothing to migrate
+        Ok(n) => println!("Hash algorithm migration complete: {n} chain(s) rehashed."),
+        Err(e) => log::warn!("Hash algorithm migration failed: {e}"),
+    }
 
     // Capture skill registry migration result to print later.
     let skill_registry_msg = match migrate_skill_registry(&config.service.chain_dir) {

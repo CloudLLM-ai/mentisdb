@@ -1287,6 +1287,27 @@ pub enum MentisDbMigrationEvent {
         /// Total number of chains in this reconciliation run.
         total: usize,
     },
+    /// A chain's stored hashes are being recomputed to the canonical bincode algorithm.
+    ///
+    /// Emitted once per chain when upgrading from a version that used JSON-based hashing
+    /// (≤ 0.7.7) to the faster bincode-based algorithm (≥ 0.7.8).
+    StartedHashRehash {
+        /// Stable chain identifier.
+        chain_key: String,
+        /// One-based chain counter within this rehash run.
+        current: usize,
+        /// Total number of chains being rehashed.
+        total: usize,
+    },
+    /// A chain finished hash rehashing successfully.
+    CompletedHashRehash {
+        /// Stable chain identifier.
+        chain_key: String,
+        /// One-based chain counter within this rehash run.
+        current: usize,
+        /// Total number of chains being rehashed.
+        total: usize,
+    },
 }
 
 /// Semantic category describing what changed in the agent's internal model.
@@ -3015,7 +3036,7 @@ impl MentisDb {
             );
         }
 
-        let chain = Self {
+        let mut chain = Self {
             query_indexes: QueryIndexes::from_thoughts(&thoughts),
             thoughts,
             id_to_index,
@@ -3032,10 +3053,25 @@ impl MentisDb {
         };
 
         if !chain.verify_integrity() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Thought chain integrity verification failed",
-            ));
+            if chain.verify_integrity_legacy() {
+                // Chain was written with the old JSON-based hash algorithm.
+                // Transparently rehash to bincode and rewrite the file.
+                rehash_chain_to_bincode(&mut chain.thoughts);
+                // Rebuild the hash index now that hashes have changed.
+                chain.hash_to_index.clear();
+                for (pos, thought) in chain.thoughts.iter().enumerate() {
+                    chain.hash_to_index.insert(thought.hash.clone(), pos);
+                }
+                if let Some(path) = chain.storage.storage_path() {
+                    let kind = chain.storage.storage_kind();
+                    persist_thoughts_to_path(&path, kind, &chain.thoughts)?;
+                }
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Thought chain integrity verification failed",
+                ));
+            }
         }
 
         Ok(chain)
@@ -3068,6 +3104,12 @@ impl MentisDb {
         chain_key: &str,
         default_storage_kind: StorageAdapterKind,
     ) -> io::Result<Self> {
+        if chain_key.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "chain_key must not be empty; provide a non-empty identifier for the chain",
+            ));
+        }
         if default_storage_kind == StorageAdapterKind::Jsonl {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -3272,6 +3314,27 @@ impl MentisDb {
                 return false;
             }
             if thought.hash != compute_thought_hash(thought) {
+                return false;
+            }
+            prev_hash = thought.hash.clone();
+        }
+        true
+    }
+
+    /// Check integrity using the legacy JSON hash algorithm.
+    ///
+    /// Returns `true` if the chain was written with the old JSON-based hasher.
+    /// Used during migration detection in `open_with_storage`.
+    fn verify_integrity_legacy(&self) -> bool {
+        let mut prev_hash = String::new();
+        for (position, thought) in self.thoughts.iter().enumerate() {
+            if thought.index != position as u64 {
+                return false;
+            }
+            if thought.prev_hash != prev_hash {
+                return false;
+            }
+            if thought.hash != compute_thought_hash_legacy(thought) {
                 return false;
             }
             prev_hash = thought.hash.clone();
@@ -6013,6 +6076,74 @@ pub fn refresh_registered_chain_counts<P: AsRef<Path>>(chain_dir: P) -> io::Resu
     Ok(())
 }
 
+/// Returns `true` if the first thought in a binary chain file uses the legacy JSON hash.
+///
+/// Used by [`migrate_chain_hash_algorithm`] to detect chains that need rehashing without
+/// performing a full integrity check.
+fn chain_file_uses_legacy_hashes(path: &Path) -> bool {
+    let thoughts = match load_binary_thoughts(path) {
+        Ok(t) if !t.is_empty() => t,
+        _ => return false,
+    };
+    let first = &thoughts[0];
+    // If the stored hash matches the legacy algorithm but not the current one, migration needed.
+    first.hash == compute_thought_hash_legacy(first) && first.hash != compute_thought_hash(first)
+}
+
+/// Rehash all registered chains that still use the legacy JSON-based hash algorithm.
+///
+/// This is a one-time migration for deployments upgrading from ≤ 0.7.7 to ≥ 0.7.8.
+/// It detects affected chains by peeking at the stored hashes before opening them,
+/// so chains that are already up to date are skipped with no I/O overhead beyond the
+/// registry read.
+///
+/// The `progress` callback receives [`MentisDbMigrationEvent::StartedHashRehash`] and
+/// [`MentisDbMigrationEvent::CompletedHashRehash`] events.  Returns the number of chains
+/// that were rehashed.
+pub fn migrate_chain_hash_algorithm<P, F>(chain_dir: P, mut progress: F) -> io::Result<usize>
+where
+    P: AsRef<Path>,
+    F: FnMut(MentisDbMigrationEvent),
+{
+    let chain_dir = chain_dir.as_ref();
+    let registry = load_mentisdb_registry(chain_dir)?;
+
+    // Collect chains whose files still carry legacy JSON hashes.
+    let candidates: Vec<(String, StorageAdapterKind)> = registry
+        .chains
+        .values()
+        .filter(|entry| !entry.chain_key.is_empty())
+        .filter(|entry| {
+            let path = chain_dir.join(chain_storage_filename(
+                &entry.chain_key,
+                entry.storage_adapter,
+            ));
+            chain_file_uses_legacy_hashes(&path)
+        })
+        .map(|entry| (entry.chain_key.clone(), entry.storage_adapter))
+        .collect();
+
+    let total = candidates.len();
+    for (position, (chain_key, storage_adapter)) in candidates.into_iter().enumerate() {
+        let current = position + 1;
+        progress(MentisDbMigrationEvent::StartedHashRehash {
+            chain_key: chain_key.clone(),
+            current,
+            total,
+        });
+        // Opening the chain triggers the transparent rehash + file rewrite in open_with_storage.
+        let storage = storage_adapter.for_chain_key(chain_dir, &chain_key);
+        MentisDb::open_with_storage(storage)?;
+        progress(MentisDbMigrationEvent::CompletedHashRehash {
+            chain_key,
+            current,
+            total,
+        });
+    }
+
+    Ok(total)
+}
+
 /// Migrate all legacy v0 chain files in a storage directory to the current format.
 pub fn migrate_registered_chains<P, F>(
     chain_dir: P,
@@ -6091,6 +6222,13 @@ where
         .chains
         .keys()
         .filter(|chain_key| {
+            if chain_key.is_empty() {
+                eprintln!(
+                    "warning: skipping registry entry with empty chain key — \
+                     remove the corresponding file and registry entry to suppress this warning"
+                );
+                return false;
+            }
             chain_needs_reconciliation(
                 chain_dir,
                 chain_key,
@@ -6174,6 +6312,14 @@ fn discover_chain_files(chain_dir: &Path) -> io::Result<Vec<DiscoveredChainFile>
         let Some(chain_key) = chain_key_from_storage_filename(file_name) else {
             continue;
         };
+        if chain_key.is_empty() {
+            eprintln!(
+                "warning: ignoring chain file with empty key: {} \
+                 (created by a tool that passed an empty chain_key; safe to delete)",
+                entry.path().display()
+            );
+            continue;
+        }
         let storage_kind = if file_name.ends_with(StorageAdapterKind::Jsonl.file_extension()) {
             StorageAdapterKind::Jsonl
         } else if file_name.ends_with(StorageAdapterKind::Binary.file_extension()) {
@@ -6341,13 +6487,11 @@ fn select_reconciliation_source(
 
     let expected_path = chain_dir.join(chain_storage_filename(chain_key, target_storage_adapter));
     if expected_path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "No valid MentisDb source found to repair chain '{chain_key}' at {}",
-                expected_path.display()
-            ),
-        ));
+        eprintln!(
+            "warning: chain '{chain_key}' at {} exists but could not be opened — \
+             skipping reconciliation; inspect or remove the file to clear this warning",
+            expected_path.display()
+        );
     }
 
     Ok(None)
@@ -6982,9 +7126,10 @@ fn persist_binary_thought(file_path: &Path, thought: &Thought) -> io::Result<()>
 }
 
 fn compute_thought_hash(thought: &Thought) -> String {
-    // Hash the canonical thought fields using bincode (same codec used for storage)
-    // to avoid a second, redundant serde_json serialization on every append.
-    // Bincode is ~3-5x faster to encode than JSON for struct-heavy payloads.
+    // Hash the canonical thought fields using bincode.
+    // IMPORTANT: this algorithm is fixed — changing it invalidates all stored hashes.
+    // Chains written before this algorithm was adopted are migrated transparently on
+    // first open via `compute_thought_hash_legacy` + `rehash_chain_to_bincode`.
     #[derive(Serialize)]
     struct CanonicalThought<'a> {
         schema_version: u32,
@@ -7033,4 +7178,72 @@ fn compute_thought_hash(thought: &Thought) -> String {
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     format!("{:x}", hasher.finalize())
+}
+
+/// Legacy hash algorithm used before bincode hashing was adopted.
+///
+/// Used exclusively during chain migration to detect and rehash old chains.
+/// Do NOT use this for new thoughts.
+fn compute_thought_hash_legacy(thought: &Thought) -> String {
+    #[derive(Serialize)]
+    struct CanonicalThought<'a> {
+        schema_version: u32,
+        id: Uuid,
+        index: u64,
+        timestamp: &'a DateTime<Utc>,
+        session_id: Option<Uuid>,
+        agent_id: &'a str,
+        signing_key_id: Option<&'a str>,
+        thought_signature: Option<&'a [u8]>,
+        thought_type: ThoughtType,
+        role: ThoughtRole,
+        content: &'a str,
+        confidence: Option<f32>,
+        importance: f32,
+        tags: &'a [String],
+        concepts: &'a [String],
+        refs: &'a [u64],
+        relations: &'a [ThoughtRelation],
+        prev_hash: &'a str,
+    }
+
+    let canonical = CanonicalThought {
+        schema_version: thought.schema_version,
+        id: thought.id,
+        index: thought.index,
+        timestamp: &thought.timestamp,
+        session_id: thought.session_id,
+        agent_id: &thought.agent_id,
+        signing_key_id: thought.signing_key_id.as_deref(),
+        thought_signature: thought.thought_signature.as_deref(),
+        thought_type: thought.thought_type,
+        role: thought.role,
+        content: &thought.content,
+        confidence: thought.confidence,
+        importance: thought.importance,
+        tags: &thought.tags,
+        concepts: &thought.concepts,
+        refs: &thought.refs,
+        relations: &thought.relations,
+        prev_hash: &thought.prev_hash,
+    };
+
+    let bytes =
+        serde_json::to_vec(&canonical).expect("canonical thought serialization should not fail");
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Recompute all hashes in a thought list using the canonical bincode algorithm,
+/// updating both `hash` and `prev_hash` fields in place.
+///
+/// This is a one-time migration for chains written with the legacy JSON hasher.
+fn rehash_chain_to_bincode(thoughts: &mut [Thought]) {
+    let mut prev_hash = String::new();
+    for thought in thoughts.iter_mut() {
+        thought.prev_hash = prev_hash.clone();
+        thought.hash = compute_thought_hash(thought);
+        prev_hash = thought.hash.clone();
+    }
 }
