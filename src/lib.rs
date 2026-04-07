@@ -3064,7 +3064,7 @@ impl MentisDb {
                 }
                 if let Some(path) = chain.storage.storage_path() {
                     let kind = chain.storage.storage_kind();
-                    persist_thoughts_to_path(&path, kind, &chain.thoughts)?;
+                    persist_thoughts_to_path(path, kind, &chain.thoughts)?;
                 }
             } else {
                 return Err(io::Error::new(
