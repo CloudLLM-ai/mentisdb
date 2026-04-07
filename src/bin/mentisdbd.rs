@@ -86,12 +86,15 @@ const DB_BANNER: &str = r#"██████╗ ██████╗
 ██║  ██║██╔══██╗
 ██████╔╝██████╔╝
 ╚═════╝ ╚═════╝ "#;
-const GREEN: &str = "\x1b[38;5;82m";
-const YELLOW: &str = "\x1b[38;5;226m";
-const PINK: &str = "\x1b[38;5;213m";
-const CYAN: &str = "\x1b[38;5;87m";
-// Standard 8-color cyan — readable on both dark and light terminal backgrounds.
-const CYAN_STD: &str = "\x1b[36m";
+// Standard 8-color ANSI codes — adapt to the terminal's own color theme.
+// On dark backgrounds they render as bright/saturated; on light backgrounds
+// they render as darker/muted — readable either way.
+// 256-color codes (\x1b[38;5;Nm) are fixed-palette and look great on dark
+// terminals but become invisible or harsh on light/white backgrounds.
+const GREEN: &str = "\x1b[32m";
+const YELLOW: &str = "\x1b[33m";
+const PINK: &str = "\x1b[35m";
+const CYAN: &str = "\x1b[36m";
 const BOLD: &str = "\x1b[1m";
 const REVERSE: &str = "\x1b[7m";
 const DIM: &str = "\x1b[2m";
@@ -1143,26 +1146,26 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let rest_friendly = format!("http://my.mentisdb.com:{rest_port}");
 
     println!("{BOLD}Endpoints{RESET}");
-    println!("  MCP  (HTTP)  {mcp_local:<32}  {CYAN_STD}{mcp_friendly}{RESET}");
-    println!("  REST (HTTP)  {rest_local:<32}  {CYAN_STD}{rest_friendly}{RESET}");
+    println!("  MCP  (HTTP)  {mcp_local:<32}  {CYAN}{mcp_friendly}{RESET}");
+    println!("  REST (HTTP)  {rest_local:<32}  {CYAN}{rest_friendly}{RESET}");
 
     if let Some(ref h) = handles.https_mcp {
         let local = format!("https://{}", h.local_addr());
         let port = h.local_addr().port();
         let friendly = format!("https://my.mentisdb.com:{port}");
-        println!("  MCP  (TLS)   {local:<32}  {CYAN_STD}{friendly}{RESET}");
+        println!("  MCP  (TLS)   {local:<32}  {CYAN}{friendly}{RESET}");
     }
     if let Some(ref h) = handles.https_rest {
         let local = format!("https://{}", h.local_addr());
         let port = h.local_addr().port();
         let friendly = format!("https://my.mentisdb.com:{port}");
-        println!("  REST (TLS)   {local:<32}  {CYAN_STD}{friendly}{RESET}");
+        println!("  REST (TLS)   {local:<32}  {CYAN}{friendly}{RESET}");
     }
     if let Some(ref h) = handles.dashboard {
         let local = format!("https://{}/dashboard", h.local_addr());
         let port = h.local_addr().port();
         let friendly = format!("https://my.mentisdb.com:{port}/dashboard");
-        println!("  Dashboard    {local:<32}  {CYAN_STD}{friendly}{RESET}");
+        println!("  Dashboard    {local:<32}  {CYAN}{friendly}{RESET}");
     }
 
     let dashboard_url = handles
@@ -1193,7 +1196,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
         for (key, reg) in &registry.chains {
             println!(
-                "  {CYAN_STD}{key}{RESET}  {DIM}{} thought{}, {} agent{}{RESET}",
+                "  {CYAN}{key}{RESET}  {DIM}{} thought{}, {} agent{}{RESET}",
                 reg.thought_count,
                 if reg.thought_count == 1 { "" } else { "s" },
                 reg.agent_count,
