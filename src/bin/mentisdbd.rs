@@ -453,44 +453,11 @@ pub(crate) fn build_first_run_setup_lines() -> Vec<String> {
     ]
 }
 
-/// Builds the "Agent primer" notice shown at daemon startup.
+/// Builds the single ready-to-paste primer line shown at daemon startup.
 ///
-/// Returns `(box_lines, paste_line)`:
-/// - `box_lines` — content for the ASCII notice box (status, MCP addr, dashboard).
-/// - `paste_line` — a single ready-to-paste line printed **outside** the box so it
-///   can be triple-click selected without box-drawing characters.
-///
-/// # Arguments
-///
-/// * `mcp_addr` - Preferred MCP base URL (HTTPS when TLS is up, HTTP otherwise).
-/// * `mcp_friendly` - Optional `my.mentisdb.com` alias shown as an alternative.
-/// * `dashboard_url` - Optional dashboard HTTPS URL.
-/// * `has_chains` - Whether any chains already exist on disk.
-pub(crate) fn build_agent_primer_lines(
-    mcp_addr: &str,
-    mcp_friendly: Option<&str>,
-    dashboard_url: Option<&str>,
-    has_chains: bool,
-) -> (Vec<String>, String) {
-    let addr_line = match mcp_friendly {
-        Some(f) => format!("  MCP: {mcp_addr}  (or {f})"),
-        None => format!("  MCP: {mcp_addr}"),
-    };
-
-    let status_line = if has_chains {
-        "Chains detected. Connect your agent via MCP:".to_string()
-    } else {
-        "No chains yet. Connect your agent via MCP:".to_string()
-    };
-
-    let mut box_lines = vec![status_line, addr_line];
-
-    if let Some(url) = dashboard_url {
-        box_lines.push(String::new());
-        box_lines.push(format!("Dashboard: {url}"));
-    }
-
-    let paste_line = if has_chains {
+/// The line is printed outside any box so it can be triple-click selected cleanly.
+pub(crate) fn build_agent_primer_paste_line(mcp_addr: &str, has_chains: bool) -> String {
+    if has_chains {
         format!(
             "Connect to MentisDB at {mcp_addr}. \
              Call mentisdb_list_chains, pick a chain, \
@@ -503,9 +470,7 @@ pub(crate) fn build_agent_primer_lines(
              No chains yet — call mentisdb_bootstrap('<project-name>'), \
              then read mentisdb://skill/core."
         )
-    };
-
-    (box_lines, paste_line)
+    }
 }
 
 fn detect_first_run_setup_status(chain_dir: &Path) -> FirstRunSetupStatus {
@@ -1214,13 +1179,29 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .unwrap_or(mcp_port);
     let primer_mcp_friendly = format!("https://my.mentisdb.com:{primer_mcp_port}");
 
-    let (primer_box_lines, primer_paste_line) = build_agent_primer_lines(
+    let primer_paste_line = build_agent_primer_paste_line(
         &primer_mcp_addr,
-        Some(&primer_mcp_friendly),
-        dashboard_url.as_deref(),
         first_run_setup_status.has_registered_chains,
     );
-    ascii_notice_box("mentisdbd", &primer_box_lines);
+
+    // Print chain list (or "no chains yet" note).
+    let registry = load_registered_chains(&config.service.chain_dir).unwrap_or_default();
+    if registry.chains.is_empty() {
+        println!("No chains yet.\n");
+    } else {
+        println!("{} chain(s) loaded:", registry.chains.len());
+        for (key, reg) in &registry.chains {
+            println!(
+                "  {key}  ({} thought{}, {} agent{})",
+                reg.thought_count,
+                if reg.thought_count == 1 { "" } else { "s" },
+                reg.agent_count,
+                if reg.agent_count == 1 { "" } else { "s" },
+            );
+        }
+        println!();
+    }
+
     println!("Paste into your AI chat to prime your agent:\n\n  {primer_paste_line}\n");
 
     if let Err(error) = maybe_run_first_run_setup(&first_run_setup_status) {

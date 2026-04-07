@@ -414,50 +414,34 @@ fn scheduler_spaces_bursts_without_overlap() {
     );
 }
 
-/// No chains: bootstrap primer — address and skill/core in paste line, dashboard in box.
+/// No chains: paste line includes bootstrap and skill/core.
 #[test]
 fn agent_primer_no_chains_shows_bootstrap() {
-    let (box_lines, paste_line) = mentisdbd_impl::build_agent_primer_lines(
-        "https://127.0.0.1:9473",
-        Some("https://my.mentisdb.com:9473"),
-        Some("https://127.0.0.1:9475/dashboard"),
-        false,
-    );
-    let box_text = box_lines.join("\n");
-    assert!(box_text.contains("127.0.0.1:9473"));
-    assert!(box_text.contains("my.mentisdb.com:9473"));
-    assert!(box_text.contains("9475/dashboard"));
+    let paste_line =
+        mentisdbd_impl::build_agent_primer_paste_line("https://127.0.0.1:9473", false);
+    assert!(paste_line.contains("127.0.0.1:9473"));
     assert!(paste_line.contains("mentisdb://skill/core"));
     assert!(paste_line.contains("mentisdb_bootstrap"));
-    assert!(paste_line.contains("127.0.0.1:9473"));
 }
 
-/// Chains exist: resume primer — bootstrap and skill/core in paste line, dashboard in box.
+/// Chains exist: paste line includes bootstrap and skill/core.
 #[test]
 fn agent_primer_with_chains_shows_resume() {
-    let (box_lines, paste_line) = mentisdbd_impl::build_agent_primer_lines(
-        "https://127.0.0.1:9473",
-        Some("https://my.mentisdb.com:9473"),
-        Some("https://127.0.0.1:9475/dashboard"),
-        true,
-    );
-    let box_text = box_lines.join("\n");
-    assert!(box_text.contains("127.0.0.1:9473"));
-    assert!(box_text.contains("my.mentisdb.com:9473"));
-    assert!(box_text.contains("9475/dashboard"));
+    let paste_line =
+        mentisdbd_impl::build_agent_primer_paste_line("https://127.0.0.1:9473", true);
+    assert!(paste_line.contains("127.0.0.1:9473"));
     assert!(paste_line.contains("mentisdb_bootstrap"));
     assert!(paste_line.contains("mentisdb://skill/core"));
-    assert!(paste_line.contains("127.0.0.1:9473"));
+    assert!(paste_line.contains("<chain-key>"));
 }
 
-/// No dashboard URL → no "dashboard" text in box; paste line still has skill/core.
+/// No-chains paste line uses project-name placeholder, not chain-key.
 #[test]
 fn agent_primer_no_dashboard() {
-    let (box_lines, paste_line) =
-        mentisdbd_impl::build_agent_primer_lines("https://127.0.0.1:9473", None, None, false);
-    let box_text = box_lines.join("\n");
-    assert!(!box_text.contains("dashboard"));
+    let paste_line =
+        mentisdbd_impl::build_agent_primer_paste_line("https://127.0.0.1:9473", false);
     assert!(paste_line.contains("mentisdb://skill/core"));
+    assert!(paste_line.contains("<project-name>"));
 }
 
 #[test]
