@@ -22,13 +22,13 @@ Reference scores (MemPalace BENCHMARKS.md, 2026):
 
 Usage:
     pip install datasets requests
-    python benchmarks/convomem_bench.py \\
+    python lme-benches/convomem_bench.py \\
         --limit 500 \\
         --top-k 5 \\
         --chain convomem-$(date +%s)
 
     # Full run (75k pairs, takes ~30 min):
-    python benchmarks/convomem_bench.py --top-k 5
+    python lme-benches/convomem_bench.py --top-k 5
 """
 
 import argparse

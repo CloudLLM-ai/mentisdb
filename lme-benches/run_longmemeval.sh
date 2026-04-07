@@ -7,9 +7,9 @@
 # and ingestion runs.
 #
 # Usage:
-#   bash benchmarks/run_longmemeval.sh              # auto-select or create chain
-#   bash benchmarks/run_longmemeval.sh --limit 50   # dev run (first 50 questions)
-#   bash benchmarks/run_longmemeval.sh --force-reingest   # re-ingest even if chain exists
+#   bash lme-benches/run_longmemeval.sh              # auto-select or create chain
+#   bash lme-benches/run_longmemeval.sh --limit 50   # dev run (first 50 questions)
+#   bash lme-benches/run_longmemeval.sh --force-reingest   # re-ingest even if chain exists
 #
 # Any unrecognised flag is forwarded verbatim to longmemeval_bench.py.
 

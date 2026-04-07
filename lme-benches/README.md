@@ -25,67 +25,76 @@ Higher is better.
 pip3 install requests datasets
 ```
 
-### 2. Download the dataset
+The dataset is already checked in at `data/longmemeval_oracle.json` — no
+download needed.
 
-```bash
-mkdir -p data
-wget -P data https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json
-```
-
-The file lands at `data/longmemeval_oracle.json` (~10 MB).
-
-### 3. Start mentisdbd
+### 2. Start mentisdbd
 
 ```bash
 mentisdbd &
 ```
 
-### 4. Run the benchmark
+### 3. Run the benchmark
 
-Use the provided shell script (handles chain naming and workers for you):
+The shell script is fully automatic:
 
 ```bash
-bash benchmarks/run_longmemeval.sh
+bash lme-benches/run_longmemeval.sh
 ```
 
-Or run manually with full control:
+It queries `GET /v1/chains`, picks the `lme-*` chain with the most thoughts
+(a full ingest beats a dev run), and skips ingestion automatically. If no
+`lme-*` chain exists it creates a fresh one and ingests.
+
+**First run or after ingestion changes** (e.g. importance weighting was
+updated) — force a fresh ingest:
 
 ```bash
-# Dev run — first 50 questions, fast
-python3 benchmarks/longmemeval_bench.py \
-    --data data/longmemeval_oracle.json \
-    --limit 50 \
-    --top-k 5 \
-    --chain lme-dev-$(date +%s) \
-    --workers 4
-
-# Full run — all 500 questions
-python3 benchmarks/longmemeval_bench.py \
-    --data data/longmemeval_oracle.json \
-    --top-k 5 \
-    --chain lme-full-$(date +%s) \
-    --workers 4 \
-    --output results/longmemeval.jsonl
+bash lme-benches/run_longmemeval.sh --force-reingest
 ```
 
-**Important:** always use a fresh `--chain` name per run. Re-using a chain
-from a previous run double-ingests the sessions and inflates result counts.
-The shell script handles this automatically with a timestamp suffix.
-
-**`--workers` note:** 4 is the safe default. Raising it speeds up ingestion
-but risks overwhelming the daemon's write queue. If you see 404/500 errors
-mid-ingest, reduce workers or restart the daemon and re-run.
-
-### 5. Re-run evaluation without re-ingesting
-
-Once a chain is populated you can skip ingestion and just re-evaluate:
+**Dev run** — first 50 questions, fast feedback loop:
 
 ```bash
-python3 benchmarks/longmemeval_bench.py \
+bash lme-benches/run_longmemeval.sh --limit 50
+```
+
+Note: `--limit 50` only covers a subset of question types and gives an
+optimistic score. The full 500-question run is the authoritative number.
+
+**`--workers` note:** 4 is the safe default for ingestion. Raising it speeds
+things up but risks overwhelming the daemon's write queue. If you see
+404/500 errors mid-ingest, reduce workers or restart the daemon and re-run.
+
+### 4. What the output means
+
+The script reports R@5, R@10, and R@20 simultaneously (retrieves top-20 per
+query, checks at each cutoff) and prints a diagnostics section:
+
+- **Near-miss analysis** — how many misses appear in top-10/top-20 tells you
+  whether the problem is ranking order (evidence retrieved but ranked too low)
+  or a true lexical gap (evidence never surfaces).
+- **Score breakdown on misses** — avg lexical/graph/recency/total scores on
+  missed queries, showing which signals are weak.
+- **Evidence length stats** — short evidence is harder for substring matching;
+  useful for identifying structurally difficult question types.
+- **Sample misses** — question, gold evidence snippet, top-1 retrieved snippet,
+  and score breakdown for the worst-performing question type.
+
+### 5. Manual control
+
+```bash
+# Re-evaluate an existing chain without re-ingesting
+python3 lme-benches/longmemeval_bench.py \
     --data data/longmemeval_oracle.json \
-    --chain lme-full-1234567890 \
-    --skip-ingest \
+    --chain lme-1234567890 \
     --top-k 5
+
+# Force re-ingest an existing chain
+python3 lme-benches/longmemeval_bench.py \
+    --data data/longmemeval_oracle.json \
+    --chain lme-1234567890 \
+    --force-reingest
 ```
 
 ---
@@ -94,19 +103,19 @@ python3 benchmarks/longmemeval_bench.py \
 
 ```bash
 # Quick smoke test — 100 items per category
-python3 benchmarks/convomem_bench.py \
+python3 lme-benches/convomem_bench.py \
     --categories all \
     --limit 100 \
     --top-k 5
 
 # Single category
-python3 benchmarks/convomem_bench.py \
+python3 lme-benches/convomem_bench.py \
     --categories user asst \
     --limit 500 \
     --top-k 5
 
 # Full run (~75k pairs, ~30 min)
-python3 benchmarks/convomem_bench.py \
+python3 lme-benches/convomem_bench.py \
     --top-k 5 \
     --output results/convomem.json
 ```
@@ -120,13 +129,13 @@ on first run and cached locally by the `datasets` library.
 
 ```bash
 # Dev run — first 20 persona-pairs
-python3 benchmarks/locomo_bench.py \
+python3 lme-benches/locomo_bench.py \
     --top-k 10 \
     --limit 20 \
     --chain locomo-dev-$(date +%s)
 
 # Full run (~1,986 QA pairs)
-python3 benchmarks/locomo_bench.py \
+python3 lme-benches/locomo_bench.py \
     --top-k 10 \
     --chain locomo-$(date +%s) \
     --output results/locomo.json

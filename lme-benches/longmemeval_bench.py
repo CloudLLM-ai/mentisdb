@@ -11,15 +11,15 @@ Reference scores (MemPalace BENCHMARKS.md, 2026):
 
 Usage:
     # Start mentisdbd, then run the shell wrapper (handles everything):
-    bash benchmarks/run_longmemeval.sh
+    bash lme-benches/run_longmemeval.sh
 
     # Or manually — chain existence auto-detected, ingestion skipped if present:
-    python benchmarks/longmemeval_bench.py \\
+    python lme-benches/longmemeval_bench.py \\
         --data data/longmemeval_oracle.json \\
         --chain lme-1234567890
 
     # Force re-ingest an existing chain:
-    python benchmarks/longmemeval_bench.py \\
+    python lme-benches/longmemeval_bench.py \\
         --data data/longmemeval_oracle.json \\
         --chain lme-1234567890 \\
         --force-reingest

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__mentisdb__mentisdb_list_skills",
+      "mcp__mentisdb__mentisdb_skill_manifest",
+      "mcp__mentisdb__mentisdb_list_agent_registry"
+    ]
+  },
+  "$version": 3
+}

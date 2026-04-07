@@ -18,13 +18,13 @@ Reference scores (MemPalace BENCHMARKS.md, 2026):
 
 Usage:
     pip install datasets requests
-    python benchmarks/locomo_bench.py \\
+    python lme-benches/locomo_bench.py \\
         --top-k 10 \\
         --chain locomo-$(date +%s) \\
         --limit 200
 
     # Full run:
-    python benchmarks/locomo_bench.py --top-k 10
+    python lme-benches/locomo_bench.py --top-k 10
 """
 
 import argparse
