@@ -970,11 +970,36 @@
         </div>
       </div>
 
+      <!-- ── Merge chain modal ───────────────────────── -->
+      <div id="cl-merge-modal" style="display:none">
+        <div class="card" style="border-color:rgba(88,166,255,0.5);margin-bottom:16px">
+          <div class="card-title" style="color:#58a6ff">⇢ Merge Chain Into Another</div>
+          <p style="color:#c9d1d9;margin-bottom:6px">
+            All thoughts from <strong id="cl-mrg-src" style="color:#58a6ff"></strong>
+            will be copied into the selected target chain. Agent identities will be
+            remapped automatically to the closest match in the target chain.
+          </p>
+          <p style="color:#f85149;font-size:0.85rem;margin-bottom:14px">
+            ⚠ After copying, <strong id="cl-mrg-src2" style="color:#f85149"></strong> will be permanently deleted and cannot be recovered.
+          </p>
+          <div class="form-group" style="margin-bottom:14px">
+            <label>Merge into target chain</label>
+            <select id="cl-mrg-target" class="filter-select"></select>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.5)" id="cl-mrg-submit">Merge &amp; Delete Source</button>
+            <button class="btn btn-secondary btn-sm" id="cl-mrg-cancel">Cancel</button>
+            <span id="cl-mrg-fb" class="feedback"></span>
+          </div>
+        </div>
+      </div>
+
       <div class="card"><div id="cl-body"></div></div>
     `;
 
     // Bootstrap modal wiring
     let _delChainKey = null;
+    let _chainListCache = [];
     document.getElementById('cl-refresh-btn').addEventListener('click', () => {
       renderChainList();
     });
@@ -1038,11 +1063,66 @@
       document.getElementById('cl-del-confirm').focus();
     };
 
+    // ── Merge chain ──────────────────────────────────────────────
+    let _mergeSourceKey = null;
+
+    window._openMergeChain = function(ck) {
+      _mergeSourceKey = ck;
+      document.getElementById('cl-mrg-src').textContent = ck;
+      document.getElementById('cl-mrg-src2').textContent = ck;
+      // Populate target dropdown with all chains except source
+      const sel = document.getElementById('cl-mrg-target');
+      sel.innerHTML = '';
+      (_chainListCache || []).forEach(c => {
+        if (c.chain_key === ck) return;
+        const opt = document.createElement('option');
+        opt.value = c.chain_key;
+        opt.textContent = c.chain_key + ' (' + (c.thought_count ?? 0) + ' thoughts)';
+        sel.appendChild(opt);
+      });
+      document.getElementById('cl-merge-modal').style.display = '';
+      document.getElementById('cl-mrg-fb').textContent = '';
+      document.getElementById('cl-mrg-fb').className = 'feedback';
+    };
+
+    document.getElementById('cl-mrg-cancel').addEventListener('click', () => {
+      document.getElementById('cl-merge-modal').style.display = 'none';
+      _mergeSourceKey = null;
+    });
+
+    document.getElementById('cl-mrg-submit').addEventListener('click', () => {
+      const fb  = document.getElementById('cl-mrg-fb');
+      const btn = document.getElementById('cl-mrg-submit');
+      const target = document.getElementById('cl-mrg-target').value;
+      if (!target) { showFeedback(fb, false, 'Select a target chain'); return; }
+      btn.disabled = true;
+      fb.textContent = 'Merging…';
+      fb.className = 'feedback show';
+      api('/dashboard/api/chains/merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_chain_key: _mergeSourceKey, target_chain_key: target })
+      })
+        .then(res => {
+          showFeedback(fb, true, `✓ Copied ${res.thoughts_copied} thoughts → ${target}. Source deleted.`);
+          setTimeout(() => {
+            document.getElementById('cl-merge-modal').style.display = 'none';
+            _mergeSourceKey = null;
+            renderChainList();
+          }, 1800);
+        })
+        .catch(err => {
+          showFeedback(fb, false, err.message);
+          btn.disabled = false;
+        });
+    });
+
     const el = document.getElementById('cl-body');
     spinner(el);
     api('/dashboard/api/chains')
       .then(chains => {
         if (!chains || !chains.length) { el.innerHTML = '<div class="empty-state">No chains found. Bootstrap one above!</div>'; return; }
+        _chainListCache = chains;
         el.innerHTML = `
           <div class="table-wrap"><table>
             <thead><tr><th>Chain Key</th><th>Thoughts</th><th>Agents</th><th>Head Hash</th><th></th></tr></thead>
@@ -1053,7 +1133,10 @@
                   <td>${esc(String(c.thought_count ?? '—'))}</td>
                   <td onclick="event.stopPropagation()"><a href="${agentListHash(c.chain_key)}" class="mono" style="color:#58a6ff;text-decoration:none">${esc(String(c.agent_count  ?? '—'))}</a></td>
                   <td class="mono" style="color:#8b949e">${c.head_hash ? esc(c.head_hash.slice(0,8)) : '—'}</td>
-                  <td onclick="event.stopPropagation()"><button class="btn btn-danger btn-sm" onclick="window._openDeleteChain('${esc(c.chain_key)}')">Delete</button></td>
+                  <td onclick="event.stopPropagation()" style="white-space:nowrap">
+                    <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);margin-right:6px" onclick="window._openMergeChain('${esc(c.chain_key)}')">Merge into…</button>
+                    <button class="btn btn-danger btn-sm" onclick="window._openDeleteChain('${esc(c.chain_key)}')">Delete</button>
+                  </td>
                 </tr>
               `).join('')}
             </tbody>
