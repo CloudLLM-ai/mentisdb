@@ -1221,7 +1221,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         first_run_setup_status.has_registered_chains,
     );
     ascii_notice_box("mentisdbd", &primer_box_lines);
-    println!("Paste into your AI chat:\n\n  {primer_paste_line}\n");
+    println!("Paste into your AI chat to prime your agent:\n\n  {primer_paste_line}\n");
 
     if let Err(error) = maybe_run_first_run_setup(&first_run_setup_status) {
         eprintln!("Startup setup wizard failed: {error}");
