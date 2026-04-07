@@ -210,6 +210,8 @@ def main():
                     help="Parallel ingestion workers")
     ap.add_argument("--skip-ingest", action="store_true",
                     help="Skip ingestion (chain already populated)")
+    ap.add_argument("--rebuild-vectors", action="store_true",
+                    help="Build vector sidecar after ingestion (experimental — hash-based, not semantic)")
     ap.add_argument("--output", help="Write per-instance JSONL results to this path")
     args = ap.parse_args()
 
@@ -229,8 +231,9 @@ def main():
         ingest(args.base_url, args.chain, instances, args.workers)
         print(f"  Ingestion done in {time.monotonic()-t0:.1f}s\n", flush=True)
         time.sleep(1)  # brief settle
-        print("Building vector sidecar…", flush=True)
-        rebuild_vectors(args.base_url, args.chain)
+        if args.rebuild_vectors:
+            print("Building vector sidecar…", flush=True)
+            rebuild_vectors(args.base_url, args.chain)
 
     t0 = time.monotonic()
     overall, by_type = evaluate(args.base_url, args.chain, instances, args.top_k)
@@ -248,8 +251,9 @@ def main():
 
     if args.output:
         # Re-run to capture per-instance detail
+        print(f"\nWriting per-instance JSONL to {args.output} …", flush=True)
         with open(args.output, "w") as out:
-            for inst in instances:
+            for i, inst in enumerate(instances, 1):
                 evidence = _collect_evidence(inst)
                 thoughts = ranked_search(args.base_url, args.chain,
                                          inst["question"], args.top_k)
@@ -260,6 +264,8 @@ def main():
                     "hit": hit,
                     "top_k_contents": [t.get("content", "")[:200] for t in thoughts],
                 }) + "\n")
+                if i % 100 == 0 or i == len(instances):
+                    print(f"  {i}/{len(instances)} written", flush=True)
         print(f"Per-instance results written to {args.output}")
 
     sys.exit(0 if overall >= 90.0 else 1)
