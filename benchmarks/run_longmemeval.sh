@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # Run the LongMemEval benchmark against a running mentisdbd instance.
 #
-# Usage:
-#   bash benchmarks/run_longmemeval.sh              # full run, 500 questions
-#   bash benchmarks/run_longmemeval.sh --limit 50   # dev run, first 50 questions
-#   bash benchmarks/run_longmemeval.sh --workers 8  # faster ingestion (if daemon is stable)
+# The Python script auto-detects whether the chain already exists and skips
+# ingestion automatically — no flags needed for re-runs.
 #
-# Pass any extra flags — they are forwarded to longmemeval_bench.py.
+# Usage:
+#   bash benchmarks/run_longmemeval.sh                      # full run, fresh chain
+#   bash benchmarks/run_longmemeval.sh --limit 50           # dev run (first 50 questions)
+#   bash benchmarks/run_longmemeval.sh --chain lme-1234567  # re-use existing chain
+#   bash benchmarks/run_longmemeval.sh --chain lme-1234567 --force-reingest
+#
+# Any unrecognised flag is forwarded verbatim to longmemeval_bench.py.
 
 set -euo pipefail
 
@@ -14,9 +18,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DATA_FILE="$REPO_ROOT/data/longmemeval_oracle.json"
 DATA_URL="https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json"
-CHAIN="lme-$(date +%s)"
 WORKERS=4
 TOP_K=5
+CHAIN=""
+EXTRA_ARGS=()
+
+# ---------------------------------------------------------------------------
+# Parse flags — pull out the ones we act on; forward the rest
+# ---------------------------------------------------------------------------
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --chain)   CHAIN="$2";   shift 2 ;;
+        --workers) WORKERS="$2"; shift 2 ;;
+        *)         EXTRA_ARGS+=("$1"); shift ;;
+    esac
+done
+
+if [[ -z "$CHAIN" ]]; then
+    CHAIN="lme-$(date +%s)"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 1 — check Python deps
@@ -55,7 +75,7 @@ echo "mentisdbd is up."
 # Step 4 — run the benchmark
 # ---------------------------------------------------------------------------
 mkdir -p "$REPO_ROOT/results"
-OUTPUT="$REPO_ROOT/results/longmemeval-$CHAIN.jsonl"
+OUTPUT="$REPO_ROOT/results/longmemeval-${CHAIN}.jsonl"
 
 echo ""
 echo "Chain : $CHAIN"
@@ -63,9 +83,9 @@ echo "Output: $OUTPUT"
 echo ""
 
 python3 "$SCRIPT_DIR/longmemeval_bench.py" \
-    --data "$DATA_FILE" \
-    --top-k $TOP_K \
-    --chain "$CHAIN" \
+    --data    "$DATA_FILE" \
+    --top-k   $TOP_K \
+    --chain   "$CHAIN" \
     --workers $WORKERS \
-    --output "$OUTPUT" \
-    "$@"
+    --output  "$OUTPUT" \
+    "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
