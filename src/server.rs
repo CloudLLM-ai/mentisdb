@@ -40,10 +40,10 @@
 //! - `POST /v1/skills/revoke`
 
 use crate::{
-    load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus, ManagedVectorProviderKind,
-    MentisDb, PublicKeyAlgorithm, RankedSearchGraph, RankedSearchQuery, SkillFormat, SkillQuery,
-    SkillRegistry, SkillRegistryManifest, SkillStatus, SkillSummary, SkillUpload,
-    SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery,
+    deregister_chain, load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus,
+    ManagedVectorProviderKind, MentisDb, PublicKeyAlgorithm, RankedSearchGraph, RankedSearchQuery,
+    SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus, SkillSummary,
+    SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery,
     ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor,
     ThoughtTraversalCursor, ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType,
     TimeWindowUnit, MENTISDB_CURRENT_VERSION,
@@ -1397,6 +1397,7 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         )
         .route("/v1/agents/disable", post(rest_disable_agent_handler))
         .route("/v1/vectors/rebuild", post(rest_rebuild_vectors_handler))
+        .route("/v1/chains/merge", post(rest_merge_chains_handler))
         .with_state(service)
 }
 
@@ -1846,6 +1847,9 @@ impl ToolProtocol for MentisDbMcpProtocol {
             }
             "mentisdb_head" => {
                 parse_and_call(parameters, |request| self.service.head(request)).await
+            }
+            "mentisdb_merge_chains" => {
+                parse_and_call(parameters, |request| self.service.merge_chains(request)).await
             }
             _ => {
                 return Err(Box::new(ToolError::NotFound(tool_name.to_string())));
@@ -3313,6 +3317,168 @@ impl MentisDbService {
         });
         Ok(RebuildVectorsResponse { chain_key, status })
     }
+
+    /// Merge all thoughts from the source chain into the target chain, then
+    /// permanently delete the source chain.
+    ///
+    /// Agent identities are remapped autonomously: each source agent is matched
+    /// to the closest existing target agent by Jaccard character-set similarity
+    /// on the agent ID strings.  No new agents are created on the target chain.
+    /// Cross-chain `refs` indices are dropped because they are chain-local and
+    /// would be meaningless after the merge.
+    ///
+    /// On the first `append_thought` failure the method returns an error and
+    /// the source chain is left intact, preventing data loss from a partial merge.
+    async fn merge_chains(
+        &self,
+        request: MergeChainsRequest,
+    ) -> Result<MergeChainsResponse, Box<dyn Error + Send + Sync>> {
+        let source_key = &request.source_chain_key;
+        let target_key = &request.target_chain_key;
+
+        if source_key == target_key {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "source and target chain must differ",
+            )));
+        }
+
+        // The target chain must already be registered.  `get_chain` will return
+        // an error for an unknown key, which we surface as a Bad Request.
+        let target_arc = self.get_chain(Some(target_key), None).await.map_err(|_| {
+            Box::new(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("target chain '{target_key}' does not exist"),
+            )) as Box<dyn Error + Send + Sync>
+        })?;
+
+        let source_arc = self.get_chain(Some(source_key), None).await?;
+
+        // Collect agent thought counts on the target chain for tie-breaking.
+        let target_agent_thought_counts: std::collections::HashMap<String, u64> = {
+            let tgt = target_arc.read().await;
+            let mut counts = std::collections::HashMap::new();
+            for t in tgt.thoughts() {
+                *counts.entry(t.agent_id.clone()).or_insert(0) += 1;
+            }
+            counts
+        };
+
+        // Collect the set of agent IDs present on the target chain.
+        let target_agent_ids: Vec<String> = {
+            let tgt = target_arc.read().await;
+            tgt.agent_registry().agents.keys().cloned().collect()
+        };
+
+        // Build source_agent_id → thought count map and source agent list.
+        let source_agent_ids: Vec<String> = {
+            let src = source_arc.read().await;
+            let mut counts: std::collections::HashMap<String, u64> =
+                std::collections::HashMap::new();
+            for t in src.thoughts() {
+                *counts.entry(t.agent_id.clone()).or_insert(0) += 1;
+            }
+            counts.into_keys().collect()
+        };
+
+        // Build the agent remapping: source_agent_id → target_agent_id.
+        let agent_remap: std::collections::HashMap<String, String> = source_agent_ids
+            .iter()
+            .map(|src_id| {
+                // Exact match wins immediately.
+                if target_agent_ids.contains(src_id) {
+                    return (src_id.clone(), src_id.clone());
+                }
+
+                let src_chars: std::collections::HashSet<char> = src_id.chars().collect();
+
+                let best = target_agent_ids
+                    .iter()
+                    .max_by(|a, b| {
+                        let score_a = merge_chains_jaccard(&src_chars, a);
+                        let score_b = merge_chains_jaccard(&src_chars, b);
+                        let cmp = score_a
+                            .partial_cmp(&score_b)
+                            .unwrap_or(std::cmp::Ordering::Equal);
+                        if cmp == std::cmp::Ordering::Equal {
+                            let count_a = target_agent_thought_counts.get(*a).copied().unwrap_or(0);
+                            let count_b = target_agent_thought_counts.get(*b).copied().unwrap_or(0);
+                            count_a.cmp(&count_b)
+                        } else {
+                            cmp
+                        }
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| src_id.clone());
+
+                (src_id.clone(), best)
+            })
+            .collect();
+
+        let agents_remapped = agent_remap.iter().filter(|(src, tgt)| src != tgt).count();
+
+        // Collect (remapped_agent_id, ThoughtInput) pairs from the source chain.
+        let remapped_thoughts: Vec<(String, ThoughtInput)> = {
+            let src = source_arc.read().await;
+            src.thoughts()
+                .iter()
+                .map(|t| {
+                    let mapped_id = agent_remap
+                        .get(&t.agent_id)
+                        .cloned()
+                        .unwrap_or_else(|| t.agent_id.clone());
+                    let mut input = ThoughtInput::new(t.thought_type, t.content.clone());
+                    input.role = t.role;
+                    input.importance = t.importance;
+                    input.confidence = t.confidence;
+                    input.tags = t.tags.clone();
+                    input.concepts = t.concepts.clone();
+                    // refs are positional/UUID references into the source chain;
+                    // they cannot be meaningfully carried over.
+                    (mapped_id, input)
+                })
+                .collect()
+        };
+
+        // Append all thoughts to the target chain.
+        let mut thoughts_copied = 0usize;
+        {
+            let mut tgt = target_arc.write().await;
+            for (agent_id, input) in remapped_thoughts {
+                tgt.append_thought(&agent_id, input).map_err(|e| {
+                    Box::new(io::Error::other(format!(
+                        "append thought to target chain: {e}"
+                    ))) as Box<dyn Error + Send + Sync>
+                })?;
+                thoughts_copied += 1;
+            }
+        }
+
+        // All thoughts successfully appended — evict source from the cache and
+        // deregister it from disk.
+        if let Some((_, arc)) = self.chains.remove(source_key) {
+            let mut chain = arc.write().await;
+            chain.detach_persistence();
+        }
+        deregister_chain(&self.config.chain_dir, source_key)?;
+
+        self.log_interaction(InteractionLogEntry {
+            access: "write",
+            operation: "merge_chains",
+            chain_key: target_key.clone(),
+            metadata: InteractionMetadata::default(),
+            result_count: Some(thoughts_copied),
+            note: Some(format!(
+                "source={source_key} agents_remapped={agents_remapped}"
+            )),
+        });
+
+        Ok(MergeChainsResponse {
+            thoughts_copied,
+            agents_remapped,
+            source_deleted: true,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -3863,6 +4029,26 @@ struct RebuildVectorsResponse {
     status: crate::ManagedVectorSidecarStatus,
 }
 
+/// Request body for `POST /v1/chains/merge` and the `mentisdb_merge_chains` MCP tool.
+#[derive(Debug, Deserialize)]
+struct MergeChainsRequest {
+    /// Chain key of the source chain whose thoughts will be moved to the target.
+    source_chain_key: String,
+    /// Chain key of the target chain that receives the merged thoughts.
+    target_chain_key: String,
+}
+
+/// Success response for `POST /v1/chains/merge` and the `mentisdb_merge_chains` MCP tool.
+#[derive(Debug, Serialize)]
+struct MergeChainsResponse {
+    /// Total number of thoughts successfully appended to the target chain.
+    thoughts_copied: usize,
+    /// Number of distinct source agents remapped to a different target agent identity.
+    agents_remapped: usize,
+    /// Always `true` on success — the source chain has been permanently deleted.
+    source_deleted: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct ListChainsResponse {
     default_chain_key: String,
@@ -4313,6 +4499,18 @@ async fn rest_rebuild_vectors_handler(
     Json(request): Json<RebuildVectorsRequest>,
 ) -> Result<Json<RebuildVectorsResponse>, (StatusCode, Json<Value>)> {
     service_call(service.rebuild_vectors(request).await)
+}
+
+/// `POST /v1/chains/merge`
+///
+/// Merges all thoughts from `source_chain_key` into `target_chain_key`, then
+/// permanently deletes the source chain.  See [`MentisDbService::merge_chains`]
+/// for full semantics.
+async fn rest_merge_chains_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<MergeChainsRequest>,
+) -> Result<Json<MergeChainsResponse>, (StatusCode, Json<Value>)> {
+    service_call(service.merge_chains(request).await)
 }
 
 async fn rest_recent_context_handler(
@@ -4885,6 +5083,24 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
             "Return head metadata for a MentisDb including chain length, latest thought at the tip, and head hash.",
         )
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key.")),
+        ToolMetadata::new(
+            "mentisdb_merge_chains",
+            "Merge all thoughts from a source chain into a target chain, then permanently delete the source chain. \
+             Agent identities are remapped autonomously: each source agent is matched to the closest existing target \
+             agent by character-set similarity (Jaccard). No new agents are created on the target chain. \
+             Cross-chain thought refs are dropped (they are chain-local indices). \
+             Returns the number of thoughts copied, agents remapped, and whether the source was deleted.",
+        )
+        .with_parameter(
+            ToolParameter::new("source_chain_key", ToolParameterType::String)
+                .with_description("Chain key of the source chain to merge from (will be deleted after a successful merge).")
+                .required(),
+        )
+        .with_parameter(
+            ToolParameter::new("target_chain_key", ToolParameterType::String)
+                .with_description("Chain key of the target chain to merge into (must already exist).")
+                .required(),
+        ),
     ]
 }
 
@@ -5688,5 +5904,22 @@ fn canonical_tool_name(tool_name: &str) -> &str {
         "thoughtchain_revoke_skill" => "mentisdb_revoke_skill",
         "thoughtchain_head" => "mentisdb_head",
         _ => tool_name,
+    }
+}
+
+/// Compute Jaccard similarity on the character sets of `src_chars` (pre-built)
+/// and `target`.
+///
+/// Returns a value in `[0.0, 1.0]` where `1.0` means identical character sets
+/// and `0.0` means fully disjoint.  Used by [`MentisDbService::merge_chains`]
+/// to pick the closest-matching target agent for each source agent.
+fn merge_chains_jaccard(src_chars: &std::collections::HashSet<char>, target: &str) -> f64 {
+    let tgt_chars: std::collections::HashSet<char> = target.chars().collect();
+    let intersection = src_chars.intersection(&tgt_chars).count();
+    let union = src_chars.union(&tgt_chars).count();
+    if union == 0 {
+        1.0
+    } else {
+        intersection as f64 / union as f64
     }
 }
