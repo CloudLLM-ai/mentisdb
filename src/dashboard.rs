@@ -834,56 +834,59 @@ struct DiffQuery {
 async fn api_chains(
     State(state): State<DashboardState>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    // Collect all known chain keys: disk registry ∪ live DashMap.
-    let mut chain_keys: BTreeSet<String> = {
-        let registry = load_registered_chains(&state.mentisdb_dir).map_err(internal_error)?;
-        registry.chains.into_keys().collect()
-    };
-    for entry in state.chains.iter() {
-        chain_keys.insert(entry.key().clone());
-    }
+    // Read the on-disk registry — this is a single fast JSON file read and
+    // gives us thought_count / agent_count for every registered chain without
+    // opening any chain file.
+    let registry = load_registered_chains(&state.mentisdb_dir).map_err(internal_error)?;
 
-    // Open all chains in parallel — sequential opens stall the response when a
-    // large chain (e.g. 10k+ thoughts) has to be read from cold disk, causing
-    // the browser to time out before the full list is returned.
-    let futs: Vec<_> = chain_keys
-        .iter()
-        .map(|key| {
-            let state = state.clone();
-            let key = key.clone();
-            async move {
-                match get_or_open_chain(&state, &key).await {
-                    Ok(arc) => {
-                        let chain = arc.read().await;
-                        Some(json!({
-                            "chain_key":     key,
-                            "thought_count": chain.thoughts().len(),
-                            "agent_count":   chain.agent_registry().agents.len(),
-                            "head_hash":     chain.head_hash().map(ToString::to_string),
-                        }))
-                    }
-                    // Chain file missing/corrupt — omit silently rather than
-                    // aborting the entire list.
-                    Err(_) => None,
-                }
-            }
+    // Start with all registered chains, then overlay live (in-memory) counts
+    // for any chains that are already open in the DashMap cache.
+    let mut by_key: BTreeMap<String, Value> = registry
+        .chains
+        .into_iter()
+        .map(|(key, reg)| {
+            let v = json!({
+                "chain_key":     key.clone(),
+                "thought_count": reg.thought_count,
+                "agent_count":   reg.agent_count,
+                "head_hash":     Value::Null,
+            });
+            (key, v)
         })
         .collect();
 
-    let mut chains: Vec<Value> = futures::future::join_all(futs)
-        .await
-        .into_iter()
-        .flatten()
-        .collect();
+    // For chains already open in the live cache, upgrade to live counts and
+    // add the head hash (not stored in the registry).
+    for entry in state.chains.iter() {
+        let key = entry.key().clone();
+        if let Ok(chain) = entry.value().try_read() {
+            let v = json!({
+                "chain_key":     key.clone(),
+                "thought_count": chain.thoughts().len(),
+                "agent_count":   chain.agent_registry().agents.len(),
+                "head_hash":     chain.head_hash().map(ToString::to_string),
+            });
+            by_key.insert(key, v);
+        }
+    }
 
-    // Restore alphabetical order (join_all preserves input order which is
-    // already sorted by BTreeSet, but be explicit).
-    chains.sort_by(|a, b| {
-        a["chain_key"]
-            .as_str()
-            .cmp(&b["chain_key"].as_str())
-    });
+    // Also include any live chains that aren't in the registry yet (e.g.
+    // freshly bootstrapped chains not yet flushed to the registry file).
+    for entry in state.chains.iter() {
+        let key = entry.key().clone();
+        if !by_key.contains_key(&key) {
+            if let Ok(chain) = entry.value().try_read() {
+                by_key.insert(key.clone(), json!({
+                    "chain_key":     key,
+                    "thought_count": chain.thoughts().len(),
+                    "agent_count":   chain.agent_registry().agents.len(),
+                    "head_hash":     chain.head_hash().map(ToString::to_string),
+                }));
+            }
+        }
+    }
 
+    let chains: Vec<Value> = by_key.into_values().collect();
     Ok(Json(json!(chains)))
 }
 

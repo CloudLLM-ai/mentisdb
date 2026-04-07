@@ -32,7 +32,6 @@ crossterm = "0.28"
 toml_edit = "0.22.27"
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
 mcp = { package = "cloudllm_mcp", version = "0.1.0" }
-futures = "0.3"
 axum = { version = "0.8.8", optional = true }
 axum-server = { version = "0.8", features = ["tls-rustls"], optional = true }
 env_logger = { version = "0.11.8", optional = true }
