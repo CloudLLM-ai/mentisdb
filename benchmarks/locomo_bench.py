@@ -71,9 +71,9 @@ def _post(base_url: str, path: str, payload: dict, timeout: int = 15) -> dict:
 
 def append_turn(base_url: str, chain_key: str, content: str, speaker: str,
                 turn_index: int) -> None:
-    _post(base_url, "/v1/append", {
+    _post(base_url, "/v1/thoughts", {
         "chain_key": chain_key,
-        "thought_type": "Observation",
+        "thought_type": "FactLearned",
         "content": content,
         "agent_id": speaker.lower(),
         "importance": 0.5,
@@ -82,11 +82,12 @@ def append_turn(base_url: str, chain_key: str, content: str, speaker: str,
 
 
 def ranked_search(base_url: str, chain_key: str, query: str, limit: int) -> list[dict]:
-    return _post(base_url, "/v1/ranked-search", {
+    resp = _post(base_url, "/v1/ranked-search", {
         "chain_key": chain_key,
         "text": query,
         "limit": limit,
-    }).get("thoughts", [])
+    })
+    return [r["thought"] for r in resp.get("results", [])]
 
 
 # ---------------------------------------------------------------------------

@@ -39,7 +39,7 @@ import requests
 DEFAULT_BASE_URL = "http://127.0.0.1:9472"
 DEFAULT_CHAIN = "longmemeval-bench"
 DEFAULT_TOP_K = 5
-DEFAULT_WORKERS = 16
+DEFAULT_WORKERS = 4  # conservative default; raise with --workers if daemon is stable
 
 
 # ---------------------------------------------------------------------------
@@ -48,28 +48,41 @@ DEFAULT_WORKERS = 16
 
 def _post(base_url: str, path: str, payload: dict, timeout: int = 15) -> dict:
     r = requests.post(f"{base_url}{path}", json=payload, timeout=timeout)
-    r.raise_for_status()
+    if not r.ok:
+        raise requests.HTTPError(
+            f"{r.status_code} {r.reason} — body: {r.text[:300]}",
+            response=r,
+        )
     return r.json()
 
 
 def append_turn(base_url: str, chain_key: str, content: str, role: str,
-                session_id: str) -> None:
-    _post(base_url, "/v1/append", {
-        "chain_key": chain_key,
-        "thought_type": "Observation",
-        "content": content,
-        "agent_id": role,          # "user" or "assistant"
-        "importance": 0.5,
-        "tags": [f"session:{session_id}", f"role:{role}"],
-    })
+                session_id: str, retries: int = 3) -> None:
+    for attempt in range(retries):
+        try:
+            _post(base_url, "/v1/thoughts", {
+                "chain_key": chain_key,
+                "thought_type": "FactLearned",
+                "content": content,
+                "agent_id": role,
+                "importance": 0.5,
+                "tags": [f"session:{session_id}", f"role:{role}"],
+            })
+            return
+        except Exception as e:
+            if attempt == retries - 1:
+                raise
+            time.sleep(0.5 * (attempt + 1))
 
 
 def ranked_search(base_url: str, chain_key: str, query: str, limit: int) -> list[dict]:
-    return _post(base_url, "/v1/ranked-search", {
+    resp = _post(base_url, "/v1/ranked-search", {
         "chain_key": chain_key,
         "text": query,
         "limit": limit,
-    }).get("thoughts", [])
+    })
+    # Response shape: {"backend":..., "total":N, "results":[{"thought":{...},"score":{...}}]}
+    return [r["thought"] for r in resp.get("results", [])]
 
 
 # ---------------------------------------------------------------------------

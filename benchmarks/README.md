@@ -17,109 +17,122 @@ Higher is better.
 
 ---
 
-## Prerequisites
+## LongMemEval — step by step
+
+### 1. Python dependencies
 
 ```bash
-# 1. mentisdbd must be running
-mentisdbd &
-
-# 2. Python deps
-pip install requests datasets
+pip3 install requests datasets
 ```
 
----
-
-## LongMemEval
+### 2. Download the dataset
 
 ```bash
-# Download the dataset
-git clone https://github.com/xiaowu0162/LongMemEval
-cd LongMemEval
-# follow their README to download data/longmemeval_oracle.json
-cd ..
+mkdir -p data
+wget -P data https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json
+```
 
-# Run (fresh chain per run — timestamps avoid re-using stale data)
-python benchmarks/longmemeval_bench.py \
-    --data LongMemEval/data/longmemeval_oracle.json \
-    --top-k 5 \
-    --chain longmemeval-$(date +%s) \
-    --workers 16
+The file lands at `data/longmemeval_oracle.json` (~10 MB).
 
-# Dev run (first 50 questions)
-python benchmarks/longmemeval_bench.py \
-    --data LongMemEval/data/longmemeval_oracle.json \
-    --top-k 5 \
+### 3. Start mentisdbd
+
+```bash
+mentisdbd &
+```
+
+### 4. Run the benchmark
+
+Use the provided shell script (handles chain naming and workers for you):
+
+```bash
+bash benchmarks/run_longmemeval.sh
+```
+
+Or run manually with full control:
+
+```bash
+# Dev run — first 50 questions, fast
+python3 benchmarks/longmemeval_bench.py \
+    --data data/longmemeval_oracle.json \
     --limit 50 \
-    --chain longmemeval-dev
-
-# Skip re-ingestion if chain already populated
-python benchmarks/longmemeval_bench.py \
-    --data LongMemEval/data/longmemeval_oracle.json \
     --top-k 5 \
-    --chain longmemeval-1234567890 \
-    --skip-ingest \
+    --chain lme-dev-$(date +%s) \
+    --workers 4
+
+# Full run — all 500 questions
+python3 benchmarks/longmemeval_bench.py \
+    --data data/longmemeval_oracle.json \
+    --top-k 5 \
+    --chain lme-full-$(date +%s) \
+    --workers 4 \
     --output results/longmemeval.jsonl
 ```
 
-**How it works:**
-Each haystack session turn is stored as an `Observation` thought tagged with
-`session:{id}` and `role:{user|assistant}`. For each question, `ranked-search`
-is called with the question text and top-k thoughts are checked for the gold
-evidence turn via substring match.
+**Important:** always use a fresh `--chain` name per run. Re-using a chain
+from a previous run double-ingests the sessions and inflates result counts.
+The shell script handles this automatically with a timestamp suffix.
+
+**`--workers` note:** 4 is the safe default. Raising it speeds up ingestion
+but risks overwhelming the daemon's write queue. If you see 404/500 errors
+mid-ingest, reduce workers or restart the daemon and re-run.
+
+### 5. Re-run evaluation without re-ingesting
+
+Once a chain is populated you can skip ingestion and just re-evaluate:
+
+```bash
+python3 benchmarks/longmemeval_bench.py \
+    --data data/longmemeval_oracle.json \
+    --chain lme-full-1234567890 \
+    --skip-ingest \
+    --top-k 5
+```
 
 ---
 
 ## ConvoMem
 
 ```bash
-# Full run (75k pairs, ~30 min)
-python benchmarks/convomem_bench.py \
-    --top-k 5 \
-    --output results/convomem.json
+# Quick smoke test — 100 items per category
+python3 benchmarks/convomem_bench.py \
+    --categories all \
+    --limit 100 \
+    --top-k 5
 
-# Single category, 500 items
-python benchmarks/convomem_bench.py \
+# Single category
+python3 benchmarks/convomem_bench.py \
     --categories user asst \
     --limit 500 \
     --top-k 5
 
-# All categories, limited (quick smoke test)
-python benchmarks/convomem_bench.py \
-    --categories all \
-    --limit 100 \
-    --top-k 5
+# Full run (~75k pairs, ~30 min)
+python3 benchmarks/convomem_bench.py \
+    --top-k 5 \
+    --output results/convomem.json
 ```
 
-**How it works:**
-Each item is a self-contained conversation. A fresh mentisdb chain is used per
-item (prevents bleed between independent conversations). The question is
-searched and evidence is matched by substring. For abstention items, a correct
-result means the evidence is NOT in the top-k (model should say "I don't know").
+Dataset is downloaded automatically from HuggingFace (`Salesforce/ConvoMem`)
+on first run and cached locally by the `datasets` library.
 
 ---
 
 ## LoCoMo
 
 ```bash
-# Full run (1,986 QA pairs)
-python benchmarks/locomo_bench.py \
-    --top-k 10 \
-    --chain locomo-$(date +%s)
-
-# Dev run (first 20 persona-pairs)
-python benchmarks/locomo_bench.py \
+# Dev run — first 20 persona-pairs
+python3 benchmarks/locomo_bench.py \
     --top-k 10 \
     --limit 20 \
-    --chain locomo-dev \
+    --chain locomo-dev-$(date +%s)
+
+# Full run (~1,986 QA pairs)
+python3 benchmarks/locomo_bench.py \
+    --top-k 10 \
+    --chain locomo-$(date +%s) \
     --output results/locomo.json
 ```
 
-**How it works:**
-Each LoCoMo item is one persona-pair with a full multi-session conversation
-(up to ~300 turns) and a set of QA pairs. The conversation is ingested into a
-per-item chain; each question is evaluated against that chain. Multi-hop
-questions are evaluated the same way — mentisdb's graph traversal in
-ranked-search is expected to surface evidence for implicit connections.
+Dataset is downloaded automatically from HuggingFace (`snap-research/locomo`).
 
 ---
 
@@ -131,9 +144,9 @@ ranked-search is expected to surface evidence for implicit connections.
 Use `--top-k 5` to compare directly to MemPalace R@5 numbers.
 Use `--top-k 10` for LoCoMo to match their honest-baseline comparison.
 
-Using `--top-k 50` will inflate scores (MemPalace's 100% LoCoMo used top-50
-which exceeds the session count for many items — their own BENCHMARKS.md flags
-this as a caveat).
+`--top-k 50` inflates scores artificially (MemPalace's 100% LoCoMo used
+top-50 which exceeds the session count for many items — their own
+BENCHMARKS.md flags this as a caveat).
 
 ---
 
@@ -145,9 +158,8 @@ mentisdb's `ranked-search` uses hybrid scoring:
 - `graph` — relation-aware traversal bonus
 - `recency` — time-based boost
 
-**To enable vector search (largest quality gain):**
-Generate and push vector sidecar files for each chain. Without sidecars,
-only lexical + graph scoring applies.
+**Largest quality lever:** generate vector sidecar files for benchmark chains.
+Without sidecars only lexical + graph scoring fires.
 
-**To simulate LLM reranking** (closes the gap to MemPalace's 100% claim):
-Use `--top-k 50` and post-process with an LLM to rerank before checking R@5.
+**To simulate LLM reranking** (matches MemPalace's 100% configuration):
+use `--top-k 50` and post-process with an LLM before checking R@5.
