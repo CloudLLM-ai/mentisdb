@@ -1,40 +1,4 @@
-0.8.0.27 APR/08/2026
- - feat(search): Porter stemming in lexical tokenizer (normalizer v2)
-   - Added rust-stemmers dependency with English Porter stemmer
-   - normalize_lexical_tokens() now stems all tokens before indexing and
-     querying so word variants share a common root (e.g. prefers/preferred/
-     preferences → prefer)
-   - LEXICAL_NORMALIZER_VERSION bumped to 2 to force index rebuilds
- - feat(search): tiered vector-lexical fusion in ranked-search scoring
-   - Replace flat lexical+vector addition with tiered boost: vector gets
-     60× when lexical==0, 20× ramp when lexical<1.0, additive otherwise
-   - Surfaces semantically-relevant hits without overriding strong lexical
-     matches (fixes preference-category regression from previous RRF approach)
- - feat(search): lower MIN_VECTOR_COSINE threshold from 0.12 to 0.06
-   - Catches more short-evidence semantic matches that previously fell
-     below the cosine cutoff
- - feat(search): boost importance weight from 0.2× to 3.0× in ranked scoring
-   - User-originated thoughts (importance=0.8) now get +2.4 vs assistant
-     thoughts (importance=0.2) at +0.6 — enough to tip close BM25 races
-     where verbose assistant responses dominated preference/factual queries
- - refactor(sidecar): ManagedSidecarEntry with auto_sync flag
-   - Introduce ManagedSidecarEntry wrapping provider + auto_sync so FastEmbed
-     can be registered for search without per-append ONNX cost during bulk
-     ingestion
-   - Add register_vector_sidecar_for_search() for search-only registration
-   - FastEmbed auto-init now uses search-only registration instead of
-     manage_vector_sidecar(), avoiding initial full rebuild on startup
- - fix(bench): --force-reingest creates fresh timestamped chain
-   - Prevented duplicate ingestion into the same chain (was causing 3×
-     duplicate entries that corrupted vector sidecar results)
-   - Switch rebuild_vectors to fastembed-minilm provider (was local-text-v1)
-   - Increase graph max_visited from 50 to 200 for cross-session recall
-   - Increase rebuild timeout from 300s to 600s for large chains
- - feat(bench): add full_bench.sh one-shot benchmark runner
-   - Starts mentisdbd, waits for health, creates a fresh chain, and runs
-     the full LongMemEval pipeline (ingest + vector rebuild + eval)
-
-0.8.0.26 APR/07/2026
+0.8.0.26 APR/08/2026
  - security(skills): SkillReadOutput wrapper — SkillRegistry::read_skill() now returns
    SkillReadOutput { content, warnings, status } instead of a plain String, so callers
    can no longer silently ignore skill warnings or revocation status
@@ -90,6 +54,40 @@
  - bench: add append_latency_percentiles group (p50/p95/p99 per-append via iter_custom)
    and concurrent_append_query group (2/4/8 writer+reader threads on shared Mutex<MentisDb>)
  - docs(MENTISDB_SKILL.md): add Step 0 chain/agent auto-selection guidance for agents
+ - feat(search): Porter stemming in lexical tokenizer (normalizer v2)
+   - Added rust-stemmers dependency with English Porter stemmer
+   - normalize_lexical_tokens() now stems all tokens before indexing and
+     querying so word variants share a common root (e.g. prefers/preferred/
+     preferences → prefer)
+   - LEXICAL_NORMALIZER_VERSION bumped to 2 to force index rebuilds
+ - feat(search): tiered vector-lexical fusion in ranked-search scoring
+   - Replace flat lexical+vector addition with tiered boost: vector gets
+     60× when lexical==0, 20× ramp when lexical<1.0, additive otherwise
+   - Surfaces semantically-relevant hits without overriding strong lexical
+     matches (fixes preference-category regression from previous RRF approach)
+ - feat(search): lower MIN_VECTOR_COSINE threshold from 0.12 to 0.06
+   - Catches more short-evidence semantic matches that previously fell
+     below the cosine cutoff
+ - feat(search): boost importance weight from 0.2× to 3.0× in ranked scoring
+   - User-originated thoughts (importance=0.8) now get +2.4 vs assistant
+     thoughts (importance=0.2) at +0.6 — enough to tip close BM25 races
+     where verbose assistant responses dominated preference/factual queries
+ - refactor(sidecar): ManagedSidecarEntry with auto_sync flag
+   - Introduce ManagedSidecarEntry wrapping provider + auto_sync so FastEmbed
+     can be registered for search without per-append ONNX cost during bulk
+     ingestion
+   - Add register_vector_sidecar_for_search() for search-only registration
+   - FastEmbed auto-init now uses search-only registration instead of
+     manage_vector_sidecar(), avoiding initial full rebuild on startup
+ - fix(bench): --force-reingest creates fresh timestamped chain
+   - Prevented duplicate ingestion into the same chain (was causing 3×
+     duplicate entries that corrupted vector sidecar results)
+   - Switch rebuild_vectors to fastembed-minilm provider (was local-text-v1)
+   - Increase graph max_visited from 50 to 200 for cross-session recall
+   - Increase rebuild timeout from 300s to 600s for large chains
+ - feat(bench): add full_bench.sh one-shot benchmark runner
+   - Starts mentisdbd, waits for health, creates a fresh chain, and runs
+     the full LongMemEval pipeline (ingest + vector rebuild + eval)
 
 0.7.7.25 APR/05/2026
  - fix(dashboard): Add Agent modal Memory Chain dropdown showed numeric indices instead of chain names
