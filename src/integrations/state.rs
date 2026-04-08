@@ -8,6 +8,23 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Resolved bridge command for Claude Desktop's mcp-remote transport.
+///
+/// Claude Desktop launches stdio-based MCP servers by running a `command` with
+/// `args`.  The mcp-remote npm package installs a shell script whose shebang
+/// is `#!/usr/bin/env node` — which may resolve to a Node.js version that is
+/// too old (mcp-remote requires Node >= 20).  To avoid the shebang ambiguity
+/// we write the **absolute path to the `node` binary** as the command and pass
+/// the **absolute path to the mcp-remote script** as the first argument.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BridgeCommand {
+    /// Absolute path to the `node` binary that satisfies mcp-remote's
+    /// minimum Node version requirement (>= 20).
+    pub(crate) node_path: String,
+    /// Absolute path to the `mcp-remote` script installed by npm.
+    pub(crate) mcp_remote_path: String,
+}
+
 /// Shared writer settings for MentisDB host integrations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IntegrationWriterSettings {
@@ -17,8 +34,8 @@ pub(crate) struct IntegrationWriterSettings {
     default_http_url: String,
     /// Default HTTPS MCP URL used by bridge-based clients.
     default_https_url: String,
-    /// Optional explicit `mcp-remote` bridge command for Claude Desktop.
-    claude_desktop_bridge_command: Option<String>,
+    /// Optional explicit bridge command (node + mcp-remote) for Claude Desktop.
+    claude_desktop_bridge_command: Option<BridgeCommand>,
 }
 
 impl Default for IntegrationWriterSettings {
@@ -58,10 +75,10 @@ impl IntegrationWriterSettings {
         }
     }
 
-    pub(crate) fn bridge_command_for(&self, platform: HostPlatform) -> String {
+    pub(crate) fn bridge_command_for(&self, platform: HostPlatform) -> BridgeCommand {
         self.claude_desktop_bridge_command
             .clone()
-            .unwrap_or_else(|| detect_mcp_remote_command(platform))
+            .unwrap_or_else(|| detect_bridge_command(platform))
     }
 }
 
@@ -91,7 +108,16 @@ impl IntegrationApplyPlan {
     }
 }
 
-fn detect_mcp_remote_command(platform: HostPlatform) -> String {
+fn detect_bridge_command(platform: HostPlatform) -> BridgeCommand {
+    let mcp_remote_path = detect_mcp_remote_path(platform);
+    let node_path = detect_node_path(&mcp_remote_path, platform);
+    BridgeCommand {
+        node_path,
+        mcp_remote_path,
+    }
+}
+
+fn detect_mcp_remote_path(platform: HostPlatform) -> String {
     let binary_name = match platform {
         HostPlatform::Windows => "mcp-remote.cmd",
         _ => "mcp-remote",
@@ -116,6 +142,43 @@ fn detect_mcp_remote_command(platform: HostPlatform) -> String {
     }
 
     binary_name.to_owned()
+}
+
+/// Detect the `node` binary that should run mcp-remote.
+///
+/// Strategy:
+/// 1. If the mcp-remote script was found on PATH, look for `node` in the
+///    **same directory** first (e.g. an nvm-managed bin dir where both live).
+/// 2. Fall back to `node` anywhere on PATH.
+/// 3. Fall back to common macOS Homebrew paths.
+/// 4. Last resort: bare `node`.
+fn detect_node_path(mcp_remote_path: &str, platform: HostPlatform) -> String {
+    if let Some(parent) = Path::new(mcp_remote_path).parent() {
+        let candidate = parent.join("node");
+        if is_executable_file(&candidate) {
+            return candidate.display().to_string();
+        }
+    }
+
+    for entry in split_path_entries(env::var_os("PATH")) {
+        let candidate = entry.join("node");
+        if is_executable_file(&candidate) {
+            return candidate.display().to_string();
+        }
+    }
+
+    if matches!(platform, HostPlatform::Macos) {
+        for candidate in [
+            PathBuf::from("/opt/homebrew/bin/node"),
+            PathBuf::from("/usr/local/bin/node"),
+        ] {
+            if is_executable_file(&candidate) {
+                return candidate.display().to_string();
+            }
+        }
+    }
+
+    "node".to_owned()
 }
 
 fn split_path_entries(path: Option<OsString>) -> Vec<PathBuf> {
