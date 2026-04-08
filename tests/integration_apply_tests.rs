@@ -1,4 +1,5 @@
 use mentisdb::integrations::apply::apply_setup_with_environment;
+use mentisdb::integrations::plan::build_setup_plan_for_integration;
 use mentisdb::integrations::IntegrationKind;
 use mentisdb::paths::{HostPlatform, PathEnvironment};
 use serde_json::Value;
@@ -295,10 +296,13 @@ fn apply_claude_desktop_uses_https_and_bridge_from_path() {
     std::fs::create_dir_all(&bin_dir).unwrap();
     let mcp_remote = bin_dir.join("mcp-remote");
     std::fs::write(&mcp_remote, "#!/bin/sh\n").unwrap();
+    let node_bin = bin_dir.join("node");
+    std::fs::write(&node_bin, "#!/bin/sh\n").unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&mcp_remote, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&node_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     let previous_path = std::env::var_os("PATH");
@@ -333,14 +337,50 @@ fn apply_claude_desktop_uses_https_and_bridge_from_path() {
         serde_json::from_str(&std::fs::read_to_string(config_path).unwrap()).unwrap();
     assert_eq!(
         parsed["mcpServers"]["mentisdb"]["command"],
-        mcp_remote.display().to_string()
+        node_bin.display().to_string()
     );
     assert_eq!(
         parsed["mcpServers"]["mentisdb"]["args"][0],
+        mcp_remote.display().to_string()
+    );
+    assert_eq!(
+        parsed["mcpServers"]["mentisdb"]["args"][1],
         "https://my.mentisdb.com:9473"
     );
     assert_eq!(
         parsed["mcpServers"]["mentisdb"]["env"]["NODE_TLS_REJECT_UNAUTHORIZED"],
         "0"
+    );
+}
+
+#[test]
+fn claude_desktop_plan_snippet_mentions_node_requirement() {
+    let env = PathEnvironment {
+        home_dir: Some("/Users/tester".into()),
+        ..PathEnvironment::default()
+    };
+    let plan = build_setup_plan_for_integration(
+        IntegrationKind::ClaudeDesktop,
+        "https://my.mentisdb.com:9473",
+        HostPlatform::Macos,
+        &env,
+    )
+    .unwrap();
+
+    let snippet = plan.snippet.as_deref().unwrap();
+    assert!(
+        snippet.contains("\"command\": \"node\""),
+        "snippet should use node as command, got: {snippet}"
+    );
+    assert!(
+        snippet.contains("\"args\""),
+        "snippet should have args array, got: {snippet}"
+    );
+    assert!(
+        plan.notes
+            .iter()
+            .any(|n| n.contains("Node.js >= 20") || n.contains("Node >= 20")),
+        "plan notes should mention Node >= 20 requirement, got: {:?}",
+        plan.notes
     );
 }

@@ -1,4 +1,6 @@
-use mentisdb::cli::{parse_args, render_setup_plan, run_with_io, CliCommand, SetupCommand};
+use mentisdb::cli::{
+    parse_args, parse_node_major, render_setup_plan, run_with_io, CliCommand, SetupCommand,
+};
 use mentisdb::integrations::plan::build_setup_plan_for_integration;
 use mentisdb::integrations::IntegrationKind;
 use mentisdb::paths::{HostPlatform, PathEnvironment};
@@ -258,4 +260,18 @@ fn setup_yes_applies_without_confirmation_prompt() {
     assert!(stdout.contains("MentisDB setup plan"));
     assert!(!stdout.contains("Apply these setup changes?"));
     assert!(stdout.contains("Codex ->"));
+}
+
+#[test]
+fn parse_node_major_extracts_major_from_standard_versions() {
+    assert_eq!(parse_node_major("v22.18.0").unwrap(), 22);
+    assert_eq!(parse_node_major("v20.0.0").unwrap(), 20);
+    assert_eq!(parse_node_major("v18.17.0").unwrap(), 18);
+    assert_eq!(parse_node_major("24.0.0").unwrap(), 24);
+}
+
+#[test]
+fn parse_node_major_rejects_malformed_versions() {
+    assert!(parse_node_major("").is_err());
+    assert!(parse_node_major("not-a-version").is_err());
 }
