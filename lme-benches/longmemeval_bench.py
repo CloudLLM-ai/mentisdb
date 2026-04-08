@@ -116,17 +116,17 @@ def append_turn(base_url: str, chain_key: str, content: str, role: str,
             time.sleep(0.5 * (attempt + 1))
 
 
-def rebuild_vectors(base_url: str, chain_key: str) -> None:
-    """Trigger vector sidecar rebuild (hash-based, not semantic — opt-in only)."""
+def rebuild_vectors(base_url: str, chain_key: str, provider_key: str = "fastembed-minilm") -> None:
+    """Trigger vector sidecar rebuild for the given provider (default: fastembed-minilm)."""
     try:
         resp = _post(base_url, "/v1/vectors/rebuild", {
             "chain_key": chain_key,
-            "provider_key": "local-text-v1",
-        }, timeout=300)
+            "provider_key": provider_key,
+        }, timeout=600)
         indexed = resp.get("status", {}).get("indexed_thought_count")
-        print(f"  Vector sidecar rebuilt — {indexed} thoughts indexed.", flush=True)
+        print(f"  [{provider_key}] Vector sidecar rebuilt — {indexed} thoughts indexed.", flush=True)
     except Exception as e:
-        print(f"  WARNING: vector rebuild failed: {e}", flush=True)
+        print(f"  WARNING: vector rebuild failed ({provider_key}): {e}", flush=True)
 
 
 def ranked_search(base_url: str, chain_key: str, query: str, limit: int) -> list[dict]:
@@ -136,7 +136,7 @@ def ranked_search(base_url: str, chain_key: str, query: str, limit: int) -> list
         "limit": limit,
         "graph": {
             "max_depth": 3,
-            "max_visited": 50,
+            "max_visited": 200,
             "include_seeds": False,
         },
     })
@@ -407,7 +407,7 @@ def main():
     ap.add_argument("--force-reingest", action="store_true",
                     help="Re-ingest even if chain already exists")
     ap.add_argument("--rebuild-vectors", action="store_true",
-                    help="Build vector sidecar after ingestion (hash-based, not semantic)")
+                    help="Rebuild fastembed vector sidecar even when skipping ingestion")
     ap.add_argument("--output", help="Write per-instance JSONL results to this path")
     args = ap.parse_args()
 
@@ -423,6 +423,10 @@ def main():
     print(f"  endpoint     : {args.base_url}")
     print(f"  eval-workers : {args.eval_workers}\n")
 
+    if args.force_reingest:
+        args.chain = f"lme-{int(time.time())}"
+        print(f"  Force-reingest: creating fresh chain {args.chain}")
+
     # Auto-detect whether ingestion is needed
     do_ingest = not args.skip_ingest
     if do_ingest and not args.force_reingest:
@@ -437,9 +441,11 @@ def main():
         ingest(args.base_url, args.chain, instances, args.workers)
         print(f"  Ingestion done in {time.monotonic()-t0:.1f}s\n", flush=True)
         time.sleep(1)  # brief settle
-        if args.rebuild_vectors:
-            print("Building vector sidecar…", flush=True)
-            rebuild_vectors(args.base_url, args.chain)
+        print("Building fastembed vector sidecar (batch ONNX — may take a few minutes)…", flush=True)
+        rebuild_vectors(args.base_url, args.chain, "fastembed-minilm")
+    elif args.rebuild_vectors:
+        print("Building fastembed vector sidecar…", flush=True)
+        rebuild_vectors(args.base_url, args.chain, "fastembed-minilm")
 
     t0 = time.monotonic()
     overall, by_type, misses, all_results = evaluate(
