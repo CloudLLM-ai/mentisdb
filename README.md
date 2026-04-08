@@ -1053,10 +1053,27 @@ qwen mcp add --scope user --transport http mentisdb http://127.0.0.1:9471
 ### Claude for Desktop
 
 Claude for Desktop connects to MCP servers through `claude_desktop_config.json`.
-It requires [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) as a bridge
-between the desktop app and the MentisDB HTTPS endpoint.
+It requires [Node.js >= 20](https://nodejs.org/) and the
+[`mcp-remote`](https://www.npmjs.com/package/mcp-remote) npm package as a
+bridge between the desktop app and the MentisDB HTTPS endpoint.
 
-**Step 1 — Install mcp-remote** (Node.js required):
+The recommended setup path is automatic:
+
+```bash
+mentisdbd setup claude-desktop
+```
+
+This command:
+
+- checks for Node.js >= 20 and `mcp-remote` on PATH
+- installs `mcp-remote` via `npm` if missing
+- writes `claude_desktop_config.json` with the correct absolute paths to `node`
+  and `mcp-remote` so the desktop app always uses the right Node version
+- sets `NODE_TLS_REJECT_UNAUTHORIZED=0` for self-signed certificate support
+
+To set it up manually instead:
+
+**Step 1 — Install prerequisites** (Node.js >= 20 required):
 
 ```bash
 npm install -g mcp-remote
@@ -1070,14 +1087,33 @@ npm install -g mcp-remote
 | Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
 | Linux   | `~/.config/Claude/claude_desktop_config.json` |
 
-**macOS:**
+The config should use the `node` binary as the command and pass the
+`mcp-remote` script path as the first argument. This avoids the shebang
+resolution issue where `mcp-remote`'s `#!/usr/bin/env node` may pick an older
+Node.js version on systems with multiple Node installs (e.g. nvm).
+
+**macOS (with nvm):**
 
 ```json
 {
   "mcpServers": {
     "mentisdb": {
-      "command": "/opt/homebrew/bin/mcp-remote",
-      "args": ["https://my.mentisdb.com:9473"],
+      "command": "/Users/you/.nvm/versions/node/v22.18.0/bin/node",
+      "args": ["/Users/you/.nvm/versions/node/v22.18.0/bin/mcp-remote", "https://my.mentisdb.com:9473"],
+      "env": { "NODE_TLS_REJECT_UNAUTHORIZED": "0" }
+    }
+  }
+}
+```
+
+**macOS (with Homebrew Node):**
+
+```json
+{
+  "mcpServers": {
+    "mentisdb": {
+      "command": "/opt/homebrew/bin/node",
+      "args": ["/opt/homebrew/bin/mcp-remote", "https://my.mentisdb.com:9473"],
       "env": { "NODE_TLS_REJECT_UNAUTHORIZED": "0" }
     }
   }
@@ -1090,16 +1126,16 @@ npm install -g mcp-remote
 {
   "mcpServers": {
     "mentisdb": {
-      "command": "mcp-remote",
-      "args": ["https://my.mentisdb.com:9473"],
+      "command": "node",
+      "args": ["mcp-remote", "https://my.mentisdb.com:9473"],
       "env": { "NODE_TLS_REJECT_UNAUTHORIZED": "0" }
     }
   }
 }
 ```
 
-If Windows can't find the binary, supply the full path:
-`C:\Users\YourName\AppData\Roaming\npm\mcp-remote.cmd`
+Use `which mcp-remote` and `which node` to confirm the binary paths on your
+machine. **Both must point to the same Node.js installation (>= 20).**
 
 **Linux:**
 
@@ -1107,15 +1143,13 @@ If Windows can't find the binary, supply the full path:
 {
   "mcpServers": {
     "mentisdb": {
-      "command": "/usr/local/bin/mcp-remote",
-      "args": ["https://my.mentisdb.com:9473"],
+      "command": "/usr/local/bin/node",
+      "args": ["/usr/local/bin/mcp-remote", "https://my.mentisdb.com:9473"],
       "env": { "NODE_TLS_REJECT_UNAUTHORIZED": "0" }
     }
   }
 }
 ```
-
-Use `which mcp-remote` to confirm the binary path on your machine.
 
 > **Why `NODE_TLS_REJECT_UNAUTHORIZED: "0"`?**  
 > MentisDB ships with a self-signed TLS certificate. Node.js rejects self-signed
@@ -1123,6 +1157,13 @@ Use `which mcp-remote` to confirm the binary path on your machine.
 > MCP `initialize` handshake. This env var disables that check for the
 > `mcp-remote` process only. As an alternative, trust the certificate at the OS
 > level (`sudo security add-trusted-cert` on macOS) and remove the `env` block.
+>
+> **Why use `node` as the command instead of `mcp-remote` directly?**  
+> The `mcp-remote` shell script uses `#!/usr/bin/env node` as its shebang. On
+> systems with multiple Node.js versions (e.g. managed by nvm), the shebang may
+> resolve to an older Node that doesn't support `mcp-remote`'s dependencies
+> (which require Node >= 20). Using the explicit `node` path as the command
+> bypasses the shebang entirely and guarantees the correct Node version is used.
 
 Restart Claude for Desktop after saving the config file.
 
