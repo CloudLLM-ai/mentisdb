@@ -13,7 +13,8 @@ use uuid::Uuid;
 pub const LEXICAL_INDEX_FORMAT_VERSION: u32 = 1;
 
 /// Current lexical tokenizer and normalizer version.
-pub const LEXICAL_NORMALIZER_VERSION: u32 = 1;
+/// Bumped to 2 when Porter stemming was added to token normalization.
+pub const LEXICAL_NORMALIZER_VERSION: u32 = 2;
 
 /// Logical lexical fields that contribute to the derived index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -599,7 +600,14 @@ impl LexicalIndex {
 }
 
 /// Normalize free-form text into versioned lexical tokens.
+///
+/// Tokenization splits on non-alphanumeric boundaries, lowercases, and then
+/// applies Porter stemming so that word variants share a common root
+/// (e.g. "prefers", "preferred", "preferences" → "prefer").
 pub fn normalize_lexical_tokens(text: &str) -> Vec<String> {
+    use rust_stemmers::{Algorithm, Stemmer};
+
+    let stemmer = Stemmer::create(Algorithm::English);
     let mut tokens = Vec::new();
     let mut current = String::new();
 
@@ -607,12 +615,15 @@ pub fn normalize_lexical_tokens(text: &str) -> Vec<String> {
         if ch.is_alphanumeric() {
             current.extend(ch.to_lowercase());
         } else if !current.is_empty() {
-            tokens.push(std::mem::take(&mut current));
+            let stemmed = stemmer.stem(&current).to_string();
+            tokens.push(stemmed);
+            current.clear();
         }
     }
 
     if !current.is_empty() {
-        tokens.push(current);
+        let stemmed = stemmer.stem(&current).to_string();
+        tokens.push(stemmed);
     }
 
     tokens
