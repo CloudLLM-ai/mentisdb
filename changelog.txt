@@ -1,4 +1,4 @@
-0.8.0.26 APR/09/2026
+0.8.0.26 APR/08/2026
   - feat(search): Porter stemming in lexical tokenizer (normalizer v2)
     - Added rust-stemmers dependency with English Porter stemmer
     - normalize_lexical_tokens() now stems all tokens before indexing and
