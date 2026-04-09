@@ -1,4 +1,12 @@
 0.8.0.26 APR/08/2026
+  - refactor(skill): rewrite MENTISDB_SKILL.md from 68,270 to 3,079 chars (22x reduction)
+    - Mandatory startup protocol as FIRST section (was buried at line 280 of 1579)
+    - Explicit WRITE TRIGGERS table consolidating 4 scattered trigger definitions
+    - All reference material in compact tables instead of prose (86 sections → 7)
+    - Added explicit READ-BEFORE-WRITE rule and per-turn write trigger checklist
+    - Removed fleet orchestration, domain guidance, REST API examples, and
+      traversal strategy details (available via tool definitions)
+    - Anti-patterns as concise list (was prose sections)
   - remove(JsonlStorageAdapter): binary is the only supported format for new chains
     - JsonlStorageAdapter re-opened the file on every append (O(n) file handles per chain)
     - StorageAdapterKind::Jsonl retained for registry backward-compat and migration reads
