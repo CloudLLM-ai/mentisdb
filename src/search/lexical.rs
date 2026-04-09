@@ -480,7 +480,7 @@ impl LexicalIndex {
             };
             if doc_count >= 20.0 {
                 let df_ratio = postings.len() as f32 / doc_count;
-                if df_ratio > 0.5 {
+                if df_ratio > 0.30 {
                     continue;
                 }
             }

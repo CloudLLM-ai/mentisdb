@@ -4040,34 +4040,30 @@ impl MentisDb {
         // Session cohesion: thoughts near high-scoring lexical hits in the
         // append-order index are likely part of the same conversation and
         // should be boosted. This helps LoCoMo-style benchmarks where
-        // evidence sits in turns adjacent to the matching turn.
-        const SESSION_COHESION_RADIUS: u64 = 5;
-        const SESSION_COHESION_BOOST: f32 = 0.5;
-        const SESSION_COHESION_MIN_LEXICAL: f32 = 3.0;
+        // evidence sits in turns adjacent to the matching turn but shares
+        // no lexical terms.
+        const SESSION_COHESION_RADIUS: u64 = 8;
+        const SESSION_COHESION_BOOST: f32 = 0.8;
+        const SESSION_COHESION_MIN_SEED_LEXICAL: f32 = 3.0;
+        const SESSION_COHESION_MAX_HIT_LEXICAL: f32 = 5.0;
         if !hits.is_empty() {
             let seed_indices: Vec<u64> = hits
                 .iter()
-                .filter(|h| h.score.lexical >= SESSION_COHESION_MIN_LEXICAL)
+                .filter(|h| h.score.lexical >= SESSION_COHESION_MIN_SEED_LEXICAL)
                 .map(|h| h.thought.index)
                 .collect();
             if !seed_indices.is_empty() {
                 for hit in &mut hits {
-                    if hit.score.lexical > 0.0 {
+                    if hit.score.lexical >= SESSION_COHESION_MAX_HIT_LEXICAL {
                         continue;
                     }
                     let idx = hit.thought.index;
                     let nearest = seed_indices
                         .iter()
-                        .map(|si| {
-                            if *si >= idx {
-                                *si - idx
-                            } else {
-                                idx - *si
-                            }
-                        })
+                        .map(|si| (*si).abs_diff(idx))
                         .min()
-                       .unwrap_or(u64::MAX);
-                    if nearest <= SESSION_COHESION_RADIUS {
+                        .unwrap_or(u64::MAX);
+                    if nearest > 0 && nearest <= SESSION_COHESION_RADIUS {
                         let distance_fraction =
                             1.0 - (nearest as f32 / SESSION_COHESION_RADIUS as f32);
                         hit.score.session_cohesion = SESSION_COHESION_BOOST * distance_fraction;
@@ -4940,8 +4936,8 @@ impl MentisDb {
         // thoughts surface. When lexical is present, the boost decays
         // exponentially with VECTOR_DECAY_RATE, letting vector help moderate-
         // lexical results without overriding strong lexical signals.
-        const VECTOR_ONLY_BOOST: f32 = 40.0;
-        const VECTOR_DECAY_RATE: f32 = 2.0;
+        const VECTOR_ONLY_BOOST: f32 = 35.0;
+        const VECTOR_DECAY_RATE: f32 = 3.0;
         let vector_contribution = if vector > 0.0 {
             let extra = VECTOR_ONLY_BOOST * (-lexical / VECTOR_DECAY_RATE).exp();
             vector * (1.0 + extra)
