@@ -478,6 +478,12 @@ impl LexicalIndex {
             let Some(postings) = self.postings.get(&term) else {
                 continue;
             };
+            if doc_count >= 20.0 {
+                let df_ratio = postings.len() as f32 / doc_count;
+                if df_ratio > 0.5 {
+                    continue;
+                }
+            }
             let idf = bm25_idf(doc_count, postings.len() as f32);
 
             for posting in postings {
