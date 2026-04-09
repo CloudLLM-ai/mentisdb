@@ -1,7 +1,7 @@
 # mentisdb Benchmarks
 
 Retrieval recall benchmarks comparing mentisdb against published results from
-MemPalace (the current SOTA on these three evaluations as of April 2026).
+MemPalace (the current SOTA on these evaluations as of April 2026).
 
 ## Benchmarks
 
@@ -9,11 +9,12 @@ MemPalace (the current SOTA on these three evaluations as of April 2026).
 |-----------|-----------|--------|-------------------|----------------|
 | LongMemEval | 500 | R@5 | 96.6% (no API) | 100% (+ Haiku rerank) |
 | ConvoMem | 75,336 | R@5 overall | 92.9% | — |
-| LoCoMo | 1,986 | R@10 | 88.9% (no rerank) | 100% (+ Sonnet, top-50) |
 
-All three measure **retrieval recall** — for each question, does the gold
+All measure **retrieval recall** — for each question, does the gold
 evidence turn appear in the top-k thoughts returned by the memory system?
 Higher is better.
+
+The **LoCoMo** benchmark lives in `locomo-benches/`.
 
 ---
 
@@ -122,26 +123,6 @@ python3 lme-benches/convomem_bench.py \
 
 Dataset is downloaded automatically from HuggingFace (`Salesforce/ConvoMem`)
 on first run and cached locally by the `datasets` library.
-
----
-
-## LoCoMo
-
-```bash
-# Dev run — first 20 persona-pairs
-python3 lme-benches/locomo_bench.py \
-    --top-k 10 \
-    --limit 20 \
-    --chain locomo-dev-$(date +%s)
-
-# Full run (~1,986 QA pairs)
-python3 lme-benches/locomo_bench.py \
-    --top-k 10 \
-    --chain locomo-$(date +%s) \
-    --output results/locomo.json
-```
-
-Dataset is downloaded automatically from HuggingFace (`snap-research/locomo`).
 
 ---
 
