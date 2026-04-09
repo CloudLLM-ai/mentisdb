@@ -59,7 +59,7 @@ NEAR_MISS_K       = 50
 _ID_RE = re.compile(r"^(q\d+)_(S\w+)_(\d+)_T(\d+)$")
 
 
-def load_locomo(data_dir: str, limit: int | None) -> tuple[list[dict], dict[str, str]]:
+def load_locomo(data_dir: str, limit: int | None) -> tuple[list[dict], dict[str, str], list[dict]]:
     items_path = f"{data_dir}/locomo_items.jsonl"
     test_path  = f"{data_dir}/locomo_test.jsonl"
 
@@ -71,14 +71,12 @@ def load_locomo(data_dir: str, limit: int | None) -> tuple[list[dict], dict[str,
     item_map = {it["id"]: it["text"] for it in items}
 
     if limit:
-        # Limit by persona groups
-        personas = _group_queries_by_persona(queries)
-        limited_queries = []
-        for persona in sorted(personas.keys()):
-            limited_queries.extend(personas[persona][:limit])
-            if len(limited_queries) >= limit * 5:
-                break
-        queries = limited_queries[:limit]
+        # Limit: ingest only first N persona groups, evaluate all their queries
+        personas = sorted(set(it["id"].split("_")[0] for it in items))
+        kept = set(personas[:limit])
+        items = [it for it in items if it["id"].split("_")[0] in kept]
+        queries = [q for q in queries if q["id"].split("_")[0] in kept]
+        item_map = {it["id"]: it["text"] for it in items}
 
     return items, item_map, queries
 
@@ -154,17 +152,17 @@ def append_turn(base_url: str, chain_key: str, content: str, speaker: str,
             time.sleep(0.3 * (attempt + 1))
 
 
-def rebuild_vectors(base_url: str, chain_key: str,
-                    provider_key: str = "fastembed-minilm") -> None:
-    try:
-        resp = _post(base_url, "/v1/vectors/rebuild", {
-            "chain_key": chain_key,
-            "provider_key": provider_key,
-        }, timeout=600)
-        indexed = resp.get("status", {}).get("indexed_thought_count")
-        print(f"  [{provider_key}] Vector sidecar rebuilt — {indexed} thoughts indexed.", flush=True)
-    except Exception as e:
-        print(f"  WARNING: vector rebuild failed ({provider_key}): {e}", flush=True)
+def rebuild_vectors(base_url: str, chain_key: str) -> None:
+    for provider_key in ["local-text-v1"]:
+        try:
+            resp = _post(base_url, "/v1/vectors/rebuild", {
+                "chain_key": chain_key,
+                "provider_key": provider_key,
+            }, timeout=600)
+            indexed = resp.get("status", {}).get("indexed_thought_count")
+            print(f"  [{provider_key}] Vector sidecar rebuilt — {indexed} thoughts indexed.", flush=True)
+        except Exception as e:
+            print(f"  WARNING: vector rebuild failed ({provider_key}): {e}", flush=True)
 
 
 def ranked_search(base_url: str, chain_key: str, query: str, limit: int) -> list[dict]:
@@ -406,7 +404,7 @@ def main():
     ap = argparse.ArgumentParser(description="LoCoMo benchmark for mentisdb")
     ap.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
     ap.add_argument("--limit", type=int, default=None,
-                    help="Evaluate only first N queries per persona (dev mode)")
+                    help="Ingest only first N persona groups (dev mode; full=10)")
     ap.add_argument("--chain", default=f"locomo-{int(time.time())}")
     ap.add_argument("--base-url", default=DEFAULT_BASE_URL)
     ap.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
@@ -445,8 +443,8 @@ def main():
         time.sleep(1)
 
         if not args.skip_vectors:
-            print("Building fastembed vector sidecar…", flush=True)
-            rebuild_vectors(args.base_url, args.chain, "fastembed-minilm")
+            print("Building vector sidecar…", flush=True)
+            rebuild_vectors(args.base_url, args.chain)
     else:
         count = chain_thought_count(args.base_url, args.chain)
         print(f"  Chain '{args.chain}' already exists ({count} thoughts) — skipping ingestion.\n")

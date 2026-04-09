@@ -4959,9 +4959,9 @@ impl MentisDb {
         candidates: &[&Thought],
         text: &str,
     ) -> HashMap<usize, f32> {
-        const FRESH_VECTOR_WEIGHT: f32 = 0.35;
-        const STALE_VECTOR_WEIGHT: f32 = 0.2;
-        const MIN_VECTOR_COSINE: f32 = 0.06;
+        const FRESH_VECTOR_WEIGHT: f32 = 0.5;
+        const STALE_VECTOR_WEIGHT: f32 = 0.3;
+        const MIN_VECTOR_COSINE: f32 = 0.04;
         const MAX_VECTOR_HITS: usize = 256;
 
         if candidates.is_empty() || self.managed_vector_sidecars.is_empty() {
