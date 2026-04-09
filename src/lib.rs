@@ -2341,6 +2341,8 @@ pub struct RankedSearchScore {
     pub confidence: f32,
     /// Small recency tie-breaker derived from append order.
     pub recency: f32,
+    /// Score contributed by session-level cohesion with top lexical hits.
+    pub session_cohesion: f32,
     /// Final combined score used for ranking.
     pub total: f32,
 }
@@ -4034,6 +4036,47 @@ impl MentisDb {
                 )
             })
             .collect();
+
+        // Session cohesion: thoughts near high-scoring lexical hits in the
+        // append-order index are likely part of the same conversation and
+        // should be boosted. This helps LoCoMo-style benchmarks where
+        // evidence sits in turns adjacent to the matching turn.
+        const SESSION_COHESION_RADIUS: u64 = 5;
+        const SESSION_COHESION_BOOST: f32 = 0.5;
+        const SESSION_COHESION_MIN_LEXICAL: f32 = 3.0;
+        if !hits.is_empty() {
+            let seed_indices: Vec<u64> = hits
+                .iter()
+                .filter(|h| h.score.lexical >= SESSION_COHESION_MIN_LEXICAL)
+                .map(|h| h.thought.index)
+                .collect();
+            if !seed_indices.is_empty() {
+                for hit in &mut hits {
+                    if hit.score.lexical > 0.0 {
+                        continue;
+                    }
+                    let idx = hit.thought.index;
+                    let nearest = seed_indices
+                        .iter()
+                        .map(|si| {
+                            if *si >= idx {
+                                *si - idx
+                            } else {
+                                idx - *si
+                            }
+                        })
+                        .min()
+                       .unwrap_or(u64::MAX);
+                    if nearest <= SESSION_COHESION_RADIUS {
+                        let distance_fraction =
+                            1.0 - (nearest as f32 / SESSION_COHESION_RADIUS as f32);
+                        hit.score.session_cohesion = SESSION_COHESION_BOOST * distance_fraction;
+                        hit.score.total += hit.score.session_cohesion;
+                    }
+                }
+            }
+        }
+
         let total_candidates = hits.len();
 
         hits.sort_by(|left, right| {
@@ -4880,35 +4923,37 @@ impl MentisDb {
             )
         };
         // Importance acts as a proxy for "user-originated content" vs
-        // "verbose assistant response". With importance 0.8 for user
-        // turns and 0.2 for assistant turns, a multiplier of 3.0 gives
-        // user thoughts +2.4 vs assistant +0.6 — enough to tip close
-        // BM25 races without overriding strong lexical signals.
-        let importance = thought.importance * 3.0;
+        // "verbose assistant response". Applied as a multiplicative boost
+        // to the lexical score so it tips close BM25 races without
+        // overriding strong lexical signals. Thoughts with no lexical
+        // match get a small flat importance bonus; thoughts with lexical
+        // matches get a scaled boost proportional to their relevance.
+        let importance_boost = if lexical > 0.0 {
+            lexical * (thought.importance - 0.5) * 0.3
+        } else {
+            (thought.importance - 0.5) * 0.1
+        };
         let confidence = thought.confidence.unwrap_or_default() * 0.1;
         let recency = self.recency_score(thought);
-        // Vector-lexical fusion: when a thought has no lexical signal at all,
-        // vector gets a large boost so semantically-matched thoughts surface.
-        // When lexical is present but weak (< RAMP_FLOOR), a partial boost
-        // helps thoughts that are semantically close but lack exact term overlap.
-        // Above RAMP_FLOOR, vector is additive only — never overrides lexical.
-        const VECTOR_ONLY_BOOST: f32 = 60.0;
-        const VECTOR_WEAK_LEXICAL_BOOST: f32 = 20.0;
-        const LEXICAL_RAMP_FLOOR: f32 = 1.0;
-        let vector_contribution = if lexical == 0.0 && vector > 0.0 {
-            vector * VECTOR_ONLY_BOOST
-        } else if lexical > 0.0 && lexical < LEXICAL_RAMP_FLOOR && vector > 0.0 {
-            let fraction = 1.0 - (lexical / LEXICAL_RAMP_FLOOR);
-            vector * (1.0 + VECTOR_WEAK_LEXICAL_BOOST * fraction)
+        // Vector-lexical fusion: when there is no lexical signal at all,
+        // vector gets a large boost (VECTOR_ONLY_BOOST) so semantically-matched
+        // thoughts surface. When lexical is present, the boost decays
+        // exponentially with VECTOR_DECAY_RATE, letting vector help moderate-
+        // lexical results without overriding strong lexical signals.
+        const VECTOR_ONLY_BOOST: f32 = 40.0;
+        const VECTOR_DECAY_RATE: f32 = 2.0;
+        let vector_contribution = if vector > 0.0 {
+            let extra = VECTOR_ONLY_BOOST * (-lexical / VECTOR_DECAY_RATE).exp();
+            vector * (1.0 + extra)
         } else {
-            vector
+            0.0
         };
         let total = lexical
             + vector_contribution
             + graph
             + relation
             + seed_support
-            + importance
+            + importance_boost
             + confidence
             + recency;
 
@@ -4920,9 +4965,10 @@ impl MentisDb {
                 graph,
                 relation,
                 seed_support,
-                importance,
+                importance: importance_boost,
                 confidence,
                 recency,
+                session_cohesion: 0.0,
                 total,
             },
             graph_distance,
@@ -5119,6 +5165,7 @@ impl MentisDb {
             return Vec::new();
         }
 
+        const MAX_GRAPH_SEEDS: usize = 20;
         let adjacency = crate::search::ThoughtAdjacencyIndex::from_thoughts(&self.thoughts);
         let candidate_positions: HashSet<usize> = candidates
             .iter()
@@ -5127,6 +5174,7 @@ impl MentisDb {
         let seeds: Vec<crate::search::ThoughtLocator> = self
             .sorted_lexical_seed_hits(lexical_hits)
             .into_iter()
+            .take(MAX_GRAPH_SEEDS)
             .filter_map(|hit| {
                 adjacency
                     .local_locator_for_index(hit.doc_position as u64)
@@ -5188,12 +5236,12 @@ impl MentisDb {
         if depth == 0 {
             0.0
         } else {
-            0.3 / depth as f32
+            1.0 / depth as f32
         }
     }
 
     fn graph_seed_support_score(&self, seed_paths: usize) -> f32 {
-        seed_paths.saturating_sub(1).min(3) as f32 * 0.05
+        seed_paths.saturating_sub(1).min(5) as f32 * 0.1
     }
 
     fn graph_path_relation_kinds(
@@ -5226,11 +5274,11 @@ impl MentisDb {
 
     fn graph_relation_kind_boost(&self, kind: ThoughtRelationKind) -> f32 {
         match kind {
-            ThoughtRelationKind::Corrects => 0.18,
-            ThoughtRelationKind::Invalidates => 0.18,
-            ThoughtRelationKind::Supersedes => 0.16,
-            ThoughtRelationKind::DerivedFrom => 0.14,
-            ThoughtRelationKind::ContinuesFrom => 0.12,
+            ThoughtRelationKind::Corrects => 0.25,
+            ThoughtRelationKind::Invalidates => 0.25,
+            ThoughtRelationKind::Supersedes => 0.22,
+            ThoughtRelationKind::DerivedFrom => 0.20,
+            ThoughtRelationKind::ContinuesFrom => 0.30,
             ThoughtRelationKind::Summarizes => 0.11,
             ThoughtRelationKind::CausedBy => 0.11,
             ThoughtRelationKind::Supports => 0.09,
