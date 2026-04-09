@@ -4340,12 +4340,10 @@ impl MentisDb {
                 }
                 Err(e) => {
                     log::warn!("FastEmbed provider init failed, falling back to LocalTextV1: {e}");
-                    self.manage_vector_sidecar(
-                        crate::search::LocalTextEmbeddingProvider::new(),
-                    )
-                    .map_err(
-                        vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>,
-                    )?;
+                    self.manage_vector_sidecar(crate::search::LocalTextEmbeddingProvider::new())
+                        .map_err(
+                            vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>,
+                        )?;
                 }
             }
             Ok(())

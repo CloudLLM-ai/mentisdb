@@ -326,7 +326,11 @@ async fn dashboard_chain_detail_exposes_default_vector_sidecar_status() {
         .iter()
         .filter(|s| s["enabled"].as_bool().unwrap_or(false))
         .collect();
-    assert_eq!(enabled_sidecars.len(), 1, "expected exactly one enabled sidecar");
+    assert_eq!(
+        enabled_sidecars.len(),
+        1,
+        "expected exactly one enabled sidecar"
+    );
     assert_eq!(enabled_sidecars[0]["freshness"], "Fresh");
 
     let _ = std::fs::remove_dir_all(&dir);
