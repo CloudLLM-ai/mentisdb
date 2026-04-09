@@ -58,7 +58,7 @@ async fn append_thought_via_rest(
 #[tokio::test]
 async fn phase4_rest_ranked_search_contract_exposes_graph_aware_fields() {
     let dir = unique_chain_dir();
-    let chain_key = "transport-ranked";
+    let chain_key = "transport-graph-fields";
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         chain_key,

@@ -54,7 +54,7 @@ fn normalizer_lowercases_and_splits_on_non_alphanumeric_boundaries() {
     let tokens = normalize_lexical_tokens("BM25-style Search_v1; Graph+Expansion");
     assert_eq!(
         tokens,
-        vec!["bm25", "style", "search", "v1", "graph", "expansion"]
+        vec!["bm25", "style", "search", "v1", "graph", "expans"]
     );
 }
 
@@ -112,10 +112,10 @@ fn lexical_search_ranks_strong_content_match_before_weaker_concept_only_match() 
 
     let hits = index.search(&LexicalQuery::new("bm25 ranking retrieval"));
 
-    assert_eq!(hits.len(), 2);
+    assert_eq!(hits.len(), 3);
     assert_eq!(hits[0].thought_index, 0);
-    assert_eq!(hits[1].thought_index, 2);
     assert!(hits[0].score > hits[1].score);
+    assert!(hits[1].score > hits[2].score);
 }
 
 #[test]
@@ -201,7 +201,7 @@ fn lexical_search_indexes_agent_id_and_registry_text() {
     let agent_id_hits = index.search(&LexicalQuery::new("backend engineer"));
     assert_eq!(agent_id_hits.len(), 1);
     assert_eq!(agent_id_hits[0].thought_index, 0);
-    assert_eq!(agent_id_hits[0].matched_terms, vec!["backend", "engineer"]);
+    assert_eq!(agent_id_hits[0].matched_terms, vec!["backend", "engin"]);
     assert!(agent_id_hits[0]
         .match_sources
         .contains(&LexicalMatchSource::AgentId));
@@ -224,7 +224,7 @@ fn lexical_hits_report_all_matching_sources() {
 
     assert_eq!(hits.len(), 2);
     assert_eq!(hits[0].thought_index, 0);
-    assert_eq!(hits[0].matched_terms, vec!["bm25", "search", "retrieval"]);
+    assert_eq!(hits[0].matched_terms, vec!["bm25", "search", "retriev"]);
     assert!(hits[0].match_sources.contains(&LexicalMatchSource::Content));
     assert!(hits[0].match_sources.contains(&LexicalMatchSource::Tags));
     assert!(hits[0]

@@ -4313,10 +4313,7 @@ impl MentisDb {
                 Ok(p) => {
                     if fastembed_enabled {
                         self.manage_vector_sidecar(p).map_err(|e| {
-                            io::Error::new(
-                                io::ErrorKind::Other,
-                                format!("FastEmbed sidecar rebuild failed: {e}"),
-                            )
+                            io::Error::other(format!("FastEmbed sidecar rebuild failed: {e}"))
                         })?;
                     } else {
                         self.register_vector_sidecar_for_search(p);

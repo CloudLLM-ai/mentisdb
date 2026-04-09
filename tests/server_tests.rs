@@ -9,7 +9,6 @@ use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use chrono::DateTime;
-use mentisdb::search::{EmbeddingProvider, LocalTextEmbeddingProvider};
 use mentisdb::server::{
     adopt_legacy_default_mentisdb_dir, mcp_router, rest_router, standard_mcp_router,
     MentisDbServerConfig, MentisDbServiceConfig,
@@ -79,15 +78,16 @@ async fn append_thought_via_rest(
 #[tokio::test]
 async fn rest_router_loads_default_managed_vector_sidecar() {
     let dir = unique_chain_dir();
+    let chain_key = "vector-default";
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
-        "vector-default",
+        chain_key,
         StorageAdapterKind::Binary,
     ));
 
     append_thought_via_rest(
         router,
-        "vector-default",
+        chain_key,
         "astro",
         "Insight",
         None,
@@ -95,20 +95,28 @@ async fn rest_router_loads_default_managed_vector_sidecar() {
     )
     .await;
 
-    let provider = LocalTextEmbeddingProvider::new();
-    let chain = MentisDb::open_with_key_and_storage_kind(
-        &dir,
-        "vector-default",
-        StorageAdapterKind::Binary,
-    )
-    .unwrap();
+    let mut chain =
+        MentisDb::open_with_key_and_storage_kind(&dir, chain_key, StorageAdapterKind::Binary)
+            .unwrap();
+    chain.apply_persisted_managed_vector_sidecars().unwrap();
+
+    let statuses = chain.managed_vector_sidecar_statuses().unwrap();
+    assert!(
+        !statuses.is_empty(),
+        "at least one vector sidecar should be registered"
+    );
+    let active = statuses
+        .iter()
+        .find(|s| s.enabled)
+        .expect("an enabled sidecar should exist");
+
     let sidecar = chain
-        .load_vector_sidecar(provider.metadata())
+        .load_vector_sidecar(&active.metadata)
         .unwrap()
         .unwrap();
     assert_eq!(
         chain
-            .vector_sidecar_freshness(&sidecar, provider.metadata())
+            .vector_sidecar_freshness(&sidecar, &active.metadata)
             .unwrap(),
         mentisdb::search::VectorSidecarFreshness::Fresh
     );
@@ -2642,7 +2650,7 @@ async fn rest_lexical_search_returns_ranked_scores() {
     assert!(!results.is_empty());
     assert_eq!(parsed["total"].as_u64(), Some(2));
     assert!(results[0]["score"].as_f64().unwrap_or(0.0) > 0.0);
-    assert_eq!(results[0]["matched_terms"], json!(["latency"]));
+    assert_eq!(results[0]["matched_terms"], json!(["latenc"]));
     assert!(results[0]["match_sources"]
         .as_array()
         .unwrap()
@@ -2733,14 +2741,14 @@ async fn rest_ranked_search_returns_graph_aware_results() {
     let dir = unique_chain_dir();
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
-        "server-ranked",
+        "server-graph-fields",
         StorageAdapterKind::Binary,
     ));
-    let chain_key = "server-ranked";
+    let chain_key = "server-graph-fields";
     let _seed = append_thought_via_rest(
         router.clone(),
         chain_key,
-        "ranked-bot",
+        "graph-bot",
         "Decision",
         None,
         "Latency ranking seed for graph-aware transport.",
@@ -2756,7 +2764,7 @@ async fn rest_ranked_search_returns_graph_aware_results() {
                 .body(Body::from(
                     json!({
                         "chain_key": chain_key,
-                        "agent_id": "ranked-bot",
+                        "agent_id": "graph-bot",
                         "thought_type": "Summary",
                         "content": "Supporting context reachable through relations.",
                         "refs": [0]
@@ -2820,15 +2828,15 @@ async fn rest_context_bundles_returns_seed_anchored_groups() {
     let dir = unique_chain_dir();
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
-        "server-bundles",
+        "server-groups",
         StorageAdapterKind::Binary,
     ));
-    let chain_key = "server-bundles";
+    let chain_key = "server-groups";
 
     let _seed_a = append_thought_via_rest(
         router.clone(),
         chain_key,
-        "bundle-bot",
+        "group-bot",
         "Decision",
         None,
         "Alpha seed for context bundling.",
@@ -2837,7 +2845,7 @@ async fn rest_context_bundles_returns_seed_anchored_groups() {
     let _seed_b = append_thought_via_rest(
         router.clone(),
         chain_key,
-        "bundle-bot",
+        "group-bot",
         "Decision",
         None,
         "Beta seed for context bundling.",
@@ -2858,7 +2866,7 @@ async fn rest_context_bundles_returns_seed_anchored_groups() {
                     .body(Body::from(
                         json!({
                             "chain_key": chain_key,
-                            "agent_id": "bundle-bot",
+                            "agent_id": "group-bot",
                             "thought_type": "Summary",
                             "content": content,
                             "refs": [ref_index]

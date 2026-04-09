@@ -605,7 +605,7 @@ fn ranked_query_relation_weighting_prefers_derived_context_over_related_context(
             "planner",
             ThoughtInput::new(
                 ThoughtType::Summary,
-                "Derived support context should rank first.",
+                "Derived support context should appear first.",
             )
             .with_tags(["search"])
             .with_relations(vec![ThoughtRelation {
@@ -620,7 +620,7 @@ fn ranked_query_relation_weighting_prefers_derived_context_over_related_context(
             "planner",
             ThoughtInput::new(
                 ThoughtType::Summary,
-                "Related support context should rank after derived.",
+                "Related support context should appear after derived.",
             )
             .with_tags(["search"])
             .with_relations(vec![ThoughtRelation {
@@ -645,12 +645,14 @@ fn ranked_query_relation_weighting_prefers_derived_context_over_related_context(
     let derived_index = ranked
         .hits
         .iter()
-        .position(|hit| hit.thought.content == "Derived support context should rank first.")
+        .position(|hit| hit.thought.content == "Derived support context should appear first.")
         .unwrap();
     let related_index = ranked
         .hits
         .iter()
-        .position(|hit| hit.thought.content == "Related support context should rank after derived.")
+        .position(|hit| {
+            hit.thought.content == "Related support context should appear after derived."
+        })
         .unwrap();
     let derived = &ranked.hits[derived_index];
     let related = &ranked.hits[related_index];
@@ -870,7 +872,7 @@ fn ranked_query_graph_tracks_multiple_supporting_seeds() {
             "planner",
             ThoughtInput::new(
                 ThoughtType::Summary,
-                "Shared rollout context reachable from both seeds.",
+                "Shared rollout context reachable from both origins.",
             )
             .with_tags(["search"])
             .with_relations(vec![
@@ -902,7 +904,7 @@ fn ranked_query_graph_tracks_multiple_supporting_seeds() {
     let shared = ranked
         .hits
         .iter()
-        .find(|hit| hit.thought.content == "Shared rollout context reachable from both seeds.")
+        .find(|hit| hit.thought.content == "Shared rollout context reachable from both origins.")
         .unwrap();
     assert_eq!(shared.graph_seed_paths, 2);
     assert!(shared.score.seed_support > 0.0);

@@ -375,7 +375,7 @@ async fn dashboard_can_disable_and_resync_vector_sidecar() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(&format!(
+                .uri(format!(
                     "/dashboard/api/chains/source/vectors/{provider_key}/disable"
                 ))
                 .body(Body::empty())
@@ -424,7 +424,7 @@ async fn dashboard_can_disable_and_resync_vector_sidecar() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(&format!(
+                .uri(format!(
                     "/dashboard/api/chains/source/vectors/{provider_key}/sync"
                 ))
                 .body(Body::empty())

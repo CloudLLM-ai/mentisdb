@@ -488,6 +488,7 @@ fn parse_thought_type(s: &str) -> Option<ThoughtType> {
 fn parse_managed_vector_provider_kind(raw: &str) -> Option<ManagedVectorProviderKind> {
     match raw.trim() {
         "local-text-v1" => Some(ManagedVectorProviderKind::LocalTextV1),
+        #[cfg(feature = "local-embeddings")]
         "fastembed-minilm" => Some(ManagedVectorProviderKind::FastEmbedMiniLM),
         _ => None,
     }
