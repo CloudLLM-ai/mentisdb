@@ -479,6 +479,7 @@ fn parse_thought_type(s: &str) -> Option<ThoughtType> {
         "Handoff" => Some(ThoughtType::Handoff),
         "Summary" => Some(ThoughtType::Summary),
         "Reframe" => Some(ThoughtType::Reframe),
+        "Goal" => Some(ThoughtType::Goal),
         "Surprise" => Some(ThoughtType::Surprise),
         _ => None,
     }

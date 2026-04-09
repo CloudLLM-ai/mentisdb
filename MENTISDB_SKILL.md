@@ -77,6 +77,7 @@ Write **immediately** when any becomes true:
 | Summary | Compressed view of prior thoughts | Checkpoint |
 | Surprise | Unexpected outcome or mismatch observed | Memory |
 | Reframe | Prior thought was accurate but unhelpfully framed (Supersedes without invalidating) | Memory |
+| Goal | High-level objective or desired outcome (what, not how — broader than Plan/Subgoal) | Memory |
 
 ## 🔗 BACK-REFERENCING & THOUGHT GRAPH
 

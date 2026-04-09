@@ -315,6 +315,7 @@ fn thought_sound_sequence(tt: ThoughtType) -> &'static [(f32, u64)] {
 
         // ── Constraints ───────────────────────────────────────────────────────
         ThoughtType::Constraint => &[(349.23, 80), (293.66, 100)], // grounding descent
+        ThoughtType::Goal => &[(440.00, 80), (554.37, 80), (659.25, 120)], // ascending triad — forward-looking
     }
 }
 

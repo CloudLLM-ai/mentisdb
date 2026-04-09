@@ -1394,6 +1394,12 @@ pub enum ThoughtType {
     /// Bincode encodes variants by their integer index; inserting mid-enum
     /// shifts all subsequent indices and silently corrupts persisted data.
     Reframe,
+    /// A high-level objective or desired outcome that the agent or team is
+    /// working toward. Broader than a `Plan` (which describes *how*) and
+    /// broader than a `Subgoal` (which is a component of a plan). Use `Goal`
+    /// to capture *what* the agent is trying to achieve so that future
+    /// sessions can orient quickly even if the plan details have changed.
+    Goal,
 }
 
 /// Operational role of a thought inside the system.
