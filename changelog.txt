@@ -1,3 +1,51 @@
+0.8.2.28 APR/10/2026
+  - feat(temporal): add temporal edge validity with schema V3 migration
+    - Add valid_at/invalid_at fields to ThoughtRelation for explicit temporal
+      bounds (e.g. "this fact was true from 2024 to 2025")
+    - invalidated_thought_ids: HashSet<Uuid> built at chain open time from all
+      Supersedes, Corrects, Invalidates relations for O(1) superseded detection
+    - as_of: Option<DateTime<Utc>> on RankedSearchQuery enables point-in-time
+      queries: excludes thoughts appended after the timestamp and thoughts
+      superseded by thoughts appended at or before the timestamp
+    - Schema V3 with full V2→V3 migration: LegacyThoughtRelationV2 (3-field),
+      LegacyThoughtV1, migrate_v2_thoughts() with hash chain rebuild
+    - Version-aware load_binary_thoughts() with peek_first_schema_version()
+    - Bincode empty-Vec fast-path guard: always check schema_version after
+      successful deserialization to detect silently-wrong old chains
+    - REST API: RankedSearchRequest exposes as_of parameter
+    - append_thought() auto-sets valid_at = Some(now) on new relations
+    - ThoughtRelation::new(kind, target_id) convenience constructor
+    - open_with_storage() persists migrated chains so future opens use native
+    - migrate_legacy_chain_v0() generalized to detect actual from_version
+    - REST API: rest_append_handler includes valid_at/invalid_at fields
+  - feat(dedup): add automatic memory deduplication with Jaccard similarity
+    - When dedup_threshold is set, each new thought's normalized lexical tokens
+      are compared against recent thoughts using Jaccard similarity
+    - If the best match exceeds threshold (0.0–1.0), a Supersedes relation is
+      auto-added pointing to the most similar prior thought
+    - dedup_scan_window (default 64) limits how many recent thoughts are scanned
+    - Configurable via MENTISDB_DEDUP_THRESHOLD and MENTISDB_DEDUP_SCAN_WINDOW
+    - MentisDb::with_dedup_threshold() and with_dedup_scan_window() builders
+    - MentisDbServiceConfig: with_dedup_threshold(), with_dedup_scan_window()
+    - invalidated_thought_ids updated correctly on auto-supersede
+  - feat(scopes): add multi-level memory scopes via tag-based MemoryScope
+    - MemoryScope enum: User (default), Session, Agent — stored as scope:user,
+      scope:session, scope:agent tags to avoid schema migration
+    - ThoughtInput::with_scope() adds the tag automatically
+    - RankedSearchQuery::with_scope() filters by scope tag
+    - REST API: AppendThoughtRequest.scope and RankedSearchRequest.scope
+    - MemoryScope::as_tag(), from_tag(), Display impl for round-tripping
+  - feat(cli): add add, search, agents subcommands via daemon REST
+    - mentisdbd add <content> [--type] [--scope] [--tag] [--agent] [--chain] [--url]
+    - mentisdbd search <query> [--limit] [--scope] [--chain] [--url]
+    - mentisdbd agents [--chain] [--url]
+    - Default REST URL: http://127.0.0.1:9472
+    - Uses ureq for synchronous HTTP (no async runtime needed)
+    - AddCommand, SearchCommand, AgentsCommand structs in cli::args
+    - Updated help text with new subcommand documentation
+  - fix(clippy): remove dead load_legacy_v0_thoughts/load_legacy_v0_binary_thoughts
+    functions and convert match→if let in load_binary_thoughts fast path
+
 0.8.1.27 APR/10/2026
   - feat(search): session cohesion boost and improved importance/vector/graph scoring
     - Session cohesion: thoughts within ±8 positions of a high-scoring lexical
