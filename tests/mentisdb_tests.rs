@@ -39,9 +39,15 @@ struct LegacyThoughtV0Record {
     tags: Vec<String>,
     concepts: Vec<String>,
     refs: Vec<u64>,
-    relations: Vec<ThoughtRelation>,
+    relations: Vec<LegacyTestRelation>,
     prev_hash: String,
     hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyTestRelation {
+    kind: ThoughtRelationKind,
+    target_id: Uuid,
 }
 
 fn unique_chain_dir() -> PathBuf {
@@ -141,6 +147,8 @@ fn resolve_context_follows_refs_and_relations() {
                 kind: ThoughtRelationKind::DerivedFrom,
                 target_id: base_id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();
@@ -1703,7 +1711,10 @@ fn migrate_v0_binary_chain_to_latest() {
 
     let archived = dir
         .join("migrations")
-        .join(format!("v{}_to_v{}", 0, MENTISDB_CURRENT_VERSION))
+        .join(format!(
+            "v{}_to_v{}",
+            reports[0].from_version, MENTISDB_CURRENT_VERSION
+        ))
         .join(chain_storage_filename(
             chain_key,
             StorageAdapterKind::Binary,
@@ -1728,18 +1739,22 @@ fn migrate_v0_chains_with_explicit_binary_adapter() {
     let entry = registry.chains.get(chain_key).unwrap();
     assert_eq!(entry.storage_adapter, StorageAdapterKind::Binary);
 
+    let archived = dir
+        .join("migrations")
+        .join(format!(
+            "v{}_to_v{}",
+            reports[0].from_version, MENTISDB_CURRENT_VERSION
+        ))
+        .join(chain_storage_filename(
+            chain_key,
+            StorageAdapterKind::Binary,
+        ));
+
     let active_path = dir.join(chain_storage_filename(
         chain_key,
         StorageAdapterKind::Binary,
     ));
     assert!(active_path.exists());
-    let archived = dir
-        .join("migrations")
-        .join(format!("v{}_to_v{}", 0, MENTISDB_CURRENT_VERSION))
-        .join(chain_storage_filename(
-            chain_key,
-            StorageAdapterKind::Binary,
-        ));
     assert!(archived.exists());
 
     let chain =
@@ -1983,6 +1998,8 @@ fn test_supersedes_relation() {
         kind: ThoughtRelationKind::Supersedes,
         target_id: first_id,
         chain_key: None,
+        valid_at: None,
+        invalid_at: None,
     }]);
 
     let second = chain.append_thought("agent1", input).unwrap();
@@ -2013,6 +2030,8 @@ fn test_cross_chain_relation_serde() {
         kind: ThoughtRelationKind::Supersedes,
         target_id: target,
         chain_key: Some("other-chain".to_string()),
+        valid_at: None,
+        invalid_at: None,
     };
 
     let json = serde_json::to_string(&relation).unwrap();
@@ -2033,6 +2052,8 @@ fn test_intra_chain_relation_backward_compat() {
         kind: ThoughtRelationKind::References,
         target_id: target,
         chain_key: None,
+        valid_at: None,
+        invalid_at: None,
     };
 
     let json = serde_json::to_string(&relation).unwrap();

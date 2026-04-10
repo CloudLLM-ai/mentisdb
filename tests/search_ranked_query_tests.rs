@@ -252,6 +252,8 @@ fn ranked_query_with_graph_expansion_surfaces_supporting_context() {
                 kind: ThoughtRelationKind::DerivedFrom,
                 target_id: seed.id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();
@@ -312,6 +314,8 @@ fn ranked_query_graph_expansion_stays_inside_filtered_candidates() {
                 kind: ThoughtRelationKind::DerivedFrom,
                 target_id: seed.id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();
@@ -397,6 +401,8 @@ fn ranked_query_graph_expansion_prefers_closer_supporting_context() {
                 kind: ThoughtRelationKind::DerivedFrom,
                 target_id: seed.id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap()
@@ -413,6 +419,8 @@ fn ranked_query_graph_expansion_prefers_closer_supporting_context() {
                 kind: ThoughtRelationKind::ContinuesFrom,
                 target_id: first_hop.id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();
@@ -553,6 +561,8 @@ fn ranked_query_graph_without_seed_hits_still_keeps_lexical_match() {
                 kind: ThoughtRelationKind::DerivedFrom,
                 target_id: seed.id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();
@@ -612,6 +622,8 @@ fn ranked_query_relation_weighting_prefers_derived_context_over_related_context(
                 kind: ThoughtRelationKind::DerivedFrom,
                 target_id: seed.id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();
@@ -627,6 +639,8 @@ fn ranked_query_relation_weighting_prefers_derived_context_over_related_context(
                 kind: ThoughtRelationKind::RelatedTo,
                 target_id: seed.id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();
@@ -704,11 +718,15 @@ fn ranked_query_multi_seed_support_counts_distinct_seed_paths() {
                     kind: ThoughtRelationKind::DerivedFrom,
                     target_id: seed_a.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 },
                 ThoughtRelation {
                     kind: ThoughtRelationKind::DerivedFrom,
                     target_id: seed_b.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 },
             ]),
         )
@@ -767,6 +785,8 @@ fn query_context_bundles_group_support_without_cross_seed_leakage() {
                     kind: ThoughtRelationKind::DerivedFrom,
                     target_id: seed_a.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 }]),
         )
         .unwrap();
@@ -779,6 +799,8 @@ fn query_context_bundles_group_support_without_cross_seed_leakage() {
                     kind: ThoughtRelationKind::DerivedFrom,
                     target_id: seed_b.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 }]),
         )
         .unwrap();
@@ -792,11 +814,15 @@ fn query_context_bundles_group_support_without_cross_seed_leakage() {
                         kind: ThoughtRelationKind::DerivedFrom,
                         target_id: seed_a.id,
                         chain_key: None,
+                        valid_at: None,
+                        invalid_at: None,
                     },
                     ThoughtRelation {
                         kind: ThoughtRelationKind::DerivedFrom,
                         target_id: seed_b.id,
                         chain_key: None,
+                        valid_at: None,
+                        invalid_at: None,
                     },
                 ]),
         )
@@ -880,11 +906,15 @@ fn ranked_query_graph_tracks_multiple_supporting_seeds() {
                     kind: ThoughtRelationKind::DerivedFrom,
                     target_id: seed_a.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 },
                 ThoughtRelation {
                     kind: ThoughtRelationKind::ContinuesFrom,
                     target_id: seed_b.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 },
             ]),
         )

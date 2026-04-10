@@ -37,6 +37,8 @@ fn expansion_follows_outgoing_edges_and_preserves_shortest_paths() {
                     kind: ThoughtRelationKind::Supports,
                     target_id: base.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 },
             ]),
         )
@@ -50,6 +52,8 @@ fn expansion_follows_outgoing_edges_and_preserves_shortest_paths() {
                     kind: ThoughtRelationKind::DerivedFrom,
                     target_id: middle.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 },
             ]),
         )
@@ -110,6 +114,8 @@ fn expansion_can_follow_incoming_only_without_emitting_seed_hits() {
                     kind: ThoughtRelationKind::DerivedFrom,
                     target_id: seed.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 },
             ]),
         )
@@ -123,6 +129,8 @@ fn expansion_can_follow_incoming_only_without_emitting_seed_hits() {
                     kind: ThoughtRelationKind::ContinuesFrom,
                     target_id: derived.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 },
             ]),
         )
@@ -167,6 +175,8 @@ fn expansion_marks_truncation_when_visit_budget_is_exhausted() {
                         kind: ThoughtRelationKind::DerivedFrom,
                         target_id: seed.id,
                         chain_key: None,
+                        valid_at: None,
+                        invalid_at: None,
                     }],
                 ),
             )
@@ -210,11 +220,15 @@ fn expansion_dedupes_duplicate_seeds_and_keeps_first_seed_path() {
                     kind: ThoughtRelationKind::DerivedFrom,
                     target_id: left.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 },
                 ThoughtRelation {
                     kind: ThoughtRelationKind::DerivedFrom,
                     target_id: right.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 },
             ]),
         )

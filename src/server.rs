@@ -2089,6 +2089,8 @@ impl MentisDbService {
                 kind,
                 target_id,
                 chain_key: rel.chain_key,
+                valid_at: None,
+                invalid_at: None,
             });
         }
         if !parsed_relations.is_empty() {
@@ -2292,6 +2294,9 @@ impl MentisDbService {
         if let Some(graph) = &request.graph {
             ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
         }
+        if let Some(as_of) = request.as_of {
+            ranked_query = ranked_query.with_as_of(as_of);
+        }
 
         let ranked = chain.query_ranked(&ranked_query);
         let total = ranked.total_candidates;
@@ -2365,6 +2370,9 @@ impl MentisDbService {
         }
         if let Some(graph) = &request.graph {
             ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
+        }
+        if let Some(as_of) = request.as_of {
+            ranked_query = ranked_query.with_as_of(as_of);
         }
 
         let mut total_query = ranked_query.clone();
@@ -3712,6 +3720,8 @@ struct RankedSearchRequest {
     min_confidence: Option<f32>,
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
+    /// Point-in-time query: only consider thoughts and relations valid at this timestamp.
+    as_of: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize)]

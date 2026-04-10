@@ -896,6 +896,8 @@ async fn chain_search_endpoint_includes_graph_supporting_context() {
                 kind: ThoughtRelationKind::DerivedFrom,
                 target_id: seed.id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();
@@ -968,6 +970,8 @@ async fn chain_search_bundles_endpoint_groups_support_under_seed() {
                 kind: ThoughtRelationKind::DerivedFrom,
                 target_id: seed.id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();

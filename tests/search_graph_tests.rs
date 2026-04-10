@@ -43,6 +43,8 @@ fn adjacency_merges_ref_and_relation_provenance_for_one_target() {
                     kind: ThoughtRelationKind::Supports,
                     target_id: base.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 }]),
         )
         .unwrap();
@@ -102,6 +104,8 @@ fn adjacency_tracks_incoming_edges_for_local_and_cross_chain_targets() {
                 kind: ThoughtRelationKind::DerivedFrom,
                 target_id: anchor.id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();
@@ -118,6 +122,8 @@ fn adjacency_tracks_incoming_edges_for_local_and_cross_chain_targets() {
                 kind: ThoughtRelationKind::ContinuesFrom,
                 target_id: remote_id,
                 chain_key: Some("remote-brain".to_string()),
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();
@@ -165,6 +171,8 @@ fn expansion_path_supports_incoming_walks_and_rejects_cycles() {
                 kind: ThoughtRelationKind::DerivedFrom,
                 target_id: seed.id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();

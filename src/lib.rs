@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{
@@ -100,8 +100,11 @@ pub const MENTISDB_SCHEMA_V1: u32 = 1;
 /// Schema version 2: adds [`ThoughtType::Reframe`], [`ThoughtRelationKind::Supersedes`],
 /// and optional cross-chain [`ThoughtRelation::chain_key`].
 pub const MENTISDB_SCHEMA_V2: u32 = 2;
+/// Schema version 3: adds temporal validity fields [`ThoughtRelation::valid_at`]
+/// and [`ThoughtRelation::invalid_at`] for time-bounded fact management.
+pub const MENTISDB_SCHEMA_V3: u32 = 3;
 /// Alias for the latest supported MentisDb storage schema version.
-pub const MENTISDB_CURRENT_VERSION: u32 = MENTISDB_SCHEMA_V2;
+pub const MENTISDB_CURRENT_VERSION: u32 = MENTISDB_SCHEMA_V3;
 const MENTISDB_REGISTRY_FILENAME: &str = "mentisdb-registry.json";
 const LEGACY_THOUGHTCHAIN_REGISTRY_FILENAME: &str = "thoughtchain-registry.json";
 
@@ -1494,11 +1497,7 @@ pub enum ThoughtRelationKind {
 /// use uuid::Uuid;
 ///
 /// // Intra-chain relation (chain_key is None)
-/// let intra = ThoughtRelation {
-///     kind: ThoughtRelationKind::Supports,
-///     target_id: Uuid::nil(),
-///     chain_key: None,
-/// };
+/// let intra = ThoughtRelation::new(ThoughtRelationKind::Supports, Uuid::nil());
 /// assert_eq!(intra.kind, ThoughtRelationKind::Supports);
 /// assert!(intra.chain_key.is_none());
 ///
@@ -1507,6 +1506,8 @@ pub enum ThoughtRelationKind {
 ///     kind: ThoughtRelationKind::Supersedes,
 ///     target_id: Uuid::nil(),
 ///     chain_key: Some("other-chain".to_string()),
+///     valid_at: None,
+///     invalid_at: None,
 /// };
 /// assert_eq!(cross.chain_key.as_deref(), Some("other-chain"));
 /// ```
@@ -1526,31 +1527,71 @@ pub struct ThoughtRelation {
     /// layout stays consistent across schema versions.
     #[serde(default)]
     pub chain_key: Option<String>,
+    /// Timestamp when this relation became valid.
+    ///
+    /// When `None`, the relation is considered valid from the beginning of time
+    /// (i.e., always valid unless `invalid_at` is set).
+    /// When present, the relation only applies from this timestamp onward.
+    #[serde(default)]
+    pub valid_at: Option<DateTime<Utc>>,
+    /// Timestamp when this relation stopped being valid.
+    ///
+    /// When `None`, the relation is still currently valid.
+    /// When present, the relation was superseded or corrected at this timestamp.
+    /// Querying with `as_of` will exclude relations where `invalid_at` is
+    /// earlier than the query timestamp.
+    #[serde(default)]
+    pub invalid_at: Option<DateTime<Utc>>,
 }
 
 impl Serialize for ThoughtRelation {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
         if serializer.is_human_readable() {
-            // Human-readable formats (JSON, TOML, etc.): omit `chain_key` when
-            // `None` to keep output compact and backward compatible.
-            let field_count = if self.chain_key.is_some() { 3 } else { 2 };
+            let mut field_count = 2;
+            if self.chain_key.is_some() {
+                field_count += 1;
+            }
+            if self.valid_at.is_some() {
+                field_count += 1;
+            }
+            if self.invalid_at.is_some() {
+                field_count += 1;
+            }
             let mut s = serializer.serialize_struct("ThoughtRelation", field_count)?;
             s.serialize_field("kind", &self.kind)?;
             s.serialize_field("target_id", &self.target_id)?;
             if let Some(ref ck) = self.chain_key {
                 s.serialize_field("chain_key", ck)?;
             }
+            if let Some(ref va) = self.valid_at {
+                s.serialize_field("valid_at", va)?;
+            }
+            if let Some(ref ia) = self.invalid_at {
+                s.serialize_field("invalid_at", ia)?;
+            }
             s.end()
         } else {
-            // Binary formats (bincode, etc.): always write every field so that
-            // sequential decoding stays aligned regardless of the `chain_key`
-            // value.  A `None` is encoded as a single zero byte.
-            let mut s = serializer.serialize_struct("ThoughtRelation", 3)?;
+            let mut s = serializer.serialize_struct("ThoughtRelation", 5)?;
             s.serialize_field("kind", &self.kind)?;
             s.serialize_field("target_id", &self.target_id)?;
             s.serialize_field("chain_key", &self.chain_key)?;
+            s.serialize_field("valid_at", &self.valid_at)?;
+            s.serialize_field("invalid_at", &self.invalid_at)?;
             s.end()
+        }
+    }
+}
+
+impl ThoughtRelation {
+    /// Create a new intra-chain relation with no temporal bounds.
+    pub fn new(kind: ThoughtRelationKind, target_id: Uuid) -> Self {
+        Self {
+            kind,
+            target_id,
+            chain_key: None,
+            valid_at: None,
+            invalid_at: None,
         }
     }
 }
@@ -1794,6 +1835,8 @@ impl ThoughtInput {
             kind,
             target_id,
             chain_key: Some(chain_key.into()),
+            valid_at: None,
+            invalid_at: None,
         });
         self
     }
@@ -2286,6 +2329,15 @@ pub struct RankedSearchQuery {
     pub graph: Option<RankedSearchGraph>,
     /// Maximum number of ranked hits to return.
     pub limit: usize,
+    /// Optional point-in-time query: only consider relations and thoughts
+    /// that were valid at this timestamp.
+    ///
+    /// When set, thoughts appended after `as_of` are excluded, and relations
+    /// with `valid_at` after `as_of` or `invalid_at` before `as_of` are
+    /// treated as non-existent. Thoughts that are targets of Supersedes,
+    /// Corrects, or Invalidates relations from thoughts appended at or before
+    /// `as_of` are also excluded.
+    pub as_of: Option<DateTime<Utc>>,
 }
 
 impl RankedSearchQuery {
@@ -2317,6 +2369,12 @@ impl RankedSearchQuery {
         self.limit = limit.max(1);
         self
     }
+
+    /// Set a point-in-time query timestamp.
+    pub fn with_as_of(mut self, as_of: DateTime<Utc>) -> Self {
+        self.as_of = Some(as_of);
+        self
+    }
 }
 
 impl Default for RankedSearchQuery {
@@ -2326,6 +2384,7 @@ impl Default for RankedSearchQuery {
             text: None,
             graph: None,
             limit: 10,
+            as_of: None,
         }
     }
 }
@@ -2906,10 +2965,11 @@ pub struct ManagedVectorSidecarStatus {
 /// Legacy `ThoughtRelation` used when reading schema-v0 binary chains.
 ///
 /// Schema-v0 binary chains serialise relations as two-field records:
-/// `(kind, target_id)`.  The modern [`ThoughtRelation`] adds `chain_key` as a
-/// third field; reading old binary data with the three-field struct would
-/// misalign the sequential decoder.  Migration code converts these into
-/// canonical [`ThoughtRelation`] values with `chain_key: None`.
+/// `(kind, target_id)`.  The modern [`ThoughtRelation`] adds `chain_key`,
+/// `valid_at`, and `invalid_at`; reading old binary data with the modern
+/// struct would misalign the sequential decoder.  Migration code converts
+/// these into canonical [`ThoughtRelation`] values with all new fields as
+/// `None`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LegacyThoughtRelation {
     kind: ThoughtRelationKind,
@@ -2922,6 +2982,34 @@ impl From<LegacyThoughtRelation> for ThoughtRelation {
             kind: l.kind,
             target_id: l.target_id,
             chain_key: None,
+            valid_at: None,
+            invalid_at: None,
+        }
+    }
+}
+
+/// Legacy `ThoughtRelation` used when reading schema-v2 binary chains.
+///
+/// Schema-v2 binary chains serialise relations as three-field records:
+/// `(kind, target_id, chain_key)`.  The modern [`ThoughtRelation`] adds
+/// `valid_at` and `invalid_at`; reading schema-v2 binary data with the
+/// five-field struct would misalign the sequential decoder.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyThoughtRelationV2 {
+    kind: ThoughtRelationKind,
+    target_id: Uuid,
+    #[serde(default)]
+    chain_key: Option<String>,
+}
+
+impl From<LegacyThoughtRelationV2> for ThoughtRelation {
+    fn from(l: LegacyThoughtRelationV2) -> Self {
+        ThoughtRelation {
+            kind: l.kind,
+            target_id: l.target_id,
+            chain_key: l.chain_key,
+            valid_at: None,
+            invalid_at: None,
         }
     }
 }
@@ -2973,6 +3061,40 @@ struct LegacyThoughtV0 {
     hash: String,
 }
 
+/// Mirrors the `Thought` binary layout written by schema-V2 daemons.
+///
+/// Field order MUST match the struct that was `#[derive(Serialize)]`d at write
+/// time, because bincode encodes structs as positional sequences with no field
+/// names.  Differences from the current [`Thought`]:
+///
+/// - Uses [`LegacyThoughtRelationV2`] (3-field: kind, target_id, chain_key)
+///   instead of the modern 5-field [`ThoughtRelation`] so that the binary
+///   decoder stays aligned when reading schema-v2 chains.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyThoughtV1 {
+    schema_version: u32,
+    id: Uuid,
+    index: u64,
+    timestamp: DateTime<Utc>,
+    session_id: Option<Uuid>,
+    agent_id: String,
+    #[serde(default)]
+    signing_key_id: Option<String>,
+    #[serde(default)]
+    thought_signature: Option<Vec<u8>>,
+    thought_type: ThoughtType,
+    role: ThoughtRole,
+    content: String,
+    confidence: Option<f32>,
+    importance: f32,
+    tags: Vec<String>,
+    concepts: Vec<String>,
+    refs: Vec<u64>,
+    relations: Vec<LegacyThoughtRelationV2>,
+    prev_hash: String,
+    hash: String,
+}
+
 /// Append-only, hash-chained semantic memory store.
 pub struct MentisDb {
     thoughts: Vec<Thought>,
@@ -2988,6 +3110,11 @@ pub struct MentisDb {
     pending_agent_registry_updates: usize,
     pending_chain_registration_sync: bool,
     pending_chain_registration_updates: usize,
+    /// Set of thought IDs that have been superseded, corrected, or invalidated
+    /// by a later thought in the chain. Built once at chain open time from all
+    /// `Supersedes`, `Corrects`, and `Invalidates` relations. Used at query
+    /// time to filter out stale relations from superseded thoughts.
+    invalidated_thought_ids: HashSet<Uuid>,
 }
 
 impl MentisDb {
@@ -3084,7 +3211,24 @@ impl MentisDb {
             pending_agent_registry_updates: 0,
             pending_chain_registration_sync: false,
             pending_chain_registration_updates: 0,
+            invalidated_thought_ids: HashSet::new(),
         };
+
+        // Build the invalidated-thoughts index: any thought that is the target
+        // of a Supersedes, Corrects, or Invalidates relation is considered
+        // superseded and its outgoing relations are filtered at query time.
+        let invalidating_kinds = [
+            ThoughtRelationKind::Supersedes,
+            ThoughtRelationKind::Corrects,
+            ThoughtRelationKind::Invalidates,
+        ];
+        for thought in &chain.thoughts {
+            for relation in &thought.relations {
+                if invalidating_kinds.contains(&relation.kind) {
+                    chain.invalidated_thought_ids.insert(relation.target_id);
+                }
+            }
+        }
 
         if !chain.verify_integrity() {
             if chain.verify_integrity_legacy() {
@@ -3105,6 +3249,18 @@ impl MentisDb {
                     io::ErrorKind::InvalidData,
                     "Thought chain integrity verification failed",
                 ));
+            }
+        } else if chain
+            .thoughts
+            .first()
+            .is_some_and(|t| t.schema_version < MENTISDB_CURRENT_VERSION)
+        {
+            // Chain was migrated from an older schema (e.g., V2→V3) during
+            // load but hashes are already correct. Persist the upgraded chain
+            // so future opens use the native format directly.
+            if let Some(path) = chain.storage.storage_path() {
+                let kind = chain.storage.storage_kind();
+                persist_thoughts_to_path(path, kind, &chain.thoughts)?;
             }
         }
 
@@ -3244,13 +3400,22 @@ impl MentisDb {
         validate_refs(&self.thoughts, &input.refs)?;
 
         let mut relations = input.relations.clone();
+        let now = Utc::now();
         for &reference_index in &input.refs {
             if let Some(target) = self.thoughts.get(reference_index as usize) {
                 relations.push(ThoughtRelation {
                     kind: ThoughtRelationKind::References,
                     target_id: target.id,
                     chain_key: None,
+                    valid_at: Some(now),
+                    invalid_at: None,
                 });
+            }
+        }
+        // Set valid_at on any caller-supplied relations that don't already have one.
+        for relation in &mut relations {
+            if relation.valid_at.is_none() {
+                relation.valid_at = Some(now);
             }
         }
         dedupe_relations(&mut relations);
@@ -3322,6 +3487,20 @@ impl MentisDb {
             .insert(thought.hash.clone(), self.thoughts.len());
         self.query_indexes.observe(self.thoughts.len(), &thought);
         self.thoughts.push(thought.clone());
+
+        // Update the invalidated-thoughts index if this thought contains
+        // Supersedes, Corrects, or Invalidates relations.
+        let invalidating_kinds = [
+            ThoughtRelationKind::Supersedes,
+            ThoughtRelationKind::Corrects,
+            ThoughtRelationKind::Invalidates,
+        ];
+        for relation in &thought.relations {
+            if invalidating_kinds.contains(&relation.kind) {
+                self.invalidated_thought_ids.insert(relation.target_id);
+            }
+        }
+
         self.sync_managed_vector_sidecars_for_append(self.thoughts.last().unwrap())?;
         self.mark_agent_registry_dirty();
         self.maybe_flush_agent_registry(
@@ -4005,6 +4184,44 @@ impl MentisDb {
     /// metadata heuristics.
     pub fn query_ranked(&self, request: &RankedSearchQuery) -> RankedSearchResult<'_> {
         let candidates = self.query(&request.filter);
+
+        // Apply as_of temporal filter: exclude thoughts appended after the
+        // requested timestamp and thoughts whose outgoing relations were
+        // superseded by that time.
+        let candidates: Vec<&Thought> = if let Some(as_of) = request.as_of {
+            candidates
+                .into_iter()
+                .filter(|thought| {
+                    // Exclude thoughts appended after the as_of timestamp.
+                    if thought.timestamp > as_of {
+                        return false;
+                    }
+                    // Exclude thoughts that have been superseded, corrected, or
+                    // invalidated by another thought appended at or before as_of.
+                    if self.invalidated_thought_ids.contains(&thought.id) {
+                        // Check if the invalidating thought was appended at or before as_of.
+                        let is_invalidated = self.thoughts.iter().any(|t| {
+                            t.timestamp <= as_of
+                                && t.relations.iter().any(|r| {
+                                    r.target_id == thought.id
+                                        && matches!(
+                                            r.kind,
+                                            ThoughtRelationKind::Supersedes
+                                                | ThoughtRelationKind::Corrects
+                                                | ThoughtRelationKind::Invalidates
+                                        )
+                                })
+                        });
+                        if is_invalidated {
+                            return false;
+                        }
+                    }
+                    true
+                })
+                .collect()
+        } else {
+            candidates
+        };
         let ranked_text = request
             .text
             .as_deref()
@@ -6808,8 +7025,25 @@ fn migrate_legacy_chain_v0(
     discovered: &DiscoveredChainFile,
     target_storage_adapter: StorageAdapterKind,
 ) -> io::Result<MentisDbMigrationReport> {
-    let legacy_thoughts = load_legacy_v0_thoughts(&discovered.path, discovered.storage_kind)?;
-    let (thoughts, agent_registry) = migrate_legacy_thoughts(legacy_thoughts);
+    // Determine the source schema version by peeking at the first thought.
+    let from_version = if discovered.storage_kind == StorageAdapterKind::Jsonl {
+        // JSONL chains are always V0.
+        MENTISDB_SCHEMA_V0
+    } else {
+        match fs::File::open(&discovered.path) {
+            Ok(mut file) => peek_first_schema_version(&mut file).unwrap_or(MENTISDB_SCHEMA_V0),
+            Err(_) => MENTISDB_SCHEMA_V0,
+        }
+    };
+
+    // Load and migrate thoughts using the version-aware binary loader.
+    // For JSONL chains, go through the legacy V0 JSONL loader first.
+    let thoughts = if discovered.storage_kind == StorageAdapterKind::Jsonl {
+        let legacy_thoughts = load_legacy_v0_jsonl_thoughts(&discovered.path)?;
+        migrate_legacy_thoughts(legacy_thoughts).0
+    } else {
+        load_binary_thoughts(&discovered.path)?
+    };
     let active_path = chain_dir.join(chain_storage_filename(
         &discovered.chain_key,
         target_storage_adapter,
@@ -6827,6 +7061,17 @@ fn migrate_legacy_chain_v0(
         }
     }
 
+    // Rebuild agent registry from migrated thoughts.
+    let mut agent_registry = AgentRegistry::default();
+    for thought in &thoughts {
+        agent_registry.observe(
+            &thought.agent_id,
+            None,
+            None,
+            thought.index,
+            thought.timestamp,
+        );
+    }
     save_agent_registry(
         chain_dir,
         &discovered.chain_key,
@@ -6837,30 +7082,20 @@ fn migrate_legacy_chain_v0(
     let archived_legacy_path = archive_chain_file(
         chain_dir,
         &discovered.path,
-        MENTISDB_SCHEMA_V0,
+        from_version,
         MENTISDB_CURRENT_VERSION,
     )?;
     fs::rename(&temp_path, &active_path)?;
 
     Ok(MentisDbMigrationReport {
         chain_key: discovered.chain_key.clone(),
-        from_version: MENTISDB_SCHEMA_V0,
+        from_version,
         to_version: MENTISDB_CURRENT_VERSION,
         source_storage_adapter: discovered.storage_kind,
         storage_adapter: target_storage_adapter,
         thought_count: thoughts.len() as u64,
         archived_legacy_path: Some(archived_legacy_path),
     })
-}
-
-fn load_legacy_v0_thoughts(
-    file_path: &Path,
-    storage_kind: StorageAdapterKind,
-) -> io::Result<Vec<LegacyThoughtV0>> {
-    match storage_kind {
-        StorageAdapterKind::Jsonl => load_legacy_v0_jsonl_thoughts(file_path),
-        StorageAdapterKind::Binary => load_legacy_v0_binary_thoughts(file_path),
-    }
 }
 
 fn load_legacy_v0_jsonl_thoughts(file_path: &Path) -> io::Result<Vec<LegacyThoughtV0>> {
@@ -6928,14 +7163,6 @@ where
     Ok(thoughts)
 }
 
-fn load_legacy_v0_binary_thoughts(file_path: &Path) -> io::Result<Vec<LegacyThoughtV0>> {
-    if !file_path.exists() {
-        return Ok(Vec::new());
-    }
-    let mut file = fs::File::open(file_path)?;
-    read_length_prefixed_thoughts(&mut file)
-}
-
 fn migrate_legacy_thoughts(legacy_thoughts: Vec<LegacyThoughtV0>) -> (Vec<Thought>, AgentRegistry) {
     let mut migrated = Vec::with_capacity(legacy_thoughts.len());
     let mut agent_registry = AgentRegistry::default();
@@ -6975,6 +7202,52 @@ fn migrate_legacy_thoughts(legacy_thoughts: Vec<LegacyThoughtV0>) -> (Vec<Though
     }
 
     (migrated, agent_registry)
+}
+
+/// Migrate schema-V2 thoughts (3-field `LegacyThoughtRelationV2`) to the
+/// current schema (5-field `ThoughtRelation` with `valid_at` / `invalid_at`).
+///
+/// Unlike `migrate_legacy_thoughts` which also rebuilds the agent registry,
+/// this function only converts the thought data. The caller is responsible for
+/// persisting the migrated chain (typically via `persist_thoughts_to_path`)
+/// so that future opens use the V3 layout directly.
+fn migrate_v2_thoughts(v2_thoughts: Vec<LegacyThoughtV1>) -> Vec<Thought> {
+    let mut migrated = Vec::with_capacity(v2_thoughts.len());
+    let mut prev_hash = String::new();
+
+    for legacy in v2_thoughts {
+        let thought = Thought {
+            schema_version: MENTISDB_CURRENT_VERSION,
+            id: legacy.id,
+            index: legacy.index,
+            timestamp: legacy.timestamp,
+            session_id: legacy.session_id,
+            agent_id: legacy.agent_id,
+            signing_key_id: legacy.signing_key_id,
+            thought_signature: legacy.thought_signature,
+            thought_type: legacy.thought_type,
+            role: legacy.role,
+            content: legacy.content,
+            confidence: legacy.confidence,
+            importance: legacy.importance,
+            tags: legacy.tags,
+            concepts: legacy.concepts,
+            refs: legacy.refs,
+            relations: legacy
+                .relations
+                .into_iter()
+                .map(ThoughtRelation::from)
+                .collect(),
+            prev_hash: prev_hash.clone(),
+            hash: String::new(),
+        };
+        let hash = compute_thought_hash(&thought);
+        let thought = Thought { hash, ..thought };
+        prev_hash = thought.hash.clone();
+        migrated.push(thought);
+    }
+
+    migrated
 }
 
 // ---------------------------------------------------------------------------
@@ -7335,7 +7608,90 @@ fn load_binary_thoughts(file_path: &Path) -> io::Result<Vec<Thought>> {
         return Ok(Vec::new());
     }
     let mut file = fs::File::open(file_path)?;
-    read_length_prefixed_thoughts(&mut file)
+
+    // Fast path: try loading with the current schema. If the chain was written
+    // by the same or a newer version of mentisdb, this succeeds immediately.
+    // IMPORTANT: older chains with empty relations may accidentally deserialize
+    // with the current Thought struct (bincode reads 0 items for Vec, ignoring
+    // the element layout). We must check schema_version to detect this.
+    if let Ok(thoughts) = read_length_prefixed_thoughts::<Thought>(&mut file) {
+        let is_current = thoughts
+            .first()
+            .is_some_and(|t| t.schema_version == MENTISDB_CURRENT_VERSION);
+        if is_current {
+            return Ok(thoughts);
+        }
+    }
+
+    // Current schema failed — the chain was written with an older schema.
+    // Peek at the schema_version field of the first thought to determine the
+    // migration path. The schema_version is always the first u32 in the
+    // bincode payload, after the 8-byte length prefix.
+    file.rewind()?;
+    let schema_version = peek_first_schema_version(&mut file)?;
+    file.rewind()?;
+
+    match schema_version {
+        0 | 1 => {
+            let v0_thoughts = read_length_prefixed_thoughts::<LegacyThoughtV0>(&mut file)?;
+            Ok(migrate_legacy_thoughts(v0_thoughts).0)
+        }
+        2 => {
+            let v2_thoughts = read_length_prefixed_thoughts::<LegacyThoughtV1>(&mut file)?;
+            Ok(migrate_v2_thoughts(v2_thoughts))
+        }
+        v => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Unknown schema version {v}; this version of mentisdb supports up to schema {MENTISDB_CURRENT_VERSION}. \
+                 Please upgrade mentisdb to open this chain."
+            ),
+        )),
+    }
+}
+
+/// Peek at the `schema_version` field of the first thought in a binary chain
+/// file without fully deserializing the entire chain.
+///
+/// The bincode layout for each thought is: `[u64 LE length][payload]`.
+/// The first field of the payload is `schema_version: u32`, which bincode
+/// encodes as a variable-length integer. For small values (0–127) this is a
+/// single byte; for values 128–16383 it's two bytes. We read enough of the
+/// payload to cover both cases and decode the varint.
+fn peek_first_schema_version(reader: &mut impl Read) -> io::Result<u32> {
+    let mut length_bytes = [0u8; 8];
+    match reader.read_exact(&mut length_bytes) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+            return Ok(0);
+        }
+        Err(e) => return Err(e),
+    }
+    let length_u64 = u64::from_le_bytes(length_bytes);
+    if length_u64 > MAX_THOUGHT_PAYLOAD_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("binary thought payload length {length_u64} exceeds maximum {MAX_THOUGHT_PAYLOAD_BYTES}"),
+        ));
+    }
+
+    // Bincode encodes u32 as a varint. Read up to 5 bytes (max varint size for u32)
+    // but only consume what we need. We'll read the full payload length to avoid
+    // corrupting the stream position, then rewind.
+    let payload_len = length_u64 as usize;
+    let mut payload = vec![0u8; payload_len];
+    reader.read_exact(&mut payload)?;
+
+    // Decode the varint schema_version from the start of the payload.
+    let (schema_version, _bytes_read): (u32, usize) =
+        bincode::decode_from_slice(&payload, bincode::config::standard()).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to decode schema version from first thought: {e}"),
+            )
+        })?;
+
+    Ok(schema_version)
 }
 
 fn persist_binary_thought(file_path: &Path, thought: &Thought) -> io::Result<()> {

@@ -184,6 +184,8 @@ fn ranked_search_graph_paths_expose_relation_kind_provenance_for_future_weightin
                 kind: ThoughtRelationKind::DerivedFrom,
                 target_id: seed.id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();
@@ -199,6 +201,8 @@ fn ranked_search_graph_paths_expose_relation_kind_provenance_for_future_weightin
                 kind: ThoughtRelationKind::RelatedTo,
                 target_id: seed.id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();
@@ -297,11 +301,15 @@ fn ranked_search_graph_multi_seed_shared_context_is_deduped_with_stable_seed_pat
                     kind: ThoughtRelationKind::DerivedFrom,
                     target_id: seed_a.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 },
                 ThoughtRelation {
                     kind: ThoughtRelationKind::DerivedFrom,
                     target_id: seed_b.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 },
             ]),
         )
@@ -364,6 +372,8 @@ fn ranked_search_graph_results_support_seed_grouped_context_bundles() {
                 kind: ThoughtRelationKind::DerivedFrom,
                 target_id: seed.id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();

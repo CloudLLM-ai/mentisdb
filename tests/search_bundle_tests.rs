@@ -44,6 +44,8 @@ fn bundles_group_support_by_seed_and_keep_deterministic_order() {
                     kind: ThoughtRelationKind::DerivedFrom,
                     target_id: seed_a.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 }],
             ),
         )
@@ -57,6 +59,8 @@ fn bundles_group_support_by_seed_and_keep_deterministic_order() {
                     kind: ThoughtRelationKind::ContinuesFrom,
                     target_id: a_depth_1.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 },
             ]),
         )
@@ -69,6 +73,8 @@ fn bundles_group_support_by_seed_and_keep_deterministic_order() {
                     kind: ThoughtRelationKind::DerivedFrom,
                     target_id: seed_b.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 },
             ]),
         )
@@ -141,6 +147,8 @@ fn bundles_optionally_include_seed_hits() {
                     kind: ThoughtRelationKind::DerivedFrom,
                     target_id: seed.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 },
             ]),
         )
@@ -201,6 +209,8 @@ fn bundles_collapse_duplicate_hits_per_seed_and_track_path_count() {
                 kind: ThoughtRelationKind::DerivedFrom,
                 target_id: seed.id,
                 chain_key: None,
+                valid_at: None,
+                invalid_at: None,
             }]),
         )
         .unwrap();
@@ -263,11 +273,15 @@ fn query_context_bundles_groups_supporting_context_by_lexical_seed() {
                         kind: ThoughtRelationKind::DerivedFrom,
                         target_id: seed_a.id,
                         chain_key: None,
+                        valid_at: None,
+                        invalid_at: None,
                     },
                     ThoughtRelation {
                         kind: ThoughtRelationKind::DerivedFrom,
                         target_id: seed_b.id,
                         chain_key: None,
+                        valid_at: None,
+                        invalid_at: None,
                     },
                 ]),
         )
@@ -281,6 +295,8 @@ fn query_context_bundles_groups_supporting_context_by_lexical_seed() {
                     kind: ThoughtRelationKind::ContinuesFrom,
                     target_id: seed_a.id,
                     chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
                 }]),
         )
         .unwrap();
