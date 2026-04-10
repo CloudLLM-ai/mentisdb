@@ -2311,6 +2311,7 @@ impl MentisDbService {
                     importance: hit.score.importance,
                     confidence: hit.score.confidence,
                     recency: hit.score.recency,
+                    session_cohesion: hit.score.session_cohesion,
                     total: hit.score.total,
                 },
                 matched_terms: hit.matched_terms,
@@ -3731,6 +3732,7 @@ struct RankedSearchScoreResponse {
     importance: f32,
     confidence: f32,
     recency: f32,
+    session_cohesion: f32,
     total: f32,
 }
 
