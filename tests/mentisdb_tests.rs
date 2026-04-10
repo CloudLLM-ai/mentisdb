@@ -50,6 +50,189 @@ struct LegacyTestRelation {
     target_id: Uuid,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyV2ThoughtRelation {
+    kind: ThoughtRelationKind,
+    target_id: Uuid,
+    #[serde(default)]
+    chain_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyV2ThoughtRecord {
+    #[serde(default = "default_schema_v2")]
+    schema_version: u32,
+    id: Uuid,
+    index: u64,
+    timestamp: chrono::DateTime<chrono::Utc>,
+    session_id: Option<Uuid>,
+    agent_id: String,
+    #[serde(default)]
+    signing_key_id: Option<String>,
+    #[serde(default)]
+    thought_signature: Option<Vec<u8>>,
+    thought_type: ThoughtType,
+    role: ThoughtRole,
+    content: String,
+    confidence: Option<f32>,
+    importance: f32,
+    tags: Vec<String>,
+    concepts: Vec<String>,
+    refs: Vec<u64>,
+    relations: Vec<LegacyV2ThoughtRelation>,
+    prev_hash: String,
+    hash: String,
+}
+
+fn default_schema_v2() -> u32 {
+    2
+}
+
+fn write_mixed_v1_v2_binary_chain(dir: &PathBuf, chain_key: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join(chain_storage_filename(
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+    let first_id = Uuid::new_v4();
+    let v1_thought = LegacyThoughtV0Record {
+        schema_version: 1,
+        id: first_id,
+        index: 0,
+        timestamp: chrono::Utc::now(),
+        session_id: None,
+        agent_id: "v1-agent".to_string(),
+        signing_key_id: None,
+        thought_signature: None,
+        thought_type: ThoughtType::Insight,
+        role: ThoughtRole::Memory,
+        content: "V1 thought with empty relations".to_string(),
+        confidence: Some(0.9),
+        importance: 0.85,
+        tags: vec!["v1".to_string()],
+        concepts: vec!["migration".to_string()],
+        refs: vec![],
+        relations: vec![],
+        prev_hash: String::new(),
+        hash: "v1-hash-0".to_string(),
+    };
+    let second_id = Uuid::new_v4();
+    let target_id = Uuid::new_v4();
+    let v2_thought = LegacyV2ThoughtRecord {
+        schema_version: 2,
+        id: second_id,
+        index: 1,
+        timestamp: chrono::Utc::now(),
+        session_id: None,
+        agent_id: "v2-agent".to_string(),
+        signing_key_id: None,
+        thought_signature: None,
+        thought_type: ThoughtType::Decision,
+        role: ThoughtRole::Memory,
+        content: "V2 thought with relations".to_string(),
+        confidence: Some(0.7),
+        importance: 0.6,
+        tags: vec!["v2".to_string()],
+        concepts: vec!["migration".to_string()],
+        refs: vec![0],
+        relations: vec![
+            LegacyV2ThoughtRelation {
+                kind: ThoughtRelationKind::Supports,
+                target_id: first_id,
+                chain_key: None,
+            },
+            LegacyV2ThoughtRelation {
+                kind: ThoughtRelationKind::References,
+                target_id,
+                chain_key: Some("other-chain".to_string()),
+            },
+        ],
+        prev_hash: "v1-hash-0".to_string(),
+        hash: "v2-hash-1".to_string(),
+    };
+    let mut bytes = Vec::new();
+    let v1_payload =
+        bincode::serde::encode_to_vec(&v1_thought, bincode::config::standard()).unwrap();
+    bytes.extend_from_slice(&(v1_payload.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&v1_payload);
+    let v2_payload =
+        bincode::serde::encode_to_vec(&v2_thought, bincode::config::standard()).unwrap();
+    bytes.extend_from_slice(&(v2_payload.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&v2_payload);
+    std::fs::write(&path, bytes).unwrap();
+}
+
+fn write_legacy_v2_binary_chain(dir: &PathBuf, chain_key: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join(chain_storage_filename(
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+    let first_id = Uuid::new_v4();
+    let first = LegacyV2ThoughtRecord {
+        schema_version: 2,
+        id: first_id,
+        index: 0,
+        timestamp: chrono::Utc::now(),
+        session_id: None,
+        agent_id: "v2-agent".to_string(),
+        signing_key_id: None,
+        thought_signature: None,
+        thought_type: ThoughtType::Insight,
+        role: ThoughtRole::Memory,
+        content: "V2 thought with relations".to_string(),
+        confidence: Some(0.9),
+        importance: 0.85,
+        tags: vec!["v2".to_string()],
+        concepts: vec!["migration".to_string()],
+        refs: vec![],
+        relations: vec![],
+        prev_hash: String::new(),
+        hash: "v2-hash-0".to_string(),
+    };
+    let second_id = Uuid::new_v4();
+    let target_id = Uuid::new_v4();
+    let second = LegacyV2ThoughtRecord {
+        schema_version: 2,
+        id: second_id,
+        index: 1,
+        timestamp: chrono::Utc::now(),
+        session_id: None,
+        agent_id: "v2-agent".to_string(),
+        signing_key_id: None,
+        thought_signature: None,
+        thought_type: ThoughtType::Decision,
+        role: ThoughtRole::Memory,
+        content: "V2 thought that references the first".to_string(),
+        confidence: Some(0.7),
+        importance: 0.6,
+        tags: vec!["v2".to_string(), "decision".to_string()],
+        concepts: vec!["migration".to_string(), "cross-chain".to_string()],
+        refs: vec![0],
+        relations: vec![
+            LegacyV2ThoughtRelation {
+                kind: ThoughtRelationKind::Supports,
+                target_id: first_id,
+                chain_key: None,
+            },
+            LegacyV2ThoughtRelation {
+                kind: ThoughtRelationKind::References,
+                target_id,
+                chain_key: Some("other-chain".to_string()),
+            },
+        ],
+        prev_hash: "v2-hash-0".to_string(),
+        hash: "v2-hash-1".to_string(),
+    };
+    let mut bytes = Vec::new();
+    for thought in [&first, &second] {
+        let payload = bincode::serde::encode_to_vec(thought, bincode::config::standard()).unwrap();
+        bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+    }
+    std::fs::write(&path, bytes).unwrap();
+}
+
 fn unique_chain_dir() -> PathBuf {
     let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!("thoughtchain_test_{}_{}", std::process::id(), n));
@@ -1725,6 +1908,74 @@ fn migrate_v0_binary_chain_to_latest() {
 }
 
 #[test]
+fn migrate_v2_binary_chain_to_latest() {
+    let dir = unique_chain_dir();
+    let chain_key = "legacy-v2";
+    write_legacy_v2_binary_chain(&dir, chain_key);
+
+    let chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(chain.thoughts().len(), 2);
+    assert_eq!(chain.thoughts()[0].schema_version, MENTISDB_CURRENT_VERSION);
+    assert_eq!(chain.thoughts()[1].schema_version, MENTISDB_CURRENT_VERSION);
+    assert_eq!(chain.thoughts()[0].thought_type, ThoughtType::Insight);
+    assert_eq!(chain.thoughts()[1].thought_type, ThoughtType::Decision);
+    assert_eq!(chain.thoughts()[0].content, "V2 thought with relations");
+    assert_eq!(
+        chain.thoughts()[1].content,
+        "V2 thought that references the first"
+    );
+    assert!(chain.thoughts()[0].relations.is_empty());
+    assert_eq!(chain.thoughts()[1].relations.len(), 2);
+    assert_eq!(
+        chain.thoughts()[1].relations[0].kind,
+        ThoughtRelationKind::Supports
+    );
+    assert!(chain.thoughts()[1].relations[0].chain_key.is_none());
+    assert!(chain.thoughts()[1].relations[0].valid_at.is_none());
+    assert!(chain.thoughts()[1].relations[0].invalid_at.is_none());
+    assert_eq!(
+        chain.thoughts()[1].relations[1].kind,
+        ThoughtRelationKind::References
+    );
+    assert_eq!(
+        chain.thoughts()[1].relations[1].chain_key,
+        Some("other-chain".to_string())
+    );
+    assert!(chain.thoughts()[1].relations[1].valid_at.is_none());
+    assert!(chain.thoughts()[1].relations[1].invalid_at.is_none());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn migrate_mixed_v1_v2_binary_chain_to_latest() {
+    let dir = unique_chain_dir();
+    let chain_key = "mixed-v1-v2";
+    write_mixed_v1_v2_binary_chain(&dir, chain_key);
+
+    let chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(chain.thoughts().len(), 2);
+    assert_eq!(chain.thoughts()[0].schema_version, MENTISDB_CURRENT_VERSION);
+    assert_eq!(chain.thoughts()[1].schema_version, MENTISDB_CURRENT_VERSION);
+    assert!(chain.thoughts()[0].relations.is_empty());
+    assert_eq!(chain.thoughts()[1].relations.len(), 2);
+    assert_eq!(
+        chain.thoughts()[1].relations[0].kind,
+        ThoughtRelationKind::Supports
+    );
+    assert_eq!(
+        chain.thoughts()[1].relations[1].kind,
+        ThoughtRelationKind::References
+    );
+    assert_eq!(
+        chain.thoughts()[1].relations[1].chain_key,
+        Some("other-chain".to_string())
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn migrate_v0_chains_with_explicit_binary_adapter() {
     let dir = unique_chain_dir();
     let chain_key = "legacy-binary-explicit";
@@ -2578,4 +2829,582 @@ fn scope_from_tag_roundtrip() {
         Some(MemoryScope::Agent)
     );
     assert_eq!(MemoryScope::from_tag("other"), None);
+}
+
+fn all_relation_kinds() -> Vec<ThoughtRelationKind> {
+    vec![
+        ThoughtRelationKind::References,
+        ThoughtRelationKind::Summarizes,
+        ThoughtRelationKind::Corrects,
+        ThoughtRelationKind::Invalidates,
+        ThoughtRelationKind::CausedBy,
+        ThoughtRelationKind::Supports,
+        ThoughtRelationKind::Contradicts,
+        ThoughtRelationKind::DerivedFrom,
+        ThoughtRelationKind::ContinuesFrom,
+        ThoughtRelationKind::RelatedTo,
+        ThoughtRelationKind::Supersedes,
+    ]
+}
+
+fn all_thought_types() -> Vec<ThoughtType> {
+    vec![
+        ThoughtType::PreferenceUpdate,
+        ThoughtType::UserTrait,
+        ThoughtType::RelationshipUpdate,
+        ThoughtType::Finding,
+        ThoughtType::Insight,
+        ThoughtType::FactLearned,
+        ThoughtType::PatternDetected,
+        ThoughtType::Hypothesis,
+        ThoughtType::Mistake,
+        ThoughtType::Correction,
+        ThoughtType::LessonLearned,
+        ThoughtType::AssumptionInvalidated,
+        ThoughtType::Constraint,
+        ThoughtType::Plan,
+        ThoughtType::Subgoal,
+        ThoughtType::Decision,
+        ThoughtType::StrategyShift,
+        ThoughtType::Wonder,
+        ThoughtType::Question,
+        ThoughtType::Idea,
+        ThoughtType::Experiment,
+        ThoughtType::ActionTaken,
+        ThoughtType::TaskComplete,
+        ThoughtType::Checkpoint,
+        ThoughtType::StateSnapshot,
+        ThoughtType::Handoff,
+        ThoughtType::Summary,
+        ThoughtType::Surprise,
+        ThoughtType::Reframe,
+        ThoughtType::Goal,
+    ]
+}
+
+fn all_thought_roles() -> Vec<ThoughtRole> {
+    vec![
+        ThoughtRole::Memory,
+        ThoughtRole::WorkingMemory,
+        ThoughtRole::Summary,
+        ThoughtRole::Compression,
+        ThoughtRole::Checkpoint,
+        ThoughtRole::Handoff,
+        ThoughtRole::Audit,
+        ThoughtRole::Retrospective,
+    ]
+}
+
+#[test]
+fn migrate_v2_chain_with_all_relation_kinds() {
+    let dir = unique_chain_dir();
+    let chain_key = "v2-all-relation-kinds";
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(chain_storage_filename(
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+
+    let first_id = Uuid::new_v4();
+    let first = LegacyV2ThoughtRecord {
+        schema_version: 2,
+        id: first_id,
+        index: 0,
+        timestamp: chrono::Utc::now(),
+        session_id: None,
+        agent_id: "v2-rel-agent".to_string(),
+        signing_key_id: None,
+        thought_signature: None,
+        thought_type: ThoughtType::Insight,
+        role: ThoughtRole::Memory,
+        content: "V2 anchor thought".to_string(),
+        confidence: Some(0.9),
+        importance: 0.85,
+        tags: vec!["v2".to_string()],
+        concepts: vec!["relations".to_string()],
+        refs: vec![],
+        relations: vec![],
+        prev_hash: String::new(),
+        hash: "v2-rel-hash-0".to_string(),
+    };
+
+    let kinds = all_relation_kinds();
+    let second_id = Uuid::new_v4();
+    let intra_relations: Vec<LegacyV2ThoughtRelation> = kinds
+        .iter()
+        .enumerate()
+        .map(|(i, kind)| LegacyV2ThoughtRelation {
+            kind: *kind,
+            target_id: first_id,
+            chain_key: if i % 2 == 0 {
+                None
+            } else {
+                Some(format!("cross-chain-{}", i))
+            },
+        })
+        .collect();
+    let second = LegacyV2ThoughtRecord {
+        schema_version: 2,
+        id: second_id,
+        index: 1,
+        timestamp: chrono::Utc::now(),
+        session_id: None,
+        agent_id: "v2-rel-agent".to_string(),
+        signing_key_id: None,
+        thought_signature: None,
+        thought_type: ThoughtType::Decision,
+        role: ThoughtRole::Memory,
+        content: "V2 thought with all relation kinds".to_string(),
+        confidence: Some(0.7),
+        importance: 0.6,
+        tags: vec!["v2".to_string(), "all-kinds".to_string()],
+        concepts: vec!["relations".to_string()],
+        refs: vec![0],
+        relations: intra_relations,
+        prev_hash: "v2-rel-hash-0".to_string(),
+        hash: "v2-rel-hash-1".to_string(),
+    };
+
+    let mut bytes = Vec::new();
+    for thought in [&first, &second] {
+        let payload = bincode::serde::encode_to_vec(thought, bincode::config::standard()).unwrap();
+        bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+    }
+    std::fs::write(&path, bytes).unwrap();
+
+    let chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(chain.thoughts().len(), 2);
+    assert_eq!(chain.thoughts()[0].schema_version, MENTISDB_CURRENT_VERSION);
+    assert_eq!(chain.thoughts()[1].schema_version, MENTISDB_CURRENT_VERSION);
+    assert!(chain.thoughts()[0].relations.is_empty());
+    assert_eq!(chain.thoughts()[1].relations.len(), kinds.len());
+
+    for (i, expected_kind) in kinds.iter().enumerate() {
+        let rel = &chain.thoughts()[1].relations[i];
+        assert_eq!(rel.kind, *expected_kind);
+        assert_eq!(rel.target_id, first_id);
+        if i % 2 == 0 {
+            assert!(rel.chain_key.is_none());
+        } else {
+            assert_eq!(rel.chain_key, Some(format!("cross-chain-{}", i)));
+        }
+        assert!(rel.valid_at.is_none());
+        assert!(rel.invalid_at.is_none());
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn migrate_v1_chain_with_all_thought_types() {
+    let dir = unique_chain_dir();
+    let chain_key = "v1-all-thought-types";
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(chain_storage_filename(
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+
+    let types = all_thought_types();
+    let mut bytes = Vec::new();
+    for (i, thought_type) in types.iter().enumerate() {
+        let record = LegacyThoughtV0Record {
+            schema_version: 1,
+            id: Uuid::new_v4(),
+            index: i as u64,
+            timestamp: chrono::Utc::now(),
+            session_id: None,
+            agent_id: "v1-type-agent".to_string(),
+            signing_key_id: None,
+            thought_signature: None,
+            thought_type: *thought_type,
+            role: ThoughtRole::Memory,
+            content: format!("V1 thought type {:?}", thought_type),
+            confidence: Some(0.8),
+            importance: 0.7,
+            tags: vec![format!("type-{}", i)],
+            concepts: vec!["thought-types".to_string()],
+            refs: vec![],
+            relations: vec![],
+            prev_hash: String::new(),
+            hash: format!("v1-type-hash-{}", i),
+        };
+        let payload = bincode::serde::encode_to_vec(&record, bincode::config::standard()).unwrap();
+        bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+    }
+    std::fs::write(&path, bytes).unwrap();
+
+    let chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(chain.thoughts().len(), types.len());
+    for (i, expected_type) in types.iter().enumerate() {
+        let thought = &chain.thoughts()[i];
+        assert_eq!(thought.schema_version, MENTISDB_CURRENT_VERSION);
+        assert_eq!(thought.thought_type, *expected_type);
+        assert_eq!(
+            thought.content,
+            format!("V1 thought type {:?}", expected_type)
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn migrate_v2_chain_with_all_thought_roles() {
+    let dir = unique_chain_dir();
+    let chain_key = "v2-all-thought-roles";
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(chain_storage_filename(
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+
+    let roles = all_thought_roles();
+    let mut bytes = Vec::new();
+    for (i, role) in roles.iter().enumerate() {
+        let record = LegacyV2ThoughtRecord {
+            schema_version: 2,
+            id: Uuid::new_v4(),
+            index: i as u64,
+            timestamp: chrono::Utc::now(),
+            session_id: None,
+            agent_id: "v2-role-agent".to_string(),
+            signing_key_id: None,
+            thought_signature: None,
+            thought_type: ThoughtType::Insight,
+            role: *role,
+            content: format!("V2 thought role {:?}", role),
+            confidence: Some(0.8),
+            importance: 0.7,
+            tags: vec![format!("role-{}", i)],
+            concepts: vec!["thought-roles".to_string()],
+            refs: vec![],
+            relations: vec![],
+            prev_hash: String::new(),
+            hash: format!("v2-role-hash-{}", i),
+        };
+        let payload = bincode::serde::encode_to_vec(&record, bincode::config::standard()).unwrap();
+        bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+    }
+    std::fs::write(&path, bytes).unwrap();
+
+    let chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(chain.thoughts().len(), roles.len());
+    for (i, expected_role) in roles.iter().enumerate() {
+        let thought = &chain.thoughts()[i];
+        assert_eq!(thought.schema_version, MENTISDB_CURRENT_VERSION);
+        assert_eq!(thought.role, *expected_role);
+        assert_eq!(
+            thought.content,
+            format!("V2 thought role {:?}", expected_role)
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn migrate_mixed_chain_with_v1_v2_v3_thoughts() {
+    let dir = unique_chain_dir();
+    let chain_key = "mixed-v1-v2-v3";
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(chain_storage_filename(
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+
+    let v1_id = Uuid::new_v4();
+    let v1_thought = LegacyThoughtV0Record {
+        schema_version: 1,
+        id: v1_id,
+        index: 0,
+        timestamp: chrono::Utc::now(),
+        session_id: None,
+        agent_id: "mixed-v1-agent".to_string(),
+        signing_key_id: None,
+        thought_signature: None,
+        thought_type: ThoughtType::Insight,
+        role: ThoughtRole::Memory,
+        content: "V1 thought in mixed chain".to_string(),
+        confidence: Some(0.9),
+        importance: 0.85,
+        tags: vec!["v1".to_string()],
+        concepts: vec!["mixed".to_string()],
+        refs: vec![],
+        relations: vec![],
+        prev_hash: String::new(),
+        hash: "mixed-v1-hash-0".to_string(),
+    };
+
+    let v2_id = Uuid::new_v4();
+    let v2_thought = LegacyV2ThoughtRecord {
+        schema_version: 2,
+        id: v2_id,
+        index: 1,
+        timestamp: chrono::Utc::now(),
+        session_id: None,
+        agent_id: "mixed-v2-agent".to_string(),
+        signing_key_id: None,
+        thought_signature: None,
+        thought_type: ThoughtType::Decision,
+        role: ThoughtRole::Memory,
+        content: "V2 thought in mixed chain".to_string(),
+        confidence: Some(0.7),
+        importance: 0.6,
+        tags: vec!["v2".to_string()],
+        concepts: vec!["mixed".to_string()],
+        refs: vec![0],
+        relations: vec![LegacyV2ThoughtRelation {
+            kind: ThoughtRelationKind::Supports,
+            target_id: v1_id,
+            chain_key: None,
+        }],
+        prev_hash: "mixed-v1-hash-0".to_string(),
+        hash: "mixed-v2-hash-1".to_string(),
+    };
+
+    let mut bytes = Vec::new();
+    let v1_payload =
+        bincode::serde::encode_to_vec(&v1_thought, bincode::config::standard()).unwrap();
+    bytes.extend_from_slice(&(v1_payload.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&v1_payload);
+    let v2_payload =
+        bincode::serde::encode_to_vec(&v2_thought, bincode::config::standard()).unwrap();
+    bytes.extend_from_slice(&(v2_payload.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&v2_payload);
+    std::fs::write(&path, &bytes).unwrap();
+
+    let mut chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(chain.thoughts().len(), 2);
+    assert_eq!(chain.thoughts()[0].schema_version, MENTISDB_CURRENT_VERSION);
+    assert_eq!(chain.thoughts()[1].schema_version, MENTISDB_CURRENT_VERSION);
+
+    let v3_thought = chain
+        .append(
+            "mixed-v3-agent",
+            ThoughtType::FactLearned,
+            "V3 thought already at current version",
+        )
+        .unwrap();
+    assert_eq!(v3_thought.schema_version, MENTISDB_CURRENT_VERSION);
+
+    drop(chain);
+
+    let chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(chain.thoughts().len(), 3);
+    for thought in chain.thoughts() {
+        assert_eq!(thought.schema_version, MENTISDB_CURRENT_VERSION);
+    }
+    assert_eq!(chain.thoughts()[0].content, "V1 thought in mixed chain");
+    assert_eq!(chain.thoughts()[1].content, "V2 thought in mixed chain");
+    assert_eq!(
+        chain.thoughts()[2].content,
+        "V3 thought already at current version"
+    );
+    assert_eq!(chain.thoughts()[1].relations.len(), 1);
+    assert_eq!(
+        chain.thoughts()[1].relations[0].kind,
+        ThoughtRelationKind::Supports
+    );
+    assert!(chain.thoughts()[1].relations[0].valid_at.is_none());
+    assert!(chain.thoughts()[1].relations[0].invalid_at.is_none());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn migrate_v2_chain_with_signed_thought() {
+    let dir = unique_chain_dir();
+    let chain_key = "v2-signed-thought";
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(chain_storage_filename(
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+
+    let signed_id = Uuid::new_v4();
+    let signed = LegacyV2ThoughtRecord {
+        schema_version: 2,
+        id: signed_id,
+        index: 0,
+        timestamp: chrono::Utc::now(),
+        session_id: None,
+        agent_id: "v2-signed-agent".to_string(),
+        signing_key_id: Some("key-ed25519-001".to_string()),
+        thought_signature: Some(vec![1, 2, 3]),
+        thought_type: ThoughtType::Decision,
+        role: ThoughtRole::Memory,
+        content: "V2 signed thought".to_string(),
+        confidence: Some(0.95),
+        importance: 0.9,
+        tags: vec!["signed".to_string()],
+        concepts: vec!["signing".to_string()],
+        refs: vec![],
+        relations: vec![],
+        prev_hash: String::new(),
+        hash: "v2-signed-hash-0".to_string(),
+    };
+
+    let unsigned_id = Uuid::new_v4();
+    let unsigned = LegacyV2ThoughtRecord {
+        schema_version: 2,
+        id: unsigned_id,
+        index: 1,
+        timestamp: chrono::Utc::now(),
+        session_id: None,
+        agent_id: "v2-signed-agent".to_string(),
+        signing_key_id: None,
+        thought_signature: None,
+        thought_type: ThoughtType::Insight,
+        role: ThoughtRole::Memory,
+        content: "V2 unsigned thought".to_string(),
+        confidence: Some(0.7),
+        importance: 0.6,
+        tags: vec!["unsigned".to_string()],
+        concepts: vec!["signing".to_string()],
+        refs: vec![0],
+        relations: vec![],
+        prev_hash: "v2-signed-hash-0".to_string(),
+        hash: "v2-signed-hash-1".to_string(),
+    };
+
+    let mut bytes = Vec::new();
+    for thought in [&signed, &unsigned] {
+        let payload = bincode::serde::encode_to_vec(thought, bincode::config::standard()).unwrap();
+        bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+    }
+    std::fs::write(&path, bytes).unwrap();
+
+    let chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(chain.thoughts().len(), 2);
+    assert_eq!(chain.thoughts()[0].schema_version, MENTISDB_CURRENT_VERSION);
+    assert_eq!(chain.thoughts()[1].schema_version, MENTISDB_CURRENT_VERSION);
+    assert_eq!(
+        chain.thoughts()[0].signing_key_id,
+        Some("key-ed25519-001".to_string())
+    );
+    assert_eq!(chain.thoughts()[0].thought_signature, Some(vec![1, 2, 3]));
+    assert!(chain.thoughts()[1].signing_key_id.is_none());
+    assert!(chain.thoughts()[1].thought_signature.is_none());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn migrate_v1_chain_with_relations() {
+    let dir = unique_chain_dir();
+    let chain_key = "v1-with-relations";
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(chain_storage_filename(
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+
+    let first_id = Uuid::new_v4();
+    let target_id = Uuid::new_v4();
+    let first = LegacyThoughtV0Record {
+        schema_version: 1,
+        id: first_id,
+        index: 0,
+        timestamp: chrono::Utc::now(),
+        session_id: None,
+        agent_id: "v1-rel-agent".to_string(),
+        signing_key_id: None,
+        thought_signature: None,
+        thought_type: ThoughtType::FactLearned,
+        role: ThoughtRole::Memory,
+        content: "V1 fact with relations".to_string(),
+        confidence: Some(0.9),
+        importance: 0.85,
+        tags: vec!["v1".to_string()],
+        concepts: vec!["relations".to_string()],
+        refs: vec![],
+        relations: vec![],
+        prev_hash: String::new(),
+        hash: "v1-rel-hash-0".to_string(),
+    };
+
+    let second_id = Uuid::new_v4();
+    let second = LegacyThoughtV0Record {
+        schema_version: 1,
+        id: second_id,
+        index: 1,
+        timestamp: chrono::Utc::now(),
+        session_id: None,
+        agent_id: "v1-rel-agent".to_string(),
+        signing_key_id: None,
+        thought_signature: None,
+        thought_type: ThoughtType::Correction,
+        role: ThoughtRole::Memory,
+        content: "V1 correction with relations".to_string(),
+        confidence: Some(0.8),
+        importance: 0.7,
+        tags: vec!["v1".to_string(), "correction".to_string()],
+        concepts: vec!["relations".to_string()],
+        refs: vec![0],
+        relations: vec![
+            LegacyTestRelation {
+                kind: ThoughtRelationKind::Corrects,
+                target_id: first_id,
+            },
+            LegacyTestRelation {
+                kind: ThoughtRelationKind::References,
+                target_id,
+            },
+            LegacyTestRelation {
+                kind: ThoughtRelationKind::DerivedFrom,
+                target_id: first_id,
+            },
+        ],
+        prev_hash: "v1-rel-hash-0".to_string(),
+        hash: "v1-rel-hash-1".to_string(),
+    };
+
+    let mut bytes = Vec::new();
+    for thought in [&first, &second] {
+        let payload = bincode::serde::encode_to_vec(thought, bincode::config::standard()).unwrap();
+        bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+    }
+    std::fs::write(&path, bytes).unwrap();
+
+    let chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(chain.thoughts().len(), 2);
+    assert_eq!(chain.thoughts()[0].schema_version, MENTISDB_CURRENT_VERSION);
+    assert_eq!(chain.thoughts()[1].schema_version, MENTISDB_CURRENT_VERSION);
+    assert!(chain.thoughts()[0].relations.is_empty());
+    assert_eq!(chain.thoughts()[1].relations.len(), 3);
+
+    assert_eq!(
+        chain.thoughts()[1].relations[0].kind,
+        ThoughtRelationKind::Corrects
+    );
+    assert_eq!(chain.thoughts()[1].relations[0].target_id, first_id);
+    assert!(chain.thoughts()[1].relations[0].chain_key.is_none());
+    assert!(chain.thoughts()[1].relations[0].valid_at.is_none());
+    assert!(chain.thoughts()[1].relations[0].invalid_at.is_none());
+
+    assert_eq!(
+        chain.thoughts()[1].relations[1].kind,
+        ThoughtRelationKind::References
+    );
+    assert_eq!(chain.thoughts()[1].relations[1].target_id, target_id);
+    assert!(chain.thoughts()[1].relations[1].chain_key.is_none());
+    assert!(chain.thoughts()[1].relations[1].valid_at.is_none());
+    assert!(chain.thoughts()[1].relations[1].invalid_at.is_none());
+
+    assert_eq!(
+        chain.thoughts()[1].relations[2].kind,
+        ThoughtRelationKind::DerivedFrom
+    );
+    assert_eq!(chain.thoughts()[1].relations[2].target_id, first_id);
+    assert!(chain.thoughts()[1].relations[2].chain_key.is_none());
+    assert!(chain.thoughts()[1].relations[2].valid_at.is_none());
+    assert!(chain.thoughts()[1].relations[2].invalid_at.is_none());
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
