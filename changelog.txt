@@ -1,3 +1,26 @@
+0.8.1.28 APR/10/2026
+  - feat(search): tune vector-lexical fusion and BM25 DF cutoff for retrieval gains
+    - Lower DF cutoff from 50% to 30% — filters non-discriminative entity names
+      that appear in many turns without contributing relevance signal
+    - VECTOR_ONLY_BOOST 40→35, VECTOR_DECAY_RATE 2.0→3.0 — faster exponential
+      decay reduces vector interference with moderate-lexical results, improving
+      ranking precision for queries with partial lexical overlap
+    - Session cohesion: radius 5→8, boost 0.5→0.8, skip seeds with lexical≥5.0,
+      exclude self from cohesion (nearest>0 guard)
+    - LoCoMo 2-persona R@10: 87.4%→88.7%, single-hop 89.4%→90.7%
+    - LoCoMo 10-persona R@10: 74.2% (new full benchmark)
+    - LongMemEval R@5: 65.0%→67.6%, R@10: 70.6%→73.2%
+  - fix(server): add session_cohesion field to RankedSearchScoreResponse
+    - Missing from commit c6ad371 which only added it to the dashboard response;
+      REST /v1/ranked-search would fail to compile from git HEAD
+  - fix(dashboard): guard against NaN/Infinity floats and null agents
+    - with_confidence() and with_importance() now reject non-finite floats
+      (NaN.clamp() returns NaN in Rust, which crashes serde_json serialization)
+    - thought_json() sanitizes confidence/importance before json!() macro
+    - renderAgentList() filters null agents to prevent JS TypeError
+  - fix(ci): rustfmt formatting issue in session cohesion code
+    - Use abs_diff() for correct single-line formatting that passes CI check
+
 0.8.1.27 APR/09/2026
   - fix(server): propagate chain_key in RelationInput for cross-chain relations
     - RelationInput struct was missing the chain_key field; all cross-chain
