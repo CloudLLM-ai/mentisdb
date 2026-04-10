@@ -41,12 +41,12 @@
 
 use crate::{
     deregister_chain, load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus,
-    ManagedVectorProviderKind, MentisDb, PublicKeyAlgorithm, RankedSearchGraph, RankedSearchQuery,
-    SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus, SkillSummary,
-    SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery,
-    ThoughtRelation, ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor,
-    ThoughtTraversalCursor, ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType,
-    TimeWindowUnit, MENTISDB_CURRENT_VERSION,
+    ManagedVectorProviderKind, MemoryScope, MentisDb, PublicKeyAlgorithm, RankedSearchGraph,
+    RankedSearchQuery, SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus,
+    SkillSummary, SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput,
+    ThoughtQuery, ThoughtRelation, ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow,
+    ThoughtTraversalAnchor, ThoughtTraversalCursor, ThoughtTraversalDirection,
+    ThoughtTraversalRequest, ThoughtType, TimeWindowUnit, MENTISDB_CURRENT_VERSION,
 };
 use async_trait::async_trait;
 use axum::extract::{Query, State};
@@ -2158,6 +2158,11 @@ impl MentisDbService {
         if let Some(confidence) = request.confidence {
             input = input.with_confidence(confidence);
         }
+        if let Some(scope_str) = &request.scope {
+            if let Some(scope) = parse_memory_scope(scope_str) {
+                input = input.with_scope(scope);
+            }
+        }
 
         let thought = chain.append_thought(&agent_id, input)?.clone();
         self.log_interaction(InteractionLogEntry {
@@ -2347,6 +2352,11 @@ impl MentisDbService {
         if let Some(as_of) = request.as_of {
             ranked_query = ranked_query.with_as_of(as_of);
         }
+        if let Some(scope_str) = &request.scope {
+            if let Some(scope) = parse_memory_scope(scope_str) {
+                ranked_query = ranked_query.with_scope(scope);
+            }
+        }
 
         let ranked = chain.query_ranked(&ranked_query);
         let total = ranked.total_candidates;
@@ -2423,6 +2433,11 @@ impl MentisDbService {
         }
         if let Some(as_of) = request.as_of {
             ranked_query = ranked_query.with_as_of(as_of);
+        }
+        if let Some(scope_str) = &request.scope {
+            if let Some(scope) = parse_memory_scope(scope_str) {
+                ranked_query = ranked_query.with_scope(scope);
+            }
         }
 
         let mut total_query = ranked_query.clone();
@@ -3673,6 +3688,8 @@ struct AppendThoughtRequest {
     concepts: Option<Vec<String>>,
     refs: Option<Vec<u64>>,
     relations: Option<Vec<RelationInput>>,
+    /// Optional memory scope (e.g. "user", "session", "agent").
+    scope: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3772,6 +3789,8 @@ struct RankedSearchRequest {
     until: Option<DateTime<Utc>>,
     /// Point-in-time query: only consider thoughts and relations valid at this timestamp.
     as_of: Option<DateTime<Utc>>,
+    /// Filter to a specific memory scope (e.g. "user", "session", "agent").
+    scope: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -5764,6 +5783,15 @@ fn parse_storage_adapter_kind(
     input
         .parse::<StorageAdapterKind>()
         .map_err(|error| error.into())
+}
+
+fn parse_memory_scope(input: &str) -> Option<MemoryScope> {
+    match input.to_lowercase().as_str() {
+        "user" => Some(MemoryScope::User),
+        "session" => Some(MemoryScope::Session),
+        "agent" => Some(MemoryScope::Agent),
+        _ => None,
+    }
 }
 
 fn parse_thought_relation_kind(

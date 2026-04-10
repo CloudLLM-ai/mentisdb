@@ -2491,3 +2491,91 @@ fn dedup_scan_window_limits_comparison_range() {
         "dedup should not find the very first thought outside the scan window"
     );
 }
+
+// ── v0.8.2 tests: Multi-level memory scopes ─────────────────────────────────
+
+#[test]
+fn scope_tag_added_on_append() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent", "Agent", None, None).unwrap();
+    chain
+        .append_thought(
+            "agent",
+            ThoughtInput::new(ThoughtType::FactLearned, "Session data")
+                .with_scope(mentisdb::MemoryScope::Session),
+        )
+        .unwrap();
+    let thought = &chain.thoughts()[0];
+    assert!(
+        thought.tags.contains(&"scope:session".to_string()),
+        "scope:session tag should be present"
+    );
+}
+
+#[test]
+fn scope_filter_in_ranked_search() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent", "Agent", None, None).unwrap();
+    chain
+        .append_thought(
+            "agent",
+            ThoughtInput::new(ThoughtType::FactLearned, "User-wide fact")
+                .with_scope(mentisdb::MemoryScope::User),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "agent",
+            ThoughtInput::new(ThoughtType::FactLearned, "Session fact")
+                .with_scope(mentisdb::MemoryScope::Session),
+        )
+        .unwrap();
+    let query = mentisdb::RankedSearchQuery::new()
+        .with_text("fact")
+        .with_scope(mentisdb::MemoryScope::Session);
+    let result = chain.query_ranked(&query);
+    assert_eq!(
+        result.hits.len(),
+        1,
+        "only session-scoped thought should match"
+    );
+    assert!(
+        result.hits[0]
+            .thought
+            .tags
+            .contains(&"scope:session".to_string()),
+        "matched thought should have scope:session tag"
+    );
+}
+
+#[test]
+fn scope_default_is_user() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent", "Agent", None, None).unwrap();
+    chain
+        .append_thought(
+            "agent",
+            ThoughtInput::new(ThoughtType::FactLearned, "Default scope"),
+        )
+        .unwrap();
+    let thought = &chain.thoughts()[0];
+    assert!(
+        !thought.tags.iter().any(|t| t.starts_with("scope:")),
+        "default append should not add a scope tag"
+    );
+}
+
+#[test]
+fn scope_from_tag_roundtrip() {
+    use mentisdb::MemoryScope;
+    assert_eq!(MemoryScope::from_tag("scope:user"), Some(MemoryScope::User));
+    assert_eq!(
+        MemoryScope::from_tag("scope:session"),
+        Some(MemoryScope::Session)
+    );
+    assert_eq!(
+        MemoryScope::from_tag("scope:agent"),
+        Some(MemoryScope::Agent)
+    );
+    assert_eq!(MemoryScope::from_tag("other"), None);
+}

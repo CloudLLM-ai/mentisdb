@@ -1438,6 +1438,62 @@ pub enum ThoughtRole {
     Retrospective,
 }
 
+/// Visibility scope for a thought.
+///
+/// Scopes control which agents or sessions can see a thought during
+/// retrieval. They are stored as a `scope:{variant}` tag on the thought
+/// (e.g. `"scope:user"`, `"scope:session"`, `"scope:agent"`) so no schema
+/// migration is required.
+///
+/// # Example
+///
+/// ```
+/// use mentisdb::MemoryScope;
+///
+/// assert_eq!(MemoryScope::User.as_tag(), "scope:user");
+/// assert_eq!(MemoryScope::Session.as_tag(), "scope:session");
+/// assert_eq!(MemoryScope::Agent.as_tag(), "scope:agent");
+/// ```
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+pub enum MemoryScope {
+    /// Visible to all agents sharing the same user identity.
+    #[default]
+    User,
+    /// Visible only within the session that created it.
+    Session,
+    /// Visible only to the agent that created it.
+    Agent,
+}
+
+impl MemoryScope {
+    /// Return the tag string used to mark this scope on a thought.
+    pub fn as_tag(&self) -> &'static str {
+        match self {
+            MemoryScope::User => "scope:user",
+            MemoryScope::Session => "scope:session",
+            MemoryScope::Agent => "scope:agent",
+        }
+    }
+
+    /// Parse a scope tag string back to a `MemoryScope`.
+    ///
+    /// Returns `None` if the string is not a recognized scope tag.
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        match tag {
+            "scope:user" => Some(MemoryScope::User),
+            "scope:session" => Some(MemoryScope::Session),
+            "scope:agent" => Some(MemoryScope::Agent),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for MemoryScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_tag())
+    }
+}
+
 /// Why a thought points to another thought.
 ///
 /// # Example
@@ -1817,6 +1873,19 @@ impl ThoughtInput {
     /// Add typed graph relations to prior thoughts.
     pub fn with_relations(mut self, relations: Vec<ThoughtRelation>) -> Self {
         self.relations = relations;
+        self
+    }
+
+    /// Set the visibility scope for this thought.
+    ///
+    /// The scope is stored as a `scope:{variant}` tag (e.g. `"scope:user"`)
+    /// and can be filtered during retrieval. See [`MemoryScope`] for the
+    /// available levels.
+    pub fn with_scope(mut self, scope: MemoryScope) -> Self {
+        let tag = scope.as_tag().to_string();
+        if !self.tags.iter().any(|t| t == &tag) {
+            self.tags.push(tag);
+        }
         self
     }
 
@@ -2338,6 +2407,11 @@ pub struct RankedSearchQuery {
     /// Corrects, or Invalidates relations from thoughts appended at or before
     /// `as_of` are also excluded.
     pub as_of: Option<DateTime<Utc>>,
+    /// Optional memory scope filter.
+    ///
+    /// When set, only thoughts tagged with the matching `scope:{variant}` tag
+    /// are included in results. See [`MemoryScope`] for the available levels.
+    pub scope: Option<MemoryScope>,
 }
 
 impl RankedSearchQuery {
@@ -2375,6 +2449,20 @@ impl RankedSearchQuery {
         self.as_of = Some(as_of);
         self
     }
+
+    /// Filter results to a specific memory scope.
+    ///
+    /// This adds a `scope:{variant}` tag to the underlying filter's
+    /// `tags_any` list so that only thoughts tagged with the matching
+    /// scope are returned.
+    pub fn with_scope(mut self, scope: MemoryScope) -> Self {
+        self.scope = Some(scope);
+        let tag = scope.as_tag().to_string();
+        if !self.filter.tags_any.iter().any(|t| t == &tag) {
+            self.filter.tags_any.push(tag);
+        }
+        self
+    }
 }
 
 impl Default for RankedSearchQuery {
@@ -2385,6 +2473,7 @@ impl Default for RankedSearchQuery {
             graph: None,
             limit: 10,
             as_of: None,
+            scope: None,
         }
     }
 }
