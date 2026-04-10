@@ -1266,6 +1266,9 @@ Usage:
   mentisdbd --help
   mentisdbd setup <agent|all> [--url <url>] [--dry-run]
   mentisdbd wizard [--url <url>] [--yes]
+  mentisdbd add <content> [--type <type>] [--scope <scope>] [--tag <tag>] [--agent <id>] [--chain <key>] [--url <url>]
+  mentisdbd search <query> [--limit <n>] [--scope <scope>] [--chain <key>] [--url <url>]
+  mentisdbd agents [--chain <key>] [--url <url>]
 
 Role:
   Start the MentisDB MCP server, REST server, and web dashboard.
@@ -1291,6 +1294,74 @@ Setup and onboarding subcommands:
 
   Special setup target:
     all
+
+Memory subcommands (require a running daemon):
+  add
+    Add a thought to a running MentisDB daemon via the REST API.
+
+    This is useful for quick manual entries, scripting, or piping data
+    into MentisDB without writing an MCP client. The daemon must already
+    be running on the target REST port.
+
+    Examples:
+      mentisdbd add \"The sky is blue\"
+      mentisdbd add \"Session fact\" --scope session --tag important
+      mentisdbd add \"Insight\" --type insight --agent my-agent
+      echo \"$(date): deploy succeeded\" | xargs -0 mentisdbd add
+
+    Options:
+      --type <type>    Thought type (default: fact-learned).
+                       Valid types: fact-learned, lesson-learned, insight,
+                       preference, correction, goal, plan, subgoal, question,
+                       hypothesis, observation, surprise, constraint, decision,
+                       reframe, continues-from, caused-by, derived-from, supports,
+                       contradicts, corrects, invalidates, supersedes,
+                       memory-checkpoint, summary, wonder, task-learned,
+                       task-failed, assumption-invalidated, strategy-shift
+      --scope <scope>  Memory scope: user, session, or agent.
+                       Controls who can see this thought during retrieval.
+                       Default: user (visible to all agents on the chain).
+      --tag <tag>      Add a tag. Repeatable: --tag foo --tag bar
+      --agent <id>     Agent ID for the thought.
+      --chain <key>    Chain key. Uses daemon default if omitted.
+      --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
+      --help           Show this help text
+
+  search
+    Search thoughts on a running MentisDB daemon via ranked search.
+
+    Returns the best-matching thoughts ranked by lexical, graph, and
+    (when available) vector scores. Useful for quick lookups from the
+    terminal, debugging retrieval quality, or piping results into other
+    tools with jq.
+
+    Examples:
+      mentisdbd search \"cache invalidation\"
+      mentisdbd search \"performance\" --limit 5 --scope session
+      mentisdbd search \"deploy\" --chain my-project | jq '.hits[].thought.content'
+
+    Options:
+      --limit <n>      Maximum results (default: 10)
+      --scope <scope>  Filter by memory scope: user, session, or agent
+      --chain <key>    Chain key. Uses daemon default if omitted.
+      --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
+      --help           Show this help text
+
+  agents
+    List registered agents on a running MentisDB daemon.
+
+    Shows agent IDs, display names, status, and thought counts for
+    each chain. Useful for auditing which agents have written to
+    your MentisDB instance.
+
+    Examples:
+      mentisdbd agents
+      mentisdbd agents --chain my-project
+
+    Options:
+      --chain <key>    Chain key. Uses daemon default if omitted.
+      --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
+      --help           Show this help text
 
 Important environment variables:
   MENTISDB_DIR
@@ -1361,7 +1432,10 @@ where
     }
 
     let first = args[0].to_string_lossy();
-    if matches!(first.as_ref(), "setup" | "wizard") {
+    if matches!(
+        first.as_ref(),
+        "setup" | "wizard" | "add" | "search" | "agents"
+    ) {
         let mut command = vec![OsString::from("mentisdbd")];
         command.extend(args);
         return Ok(DaemonArgMode::CliSubcommand(command));
