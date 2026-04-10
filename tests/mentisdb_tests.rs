@@ -2375,3 +2375,119 @@ fn test_hash_rehash_migration_v077_to_v078() {
     let count2 = migrate_chain_hash_algorithm(&dir, |_| {}).unwrap();
     assert_eq!(count2, 0, "second migration run must be a no-op");
 }
+
+// ── v0.8.2 tests: Memory dedup/merge ────────────────────────────────────────
+
+#[test]
+fn dedup_threshold_disabled_by_default() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent", "Agent", None, None).unwrap();
+    chain
+        .append("agent", ThoughtType::FactLearned, "The sky is blue.")
+        .unwrap();
+    chain
+        .append("agent", ThoughtType::FactLearned, "The sky is blue.")
+        .unwrap();
+    let thoughts = chain.thoughts();
+    assert_eq!(thoughts.len(), 2);
+    assert!(
+        thoughts[1].relations.is_empty(),
+        "no Supersedes relation when dedup is disabled"
+    );
+}
+
+#[test]
+fn dedup_auto_supersedes_similar_content() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent", "Agent", None, None).unwrap();
+    chain.with_dedup_threshold(Some(0.85));
+    chain
+        .append(
+            "agent",
+            ThoughtType::FactLearned,
+            "The sky is blue on clear days.",
+        )
+        .unwrap();
+    chain
+        .append(
+            "agent",
+            ThoughtType::FactLearned,
+            "The sky is blue on clear days.",
+        )
+        .unwrap();
+    let thoughts = chain.thoughts();
+    assert_eq!(thoughts.len(), 2);
+    assert_eq!(thoughts[1].relations.len(), 1);
+    assert_eq!(
+        thoughts[1].relations[0].kind,
+        ThoughtRelationKind::Supersedes
+    );
+    assert_eq!(thoughts[1].relations[0].target_id, thoughts[0].id);
+}
+
+#[test]
+fn dedup_no_supersedes_for_dissimilar_content() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent", "Agent", None, None).unwrap();
+    chain.with_dedup_threshold(Some(0.85));
+    chain
+        .append("agent", ThoughtType::FactLearned, "The sky is blue.")
+        .unwrap();
+    chain
+        .append(
+            "agent",
+            ThoughtType::FactLearned,
+            "Water boils at 100 degrees Celsius.",
+        )
+        .unwrap();
+    let thoughts = chain.thoughts();
+    assert_eq!(thoughts.len(), 2);
+    assert!(
+        thoughts[1].relations.is_empty(),
+        "no Supersedes for dissimilar content"
+    );
+}
+
+#[test]
+fn dedup_invalidated_set_updated_on_auto_supersedes() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent", "Agent", None, None).unwrap();
+    chain.with_dedup_threshold(Some(0.85));
+    chain
+        .append("agent", ThoughtType::FactLearned, "The sky is blue.")
+        .unwrap();
+    let first_id = chain.thoughts()[0].id;
+    chain
+        .append("agent", ThoughtType::FactLearned, "The sky is blue.")
+        .unwrap();
+    assert!(
+        chain.invalidated_thought_ids().contains(&first_id),
+        "first thought should be in invalidated set"
+    );
+}
+
+#[test]
+fn dedup_scan_window_limits_comparison_range() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent", "Agent", None, None).unwrap();
+    chain.with_dedup_threshold(Some(0.85));
+    chain.with_dedup_scan_window(2);
+    for i in 0..5 {
+        chain
+            .append(
+                "agent",
+                ThoughtType::FactLearned,
+                &format!("Fact number {i}."),
+            )
+            .unwrap();
+    }
+    chain
+        .append("agent", ThoughtType::FactLearned, "Fact number 0.")
+        .unwrap();
+    let thoughts = chain.thoughts();
+    let last = thoughts.last().unwrap();
+    assert!(
+        last.relations.is_empty(),
+        "dedup should not find the very first thought outside the scan window"
+    );
+}

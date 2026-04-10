@@ -3115,6 +3115,17 @@ pub struct MentisDb {
     /// `Supersedes`, `Corrects`, and `Invalidates` relations. Used at query
     /// time to filter out stale relations from superseded thoughts.
     invalidated_thought_ids: HashSet<Uuid>,
+    /// Optional deduplication threshold for automatic `Supersedes` relations.
+    ///
+    /// When set, each new thought's content is compared against recent thoughts
+    /// in the chain using Jaccard similarity on normalized lexical tokens.
+    /// If similarity exceeds this threshold, a `Supersedes` relation is
+    /// automatically added pointing to the most similar prior thought.
+    /// A value of `None` disables dedup (the default).
+    dedup_threshold: Option<f32>,
+    /// Maximum number of recent thoughts to scan during dedup checking.
+    /// Limits the cost of the similarity comparison on large chains.
+    dedup_scan_window: usize,
 }
 
 impl MentisDb {
@@ -3212,6 +3223,8 @@ impl MentisDb {
             pending_chain_registration_sync: false,
             pending_chain_registration_updates: 0,
             invalidated_thought_ids: HashSet::new(),
+            dedup_threshold: None,
+            dedup_scan_window: 64,
         };
 
         // Build the invalidated-thoughts index: any thought that is the target
@@ -3419,6 +3432,51 @@ impl MentisDb {
             }
         }
         dedupe_relations(&mut relations);
+
+        // Automatic dedup: if dedup_threshold is set, check the new content
+        // against recent thoughts. If similarity exceeds the threshold, auto-add
+        // a Supersedes relation pointing to the most similar prior thought.
+        if let Some(threshold) = self.dedup_threshold {
+            let new_tokens: HashSet<String> =
+                search::lexical::normalize_lexical_tokens(&input.content)
+                    .into_iter()
+                    .collect();
+            if !new_tokens.is_empty() {
+                let scan_start = self.thoughts.len().saturating_sub(self.dedup_scan_window);
+                let mut best_similarity = 0.0_f32;
+                let mut best_target_id = None;
+                for prior in &self.thoughts[scan_start..] {
+                    let prior_tokens: HashSet<String> =
+                        search::lexical::normalize_lexical_tokens(&prior.content)
+                            .into_iter()
+                            .collect();
+                    if prior_tokens.is_empty() {
+                        continue;
+                    }
+                    let intersection = new_tokens.intersection(&prior_tokens).count() as f32;
+                    let union = new_tokens.union(&prior_tokens).count() as f32;
+                    if union == 0.0 {
+                        continue;
+                    }
+                    let similarity = intersection / union;
+                    if similarity > best_similarity {
+                        best_similarity = similarity;
+                        best_target_id = Some(prior.id);
+                    }
+                }
+                if best_similarity >= threshold {
+                    if let Some(target_id) = best_target_id {
+                        relations.push(ThoughtRelation {
+                            kind: ThoughtRelationKind::Supersedes,
+                            target_id,
+                            chain_key: None,
+                            valid_at: Some(now),
+                            invalid_at: None,
+                        });
+                    }
+                }
+            }
+        }
 
         let index = self.thoughts.len() as u64;
         let prev_hash = self
@@ -5909,6 +5967,12 @@ impl MentisDb {
         &self.thoughts
     }
 
+    /// Return the set of thought IDs that have been superseded, corrected,
+    /// or invalidated by a later thought in the chain.
+    pub fn invalidated_thought_ids(&self) -> &HashSet<Uuid> {
+        &self.invalidated_thought_ids
+    }
+
     /// Return the current head hash of the chain, if any.
     pub fn head_hash(&self) -> Option<&str> {
         self.head_thought().map(|thought| thought.hash.as_str())
@@ -5936,6 +6000,28 @@ impl MentisDb {
             self.maybe_flush_chain_registration(true)?;
         }
         Ok(())
+    }
+
+    /// Enable automatic deduplication with the given similarity threshold.
+    ///
+    /// When a new thought is appended, its normalized lexical tokens are
+    /// compared against recent thoughts using Jaccard similarity. If the
+    /// best match exceeds `threshold` (0.0–1.0), a `Supersedes` relation
+    /// is automatically added pointing to the most similar prior thought.
+    ///
+    /// Set to `None` to disable dedup (the default).
+    pub fn with_dedup_threshold(&mut self, threshold: Option<f32>) -> &mut Self {
+        self.dedup_threshold = threshold;
+        self
+    }
+
+    /// Set how many recent thoughts to scan during dedup checking.
+    ///
+    /// Defaults to 64. Larger values catch more duplicates but cost more
+    /// per append on long chains.
+    pub fn with_dedup_scan_window(&mut self, window: usize) -> &mut Self {
+        self.dedup_scan_window = window.max(1);
+        self
     }
 
     /// Detach this chain from on-disk registry synchronization.

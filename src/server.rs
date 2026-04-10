@@ -217,6 +217,14 @@ pub struct MentisDbServiceConfig {
     /// [`with_on_thought_appended`](Self::with_on_thought_appended). Defaults
     /// to `None` (no callback).
     pub on_thought_appended: Option<Arc<dyn Fn(ThoughtType) + Send + Sync>>,
+    /// Optional Jaccard similarity threshold for automatic deduplication on
+    /// append. When set, each new thought's content is compared against recent
+    /// thoughts and a `Supersedes` relation is auto-added if similarity exceeds
+    /// this value. `None` disables dedup (the default).
+    pub dedup_threshold: Option<f32>,
+    /// Maximum number of recent thoughts to scan during dedup checking.
+    /// Defaults to 64. Only relevant when `dedup_threshold` is `Some`.
+    pub dedup_scan_window: usize,
 }
 
 impl std::fmt::Debug for MentisDbServiceConfig {
@@ -232,6 +240,8 @@ impl std::fmt::Debug for MentisDbServiceConfig {
                 "on_thought_appended",
                 &self.on_thought_appended.as_ref().map(|_| "<callback>"),
             )
+            .field("dedup_threshold", &self.dedup_threshold)
+            .field("dedup_scan_window", &self.dedup_scan_window)
             .finish()
     }
 }
@@ -277,6 +287,8 @@ impl MentisDbServiceConfig {
             log_file: None,
             auto_flush: true,
             on_thought_appended: None,
+            dedup_threshold: None,
+            dedup_scan_window: 64,
         }
     }
 
@@ -405,6 +417,25 @@ impl MentisDbServiceConfig {
         self.on_thought_appended = Some(cb);
         self
     }
+
+    /// Enable automatic deduplication with the given Jaccard similarity threshold.
+    ///
+    /// When a new thought is appended, its normalized lexical tokens are
+    /// compared against recent thoughts. If similarity exceeds `threshold`
+    /// (0.0–1.0), a `Supersedes` relation is automatically added pointing
+    /// to the most similar prior thought. Pass `None` to disable dedup.
+    pub fn with_dedup_threshold(mut self, threshold: Option<f32>) -> Self {
+        self.dedup_threshold = threshold;
+        self
+    }
+
+    /// Set how many recent thoughts to scan during dedup checking.
+    ///
+    /// Defaults to 64. Only relevant when `dedup_threshold` is `Some`.
+    pub fn with_dedup_scan_window(mut self, window: usize) -> Self {
+        self.dedup_scan_window = window.max(1);
+        self
+    }
 }
 
 /// Full runtime configuration for the standalone `mentisdbd` daemon process.
@@ -427,6 +458,8 @@ impl MentisDbServiceConfig {
 /// | `MENTISDB_VERBOSE` | `true` | Log each operation to the `mentisdb::interaction` target. |
 /// | `MENTISDB_LOG_FILE` | *(none)* | Optional file path for interaction logs. |
 /// | `MENTISDB_AUTO_FLUSH` | `true` | Set `false` for batched binary writes (higher throughput, reduced durability). |
+/// | `MENTISDB_DEDUP_THRESHOLD` | *(none)* | Jaccard threshold for auto-dedup on append (0.0–1.0). Disabled when unset. |
+/// | `MENTISDB_DEDUP_SCAN_WINDOW` | `64` | Number of recent thoughts to scan for dedup. |
 /// | `MENTISDB_BIND_HOST` | `127.0.0.1` | IP address for all server sockets. |
 /// | `MENTISDB_MCP_PORT` | `9471` | Port for the HTTP MCP server. |
 /// | `MENTISDB_REST_PORT` | `9472` | Port for the HTTP REST server. |
@@ -621,7 +654,20 @@ impl MentisDbServerConfig {
             )
             .with_verbose(verbose)
             .with_log_file(log_file)
-            .with_auto_flush(auto_flush),
+            .with_auto_flush(auto_flush)
+            .with_dedup_threshold(
+                env_var(&["MENTISDB_DEDUP_THRESHOLD"])
+                    .ok()
+                    .and_then(|v| v.trim().parse::<f32>().ok())
+                    .filter(|t| (0.0..=1.0).contains(t)),
+            )
+            .with_dedup_scan_window(
+                env_var(&["MENTISDB_DEDUP_SCAN_WINDOW"])
+                    .ok()
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(64)
+                    .max(1),
+            ),
             mcp_addr: SocketAddr::new(bind_host, mcp_port),
             rest_addr: SocketAddr::new(bind_host, rest_port),
             https_mcp_addr,
@@ -1953,10 +1999,14 @@ impl MentisDbService {
         let chain_dir = self.config.chain_dir.clone();
         let chain_key_clone = chain_key.clone();
         let auto_flush = self.config.auto_flush;
+        let dedup_threshold = self.config.dedup_threshold;
+        let dedup_scan_window = self.config.dedup_scan_window;
         let entry = self.chains.entry(chain_key).or_try_insert_with(|| {
             MentisDb::open_with_key_and_storage_kind(&chain_dir, &chain_key_clone, storage_kind)
                 .and_then(|mut db| {
                     db.set_auto_flush(auto_flush)?;
+                    db.with_dedup_threshold(dedup_threshold);
+                    db.with_dedup_scan_window(dedup_scan_window);
                     db.apply_persisted_managed_vector_sidecars()?;
                     Ok(Arc::new(RwLock::new(db)))
                 })
