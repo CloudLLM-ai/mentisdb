@@ -1,3 +1,33 @@
+0.8.3.29 APR/10/2026
+  - fix(migration): per-thought schema detection for mixed-schema binary chains
+    - Users upgrading from 0.8.1 to 0.8.2 encountered a crash when opening existing
+      chains: "UnexpectedVariant { type_name: Option<T>, found: 64 }" or
+      "UUID parsing failed: invalid length". We sincerely apologize for the snag.
+    - Root cause: the old load_binary_thoughts() peeked only the FIRST thought's
+      schema_version and applied one legacy format to the entire chain. Chains
+      containing thoughts from multiple schema versions (e.g. V1 thoughts followed
+      by V2 thoughts appended by a later daemon) would fail deserialization because
+      the wrong struct layout was used for later thoughts.
+    - Fix: replace single-schema-path approach with load_binary_thoughts_per_thought()
+      which reads each thought's payload individually, peeks its schema_version
+      varint, and dispatches to the correct legacy deserializer (V0/V1 with
+      2-field ThoughtRelation, V2 with 3-field, or V3 direct). Rebuilds the hash
+      chain for migrated thoughts after loading.
+    - Remove dead migrate_v2_thoughts() function whose logic is now inline.
+  - test(migration): comprehensive migration tests for all schema versions
+    - migrate_v2_chain_with_all_relation_kinds: all 11 ThoughtRelationKind variants
+      with and without chain_key, verifying valid_at/invalid_at are None after migration
+    - migrate_v1_chain_with_all_thought_types: all 30 ThoughtType variants survive
+    - migrate_v2_chain_with_all_thought_roles: all 8 ThoughtRole variants survive
+    - migrate_mixed_chain_with_v1_v2_v3_thoughts: per-thought detection across
+      V1, V2, and V3 thoughts in the same chain
+    - migrate_v2_chain_with_signed_thought: signing_key_id and thought_signature
+    - migrate_v1_chain_with_relations: 2-field LegacyTestRelation migrates to 5-field
+      ThoughtRelation with chain_key=None, valid_at=None, invalid_at=None
+  - docs(whitepaper): complete rewrite covering 0.8.2 features
+    - 12 sections: architecture, schema evolution, semantic memory model, storage,
+      query & retrieval, dedup, CLI, MCP, benchmarks, competitive landscape, future
+
 0.8.2.28 APR/10/2026
   - feat(temporal): add temporal edge validity with schema V3 migration
     - Add valid_at/invalid_at fields to ThoughtRelation for explicit temporal
