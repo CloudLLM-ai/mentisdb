@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB vs the Field — A Competitive Analysis of Agentic Memory Systems</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+    .comparison-table { font-size: 0.82rem; }
+    .comparison-table th, .comparison-table td { padding: 0.4rem 0.5rem; }
+    .yes { color: #16a34a; font-weight: 600; }
+    .no { color: #dc2626; }
+    .partial { color: #d97706; }
+  </style>
+</head>
+<body>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 10, 2026</div>
+
+<h1>MentisDB vs the Field — A Competitive Analysis of Agentic Memory Systems</h1>
+
+<p>
+  AI agents need memory. A growing stack of open-source projects tackle this problem,
+  but they make very different architectural tradeoffs. We studied the five most prominent
+  systems — Mem0, Graphiti/Zep, Letta, Neo4j LLM Graph Builder, and Cognee — to
+  understand where MentisDB fits, what we're missing, and what to build next.
+</p>
+
+<h2 id="the-landscape">The Landscape</h2>
+
+<p>
+  The agentic memory space has exploded in 2025–2026. At a high level, the projects fall
+  into three categories:
+</p>
+
+<ul>
+  <li><strong>Memory layers</strong> (Mem0, MentisDB) — store and retrieve facts about users and conversations</li>
+  <li><strong>Knowledge graph engines</strong> (Graphiti, Neo4j KB, Cognee) — build structured graphs from unstructured data</li>
+  <li><strong>Agent frameworks</strong> (Letta/MemGPT) — provide the entire agent loop including memory</li>
+</ul>
+
+<p>
+  MentisDB sits in the first category but borrows heavily from the second: we have a
+  built-in knowledge graph with hybrid BM25+vector+graph retrieval, and we do it all
+  without requiring an LLM or an external database.
+</p>
+
+<h2 id="feature-comparison">Feature Comparison</h2>
+
+<table class="comparison-table">
+  <thead>
+    <tr>
+      <th>Feature</th>
+      <th>MentisDB</th>
+      <th>Mem0</th>
+      <th>Graphiti</th>
+      <th>Letta</th>
+      <th>Neo4j KB</th>
+      <th>Cognee</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Language</strong></td>
+      <td>Rust</td>
+      <td>Python</td>
+      <td>Python</td>
+      <td>Python/TS</td>
+      <td>Python</td>
+      <td>Python</td>
+    </tr>
+    <tr>
+      <td><strong>Storage</strong></td>
+      <td class="yes">Embedded (sled)</td>
+      <td class="no">External DB</td>
+      <td class="no">External DB</td>
+      <td class="no">External DB</td>
+      <td class="no">Neo4j</td>
+      <td class="no">External DB</td>
+    </tr>
+    <tr>
+      <td><strong>LLM Required for Core</strong></td>
+      <td class="yes">No</td>
+      <td class="no">Yes</td>
+      <td class="no">Yes</td>
+      <td class="no">Yes</td>
+      <td class="no">Yes</td>
+      <td class="no">Yes</td>
+    </tr>
+    <tr>
+      <td><strong>Local-First</strong></td>
+      <td class="yes">Yes</td>
+      <td class="partial">Self-host option</td>
+      <td class="partial">Self-host only</td>
+      <td class="partial">Self-host option</td>
+      <td class="no">No</td>
+      <td class="partial">Partial</td>
+    </tr>
+    <tr>
+      <td><strong>Cryptographic Integrity</strong></td>
+      <td class="yes">Hash chain</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+    </tr>
+    <tr>
+      <td><strong>Hybrid Retrieval</strong></td>
+      <td class="yes">BM25+vec+graph</td>
+      <td class="partial">vec+keyword</td>
+      <td class="yes">semantic+kw+graph</td>
+      <td class="no">No</td>
+      <td class="yes">Multi-mode</td>
+      <td class="yes">vec+graph</td>
+    </tr>
+    <tr>
+      <td><strong>Temporal Facts</strong></td>
+      <td class="no">No</td>
+      <td class="partial">Updates</td>
+      <td class="yes">valid_at / invalid_at</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+    </tr>
+    <tr>
+      <td><strong>Memory Dedup</strong></td>
+      <td class="no">No</td>
+      <td class="yes">Yes</td>
+      <td class="partial">Merge</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="partial">Partial</td>
+    </tr>
+    <tr>
+      <td><strong>Custom Ontology</strong></td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="yes">Pydantic models</td>
+      <td class="no">No</td>
+      <td class="yes">Schema</td>
+      <td class="yes">Yes</td>
+    </tr>
+    <tr>
+      <td><strong>MCP Server</strong></td>
+      <td class="yes">Built-in</td>
+      <td class="no">No</td>
+      <td class="yes">Yes</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="partial">Partial</td>
+    </tr>
+    <tr>
+      <td><strong>Agent Registry</strong></td>
+      <td class="yes">Yes</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="yes">Yes</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+    </tr>
+    <tr>
+      <td><strong>CLI Tool</strong></td>
+      <td class="no">No</td>
+      <td class="yes">Yes</td>
+      <td class="no">No</td>
+      <td class="yes">Yes</td>
+      <td class="no">No</td>
+      <td class="yes">Yes</td>
+    </tr>
+    <tr>
+      <td><strong>Browser Extension</strong></td>
+      <td class="no">No</td>
+      <td class="yes">Yes</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+    </tr>
+    <tr>
+      <td><strong>Episode Provenance</strong></td>
+      <td class="partial">Thought refs</td>
+      <td class="no">No</td>
+      <td class="yes">Episodes</td>
+      <td class="no">No</td>
+      <td class="partial">Partial</td>
+      <td class="partial">Partial</td>
+    </tr>
+    <tr>
+      <td><strong>Token Tracking</strong></td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="yes">Yes</td>
+      <td class="no">No</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="what-makes-mentisdb-unique">What Makes MentisDB Unique</h2>
+
+<p>
+  Five properties that no competitor combines:
+</p>
+
+<ol>
+  <li>
+    <strong>Append-only hash chain</strong> — every thought links to the previous one
+    via a cryptographic hash. Tampering with any memory breaks the chain. This is
+    critical for audit trails, compliance, and any scenario where memory integrity
+    matters. No other system in this comparison has it.
+  </li>
+  <li>
+    <strong>Embedded storage</strong> — <code>cargo add mentisdb</code> and it works.
+    No Neo4j, no Qdrant, no Postgres. Graphiti requires Neo4j or FalkorDB. Mem0
+    requires a vector store. The Neo4j Graph Builder is literally built around Neo4j.
+    MentisDB stores everything in sled, a Rust-native embedded database.
+  </li>
+  <li>
+    <strong>No LLM dependency</strong> — Mem0, Graphiti, Cognee, and the Neo4j KB all
+    require an LLM API key to function. Their core ingestion pipelines call an LLM to
+    extract entities, facts, or summaries. MentisDB ingests, indexes, and retrieves
+    without any API keys. This matters for offline use, air-gapped environments, and
+    cost-sensitive deployments.
+  </li>
+  <li>
+    <strong>Rust</strong> — every competitor is Python. Rust gives us 10–100×
+    throughput, memory safety, and a single static binary. No runtime, no GIL, no
+    virtualenv.
+  </li>
+  <li>
+    <strong>Agent identity</strong> — first-class agent registry with aliases, public
+    keys, and lifecycle status. Thoughts carry producing agent IDs. This enables
+    multi-agent audit trails that no other system supports natively.
+  </li>
+</ol>
+
+<div class="highlight">
+  <p>
+    MentisDB is the only local-first, zero-dependency, cryptographically-integrity-verified
+    semantic memory with built-in hybrid retrieval — in Rust.
+  </p>
+</div>
+
+<h2 id="what-were-missing">What We're Missing</h2>
+
+<p>
+  Honest gaps matter more than marketing. Here are the features competitors have that
+  MentisDB doesn't — ranked by how much they'd move the needle for real users.
+</p>
+
+<h3 id="temporal-facts">1. Temporal Fact Management</h3>
+
+<p>
+  <strong>Who has it:</strong> Graphiti (valid_at / invalid_at on edges)
+</p>
+
+<p>
+  This is Graphiti's killer feature. In production, facts change: "Kendra works at
+  Acme" becomes false when she switches jobs. Graphiti marks the old edge as
+  <code>invalid_at = now</code> and adds a new one with <code>valid_at = now</code>.
+  You can query "what was true on March 1?" — something no other system handles.
+</p>
+
+<p>
+  <strong>How we'd implement it:</strong> Add <code>valid_at</code> and
+  <code>invalid_at</code> fields to <code>ThoughtRelation</code>. When a new
+  <code>Supersedes</code> or <code>Corrects</code> relation is created, automatically
+  set <code>invalid_at</code> on the old edge. Add a query parameter
+  <code>as_of=&lt;timestamp&gt;</code> that filters to currently-valid edges.
+  Purely structural — no LLM needed.
+</p>
+
+<h3 id="memory-dedup">2. Memory Deduplication</h3>
+
+<p>
+  <strong>Who has it:</strong> Mem0 (LLM-based dedup)
+</p>
+
+<p>
+  Without dedup, contradictory or near-duplicate thoughts pollute search results.
+  "Caroline likes hiking" stored three times shouldn't produce three separate
+  high-scoring hits.
+</p>
+
+<p>
+  <strong>How we'd implement it:</strong> On <code>append()</code>, run a lexical
+  overlap check against recent thoughts in the same chain. If similarity exceeds
+  0.85, auto-create a <code>Supersedes</code> relation instead of inserting a
+  duplicate. An optional LLM pass could handle semantic dedup for harder cases.
+</p>
+
+<h3 id="multi-level-memory">3. Multi-Level Memory Scopes</h3>
+
+<p>
+  <strong>Who has it:</strong> Mem0 (User / Session / Agent levels), Letta (memory blocks)
+</p>
+
+<p>
+  Real applications need per-user, per-session, and per-agent memory isolation.
+  MentisDB's chain keys provide physical isolation, but there's no semantic way to
+  say "this is a user-level preference" vs. "this is a session-specific context."
+</p>
+
+<p>
+  <strong>How we'd implement it:</strong> Add semantic scope tags
+  (<code>user</code>, <code>session</code>, <code>agent</code>) to thoughts.
+  Chain keys already provide the physical isolation. Add a convenience API
+  <code>memory.add(scope=&quot;user&quot;, ...)</code> and scoped search filters.
+</p>
+
+<h3 id="custom-ontology">4. Custom Ontology / Entity Types</h3>
+
+<p>
+  <strong>Who has it:</strong> Graphiti (Pydantic models), Neo4j KB (schema), Cognee
+</p>
+
+<p>
+  Domain-specific applications want typed entities: <code>Person</code>,
+  <code>Product</code>, <code>Policy</code> — not just generic "thoughts." Graphiti
+  lets you define these upfront via Pydantic models; the Neo4j builder supports
+  custom schemas.
+</p>
+
+<p>
+  <strong>How we'd implement it:</strong> Add <code>entity_type</code> and
+  <code>relation_type</code> fields to thoughts. Allow a user-defined type
+  registry per chain. Graph expansion respects types. Schema validation at the
+  REST/MCP layer.
+</p>
+
+<h3 id="episode-provenance">5. Episode Provenance</h3>
+
+<p>
+  <strong>Who has it:</strong> Graphiti (episodes — every fact traces back to source data)
+</p>
+
+<p>
+  When a search result says "Kendra loves Adidas shoes," you want to know which
+  conversation produced that fact. Graphiti's episode system gives full lineage
+  from derived fact to source.
+</p>
+
+<p>
+  <strong>How we'd implement it:</strong> Thoughts already have a <code>refs</code>
+  field. Add a provenance chain: <code>source_episode</code> field pointing to the
+  original thought, and a <code>DerivedFrom</code> relation kind. The dashboard
+  would show provenance graphs.
+</p>
+
+<h2 id="positioning-vs-each">Positioning vs. Each Competitor</h2>
+
+<h3>vs. Mem0</h3>
+<p>
+  Mem0 is the most popular memory layer (52k+ GitHub stars), but it requires an LLM
+  to function and strongly pushes users to its hosted platform. MentisDB works offline
+  with no API keys, and your memory is tamper-proof. Mem0's strength is its ecosystem —
+  browser extension, LangChain/CrewAI integrations, and a polished CLI — all of which
+  we plan to add over time.
+</p>
+
+<h3>vs. Graphiti / Zep</h3>
+<p>
+  Graphiti has the best temporal knowledge graph in the space. But it requires Neo4j
+  (or FalkorDB, Kuzu, Neptune). MentisDB is embedded — one binary, one crate. No
+  Docker, no database server, no configuration. We're adding temporal edges in 0.8.2.
+  Zep (the managed version) offers sub-200ms latency at scale with governance — a
+  compelling enterprise offering, but one that comes with vendor lock-in.
+</p>
+
+<h3>vs. Letta / MemGPT</h3>
+<p>
+  Letta is an agent framework, not a memory layer. It manages the entire agent loop:
+  memory blocks, tool calls, self-improvement. MentisDB is the memory layer that
+  <em>any</em> agent framework can use — Letta included. If you want memory without
+  buying into a specific agent framework, MentisDB is the right choice.
+</p>
+
+<h3>vs. Neo4j LLM Graph Builder</h3>
+<p>
+  The Neo4j builder is a document-to-graph pipeline. You upload PDFs and it extracts
+  a knowledge graph using an LLM. MentisDB is a runtime memory — agents write to it
+  and query it in real time. Different use cases: the Neo4j builder is for
+  unstructured document analysis; MentisDB is for live agent memory.
+</p>
+
+<h3>vs. Cognee</h3>
+<p>
+  Cognee is a knowledge engine that combines vector search, graph databases, and
+  cognitive science approaches. It requires external databases and an LLM for its
+  <code>cognify</code> pipeline. MentisDB is self-contained and works without any
+  external services.
+</p>
+
+<h2 id="roadmap">Roadmap</h2>
+
+<p>
+  Based on this analysis, here's our feature roadmap through 1.0:
+</p>
+
+<table>
+  <thead>
+    <tr><th>Version</th><th>Focus</th><th>Key Features</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>0.8.2</strong></td>
+      <td>Temporal + Dedup + Ergonomics</td>
+      <td>Temporal edge validity, memory dedup/merge, multi-level memory scopes, CLI tool</td>
+    </tr>
+    <tr>
+      <td><strong>0.8.3</strong></td>
+      <td>Retrieval Quality</td>
+      <td>Lightweight reranking, irregular verb lemma expansion, per-field BM25 DF cutoff</td>
+    </tr>
+    <tr>
+      <td><strong>0.8.4</strong></td>
+      <td>Ontology + Provenance</td>
+      <td>Custom entity/relation types, episode provenance tracking</td>
+    </tr>
+    <tr>
+      <td><strong>0.9.0</strong></td>
+      <td>Ecosystem</td>
+      <td>Cross-chain queries, optional LLM-extracted memories, LangChain integration, webhooks</td>
+    </tr>
+    <tr>
+      <td><strong>1.0.0</strong></td>
+      <td>Production Stable</td>
+      <td>Browser extension, self-improving agent primitives, token tracking, API stability</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="the-bigger-picture">The Bigger Picture</h2>
+
+<p>
+  The agentic memory space is still early. Most systems are Python-based, cloud-dependent,
+  and require LLM calls for basic operations. MentisDB's architectural choices —
+  Rust, embedded storage, no-LLM core, cryptographic integrity — are contrarian bets.
+  They trade ecosystem convenience for reliability, performance, and trust.
+</p>
+
+<p>
+  If you're building agents that need memory you can audit, deploy offline, or run at
+  scale without external infrastructure, MentisDB is built for you. If you need an LLM
+  to extract facts from conversations today, Mem0 or Graphiti are the pragmatic choice.
+  Our goal is to close that gap without compromising on what makes MentisDB different.
+</p>
+
+<hr />
+
+<p>
+  <em>MentisDB is an open-source durable memory layer for AI agents. It stores
+  memories in an append-only hash-chained log, retrieves them with hybrid
+  lexical+semantic+graph search, and runs entirely locally with no cloud
+  dependencies.
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">Website</a></em>
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>
