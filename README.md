@@ -657,15 +657,18 @@ Product rule:
 
 The ranked-search benchmark `benches/search_ranked.rs` and evaluation tests in `tests/search_ranked_eval_tests.rs` are the guardrails for that additive surface.
 
-### Search Scoring (0.8.0)
+### Search Scoring (0.8.1)
 
-Starting in 0.8.0, ranked search uses three key improvements:
+Starting in 0.8.1, ranked search uses six key improvements:
 
-- **Porter stemming** — the lexical tokenizer now stems all tokens before indexing and querying so word variants share a common root (e.g. `prefers`/`preferred`/`preferences` → `prefer`). This alone improved LongMemEval R@5 from 57.2% to 61.6%.
-- **Tiered vector-lexical fusion** — when a thought has no lexical match, its vector score gets a 60× boost; weak lexical matches get a 20× ramp; strong BM25 hits receive vector as a small additive signal. This replaces flat addition and RRF, which demoted strong lexical hits.
-- **Importance-weighted scoring** — the importance weight was raised from 0.2× to 3.0× so user-originated thoughts (importance ≈ 0.8) consistently outrank verbose assistant responses (importance ≈ 0.2) in close BM25 races.
+- **Porter stemming** — the lexical tokenizer stems all tokens before indexing and querying so word variants share a common root (e.g. `prefers`/`preferred`/`preferences` → `prefer`).
+- **Smooth exponential vector-lexical fusion** — replaces the 0.8.0 step-function boosts with a continuous decay curve: `vector × (1 + 35 × exp(-lexical / 3.0))`. Pure-semantic matches get ~36× amplification; by lexical=3.0 the boost has decayed to ~12×; at lexical=6.0 it's additive. This eliminates discontinuities between tiers.
+- **Session cohesion scoring** — thoughts within ±8 positions of a high-scoring lexical seed (score ≥ 3.0) receive a proximity boost up to 0.8, decaying linearly with distance. This surfaces evidence turns adjacent to the matching turn but sharing no lexical terms.
+- **BM25 document-frequency cutoff** — terms appearing in >30% of documents (corpus ≥ 20 docs) are skipped during scoring. This filters non-discriminative entity names without blanket stopword removal.
+- **Importance-weighted scoring** — replaces flat multipliers with a differential boost proportional to lexical score: `lexical × (importance - 0.5) × 0.3`. User-originated thoughts (importance ≈ 0.8) outrank verbose assistant responses (importance ≈ 0.2) in close BM25 races.
+- **Graph expansion limits and relation boosts** — `MAX_GRAPH_SEEDS=20` bounds BFS cost; `ContinuesFrom` boost raised to 0.30; graph proximity 1.0/depth.
 
-These three changes took LongMemEval R@5 from 57.2% to 65.0%.
+These changes took LongMemEval R@5 from 57.2% to 67.6% and LoCoMo 2-persona R@10 from 55.8% to 88.7%.
 
 ### Vector Sidecars
 
