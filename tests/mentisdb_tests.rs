@@ -2842,6 +2842,7 @@ fn all_relation_kinds() -> Vec<ThoughtRelationKind> {
         ThoughtRelationKind::Contradicts,
         ThoughtRelationKind::DerivedFrom,
         ThoughtRelationKind::ContinuesFrom,
+        ThoughtRelationKind::BranchesFrom,
         ThoughtRelationKind::RelatedTo,
         ThoughtRelationKind::Supersedes,
     ]
@@ -3406,5 +3407,144 @@ fn migrate_v1_chain_with_relations() {
     assert!(chain.thoughts()[1].relations[2].valid_at.is_none());
     assert!(chain.thoughts()[1].relations[2].invalid_at.is_none());
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_branches_from_relation_serde() {
+    let target = Uuid::new_v4();
+    let relation = ThoughtRelation {
+        kind: ThoughtRelationKind::BranchesFrom,
+        target_id: target,
+        chain_key: Some("source-chain".to_string()),
+        valid_at: None,
+        invalid_at: None,
+    };
+
+    let json = serde_json::to_string(&relation).unwrap();
+    let deserialized: ThoughtRelation = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(deserialized.kind, ThoughtRelationKind::BranchesFrom);
+    assert_eq!(deserialized.target_id, target);
+    assert_eq!(deserialized.chain_key.as_deref(), Some("source-chain"));
+}
+
+#[test]
+fn test_branch_from_creates_branch_chain() {
+    let dir = unique_chain_dir();
+    let mut source = MentisDb::open_with_key(&dir, "source-chain").unwrap();
+
+    let first = source
+        .append("agent1", ThoughtType::Decision, "Go with plan A.")
+        .unwrap();
+    let first_id = first.id;
+
+    let branch = MentisDb::branch_from(&dir, "source-chain", first_id, "experiment-1").unwrap();
+
+    assert_eq!(branch.thoughts().len(), 1);
+    let genesis = &branch.thoughts()[0];
+    assert_eq!(genesis.thought_type, ThoughtType::StateSnapshot);
+    assert_eq!(genesis.agent_id, "mentisdb");
+    assert!((genesis.importance - 0.5).abs() < f32::EPSILON);
+    assert_eq!(genesis.relations.len(), 1);
+    assert_eq!(genesis.relations[0].kind, ThoughtRelationKind::BranchesFrom);
+    assert_eq!(genesis.relations[0].target_id, first_id);
+    assert_eq!(
+        genesis.relations[0].chain_key.as_deref(),
+        Some("source-chain")
+    );
+    assert!(genesis.content.contains("source-chain"));
+    assert!(genesis.content.contains(&first_id.to_string()));
+
+    let reloaded = MentisDb::open_with_key(&dir, "experiment-1").unwrap();
+    assert_eq!(reloaded.thoughts().len(), 1);
+    assert_eq!(
+        reloaded.thoughts()[0].relations[0].kind,
+        ThoughtRelationKind::BranchesFrom
+    );
+    assert_eq!(reloaded.thoughts()[0].relations[0].target_id, first_id);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_branch_from_rejects_missing_thought() {
+    let dir = unique_chain_dir();
+    let _source = MentisDb::open_with_key(&dir, "source-chain").unwrap();
+
+    let missing_id = Uuid::new_v4();
+    let result = MentisDb::branch_from(&dir, "source-chain", missing_id, "experiment-2");
+    assert!(result.is_err());
+    match result {
+        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+        Ok(_) => panic!("expected error for missing thought"),
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_branch_from_rejects_empty_branch_key() {
+    let dir = unique_chain_dir();
+    let mut source = MentisDb::open_with_key(&dir, "source-chain").unwrap();
+    let thought = source
+        .append("agent1", ThoughtType::Decision, "Original thought.")
+        .unwrap();
+
+    let result = MentisDb::branch_from(&dir, "source-chain", thought.id, "");
+    assert!(result.is_err());
+    match result {
+        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput),
+        Ok(_) => panic!("expected error for empty branch key"),
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_chain_key_accessor() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "test-chain-key").unwrap();
+    assert_eq!(chain.chain_key(), "test-chain-key");
+    assert_eq!(chain.chain_dir(), dir.as_path());
+    chain
+        .append("agent1", ThoughtType::FactLearned, "Some fact.")
+        .unwrap();
+    assert_eq!(chain.chain_key(), "test-chain-key");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_ancestor_chain_keys_from_branch() {
+    let dir = unique_chain_dir();
+    let mut source = MentisDb::open_with_key(&dir, "parent-chain").unwrap();
+    let thought = source
+        .append("agent1", ThoughtType::Decision, "Parent decision.")
+        .unwrap();
+
+    let branch = MentisDb::branch_from(&dir, "parent-chain", thought.id, "child-chain").unwrap();
+    let ancestors = branch.ancestor_chain_keys();
+    assert_eq!(ancestors, vec!["parent-chain"]);
+    assert!(source.ancestor_chain_keys().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_ancestor_chain_keys_grandparent() {
+    let dir = unique_chain_dir();
+    let mut grandparent = MentisDb::open_with_key(&dir, "grandparent-chain").unwrap();
+    let gp_thought = grandparent
+        .append("agent1", ThoughtType::Decision, "Grandparent decision.")
+        .unwrap();
+
+    let mut parent =
+        MentisDb::branch_from(&dir, "grandparent-chain", gp_thought.id, "parent-chain").unwrap();
+    let p_thought = parent
+        .append("agent1", ThoughtType::Decision, "Parent decision.")
+        .unwrap();
+
+    let child = MentisDb::branch_from(&dir, "parent-chain", p_thought.id, "child-chain").unwrap();
+    let ancestors = child.ancestor_chain_keys();
+    assert_eq!(ancestors, vec!["parent-chain"]);
     let _ = std::fs::remove_dir_all(&dir);
 }

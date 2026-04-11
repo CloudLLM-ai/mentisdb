@@ -635,6 +635,7 @@ fn relation_kind_label(kind: ThoughtRelationKind) -> &'static str {
         ThoughtRelationKind::Contradicts => "contradicts",
         ThoughtRelationKind::DerivedFrom => "derived_from",
         ThoughtRelationKind::ContinuesFrom => "continues_from",
+        ThoughtRelationKind::BranchesFrom => "branches_from",
         ThoughtRelationKind::RelatedTo => "related_to",
         ThoughtRelationKind::Supersedes => "supersedes",
     }

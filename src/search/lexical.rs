@@ -687,11 +687,39 @@ fn agent_registry_tokens(record: &crate::AgentRecord) -> Vec<String> {
 }
 
 fn unique_normalized_terms(text: &str) -> Vec<String> {
+    use rust_stemmers::{Algorithm, Stemmer};
+
+    let stemmer = Stemmer::create(Algorithm::English);
     let mut seen = HashSet::new();
-    normalize_lexical_tokens(text)
-        .into_iter()
-        .filter(|term| seen.insert(term.clone()))
-        .collect()
+    let mut result = Vec::new();
+
+    let mut push = |token: &str| {
+        let stemmed = stemmer.stem(token).to_string();
+        if seen.insert(stemmed.clone()) {
+            result.push(stemmed);
+        }
+        if let Some(lemma) = super::lemmas::expand_lemma(token) {
+            let lemma_stemmed = stemmer.stem(lemma).to_string();
+            if seen.insert(lemma_stemmed.clone()) {
+                result.push(lemma_stemmed);
+            }
+        }
+    };
+
+    let mut raw = String::new();
+    for ch in text.chars() {
+        if ch.is_alphanumeric() {
+            raw.extend(ch.to_lowercase());
+        } else if !raw.is_empty() {
+            push(&raw);
+            raw.clear();
+        }
+    }
+    if !raw.is_empty() {
+        push(&raw);
+    }
+
+    result
 }
 
 fn normalized_single_term(term: &str) -> Option<String> {

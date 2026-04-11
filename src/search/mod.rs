@@ -11,6 +11,8 @@ pub mod expansion;
 /// Graph adjacency and edge-provenance structures derived from committed
 /// thoughts.
 pub mod graph;
+/// Irregular verb lemma expansion for lexical search queries.
+pub mod lemmas;
 /// BM25-style lexical indexing and ranking over committed thoughts.
 pub mod lexical;
 /// Provenance path structures for graph expansion starting from lexical seeds.

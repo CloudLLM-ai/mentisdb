@@ -1,3 +1,4 @@
+use mentisdb::search::lemmas;
 use mentisdb::search::lexical::{
     normalize_lexical_tokens, LexicalField, LexicalIndex, LexicalMatchSource, LexicalQuery,
     LEXICAL_INDEX_FORMAT_VERSION, LEXICAL_NORMALIZER_VERSION,
@@ -230,4 +231,43 @@ fn lexical_hits_report_all_matching_sources() {
     assert!(hits[0]
         .match_sources
         .contains(&LexicalMatchSource::Concepts));
+}
+
+#[test]
+fn expand_lemma_returns_base_for_irregular_past() {
+    assert_eq!(lemmas::expand_lemma("went"), Some("go"));
+    assert_eq!(lemmas::expand_lemma("gave"), Some("give"));
+    assert_eq!(lemmas::expand_lemma("ran"), Some("run"));
+}
+
+#[test]
+fn expand_lemma_returns_none_for_regular_verb() {
+    assert_eq!(lemmas::expand_lemma("regular"), None);
+    assert_eq!(lemmas::expand_lemma("walked"), None);
+}
+
+#[test]
+fn querying_went_matches_document_containing_go() {
+    let temp = tempdir().unwrap();
+    let chain_dir = temp.path().to_path_buf();
+    let mut db = MentisDb::open_with_key(&chain_dir, "search-lemma-tests").unwrap();
+
+    db.append_thought(
+        "tester",
+        ThoughtInput::new(ThoughtType::Decision, "We must go to the store today."),
+    )
+    .unwrap();
+
+    db.append_thought(
+        "tester",
+        ThoughtInput::new(ThoughtType::Insight, "The weather is sunny."),
+    )
+    .unwrap();
+
+    let index = LexicalIndex::build(db.thoughts());
+    let hits = index.search(&LexicalQuery::new("went"));
+
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].thought_index, 0);
+    assert!(hits[0].matched_terms.iter().any(|t| t == "go"));
 }

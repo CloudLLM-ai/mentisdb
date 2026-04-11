@@ -1523,6 +1523,10 @@ pub enum ThoughtRelationKind {
     DerivedFrom,
     /// The source thought continues the work or state of the target thought.
     ContinuesFrom,
+    /// The source thought is the genesis of a branch chain that diverged from
+    /// the target thought on another chain. The target lives on the source
+    /// chain identified by [`ThoughtRelation::chain_key`].
+    BranchesFrom,
     /// A generic semantic relation exists between source and target.
     RelatedTo,
     /// The source thought supersedes the target thought.
@@ -3443,6 +3447,116 @@ impl MentisDb {
         let chain = Self::open_with_storage(storage_kind.for_chain_key(&chain_dir, chain_key))?;
         chain.persist_chain_registration()?;
         Ok(chain)
+    }
+
+    /// Create a new branch chain that diverges from a thought on a source chain.
+    ///
+    /// The new chain receives a single genesis thought of type
+    /// [`ThoughtType::StateSnapshot`] with a [`ThoughtRelationKind::BranchesFrom`]
+    /// relation pointing back to the branch-point thought on the source chain.
+    /// The source chain is not modified.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - `branch_thought_id` does not exist in the source chain
+    /// - `branch_chain_key` is empty
+    /// - the new chain cannot be created or written to
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use std::path::PathBuf;
+    /// use mentisdb::MentisDb;
+    /// use uuid::Uuid;
+    ///
+    /// # fn main() -> std::io::Result<()> {
+    /// let dir = PathBuf::from("/tmp/tc_branch");
+    /// let mut source = MentisDb::open_with_key(&dir, "main-chain")?;
+    /// let thought = source.append("agent1", mentisdb::ThoughtType::Decision, "Go with plan A.")?;
+    ///
+    /// let branch = MentisDb::branch_from(&dir, "main-chain", thought.id, "experiment-1")?;
+    /// assert_eq!(branch.thoughts().len(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn branch_from(
+        chain_dir: &Path,
+        source_chain_key: &str,
+        branch_thought_id: Uuid,
+        branch_chain_key: &str,
+    ) -> io::Result<Self> {
+        let source = Self::open_with_key(chain_dir, source_chain_key)?;
+        if source.get_thought_by_id(branch_thought_id).is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Thought {branch_thought_id} not found in chain '{source_chain_key}'"),
+            ));
+        }
+        if branch_chain_key.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "branch_chain_key must not be empty",
+            ));
+        }
+        let mut branch = Self::open_with_key(chain_dir, branch_chain_key)?;
+        let input = ThoughtInput::new(
+            ThoughtType::StateSnapshot,
+            format!(
+                "Branch from chain '{}' at thought {}",
+                source_chain_key, branch_thought_id
+            ),
+        )
+        .with_importance(0.5)
+        .with_relations(vec![ThoughtRelation {
+            kind: ThoughtRelationKind::BranchesFrom,
+            target_id: branch_thought_id,
+            chain_key: Some(source_chain_key.to_string()),
+            valid_at: None,
+            invalid_at: None,
+        }]);
+        branch.append_thought("mentisdb", input)?;
+        Ok(branch)
+    }
+
+    /// Return the chain key for this chain, or an empty string if persistence metadata is absent.
+    pub fn chain_key(&self) -> &str {
+        self.persistence
+            .as_ref()
+            .map(|p| p.chain_key.as_str())
+            .unwrap_or("")
+    }
+
+    /// Return the chain directory for this chain, or an empty path if persistence metadata is absent.
+    pub fn chain_dir(&self) -> &Path {
+        self.persistence
+            .as_ref()
+            .map(|p| p.chain_dir.as_path())
+            .unwrap_or(Path::new(""))
+    }
+
+    /// Return the parent chain keys discovered via `BranchesFrom` relations on the
+    /// genesis thought, walking up through grandparent chains.
+    ///
+    /// This is used by the server layer to implement transparent cross-chain search:
+    /// when searching a branch chain, the server also searches each ancestor chain
+    /// and merges the results.
+    pub fn ancestor_chain_keys(&self) -> Vec<String> {
+        let mut ancestors = Vec::new();
+        if self.thoughts.is_empty() {
+            return ancestors;
+        }
+        let genesis = &self.thoughts[0];
+        for relation in &genesis.relations {
+            if relation.kind == ThoughtRelationKind::BranchesFrom {
+                if let Some(ref parent_key) = relation.chain_key {
+                    if !parent_key.is_empty() && !ancestors.contains(parent_key) {
+                        ancestors.push(parent_key.clone());
+                    }
+                }
+            }
+        }
+        ancestors
     }
 
     /// Append a simple thought with default metadata and no references.
@@ -5673,6 +5787,7 @@ impl MentisDb {
             ThoughtRelationKind::Supersedes => 0.45,
             ThoughtRelationKind::DerivedFrom => 0.4,
             ThoughtRelationKind::ContinuesFrom => 0.6,
+            ThoughtRelationKind::BranchesFrom => 0.55,
             ThoughtRelationKind::Summarizes => 0.2,
             ThoughtRelationKind::CausedBy => 0.2,
             ThoughtRelationKind::Supports => 0.15,

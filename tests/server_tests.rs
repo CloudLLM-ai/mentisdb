@@ -3213,3 +3213,120 @@ Load this skill immediately after bootstrap.
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn rest_ranked_search_annotates_chain_key_and_searches_ancestor_branches() {
+    let dir = unique_chain_dir();
+    let config = MentisDbServiceConfig::new(
+        dir.clone(),
+        "parent-for-branch-search",
+        StorageAdapterKind::Binary,
+    );
+    let router = rest_router(config);
+
+    let parent_response = append_thought_via_rest(
+        router.clone(),
+        "parent-for-branch-search",
+        "agent1",
+        "FactLearned",
+        None,
+        "Python uses indentation for blocks.",
+    )
+    .await;
+    let parent_id = parent_response["thought"]["id"]
+        .as_str()
+        .unwrap()
+        .parse::<uuid::Uuid>()
+        .unwrap();
+
+    let branch_response: serde_json::Value = {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chains/branch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "source_chain_key": "parent-for-branch-search",
+                            "branch_thought_id": parent_id,
+                            "branch_chain_key": "child-branch-search"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        branch_response["branch_chain_key"].as_str(),
+        Some("child-branch-search")
+    );
+
+    append_thought_via_rest(
+        router.clone(),
+        "child-branch-search",
+        "agent1",
+        "FactLearned",
+        None,
+        "Rust uses braces for blocks.",
+    )
+    .await;
+
+    let search_response: serde_json::Value = {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/ranked-search")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "chain_key": "child-branch-search",
+                            "text": "Python indentation"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap()
+    };
+
+    let results = search_response["results"]
+        .as_array()
+        .expect("results array");
+    assert!(
+        !results.is_empty(),
+        "cross-chain search should return results from parent chain"
+    );
+
+    let chain_keys: Vec<&str> = results
+        .iter()
+        .filter_map(|hit| hit["chain_key"].as_str())
+        .collect();
+    assert!(
+        chain_keys.contains(&"parent-for-branch-search"),
+        "cross-chain search must include results from parent chain, got chain_keys: {:?}",
+        chain_keys
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

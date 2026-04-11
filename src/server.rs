@@ -28,6 +28,7 @@
 //! - `POST /v1/thoughts/traverse`
 //! - `POST /v1/head`
 //! - `GET /v1/chains`
+//! - `POST /v1/chains/branch`
 //! - `POST /v1/agents`
 //! - `GET /mentisdb_skill_md`
 //! - `GET /v1/skills`
@@ -1427,6 +1428,7 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         )
         .route("/v1/head", post(rest_head_handler))
         .route("/v1/chains", get(rest_list_chains_handler))
+        .route("/v1/chains/branch", post(rest_branch_handler))
         .route("/v1/agents", post(rest_list_agents_handler))
         .route("/v1/agent", post(rest_get_agent_handler))
         .route("/v1/agent-registry", post(rest_list_agent_registry_handler))
@@ -1655,6 +1657,7 @@ pub fn rest_router(config: MentisDbServiceConfig) -> Router {
         )
         .route("/v1/head", post(rest_head_handler))
         .route("/v1/chains", get(rest_list_chains_handler))
+        .route("/v1/chains/branch", post(rest_branch_handler))
         .route("/v1/agents", post(rest_list_agents_handler))
         .route("/v1/agent", post(rest_get_agent_handler))
         .route("/v1/agent-registry", post(rest_list_agent_registry_handler))
@@ -1897,6 +1900,9 @@ impl ToolProtocol for MentisDbMcpProtocol {
             "mentisdb_merge_chains" => {
                 parse_and_call(parameters, |request| self.service.merge_chains(request)).await
             }
+            "mentisdb_branch_from" => {
+                parse_and_call(parameters, |request| self.service.branch_chain(request)).await
+            }
             _ => {
                 return Err(Box::new(ToolError::NotFound(tool_name.to_string())));
             }
@@ -2013,6 +2019,34 @@ impl MentisDbService {
                 .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
         })?;
         Ok(entry.clone())
+    }
+
+    /// Discover ancestor chain keys by following `BranchesFrom` relations.
+    ///
+    /// Opens each ancestor chain to walk further if grandparent branches exist,
+    /// but does NOT hold the read lock — only peeks at the genesis thought.
+    async fn discover_ancestor_chain_keys(&self, chain_key: &str) -> Vec<String> {
+        let mut ancestors = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(chain_key.to_string());
+        let mut frontier = vec![chain_key.to_string()];
+        while let Some(key) = frontier.pop() {
+            let chain = match self.get_chain(Some(&key), None).await {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let parent_keys = {
+                let guard = chain.read().await;
+                guard.ancestor_chain_keys()
+            };
+            for parent_key in parent_keys {
+                if visited.insert(parent_key.clone()) {
+                    ancestors.push(parent_key.clone());
+                    frontier.push(parent_key);
+                }
+            }
+        }
+        ancestors
     }
 
     async fn bootstrap(
@@ -2329,79 +2363,126 @@ impl MentisDbService {
         request: RankedSearchRequest,
     ) -> Result<RankedSearchResponse, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
-        let chain = self.get_chain(Some(&chain_key), None).await?;
-        let chain = chain.read().await;
-        let filter = build_ranked_filter_query(&request, chain_key.clone())?;
         let offset = request.offset.unwrap_or(0);
         let page_size = request.limit.unwrap_or(50).max(1);
         let ranked_limit = offset.saturating_add(page_size).max(1);
-        let mut ranked_query = RankedSearchQuery::new()
-            .with_filter(filter)
-            .with_limit(ranked_limit);
-        if let Some(text) = request
-            .text
-            .as_deref()
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-        {
-            ranked_query = ranked_query.with_text(text.to_string());
-        }
-        if let Some(graph) = &request.graph {
-            ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
-        }
-        if let Some(as_of) = request.as_of {
-            ranked_query = ranked_query.with_as_of(as_of);
-        }
-        if let Some(scope_str) = &request.scope {
-            if let Some(scope) = parse_memory_scope(scope_str) {
-                ranked_query = ranked_query.with_scope(scope);
+
+        let ancestor_keys = self.discover_ancestor_chain_keys(&chain_key).await;
+        let chain_keys_to_search: Vec<String> = std::iter::once(chain_key.clone())
+            .chain(ancestor_keys)
+            .collect();
+
+        let mut all_hits: Vec<(String, RankedSearchHitOwned)> = Vec::new();
+        let mut seen_ids: BTreeSet<Uuid> = BTreeSet::new();
+        let mut best_backend = String::new();
+        let mut total_candidates = 0usize;
+
+        for search_key in &chain_keys_to_search {
+            let chain = match self.get_chain(Some(search_key), None).await {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let chain = chain.read().await;
+            let filter = build_ranked_filter_query(&request, search_key.clone())?;
+            let mut ranked_query = RankedSearchQuery::new()
+                .with_filter(filter)
+                .with_limit(ranked_limit);
+            if let Some(text) = request
+                .text
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+            {
+                ranked_query = ranked_query.with_text(text.to_string());
+            }
+            if let Some(graph) = &request.graph {
+                ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
+            }
+            if let Some(as_of) = request.as_of {
+                ranked_query = ranked_query.with_as_of(as_of);
+            }
+            if let Some(scope_str) = &request.scope {
+                if let Some(scope) = parse_memory_scope(scope_str) {
+                    ranked_query = ranked_query.with_scope(scope);
+                }
+            }
+
+            let ranked = chain.query_ranked(&ranked_query);
+            total_candidates += ranked.total_candidates;
+            if best_backend.is_empty() {
+                best_backend = ranked.backend.as_str().to_string();
+            }
+
+            for hit in ranked.hits {
+                if !seen_ids.insert(hit.thought.id) {
+                    continue;
+                }
+                all_hits.push((
+                    search_key.clone(),
+                    RankedSearchHitOwned {
+                        thought: thought_to_json(&chain, hit.thought),
+                        score: RankedSearchScoreResponse {
+                            lexical: hit.score.lexical,
+                            vector: hit.score.vector,
+                            graph: hit.score.graph,
+                            relation: hit.score.relation,
+                            seed_support: hit.score.seed_support,
+                            importance: hit.score.importance,
+                            confidence: hit.score.confidence,
+                            recency: hit.score.recency,
+                            session_cohesion: hit.score.session_cohesion,
+                            total: hit.score.total,
+                        },
+                        matched_terms: hit.matched_terms,
+                        match_sources: hit
+                            .match_sources
+                            .into_iter()
+                            .map(|source| source.as_str().to_string())
+                            .collect(),
+                        graph_distance: hit.graph_distance,
+                        graph_seed_paths: hit.graph_seed_paths,
+                        graph_relation_kinds: hit
+                            .graph_relation_kinds
+                            .into_iter()
+                            .map(relation_kind_label)
+                            .map(str::to_string)
+                            .collect(),
+                        graph_path: hit
+                            .graph_path
+                            .as_ref()
+                            .map(transport_graph_path_from_core_path),
+                    },
+                ));
             }
         }
 
-        let ranked = chain.query_ranked(&ranked_query);
-        let total = ranked.total_candidates;
-        let results = ranked
-            .hits
+        all_hits.sort_by(|a, b| {
+            b.1.score
+                .total
+                .partial_cmp(&a.1.score.total)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let results = all_hits
             .into_iter()
             .skip(offset)
             .take(page_size)
-            .map(|hit| RankedSearchHitResponse {
-                thought: thought_to_json(&chain, hit.thought),
-                score: RankedSearchScoreResponse {
-                    lexical: hit.score.lexical,
-                    vector: hit.score.vector,
-                    graph: hit.score.graph,
-                    relation: hit.score.relation,
-                    seed_support: hit.score.seed_support,
-                    importance: hit.score.importance,
-                    confidence: hit.score.confidence,
-                    recency: hit.score.recency,
-                    session_cohesion: hit.score.session_cohesion,
-                    total: hit.score.total,
-                },
+            .map(|(chain_key, hit)| RankedSearchHitResponse {
+                chain_key,
+                thought: hit.thought,
+                score: hit.score,
                 matched_terms: hit.matched_terms,
-                match_sources: hit
-                    .match_sources
-                    .into_iter()
-                    .map(|source| source.as_str().to_string())
-                    .collect(),
+                match_sources: hit.match_sources,
                 graph_distance: hit.graph_distance,
                 graph_seed_paths: hit.graph_seed_paths,
-                graph_relation_kinds: hit
-                    .graph_relation_kinds
-                    .into_iter()
-                    .map(relation_kind_label)
-                    .map(str::to_string)
-                    .collect(),
-                graph_path: hit
-                    .graph_path
-                    .as_ref()
-                    .map(transport_graph_path_from_core_path),
+                graph_relation_kinds: hit.graph_relation_kinds,
+                graph_path: hit.graph_path,
             })
             .collect();
+
         Ok(RankedSearchResponse {
-            backend: ranked.backend.as_str().to_string(),
-            total,
+            backend: best_backend,
+            total: total_candidates,
             results,
         })
     }
@@ -3417,6 +3498,56 @@ impl MentisDbService {
     ///
     /// Agent identities are remapped autonomously: each source agent is matched
     /// to the closest existing target agent by Jaccard character-set similarity
+    async fn branch_chain(
+        &self,
+        request: BranchChainRequest,
+    ) -> Result<BranchChainResponse, Box<dyn Error + Send + Sync>> {
+        let chain_dir = self.config.chain_dir.clone();
+        let source_chain_key = request.source_chain_key.clone();
+        let branch_thought_id = request.branch_thought_id;
+        let branch_chain_key = request.branch_chain_key.clone();
+
+        let branch = tokio::task::spawn_blocking(move || {
+            MentisDb::branch_from(
+                &chain_dir,
+                &source_chain_key,
+                branch_thought_id,
+                &branch_chain_key,
+            )
+        })
+        .await
+        .map_err(|e| {
+            Box::new(io::Error::other(format!("branch task failed: {e}")))
+                as Box<dyn Error + Send + Sync>
+        })??;
+
+        let genesis_id = branch.thoughts()[0].id;
+
+        self.chains.insert(
+            request.branch_chain_key.clone(),
+            Arc::new(RwLock::new(branch)),
+        );
+
+        self.log_interaction(InteractionLogEntry {
+            access: "write",
+            operation: "branch_chain",
+            chain_key: request.branch_chain_key.clone(),
+            metadata: InteractionMetadata::default(),
+            result_count: Some(1),
+            note: Some(format!(
+                "branched from '{}' at thought {}",
+                request.source_chain_key, request.branch_thought_id
+            )),
+        });
+
+        Ok(BranchChainResponse {
+            branch_chain_key: request.branch_chain_key,
+            genesis_thought_id: genesis_id,
+            source_chain_key: request.source_chain_key,
+            branch_thought_id: request.branch_thought_id,
+        })
+    }
+
     /// on the agent ID strings.  No new agents are created on the target chain.
     /// Cross-chain `refs` indices are dropped because they are chain-local and
     /// would be meaningless after the merge.
@@ -3830,7 +3961,20 @@ struct TransportGraphPath {
 }
 
 #[derive(Debug, Serialize)]
+struct RankedSearchHitOwned {
+    thought: Value,
+    score: RankedSearchScoreResponse,
+    matched_terms: Vec<String>,
+    match_sources: Vec<String>,
+    graph_distance: Option<usize>,
+    graph_seed_paths: usize,
+    graph_relation_kinds: Vec<String>,
+    graph_path: Option<TransportGraphPath>,
+}
+
+#[derive(Debug, Serialize)]
 struct RankedSearchHitResponse {
+    chain_key: String,
     thought: Value,
     score: RankedSearchScoreResponse,
     matched_terms: Vec<String>,
@@ -4145,6 +4289,21 @@ struct MergeChainsRequest {
     source_chain_key: String,
     /// Chain key of the target chain that receives the merged thoughts.
     target_chain_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BranchChainRequest {
+    source_chain_key: String,
+    branch_thought_id: Uuid,
+    branch_chain_key: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BranchChainResponse {
+    branch_chain_key: String,
+    genesis_thought_id: Uuid,
+    source_chain_key: String,
+    branch_thought_id: Uuid,
 }
 
 /// Success response for `POST /v1/chains/merge` and the `mentisdb_merge_chains` MCP tool.
@@ -4620,6 +4779,13 @@ async fn rest_merge_chains_handler(
     Json(request): Json<MergeChainsRequest>,
 ) -> Result<Json<MergeChainsResponse>, (StatusCode, Json<Value>)> {
     service_call(service.merge_chains(request).await)
+}
+
+async fn rest_branch_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<BranchChainRequest>,
+) -> Result<Json<BranchChainResponse>, (StatusCode, Json<Value>)> {
+    service_call(service.branch_chain(request).await)
 }
 
 async fn rest_recent_context_handler(
@@ -5208,6 +5374,27 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(
             ToolParameter::new("target_chain_key", ToolParameterType::String)
                 .with_description("Chain key of the target chain to merge into (must already exist).")
+                .required(),
+        ),
+        ToolMetadata::new(
+            "mentisdb_branch_from",
+            "Create a new branch chain that diverges from a thought on a source chain. \
+             The new chain receives a genesis StateSnapshot thought with a BranchesFrom relation \
+             pointing back to the branch-point thought on the source chain. The source chain is not modified.",
+        )
+        .with_parameter(
+            ToolParameter::new("source_chain_key", ToolParameterType::String)
+                .with_description("Chain key of the source chain to branch from.")
+                .required(),
+        )
+        .with_parameter(
+            ToolParameter::new("branch_thought_id", ToolParameterType::String)
+                .with_description("UUID of the thought in the source chain to branch from.")
+                .required(),
+        )
+        .with_parameter(
+            ToolParameter::new("branch_chain_key", ToolParameterType::String)
+                .with_description("Chain key for the new branch chain.")
                 .required(),
         ),
     ]
@@ -5807,6 +5994,7 @@ fn parse_thought_relation_kind(
         "contradicts" => ThoughtRelationKind::Contradicts,
         "derivedfrom" => ThoughtRelationKind::DerivedFrom,
         "continuesfrom" => ThoughtRelationKind::ContinuesFrom,
+        "branchesfrom" => ThoughtRelationKind::BranchesFrom,
         "relatedto" => ThoughtRelationKind::RelatedTo,
         "supersedes" => ThoughtRelationKind::Supersedes,
         _ => return Err(format!("Unknown ThoughtRelationKind '{input}'").into()),
@@ -5901,6 +6089,7 @@ fn relation_kind_label(kind: ThoughtRelationKind) -> &'static str {
         ThoughtRelationKind::Contradicts => "contradicts",
         ThoughtRelationKind::DerivedFrom => "derived_from",
         ThoughtRelationKind::ContinuesFrom => "continues_from",
+        ThoughtRelationKind::BranchesFrom => "branches_from",
         ThoughtRelationKind::RelatedTo => "related_to",
         ThoughtRelationKind::Supersedes => "supersedes",
     }
