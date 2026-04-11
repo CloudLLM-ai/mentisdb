@@ -2406,6 +2406,10 @@ impl MentisDbService {
                     ranked_query = ranked_query.with_scope(scope);
                 }
             }
+            if let Some(true) = request.enable_reranking {
+                let k = request.rerank_k.unwrap_or(50).max(1);
+                ranked_query = ranked_query.with_reranking(k);
+            }
 
             let ranked = chain.query_ranked(&ranked_query);
             total_candidates += ranked.total_candidates;
@@ -2431,6 +2435,7 @@ impl MentisDbService {
                             confidence: hit.score.confidence,
                             recency: hit.score.recency,
                             session_cohesion: hit.score.session_cohesion,
+                            rrf: hit.score.rrf,
                             total: hit.score.total,
                         },
                         matched_terms: hit.matched_terms,
@@ -2519,6 +2524,10 @@ impl MentisDbService {
             if let Some(scope) = parse_memory_scope(scope_str) {
                 ranked_query = ranked_query.with_scope(scope);
             }
+        }
+        if let Some(true) = request.enable_reranking {
+            let k = request.rerank_k.unwrap_or(50).max(1);
+            ranked_query = ranked_query.with_reranking(k);
         }
 
         let mut total_query = ranked_query.clone();
@@ -3918,10 +3927,10 @@ struct RankedSearchRequest {
     min_confidence: Option<f32>,
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
-    /// Point-in-time query: only consider thoughts and relations valid at this timestamp.
     as_of: Option<DateTime<Utc>>,
-    /// Filter to a specific memory scope (e.g. "user", "session", "agent").
     scope: Option<String>,
+    enable_reranking: Option<bool>,
+    rerank_k: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3943,6 +3952,7 @@ struct RankedSearchScoreResponse {
     confidence: f32,
     recency: f32,
     session_cohesion: f32,
+    rrf: f32,
     total: f32,
 }
 

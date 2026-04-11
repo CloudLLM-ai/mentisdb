@@ -17,6 +17,8 @@ pub mod lemmas;
 pub mod lexical;
 /// Provenance path structures for graph expansion starting from lexical seeds.
 pub mod provenance;
+/// Reciprocal Rank Fusion (RRF) reranking for hybrid search results.
+pub mod ranked;
 /// Rebuildable vector sidecar persistence for one durable chain.
 pub mod sidecar;
 /// Provider-agnostic vector and embedding helpers for deterministic ranking.

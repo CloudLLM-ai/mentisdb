@@ -2416,6 +2416,24 @@ pub struct RankedSearchQuery {
     /// When set, only thoughts tagged with the matching `scope:{variant}` tag
     /// are included in results. See [`MemoryScope`] for the available levels.
     pub scope: Option<MemoryScope>,
+    /// When `true`, apply Reciprocal Rank Fusion (RRF) reranking to the
+    /// top `rerank_k` candidates after the initial scoring pass.
+    ///
+    /// RRF produces separate lexical-only and vector-only rankings over
+    /// the candidate set, then merges them via
+    /// `score = 1/(k + rank_lexical) + 1/(k + rank_vector)` (with the
+    /// standard `k = 60` damping constant). Graph, importance, confidence,
+    /// recency, and session cohesion signals are added back as small
+    /// additive adjustments on top of the RRF total so they can still
+    /// break ties without overriding the rank-based fusion.
+    pub enable_reranking: bool,
+    /// Number of top candidates to rerank when [`enable_reranking`](Self::enable_reranking)
+    /// is `true`.
+    ///
+    /// Defaults to 50. Larger values improve recall for queries where the
+    /// best match is ranked low by one signal but high by another, at the
+    /// cost of a second scoring pass over more documents.
+    pub rerank_k: usize,
 }
 
 impl RankedSearchQuery {
@@ -2467,6 +2485,13 @@ impl RankedSearchQuery {
         }
         self
     }
+
+    /// Enable Reciprocal Rank Fusion reranking on this query.
+    pub fn with_reranking(mut self, rerank_k: usize) -> Self {
+        self.enable_reranking = true;
+        self.rerank_k = rerank_k.max(1);
+        self
+    }
 }
 
 impl Default for RankedSearchQuery {
@@ -2478,6 +2503,8 @@ impl Default for RankedSearchQuery {
             limit: 10,
             as_of: None,
             scope: None,
+            enable_reranking: false,
+            rerank_k: 50,
         }
     }
 }
@@ -2503,6 +2530,8 @@ pub struct RankedSearchScore {
     pub recency: f32,
     /// Score contributed by session-level cohesion with top lexical hits.
     pub session_cohesion: f32,
+    /// Reciprocal Rank Fusion score (set when `enable_reranking` is true).
+    pub rrf: f32,
     /// Final combined score used for ranking.
     pub total: f32,
 }
@@ -4585,6 +4614,77 @@ impl MentisDb {
             }
         }
 
+        // RRF reranking: when enabled, produce separate lexical-only and
+        // vector-only rankings over the top rerank_k candidates, merge via
+        // Reciprocal Rank Fusion, and replace the total score with the RRF
+        // total plus additive adjustments from non-rankable signals
+        // (importance, confidence, recency, session cohesion, graph,
+        // relation, seed support).
+        if request.enable_reranking && !hits.is_empty() {
+            let rerank_k = request.rerank_k.min(hits.len());
+            let mut by_lexical = hits.clone();
+            by_lexical.sort_by(|a, b| {
+                b.score
+                    .lexical
+                    .total_cmp(&a.score.lexical)
+                    .then_with(|| a.thought.index.cmp(&b.thought.index))
+            });
+            let mut by_vector = hits.clone();
+            by_vector.sort_by(|a, b| {
+                b.score
+                    .vector
+                    .total_cmp(&a.score.vector)
+                    .then_with(|| a.thought.index.cmp(&b.thought.index))
+            });
+            let mut by_graph = hits.clone();
+            by_graph.sort_by(|a, b| {
+                let a_graph = a.score.graph + a.score.relation + a.score.seed_support;
+                let b_graph = b.score.graph + b.score.relation + b.score.seed_support;
+                b_graph
+                    .total_cmp(&a_graph)
+                    .then_with(|| a.thought.index.cmp(&b.thought.index))
+            });
+
+            let lexical_ids: Vec<u64> = by_lexical
+                .iter()
+                .take(rerank_k)
+                .map(|h| h.thought.index)
+                .collect();
+            let vector_ids: Vec<u64> = by_vector
+                .iter()
+                .take(rerank_k)
+                .map(|h| h.thought.index)
+                .collect();
+            let graph_ids: Vec<u64> = by_graph
+                .iter()
+                .take(rerank_k)
+                .map(|h| h.thought.index)
+                .collect();
+
+            let merged = crate::search::ranked::rrf_merge_three(
+                &lexical_ids,
+                &vector_ids,
+                &graph_ids,
+                crate::search::ranked::RRF_K,
+            );
+            let rrf_scores: HashMap<u64, f64> = merged.into_iter().collect();
+
+            for hit in &mut hits {
+                if let Some(&rrf) = rrf_scores.get(&hit.thought.index) {
+                    let rrf_f32 = rrf as f32;
+                    hit.score.rrf = rrf_f32;
+                    let additive = hit.score.graph
+                        + hit.score.relation
+                        + hit.score.seed_support
+                        + hit.score.importance
+                        + hit.score.confidence
+                        + hit.score.recency
+                        + hit.score.session_cohesion;
+                    hit.score.total = rrf_f32 + additive;
+                }
+            }
+        }
+
         let total_candidates = hits.len();
 
         hits.sort_by(|left, right| {
@@ -5477,6 +5577,7 @@ impl MentisDb {
                 confidence,
                 recency,
                 session_cohesion: 0.0,
+                rrf: 0.0,
                 total,
             },
             graph_distance,

@@ -957,3 +957,79 @@ fn ranked_query_graph_tracks_multiple_supporting_seeds() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn ranked_query_with_reranking_sets_rrf_score() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "ranked-rrf").unwrap();
+
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Decision, "Use SQLite for local state.")
+                .with_importance(0.7),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(
+                ThoughtType::Plan,
+                "SQLite indexing strategy for fast queries.",
+            )
+            .with_importance(0.9)
+            .with_tags(["sqlite", "indexing"]),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Idea, "Consider PostgreSQL for production.")
+                .with_importance(0.5),
+        )
+        .unwrap();
+
+    let ranked = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text("SQLite indexing")
+            .with_limit(10)
+            .with_reranking(50),
+    );
+
+    assert!(!ranked.hits.is_empty());
+    for hit in &ranked.hits {
+        assert!(
+            hit.score.rrf > 0.0,
+            "RRF score should be > 0 when reranking enabled"
+        );
+    }
+    assert!(ranked.hits[0].score.rrf > 0.0);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ranked_query_without_reranking_has_zero_rrf_score() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "ranked-no-rrf").unwrap();
+
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Decision, "Use SQLite for local state.")
+                .with_importance(0.7),
+        )
+        .unwrap();
+
+    let ranked = chain.query_ranked(&RankedSearchQuery::new().with_text("SQLite").with_limit(10));
+
+    assert!(!ranked.hits.is_empty());
+    for hit in &ranked.hits {
+        assert_eq!(
+            hit.score.rrf, 0.0,
+            "RRF score should be 0 when reranking disabled"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
