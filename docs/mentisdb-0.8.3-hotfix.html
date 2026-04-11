@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.8.3 — V2→V3 Migration Hotfix</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+    .warning { background: #fff8e1; border-left: 3px solid #f9a825; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .warning p:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 10, 2026</div>
+
+<h1>MentisDB 0.8.3 — V2→V3 Migration Hotfix</h1>
+
+<div class="warning">
+  <p>
+    <strong>We're sorry.</strong> If you opened a chain that contained both V1 and V2 thoughts
+    after upgrading to 0.8.2, the daemon crashed with an <code>UnexpectedVariant</code> or
+    <code>UUID parsing error</code>. This was our fault, and 0.8.3 fixes it.
+  </p>
+</div>
+
+<h2 id="what-happened">What Happened</h2>
+
+<p>
+  0.8.2 introduced schema V3 with temporal edge validity. The migration from V2 to V3 worked
+  correctly — for homogeneous chains. But many real-world chains are <strong>mixed</strong>:
+  they contain thoughts written under V1 and V2 side by side. When the deserializer loaded
+  such a chain, it peeked only the <strong>first thought's</strong>
+  <code>schema_version</code> and then applied that format to the <em>entire</em> chain.
+</p>
+
+<p>
+  If the first thought happened to be V3, every subsequent V1 or V2 thought was deserialized
+  under V3 rules — wrong byte offsets, wrong field layout, <code>UnexpectedVariant</code>,
+  or a UUID parse error on what was actually a relation byte. The chain was intact on disk;
+  only the read path was broken.
+</p>
+
+<h2 id="the-fix">The Fix</h2>
+
+<p>
+  0.8.3 replaces the monolithic <code>load_binary_thoughts()</code> with
+  <code>load_binary_thoughts_per_thought()</code>. Instead of a single schema assumption for
+  the whole chain, the new function <strong>reads each thought individually</strong>, peeks
+  its own <code>schema_version</code> byte, and dispatches to the correct deserializer for
+  that specific thought. Mixed V1/V2/V3 chains now load without error.
+</p>
+
+<div class="highlight">
+  <p>
+    <strong>Before (0.8.2):</strong> Peek first thought's version → deserialize entire chain
+    as that version. Mixed chains crash.<br />
+    <strong>After (0.8.3):</strong> For each thought, peek its version → deserialize that one
+    thought. Mixed chains work.
+  </p>
+</div>
+
+<h2 id="migration-test-coverage">Migration Test Coverage</h2>
+
+<p>
+  0.8.3 adds 11 new migration tests that exercise the exact failure modes:
+</p>
+
+<ul>
+  <li>All 30 <code>ThoughtType</code> variants round-trip through V1→V2→V3 migration</li>
+  <li>All 11 <code>ThoughtRelationKind</code> variants survive cross-version deserialization</li>
+  <li>All <code>ThoughtRole</code> variants are preserved across schema boundaries</li>
+  <li>Signed thoughts (with embedded key metadata) migrate without signature loss</li>
+  <li>Mixed V1+V2+V3 chains load and verify correctly</li>
+</ul>
+
+<p>
+  These tests run on every CI build. No future schema change should ship without covering
+  mixed-version chains.
+</p>
+
+<h2 id="whitepaper">WHITEPAPER.md Rewrite</h2>
+
+<p>
+  The <code>WHITEPAPER.md</code> was rewritten from scratch into 12 sections covering
+  MentisDB's architecture, storage model, query engine, integrity guarantees, and migration
+  strategy. The rewrite was prompted by the realization that our migration documentation
+  didn't accurately describe the per-thought version boundary — a gap that contributed to
+  the bug shipping in the first place.
+</p>
+
+<h2 id="upgrade">Upgrade</h2>
+
+<pre><code>cargo install mentisdb --force
+</code></pre>
+
+<p>
+  The <code>--force</code> flag is needed because <code>cargo install</code> won't replace
+  an existing binary of the same version string otherwise. Your chains on disk are safe —
+  0.8.3 reads them correctly regardless of their schema mix.
+</p>
+
+<hr />
+
+<p>
+  <em>MentisDB is an open-source durable memory layer for AI agents. It stores
+  memories in an append-only hash-chained log, retrieves them with hybrid
+  lexical+semantic+graph search, and runs entirely locally with no cloud
+  dependencies.
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">Website</a></em>
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>

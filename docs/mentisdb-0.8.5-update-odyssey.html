@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.8.5 — The Update Odyssey: Three Releases in 72 Hours</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+    .warning { background: #fff8e1; border-left: 3px solid #f9a825; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .warning p:last-child { margin-bottom: 0; }
+    .timeline { border-left: 3px solid #4361ee; padding-left: 1.25rem; margin-bottom: 1.5rem; }
+    .timeline h3 { margin-top: 0; }
+  </style>
+</head>
+<body>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 10, 2026</div>
+
+<h1>MentisDB 0.8.5 — The Update Odyssey: Three Releases in 72 Hours</h1>
+
+<p>
+  This is the story of how a schema migration bug, a chicken-and-egg update check, and a
+  nested Tokio runtime turned 72 hours into three patch releases. We're documenting it
+  in full because every failure mode here is worth remembering — and worth avoiding.
+</p>
+
+<div class="timeline">
+  <h3 id="0-8-2">0.8.2 — The Crash</h3>
+  <p>
+    0.8.2 shipped schema V3 with temporal edge validity. On homogeneous chains, the
+    V2→V3 migration worked perfectly. But real chains are messy: many contain thoughts
+    written under V1 sitting alongside V2 thoughts. When
+    <code>load_binary_thoughts()</code> peeked only the <strong>first thought's</strong>
+    <code>schema_version</code> and applied that format to the entire chain, mixed chains
+    crashed with <code>UnexpectedVariant</code> or UUID parsing errors.
+  </p>
+  <p>
+    The chain data on disk was never corrupted — the append-only hash chain was intact.
+    The read path just couldn't handle version diversity within a single chain.
+  </p>
+
+  <h3 id="0-8-3">0.8.3 — The Per-Thought Fix</h3>
+  <p>
+    We replaced <code>load_binary_thoughts()</code> with
+    <code>load_binary_thoughts_per_thought()</code>, which reads each thought
+    individually, peeks its own <code>schema_version</code>, and dispatches to the
+    correct deserializer. 11 new migration tests were added covering all 30
+    <code>ThoughtType</code> variants, all 11 <code>ThoughtRelationKind</code> variants,
+    all <code>ThoughtRole</code> variants, signed thoughts, and mixed V1+V2+V3 chains.
+  </p>
+  <p>
+    <code>WHITEPAPER.md</code> was rewritten into 12 sections to accurately document the
+    per-thought version boundary that we'd previously gotten wrong.
+  </p>
+
+  <h3 id="the-catch-22">The Catch-22</h3>
+  <p>
+    Here's the part that hurt: <strong>the update check ran after migrations</strong>.
+    When the daemon started, it would first load and migrate the chain, <em>then</em>
+    check for a newer version. If the migration crashed, the update check never ran —
+    so the fix couldn't install itself. Users had to manually
+    <code>cargo install mentisdb --force</code> to get the patched version.
+  </p>
+
+  <h3 id="0-8-4">0.8.4 — Update Before Anything That Can Crash</h3>
+  <p>
+    0.8.4 moved the update check <strong>before</strong> any chain loading or migration.
+    It also added two new CLI subcommands:
+  </p>
+  <ul>
+    <li><code>mentisdbd update</code> — check for updates and prompt to install</li>
+    <li><code>mentisdbd force-update</code> — download and install the latest version
+        without prompting</li>
+  </ul>
+  <p>
+    With 0.8.4, a daemon that starts on a broken chain can still check for and install
+    a fix. The chicken-and-egg loop is broken.
+  </p>
+
+  <h3 id="0-8-5">0.8.5 — The Runtime-in-Runtime Panic</h3>
+  <p>
+    0.8.4 introduced a new crash: <code>run_update_standalone()</code> created a
+    <strong>nested Tokio runtime</strong> inside <code>#[tokio::main]</code>. Tokio
+    panics with <em>"Cannot start a runtime from within a runtime"</em> when you try
+    this. The symptom was immediate: running <code>mentisdbd update</code> or
+    <code>mentisdbd force-update</code> would panic every time.
+  </p>
+  <p>
+    The fix: make <code>run_update_standalone()</code> async and let it ride on the
+    existing <code>#[tokio::main]</code> runtime instead of spawning its own. One
+    function signature change, one panic eliminated.
+  </p>
+</div>
+
+<h2 id="lessons">Lessons</h2>
+
+<ol>
+  <li>
+    <strong>Never assume homogeneous schemas.</strong> Real chains accumulate thoughts
+    across versions. Any deserialization path that assumes a single schema version for
+    the entire chain will break on mixed chains. Per-record version dispatch is the only
+    safe approach.
+  </li>
+  <li>
+    <strong>Update checks must run before anything that can crash.</strong> If your
+    self-update mechanism runs after the code that might fail, you've created a
+    chicken-and-egg loop. The update path must be the first thing that executes.
+  </li>
+  <li>
+    <strong>Never nest Tokio runtimes.</strong> <code>#[tokio::main]</code> already
+    creates a runtime. Calling <code>Tokio::runtime::Runtime::new()</code> inside it
+    will panic. Make the inner function async and <code>.await</code> it instead.
+  </li>
+  <li>
+    <strong>Test the full dispatch path, not just the library.</strong> All 30
+    <code>ThoughtType</code> variants passed unit tests. The migration crashed because
+    the <em>integration path</em> — load entire chain, peek first version, deserialize
+    all — wasn't tested. Coverage of the library isn't coverage of the dispatch.
+  </li>
+</ol>
+
+<div class="highlight">
+  <p>
+    <strong>The pattern:</strong> each bug was hidden by the fix for the previous one.
+    The migration crash (0.8.2) was fixed (0.8.3), but the update catch-22 meant users
+    couldn't get the fix automatically. The update fix (0.8.4) introduced a runtime
+    panic (0.8.5). Three releases, three different failure modes, each invisible until
+    the previous failure was resolved.
+  </p>
+</div>
+
+<h2 id="upgrade">Upgrade</h2>
+
+<pre><code>cargo install mentisdb --force
+</code></pre>
+
+<p>
+  The <code>--force</code> flag is <strong>required</strong> — without it,
+  <code>cargo install</code> will see an existing binary and skip the installation.
+  Make sure you're on 0.8.5 or later.
+</p>
+
+<hr />
+
+<p>
+  <em>MentisDB is an open-source durable memory layer for AI agents. It stores
+  memories in an append-only hash-chained log, retrieves them with hybrid
+  lexical+semantic+graph search, and runs entirely locally with no cloud
+  dependencies.
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">Website</a></em>
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>

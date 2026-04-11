@@ -37,6 +37,27 @@
   </header>
 
   <article>
+    <h2><a href="mentisdb-0.8.5-update-odyssey.html">MentisDB 0.8.5 — The Update That Almost Wasn't</a></h2>
+    <div class="meta">April 11, 2026</div>
+    <p>
+      Three releases in 72 hours. A migration crash, a catch-22 where the auto-updater
+      couldn't run because the bug blocked startup, and a runtime-in-runtime panic in the
+      fix. The full story of what broke, why, and how we recovered.
+    </p>
+  </article>
+
+  <article>
+    <h2><a href="mentisdb-0.8.3-hotfix.html">MentisDB 0.8.3 — Migration Hotfix</a></h2>
+    <div class="meta">April 10, 2026</div>
+    <p>
+      Users upgrading from 0.8.1 hit a hard crash on chain open. The V2→V3 migration code
+      peeked only the first thought's schema version and applied that format to the entire
+      chain. Fixed with per-thought schema detection. 11 new migration tests. WHITEPAPER.md
+      rewritten.
+    </p>
+  </article>
+
+  <article>
     <h2><a href="mentisdb-0.8.2.html">MentisDB 0.8.2 — Temporal Memory, Auto-Dedup, Scoped Recall, CLI Subcommands</a></h2>
     <div class="meta">April 10, 2026</div>
     <p>
