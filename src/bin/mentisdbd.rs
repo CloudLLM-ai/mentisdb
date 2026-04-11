@@ -1152,6 +1152,9 @@ Update subcommands:
     current version appears to be the same or newer. Useful for
     reinstalling a corrupted binary or forcing a fresh install.
 
+Manual update:
+  cargo install mentisdb --force
+
 Setup and onboarding subcommands:
   setup
     Configure one supported integration or `all`.
