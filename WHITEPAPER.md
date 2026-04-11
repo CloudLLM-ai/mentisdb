@@ -274,7 +274,21 @@ Backend selection:
 
 ### 6.3 BM25 Lexical Scoring
 
-The lexical tokenizer applies Porter stemming before indexing and querying so word variants share a common root (`prefers`/`preferred`/`preferences` all map to `prefer`). BM25 document-frequency cutoff: terms appearing in more than 30% of documents (when corpus size >= 20) are skipped during scoring, filtering non-discriminative entity names without blanket stopword removal.
+BM25 (Best Matching 25) is a probabilistic ranking function that scores documents by term frequency and document frequency. It rewards terms that appear frequently in a document (high TF) while penalizing terms that appear in many documents across the corpus (low IDF), and normalizes for document length. MentisDB applies BM25 per indexed field (content, tags, concepts, agent id, agent registry) with configurable field weights, then sums the field scores into a single lexical score.
+
+The lexical tokenizer applies Porter stemming before indexing and querying so word variants share a common root (`prefers`/`preferred`/`preferences` all map to `prefer`). An irregular verb lemma map (~170 entries) expands query-time tokens: `went` also matches `go`-stemmed documents, `saw` also matches `see`, and so on.
+
+Per-field document-frequency cutoffs prevent non-discriminative terms from dominating scores. Each field has its own DF ratio threshold:
+
+| Field | Cutoff | Rationale |
+|-------|--------|-----------|
+| Content | 30% | Default; content is large and stop-word prone |
+| Tags | 50% | Tag vocabularies are smaller and more uniform |
+| Concepts | 40% | Concepts are curated, less noisy |
+| Agent ID | 70% | Agent IDs are inherently repetitive |
+| Agent Registry | 60% | Registry text is short and repetitive |
+
+A term that exceeds the cutoff in one field is still scored in other fields where it remains discriminative — e.g., a term at 35% content DF is filtered from content scoring but still contributes via tags if its tag DF is below 50%. The cutoff only activates when the corpus has 20+ documents.
 
 ### 6.4 Vector-Lexical Fusion
 
@@ -311,11 +325,29 @@ lexical_score * (importance - 0.5) * 0.3
 
 User-originated thoughts (`importance` ~0.8) outrank verbose assistant responses (`importance` ~0.2) in close BM25 races.
 
-### 6.8 As-Of Point-in-Time Queries
+### 6.8 Reciprocal Rank Fusion (RRF)
+
+When `enable_reranking` is set on a `RankedSearchQuery`, ranked search runs a second scoring pass over the top `rerank_k` candidates (default 50). Three single-signal rankings are produced:
+
+1. **Lexical-only** — sorted by BM25 score, vector set to 0
+2. **Vector-only** — sorted by cosine similarity, lexical set to 0
+3. **Graph-only** — sorted by `graph + relation + seed_support`
+
+These three rank lists are merged via Reciprocal Rank Fusion:
+
+```
+score(d) = Σ 1 / (k + rank_i(d))    where k = 60
+```
+
+Documents appearing in multiple lists accumulate contributions from each. The RRF total replaces the original additive total. Non-rankable signals (importance, confidence, recency, session cohesion, graph) are added back as small additive adjustments on top of the RRF score so they can still break ties without overriding the rank-based fusion.
+
+RRF is pure arithmetic — no LLM, no model, no external service. It is opt-in via `with_reranking(rerank_k)` on the query builder or `enable_reranking` / `rerank_k` in the REST/MCP request.
+
+### 6.9 As-Of Point-in-Time Queries
 
 `RankedSearchQuery::with_as_of(rfc3339)` restricts graph expansion to only relation edges whose `valid_at`/`invalid_at` window covers the given timestamp. Thoughts appended after the `as_of` timestamp are excluded. Thoughts superseded by thoughts appended at or before the timestamp are also excluded (via `invalidated_thought_ids`).
 
-### 6.9 Memory Scopes
+### 6.10 Memory Scopes
 
 Three visibility levels stored as `scope:{variant}` tags:
 
@@ -327,17 +359,17 @@ Three visibility levels stored as `scope:{variant}` tags:
 
 `RankedSearchQuery::with_scope(MemoryScope)` filters results by scope. Omitting scope returns thoughts from all scopes.
 
-### 6.10 Context Bundles
+### 6.11 Context Bundles
 
 `query_context_bundles` / `mentisdb_context_bundles` returns seed-anchored grouped support context instead of a flat list. Each bundle contains one lexical seed and its supporting graph-expanded neighbors in deterministic order, making it easy for agents to understand why supporting thoughts surfaced.
 
-### 6.11 Vector Sidecars
+### 6.12 Vector Sidecars
 
 Vector state lives in rebuildable per-chain sidecars, never in the canonical chain. Sidecars are separated by `chain_key`, `thought_id`, `thought_hash`, `model_id`, dimension, and embedding version. Changing the model or version invalidates old vector state instead of silently mixing incompatible embeddings.
 
 Managed sidecars (registered via `manage_vector_sidecar`) stay synchronized on append. The daemon defaults to the built-in `fastembed-minilm` provider (ONNX, local, no cloud dependencies).
 
-### 6.12 Score Breakdown
+### 6.13 Score Breakdown
 
 Each ranked hit includes decomposed scores:
 
