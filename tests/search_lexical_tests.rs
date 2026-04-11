@@ -1,7 +1,7 @@
 use mentisdb::search::lemmas;
 use mentisdb::search::lexical::{
-    normalize_lexical_tokens, LexicalField, LexicalIndex, LexicalMatchSource, LexicalQuery,
-    LEXICAL_INDEX_FORMAT_VERSION, LEXICAL_NORMALIZER_VERSION,
+    normalize_lexical_tokens, Bm25DfCutoffs, LexicalField, LexicalIndex, LexicalMatchSource,
+    LexicalQuery, LEXICAL_INDEX_FORMAT_VERSION, LEXICAL_NORMALIZER_VERSION,
 };
 use mentisdb::{MentisDb, ThoughtInput, ThoughtType};
 use tempfile::tempdir;
@@ -270,4 +270,63 @@ fn querying_went_matches_document_containing_go() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].thought_index, 0);
     assert!(hits[0].matched_terms.iter().any(|t| t == "go"));
+}
+
+#[test]
+fn per_field_df_cutoffs_allow_tag_matches_when_content_is_filtered() {
+    let temp = tempdir().unwrap();
+    let chain_dir = temp.path().to_path_buf();
+    let mut db = MentisDb::open_with_key(&chain_dir, "df-cutoff-test").unwrap();
+
+    for i in 0..25 {
+        db.append_thought(
+            "tester",
+            ThoughtInput::new(
+                ThoughtType::Insight,
+                &format!("Common word appears in every document number {i}"),
+            ),
+        )
+        .unwrap();
+    }
+
+    let index = LexicalIndex::build(db.thoughts());
+
+    let strict_cutoffs = Bm25DfCutoffs {
+        content: 0.01,
+        tags: 0.80,
+        concepts: 0.80,
+        agent_id: 0.80,
+        agent_registry: 0.80,
+    };
+    let hits = index.search(&LexicalQuery::new("common").with_df_cutoffs(strict_cutoffs));
+    assert!(
+        hits.is_empty(),
+        "term should be filtered out when content cutoff is strict and term only in content"
+    );
+
+    db.append_thought(
+        "tester",
+        ThoughtInput::new(ThoughtType::Insight, "Rare unique document").with_tags(["common"]),
+    )
+    .unwrap();
+
+    let index2 = LexicalIndex::build(db.thoughts());
+    let cutoffs = Bm25DfCutoffs {
+        content: 0.01,
+        tags: 0.80,
+        concepts: 0.80,
+        agent_id: 0.80,
+        agent_registry: 0.80,
+    };
+    let hits2 = index2.search(&LexicalQuery::new("common").with_df_cutoffs(cutoffs));
+    assert!(
+        !hits2.is_empty(),
+        "term should match via tags even when content cutoff filters it"
+    );
+    assert!(
+        hits2
+            .iter()
+            .any(|h| h.match_sources.contains(&LexicalMatchSource::Tags)),
+        "at least one hit should report tags as a match source"
+    );
 }

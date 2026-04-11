@@ -213,6 +213,8 @@ pub struct LexicalQuery {
     pub limit: Option<usize>,
     /// BM25-style scoring configuration.
     pub scoring: LexicalScoringConfig,
+    /// Per-field document-frequency cutoffs for stop-word suppression.
+    pub df_cutoffs: Bm25DfCutoffs,
 }
 
 impl LexicalQuery {
@@ -222,6 +224,7 @@ impl LexicalQuery {
             text: text.into(),
             limit: None,
             scoring: LexicalScoringConfig::default(),
+            df_cutoffs: Bm25DfCutoffs::default(),
         }
     }
 
@@ -237,9 +240,60 @@ impl LexicalQuery {
         self
     }
 
+    /// Replace the per-field document-frequency cutoffs.
+    pub fn with_df_cutoffs(mut self, cutoffs: Bm25DfCutoffs) -> Self {
+        self.df_cutoffs = cutoffs;
+        self
+    }
+
     /// Return the unique normalized query terms in encounter order.
     pub fn normalized_terms(&self) -> Vec<String> {
         unique_normalized_terms(&self.text)
+    }
+}
+
+/// Per-field BM25 document-frequency cutoffs.
+///
+/// Terms whose document frequency exceeds `cutoff_ratio * N` in a given
+/// field are skipped for that field only. This prevents stop words from
+/// dominating content scoring while still allowing high-frequency tag or
+/// concept matches to contribute.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bm25DfCutoffs {
+    /// DF cutoff ratio for content matches.
+    pub content: f32,
+    /// DF cutoff ratio for tag matches.
+    pub tags: f32,
+    /// DF cutoff ratio for concept matches.
+    pub concepts: f32,
+    /// DF cutoff ratio for agent-id matches.
+    pub agent_id: f32,
+    /// DF cutoff ratio for agent-registry text matches.
+    pub agent_registry: f32,
+}
+
+impl Default for Bm25DfCutoffs {
+    fn default() -> Self {
+        Self {
+            content: 0.30,
+            tags: 0.50,
+            concepts: 0.40,
+            agent_id: 0.70,
+            agent_registry: 0.60,
+        }
+    }
+}
+
+impl Bm25DfCutoffs {
+    /// Return the cutoff ratio for one field.
+    pub fn for_field(&self, field: LexicalField) -> f32 {
+        match field {
+            LexicalField::Content => self.content,
+            LexicalField::Tags => self.tags,
+            LexicalField::Concepts => self.concepts,
+            LexicalField::AgentId => self.agent_id,
+            LexicalField::AgentRegistry => self.agent_registry,
+        }
     }
 }
 
@@ -478,13 +532,42 @@ impl LexicalIndex {
             let Some(postings) = self.postings.get(&term) else {
                 continue;
             };
-            if doc_count >= 20.0 {
-                let df_ratio = postings.len() as f32 / doc_count;
-                if df_ratio > 0.30 {
-                    continue;
-                }
+            let content_df = postings
+                .iter()
+                .filter(|p| p.content_term_frequency > 0)
+                .count() as f32;
+            let tag_df = postings.iter().filter(|p| p.tag_term_frequency > 0).count() as f32;
+            let concept_df = postings
+                .iter()
+                .filter(|p| p.concept_term_frequency > 0)
+                .count() as f32;
+            let agent_id_df = postings
+                .iter()
+                .filter(|p| p.agent_id_term_frequency > 0)
+                .count() as f32;
+            let agent_registry_df = postings
+                .iter()
+                .filter(|p| p.agent_registry_term_frequency > 0)
+                .count() as f32;
+            let content_allowed =
+                doc_count < 20.0 || content_df / doc_count <= query.df_cutoffs.content;
+            let tags_allowed = doc_count < 20.0 || tag_df / doc_count <= query.df_cutoffs.tags;
+            let concepts_allowed =
+                doc_count < 20.0 || concept_df / doc_count <= query.df_cutoffs.concepts;
+            let agent_id_allowed =
+                doc_count < 20.0 || agent_id_df / doc_count <= query.df_cutoffs.agent_id;
+            let agent_registry_allowed = doc_count < 20.0
+                || agent_registry_df / doc_count <= query.df_cutoffs.agent_registry;
+            if !content_allowed
+                && !tags_allowed
+                && !concepts_allowed
+                && !agent_id_allowed
+                && !agent_registry_allowed
+            {
+                continue;
             }
-            let idf = bm25_idf(doc_count, postings.len() as f32);
+            let term_df = postings.len() as f32;
+            let idf = bm25_idf(doc_count, term_df);
 
             for posting in postings {
                 if candidate_filter
@@ -494,46 +577,66 @@ impl LexicalIndex {
                     continue;
                 }
                 let stats = &self.document_stats[posting.doc_position];
-                let content_score = bm25_field_score(
-                    posting.content_term_frequency,
-                    stats.content_len,
-                    self.average_content_len,
-                    idf,
-                    query.scoring.k1,
-                    query.scoring.b,
-                ) * query.scoring.content_weight;
-                let tag_score = bm25_field_score(
-                    posting.tag_term_frequency,
-                    stats.tag_len,
-                    self.average_tag_len,
-                    idf,
-                    query.scoring.k1,
-                    query.scoring.b,
-                ) * query.scoring.tag_weight;
-                let concept_score = bm25_field_score(
-                    posting.concept_term_frequency,
-                    stats.concept_len,
-                    self.average_concept_len,
-                    idf,
-                    query.scoring.k1,
-                    query.scoring.b,
-                ) * query.scoring.concept_weight;
-                let agent_id_score = bm25_field_score(
-                    posting.agent_id_term_frequency,
-                    stats.agent_id_len,
-                    self.average_agent_id_len,
-                    idf,
-                    query.scoring.k1,
-                    query.scoring.b,
-                ) * query.scoring.agent_id_weight;
-                let agent_registry_score = bm25_field_score(
-                    posting.agent_registry_term_frequency,
-                    stats.agent_registry_len,
-                    self.average_agent_registry_len,
-                    idf,
-                    query.scoring.k1,
-                    query.scoring.b,
-                ) * query.scoring.agent_registry_weight;
+                let content_score = if content_allowed {
+                    bm25_field_score(
+                        posting.content_term_frequency,
+                        stats.content_len,
+                        self.average_content_len,
+                        idf,
+                        query.scoring.k1,
+                        query.scoring.b,
+                    ) * query.scoring.content_weight
+                } else {
+                    0.0
+                };
+                let tag_score = if tags_allowed {
+                    bm25_field_score(
+                        posting.tag_term_frequency,
+                        stats.tag_len,
+                        self.average_tag_len,
+                        idf,
+                        query.scoring.k1,
+                        query.scoring.b,
+                    ) * query.scoring.tag_weight
+                } else {
+                    0.0
+                };
+                let concept_score = if concepts_allowed {
+                    bm25_field_score(
+                        posting.concept_term_frequency,
+                        stats.concept_len,
+                        self.average_concept_len,
+                        idf,
+                        query.scoring.k1,
+                        query.scoring.b,
+                    ) * query.scoring.concept_weight
+                } else {
+                    0.0
+                };
+                let agent_id_score = if agent_id_allowed {
+                    bm25_field_score(
+                        posting.agent_id_term_frequency,
+                        stats.agent_id_len,
+                        self.average_agent_id_len,
+                        idf,
+                        query.scoring.k1,
+                        query.scoring.b,
+                    ) * query.scoring.agent_id_weight
+                } else {
+                    0.0
+                };
+                let agent_registry_score = if agent_registry_allowed {
+                    bm25_field_score(
+                        posting.agent_registry_term_frequency,
+                        stats.agent_registry_len,
+                        self.average_agent_registry_len,
+                        idf,
+                        query.scoring.k1,
+                        query.scoring.b,
+                    ) * query.scoring.agent_registry_weight
+                } else {
+                    0.0
+                };
                 let score = content_score
                     + tag_score
                     + concept_score
