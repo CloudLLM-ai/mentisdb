@@ -457,20 +457,15 @@ pub(crate) fn build_first_run_setup_lines() -> Vec<String> {
 ///
 /// The line is printed outside any box so it can be triple-click selected cleanly.
 pub(crate) fn build_agent_primer_paste_line(mcp_addr: &str, has_chains: bool) -> String {
-    if has_chains {
-        format!(
-            "Connect to MentisDB at {mcp_addr}. \
-             Call mentisdb_list_chains, pick a chain, \
-             call mentisdb_bootstrap('<chain-key>'), \
-             then read mentisdb://skill/core."
-        )
+    let chain_hint = if has_chains {
+        "Call mentisdb_list_chains, pick a chain, \
+         call mentisdb_bootstrap('<chain-key>'), \
+         then read mentisdb://skill/core."
     } else {
-        format!(
-            "Connect to MentisDB at {mcp_addr}. \
-             No chains yet — call mentisdb_bootstrap('<project-name>'), \
-             then read mentisdb://skill/core."
-        )
-    }
+        "No chains yet — call mentisdb_bootstrap('<project-name>'), \
+         then read mentisdb://skill/core."
+    };
+    format!("prime yourself for optimal mentisdb usage — connect to MentisDB at {mcp_addr}. {chain_hint}")
 }
 
 fn detect_first_run_setup_status(chain_dir: &Path) -> FirstRunSetupStatus {
@@ -1036,6 +1031,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("{skill_registry_msg}");
     println!("{BOLD}mentisdbd{RESET} running\n");
 
+    let is_first_run = should_show_first_run_setup_notice(&first_run_setup_status);
+
     // ── Resolved endpoints ───────────────────────────────────────────────────
     let mcp_local = format!("http://{}", handles.mcp.local_addr());
     let rest_local = format!("http://{}", handles.rest.local_addr());
@@ -1072,19 +1069,29 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .as_ref()
         .map(|h| format!("https://{}/dashboard", h.local_addr()));
 
+    if is_first_run {
+        println!();
+        println!("{DIM}Setup wizard will run first — agent primer shown after.{RESET}");
+    }
+
+    // ── First-run setup wizard (before showing chain list + primer) ────────
+    if let Err(error) = maybe_run_first_run_setup(&first_run_setup_status) {
+        eprintln!("Startup setup wizard failed: {error}");
+    }
+
+    // ── Refresh chain registry after wizard may have created one ───────────
+    let registry = load_registered_chains(&config.service.chain_dir).unwrap_or_default();
+    let has_chains = !registry.chains.is_empty();
+
     // Prefer the HTTPS MCP address for the primer; fall back to plain HTTP.
     let primer_mcp_addr = handles
         .https_mcp
         .as_ref()
         .map(|h| format!("https://{}", h.local_addr()))
         .unwrap_or_else(|| mcp_local.clone());
-    let primer_paste_line = build_agent_primer_paste_line(
-        &primer_mcp_addr,
-        first_run_setup_status.has_registered_chains,
-    );
+    let primer_paste_line = build_agent_primer_paste_line(&primer_mcp_addr, has_chains);
 
     // ── Chain list ───────────────────────────────────────────────────────────
-    let registry = load_registered_chains(&config.service.chain_dir).unwrap_or_default();
     println!();
     if registry.chains.is_empty() {
         println!("{BOLD}Chains{RESET}  {DIM}none yet{RESET}");
@@ -1106,16 +1113,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // ── Primer CTA ───────────────────────────────────────────────────────────
     println!();
-    println!("{BOLD}▶  Paste into your AI chat to prime your agent:{RESET}");
+    println!("{BOLD}▶  Prime your agent — paste into your AI chat:{RESET}");
     println!();
     println!("  {REVERSE}{BOLD} {primer_paste_line} {RESET}");
     println!();
 
-    let _ = dashboard_url; // used elsewhere if needed
-
-    if let Err(error) = maybe_run_first_run_setup(&first_run_setup_status) {
-        eprintln!("Startup setup wizard failed: {error}");
-    }
+    let _ = dashboard_url;
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
