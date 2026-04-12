@@ -42,12 +42,13 @@
 
 use crate::{
     deregister_chain, load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus,
-    ManagedVectorProviderKind, MemoryScope, MentisDb, PublicKeyAlgorithm, RankedSearchGraph,
-    RankedSearchQuery, SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus,
-    SkillSummary, SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput,
-    ThoughtQuery, ThoughtRelation, ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow,
-    ThoughtTraversalAnchor, ThoughtTraversalCursor, ThoughtTraversalDirection,
-    ThoughtTraversalRequest, ThoughtType, TimeWindowUnit, MENTISDB_CURRENT_VERSION,
+    EntityTypeRecord, ManagedVectorProviderKind, MemoryScope, MentisDb, PublicKeyAlgorithm,
+    RankedSearchGraph, RankedSearchQuery, SkillFormat, SkillQuery, SkillRegistry,
+    SkillRegistryManifest, SkillStatus, SkillSummary, SkillUpload, SkillVersionSummary,
+    StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelation, ThoughtRelationKind,
+    ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor, ThoughtTraversalCursor,
+    ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType, TimeWindowUnit,
+    MENTISDB_CURRENT_VERSION,
 };
 use async_trait::async_trait;
 use axum::extract::{Query, State};
@@ -1444,6 +1445,11 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
             post(rest_revoke_agent_key_handler),
         )
         .route("/v1/agents/disable", post(rest_disable_agent_handler))
+        .route("/v1/entity-types", post(rest_list_entity_types_handler))
+        .route(
+            "/v1/entity-types/upsert",
+            post(rest_upsert_entity_type_handler),
+        )
         .route("/v1/vectors/rebuild", post(rest_rebuild_vectors_handler))
         .route("/v1/chains/merge", post(rest_merge_chains_handler))
         .with_state(service)
@@ -1673,6 +1679,11 @@ pub fn rest_router(config: MentisDbServiceConfig) -> Router {
             post(rest_revoke_agent_key_handler),
         )
         .route("/v1/agents/disable", post(rest_disable_agent_handler))
+        .route("/v1/entity-types", post(rest_list_entity_types_handler))
+        .route(
+            "/v1/entity-types/upsert",
+            post(rest_upsert_entity_type_handler),
+        )
         .with_state(service)
 }
 
@@ -1851,6 +1862,18 @@ impl ToolProtocol for MentisDbMcpProtocol {
             }
             "mentisdb_disable_agent" => {
                 parse_and_call(parameters, |request| self.service.disable_agent(request)).await
+            }
+            "mentisdb_list_entity_types" => {
+                parse_and_call(parameters, |request| {
+                    self.service.list_entity_types(request)
+                })
+                .await
+            }
+            "mentisdb_upsert_entity_type" => {
+                parse_and_call(parameters, |request| {
+                    self.service.upsert_entity_type(request)
+                })
+                .await
             }
             "mentisdb_recent_context" => {
                 parse_and_call(parameters, |request| self.service.recent_context(request)).await
@@ -2197,6 +2220,9 @@ impl MentisDbService {
                 input = input.with_scope(scope);
             }
         }
+        if let Some(entity_type) = &request.entity_type {
+            input = input.with_entity_type(entity_type);
+        }
 
         let thought = chain.append_thought(&agent_id, input)?.clone();
         self.log_interaction(InteractionLogEntry {
@@ -2328,6 +2354,7 @@ impl MentisDbService {
             since: None,
             until: None,
             limit: None,
+            entity_type: None,
         })?;
         let offset = request.offset.unwrap_or(0);
         let page_size = request.limit.unwrap_or(50);
@@ -2869,6 +2896,50 @@ impl MentisDbService {
             note: Some(format!("agent_id={}", request.agent_id)),
         });
         Ok(AgentRecordResponse { chain_key, agent })
+    }
+
+    async fn list_entity_types(
+        &self,
+        request: ListEntityTypesRequest,
+    ) -> Result<ListEntityTypesResponse, Box<dyn Error + Send + Sync>> {
+        let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
+        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let chain = chain.read().await;
+        let entity_types: Vec<EntityTypeRecord> = chain.list_entity_types().into_iter().cloned().collect();
+        self.log_interaction(InteractionLogEntry {
+            access: "read",
+            operation: "list_entity_types",
+            chain_key: chain_key.clone(),
+            metadata: InteractionMetadata::default(),
+            result_count: Some(entity_types.len()),
+            note: None,
+        });
+        Ok(ListEntityTypesResponse {
+            chain_key,
+            entity_types,
+        })
+    }
+
+    async fn upsert_entity_type(
+        &self,
+        request: UpsertEntityTypeRequest,
+    ) -> Result<UpsertEntityTypeResponse, Box<dyn Error + Send + Sync>> {
+        let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
+        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let mut chain = chain.write().await;
+        let record = chain.upsert_entity_type(&request.entity_type)?;
+        self.log_interaction(InteractionLogEntry {
+            access: "write",
+            operation: "upsert_entity_type",
+            chain_key: chain_key.clone(),
+            metadata: InteractionMetadata::default(),
+            result_count: Some(1),
+            note: Some(format!("entity_type={}", request.entity_type)),
+        });
+        Ok(UpsertEntityTypeResponse {
+            chain_key,
+            entity_type: record,
+        })
     }
 
     async fn recent_context(
@@ -3830,6 +3901,7 @@ struct AppendThoughtRequest {
     relations: Option<Vec<RelationInput>>,
     /// Optional memory scope (e.g. "user", "session", "agent").
     scope: Option<String>,
+    entity_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3878,6 +3950,7 @@ struct SearchRequest {
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
     limit: Option<usize>,
+    entity_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3931,6 +4004,7 @@ struct RankedSearchRequest {
     scope: Option<String>,
     enable_reranking: Option<bool>,
     rerank_k: Option<usize>,
+    entity_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4069,6 +4143,7 @@ struct TraverseThoughtsRequest {
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
     time_window: Option<TransportThoughtTimeWindow>,
+    entity_type: Option<String>,
 }
 
 /// Request body for the `mentisdb_upload_skill` MCP tool and `POST /v1/skills/upload` REST endpoint.
@@ -4280,6 +4355,17 @@ struct DisableAgentRequest {
     agent_id: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct ListEntityTypesRequest {
+    chain_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpsertEntityTypeRequest {
+    chain_key: Option<String>,
+    entity_type: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct RebuildVectorsRequest {
     chain_key: Option<String>,
@@ -4369,6 +4455,18 @@ struct AgentRegistryResponse {
     agents: Vec<AgentRecord>,
 }
 
+#[derive(Debug, Serialize)]
+struct ListEntityTypesResponse {
+    chain_key: String,
+    entity_types: Vec<EntityTypeRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct UpsertEntityTypeResponse {
+    chain_key: String,
+    entity_type: EntityTypeRecord,
+}
+
 #[derive(Debug, Deserialize)]
 struct RecentContextRequest {
     chain_key: Option<String>,
@@ -4396,6 +4494,7 @@ struct MemoryMarkdownRequest {
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
     limit: Option<usize>,
+    entity_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -4772,6 +4871,20 @@ async fn rest_disable_agent_handler(
     service_call(service.disable_agent(request).await)
 }
 
+async fn rest_list_entity_types_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<ListEntityTypesRequest>,
+) -> Result<Json<ListEntityTypesResponse>, (StatusCode, Json<Value>)> {
+    service_call(service.list_entity_types(request).await)
+}
+
+async fn rest_upsert_entity_type_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<UpsertEntityTypeRequest>,
+) -> Result<Json<UpsertEntityTypeResponse>, (StatusCode, Json<Value>)> {
+    service_call(service.upsert_entity_type(request).await)
+}
+
 async fn rest_rebuild_vectors_handler(
     State(service): State<Arc<MentisDbService>>,
     Json(request): Json<RebuildVectorsRequest>,
@@ -5066,7 +5179,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("concepts", ToolParameterType::Array).with_description("Optional semantic concepts.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("refs", ToolParameterType::Array).with_description("Optional referenced thought indices.").with_items(ToolParameterType::Integer))
         .with_parameter(ToolParameter::new("signing_key_id", ToolParameterType::String).with_description("Optional key id used to verify the detached thought signature."))
-        .with_parameter(ToolParameter::new("thought_signature", ToolParameterType::Array).with_description("Optional detached signature bytes for the signable thought payload.").with_items(ToolParameterType::Integer)),
+        .with_parameter(ToolParameter::new("thought_signature", ToolParameterType::Array).with_description("Optional detached signature bytes for the signable thought payload.").with_items(ToolParameterType::Integer))
+        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label for categorizing the thought.")),
         ToolMetadata::new(
             "mentisdb_append_retrospective",
             "Append a guided retrospective memory after a hard failure, repeated snag, or non-obvious fix. Prefer this over mentisdb_append when you want future agents to avoid repeating the same struggle. This tool defaults to ThoughtType LessonLearned and always records the thought with role Retrospective. \
@@ -5102,7 +5216,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("min_confidence", ToolParameterType::Number).with_description("Optional minimum confidence threshold."))
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
-            .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Optional maximum number of results.")),
+            .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Optional maximum number of results."))
+            .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by.")),
         ToolMetadata::new(
             "mentisdb_lexical_search",
             "Run a lexical-ranked search over thread text and return scored results with offset/limit paging.",
@@ -5132,7 +5247,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("min_importance", ToolParameterType::Number).with_description("Optional minimum importance threshold."))
         .with_parameter(ToolParameter::new("min_confidence", ToolParameterType::Number).with_description("Optional minimum confidence threshold."))
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
-        .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound.")),
+        .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
+        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by.")),
         ToolMetadata::new(
             "mentisdb_context_bundles",
             "Return deterministic seed-anchored grouped context bundles over query_context_bundles. Use this when you want supporting context grouped beneath the best lexical seed thoughts.",
@@ -5152,7 +5268,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("min_importance", ToolParameterType::Number).with_description("Optional minimum importance threshold."))
         .with_parameter(ToolParameter::new("min_confidence", ToolParameterType::Number).with_description("Optional minimum confidence threshold."))
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
-        .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound.")),
+        .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
+        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by.")),
         ToolMetadata::new(
             "mentisdb_list_chains",
             "List the durable chain keys currently available in MentisDb storage, together with the server default chain key.",
@@ -5220,6 +5337,17 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key. Defaults to the server default chain."))
         .with_parameter(ToolParameter::new("agent_id", ToolParameterType::String).with_description("Stable agent id to disable.").required()),
         ToolMetadata::new(
+            "mentisdb_list_entity_types",
+            "List all entity types registered in a chain's entity type registry.",
+        )
+        .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key. Defaults to the server default chain.")),
+        ToolMetadata::new(
+            "mentisdb_upsert_entity_type",
+            "Create or update an entity type record in the per-chain registry.",
+        )
+        .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key. Defaults to the server default chain."))
+        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Entity type label to create or update.").required()),
+        ToolMetadata::new(
             "mentisdb_recent_context",
             "Render recent MentisDb context as a prompt snippet suitable for resuming work.",
         )
@@ -5242,7 +5370,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("min_confidence", ToolParameterType::Number).with_description("Optional minimum confidence threshold."))
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
-        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Optional maximum number of thoughts.")),
+        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Optional maximum number of thoughts."))
+        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by.")),
         ToolMetadata::new(
             "mentisdb_import_memory_markdown",
             "Import a MEMORY.md formatted markdown string into the target chain. Parsed thoughts are appended; malformed lines are skipped. Returns the imported thought indices.",
@@ -5287,7 +5416,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("min_confidence", ToolParameterType::Number).with_description("Optional minimum confidence threshold."))
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
-        .with_parameter(ToolParameter::new("time_window", ToolParameterType::Object).with_description("Optional numeric time window object with start, delta, and unit fields. Use since/until for RFC 3339 timestamps.")),
+        .with_parameter(ToolParameter::new("time_window", ToolParameterType::Object).with_description("Optional numeric time window object with start, delta, and unit fields. Use since/until for RFC 3339 timestamps."))
+        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by.")),
         ToolMetadata::new(
             "mentisdb_skill_md",
             "Return the official embedded MentisDB skill Markdown file. \
@@ -5424,6 +5554,9 @@ trait HasOptionalQueryFields {
     fn since(&self) -> Option<DateTime<Utc>>;
     fn until(&self) -> Option<DateTime<Utc>>;
     fn limit(&self) -> Option<usize>;
+    fn entity_type(&self) -> Option<String> {
+        None
+    }
 }
 
 impl HasOptionalQueryFields for SearchRequest {
@@ -5485,6 +5618,9 @@ impl HasOptionalQueryFields for SearchRequest {
     }
     fn limit(&self) -> Option<usize> {
         self.limit
+    }
+    fn entity_type(&self) -> Option<String> {
+        self.entity_type.clone()
     }
 }
 
@@ -5548,6 +5684,9 @@ impl HasOptionalQueryFields for RankedSearchRequest {
     fn limit(&self) -> Option<usize> {
         self.limit
     }
+    fn entity_type(&self) -> Option<String> {
+        self.entity_type.clone()
+    }
 }
 
 impl HasOptionalQueryFields for MemoryMarkdownRequest {
@@ -5610,6 +5749,9 @@ impl HasOptionalQueryFields for MemoryMarkdownRequest {
     fn limit(&self) -> Option<usize> {
         self.limit
     }
+    fn entity_type(&self) -> Option<String> {
+        self.entity_type.clone()
+    }
 }
 
 fn apply_optional_query_fields<T: HasOptionalQueryFields>(
@@ -5655,6 +5797,9 @@ fn apply_optional_query_fields<T: HasOptionalQueryFields>(
     if let Some(limit) = request.limit() {
         query = query.with_limit(limit);
     }
+    if let Some(entity_type) = request.entity_type() {
+        query = query.with_entity_type(entity_type);
+    }
     Ok(query)
 }
 
@@ -5682,6 +5827,7 @@ fn build_ranked_filter_query(
         since: request.since,
         until: request.until,
         limit: None,
+        entity_type: request.entity_type.clone(),
     })
 }
 
@@ -5768,6 +5914,9 @@ impl HasOptionalQueryFields for TraverseThoughtsRequest {
     }
     fn limit(&self) -> Option<usize> {
         None
+    }
+    fn entity_type(&self) -> Option<String> {
+        self.entity_type.clone()
     }
 }
 
@@ -5919,6 +6068,7 @@ fn query_is_empty(query: &ThoughtQuery) -> bool {
         && query.since.is_none()
         && query.until.is_none()
         && query.limit.is_none()
+        && query.entity_type.is_none()
 }
 
 fn parse_thought_type(input: &str) -> Result<ThoughtType, Box<dyn Error + Send + Sync>> {
