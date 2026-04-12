@@ -2590,11 +2590,11 @@ fn test_hash_rehash_migration_v077_to_v078() {
         chain_key,
         StorageAdapterKind::Binary,
     ));
-    {
+    let mut thoughts: Vec<Thought> = {
         let chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
-        let mut thoughts: Vec<Thought> = chain.thoughts().to_vec();
-        patch_chain_file_to_legacy_hashes(&chain_path, &mut thoughts);
-    }
+        chain.thoughts().to_vec()
+    };
+    patch_chain_file_to_legacy_hashes(&chain_path, &mut thoughts);
 
     // 3. Run the migration — it detects the legacy-hashed file and rehashes it.
     let mut started: Vec<String> = vec![];
@@ -3546,5 +3546,203 @@ fn test_ancestor_chain_keys_grandparent() {
     let child = MentisDb::branch_from(&dir, "parent-chain", p_thought.id, "child-chain").unwrap();
     let ancestors = child.ancestor_chain_keys();
     assert_eq!(ancestors, vec!["parent-chain"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Mirrors the V3 binary Thought layout (without entity_type) written by
+/// daemons before entity_type was added. Field order must match exactly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyV3ThoughtRecord {
+    schema_version: u32,
+    id: Uuid,
+    index: u64,
+    timestamp: chrono::DateTime<chrono::Utc>,
+    session_id: Option<Uuid>,
+    agent_id: String,
+    #[serde(default)]
+    signing_key_id: Option<String>,
+    #[serde(default)]
+    thought_signature: Option<Vec<u8>>,
+    thought_type: ThoughtType,
+    role: ThoughtRole,
+    content: String,
+    confidence: Option<f32>,
+    importance: f32,
+    tags: Vec<String>,
+    concepts: Vec<String>,
+    refs: Vec<u64>,
+    relations: Vec<ThoughtRelation>,
+    prev_hash: String,
+    hash: String,
+}
+
+fn write_v3_binary_chain_without_entity_type(dir: &PathBuf, chain_key: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join(chain_storage_filename(
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+    let first_id = Uuid::new_v4();
+    let first = LegacyV3ThoughtRecord {
+        schema_version: 3,
+        id: first_id,
+        index: 0,
+        timestamp: chrono::Utc::now(),
+        session_id: None,
+        agent_id: "v3-agent".to_string(),
+        signing_key_id: None,
+        thought_signature: None,
+        thought_type: ThoughtType::Insight,
+        role: ThoughtRole::Memory,
+        content: "V3 thought without entity_type".to_string(),
+        confidence: Some(0.9),
+        importance: 0.85,
+        tags: vec!["v3".to_string()],
+        concepts: vec!["migration".to_string()],
+        refs: vec![],
+        relations: vec![ThoughtRelation::new(
+            ThoughtRelationKind::Supports,
+            Uuid::new_v4(),
+        )],
+        prev_hash: String::new(),
+        hash: String::new(),
+    };
+    let second_id = Uuid::new_v4();
+    let second = LegacyV3ThoughtRecord {
+        schema_version: 3,
+        id: second_id,
+        index: 1,
+        timestamp: chrono::Utc::now(),
+        session_id: None,
+        agent_id: "v3-agent".to_string(),
+        signing_key_id: None,
+        thought_signature: None,
+        thought_type: ThoughtType::Decision,
+        role: ThoughtRole::Memory,
+        content: "V3 decision without entity_type".to_string(),
+        confidence: None,
+        importance: 0.5,
+        tags: vec![],
+        concepts: vec![],
+        refs: vec![0],
+        relations: vec![ThoughtRelation::new(
+            ThoughtRelationKind::References,
+            first_id,
+        )],
+        prev_hash: String::new(),
+        hash: String::new(),
+    };
+    let mut bytes = Vec::new();
+    for thought in [&first, &second] {
+        let payload = bincode::serde::encode_to_vec(thought, bincode::config::standard()).unwrap();
+        bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+    }
+    std::fs::write(&path, bytes).unwrap();
+}
+
+#[test]
+fn test_v3_chain_without_entity_type_loads_and_migrates() {
+    let dir = unique_chain_dir();
+    let chain_key = "v3-no-entity-type";
+    write_v3_binary_chain_without_entity_type(&dir, chain_key);
+
+    let mut chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(chain.thoughts().len(), 2);
+
+    let first = &chain.thoughts()[0];
+    assert_eq!(first.content, "V3 thought without entity_type");
+    assert!(first.entity_type.is_none());
+    assert!(!first.relations.is_empty());
+
+    let second = &chain.thoughts()[1];
+    assert_eq!(second.content, "V3 decision without entity_type");
+    assert!(second.entity_type.is_none());
+
+    let new_thought = chain
+        .append_thought(
+            "new-agent",
+            ThoughtInput::new(ThoughtType::Insight, "New thought with entity type")
+                .with_entity_type("project"),
+        )
+        .unwrap();
+    assert_eq!(new_thought.entity_type.as_deref(), Some("project"));
+    assert_eq!(chain.thoughts().len(), 3);
+
+    drop(chain);
+
+    let reopened = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(reopened.thoughts().len(), 3);
+    assert!(reopened.thoughts()[0].entity_type.is_none());
+    assert!(reopened.thoughts()[1].entity_type.is_none());
+    assert_eq!(
+        reopened.thoughts()[2].entity_type.as_deref(),
+        Some("project")
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_v3_chain_without_entity_type_append_then_reload() {
+    let dir = unique_chain_dir();
+    let chain_key = "v3-append-reload";
+    write_v3_binary_chain_without_entity_type(&dir, chain_key);
+
+    let mut chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    let old_id = chain.thoughts()[0].id;
+    let new = chain
+        .append_thought(
+            "agent2",
+            ThoughtInput::new(ThoughtType::Finding, "finding with entity")
+                .with_entity_type("api-endpoint")
+                .with_importance(0.9),
+        )
+        .unwrap();
+    assert_eq!(new.entity_type.as_deref(), Some("api-endpoint"));
+    drop(chain);
+
+    let reopened = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(reopened.thoughts().len(), 3);
+    assert_eq!(reopened.thoughts()[0].id, old_id);
+    assert!(reopened.thoughts()[0].entity_type.is_none());
+    assert_eq!(
+        reopened.thoughts()[2].entity_type.as_deref(),
+        Some("api-endpoint")
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_entity_type_in_json_serialization() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "test-json").unwrap();
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Decision, "Test thought").with_entity_type("project"),
+        )
+        .unwrap();
+    let thought = &chain.thoughts()[0];
+    let json = serde_json::to_vec(thought).unwrap();
+    let json_str = String::from_utf8_lossy(&json);
+    assert!(
+        json_str.contains("entity_type"),
+        "entity_type should appear in JSON when set: {json_str}"
+    );
+
+    // When entity_type is None, it should still appear in JSON (for API consistency)
+    chain
+        .append("agent1", ThoughtType::Insight, "No entity type")
+        .unwrap();
+    let no_entity = &chain.thoughts()[1];
+    let json2 = serde_json::to_vec(no_entity).unwrap();
+    let json_str2 = String::from_utf8_lossy(&json2);
+    assert!(
+        json_str2.contains("entity_type"),
+        "entity_type should appear in JSON even when None: {json_str2}"
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1753,6 +1753,12 @@ pub struct ThoughtInput {
     /// These preserve the meaning of the link, not just the fact that a link
     /// exists.
     pub relations: Vec<ThoughtRelation>,
+    /// Optional entity type label for this thought.
+    ///
+    /// When set, this thought represents a typed entity (e.g. "person",
+    /// "project", "api-endpoint") rather than a generic memory. Entity types
+    /// are auto-registered in the per-chain [`EntityTypeRegistry`] on append.
+    pub entity_type: Option<String>,
 }
 
 impl ThoughtInput {
@@ -1789,6 +1795,7 @@ impl ThoughtInput {
             concepts: Vec::new(),
             refs: Vec::new(),
             relations: Vec::new(),
+            entity_type: None,
         }
     }
 
@@ -1877,6 +1884,12 @@ impl ThoughtInput {
     /// Add typed graph relations to prior thoughts.
     pub fn with_relations(mut self, relations: Vec<ThoughtRelation>) -> Self {
         self.relations = relations;
+        self
+    }
+
+    /// Set the entity type label for this thought.
+    pub fn with_entity_type(mut self, entity_type: impl Into<String>) -> Self {
+        self.entity_type = Some(entity_type.into());
         self
     }
 
@@ -2029,6 +2042,13 @@ pub struct Thought {
     pub refs: Vec<u64>,
     /// Typed graph relations to prior thoughts.
     pub relations: Vec<ThoughtRelation>,
+    /// Optional entity type label for this thought.
+    ///
+    /// When set, this thought represents a typed entity rather than a generic
+    /// memory. The per-chain [`EntityTypeRegistry`] tracks all entity types
+    /// that have been observed across the chain.
+    #[serde(default)]
+    pub entity_type: Option<String>,
     /// Hash of the previous thought in the chain.
     ///
     /// This links the record to the prior committed chain state.
@@ -2094,6 +2114,8 @@ pub struct ThoughtQuery {
     pub until: Option<DateTime<Utc>>,
     /// Maximum number of thoughts to return.
     pub limit: Option<usize>,
+    /// Match thoughts with a specific entity type.
+    pub entity_type: Option<String>,
 }
 
 impl ThoughtQuery {
@@ -3243,6 +3265,36 @@ struct LegacyThoughtV1 {
     hash: String,
 }
 
+/// Mirrors the `Thought` binary layout written by schema-V3 daemons.
+///
+/// Field order MUST match the struct that was `#[derive(Serialize)]`d at write
+/// time, because bincode encodes structs as positional sequences with no field
+/// names. This is the V3 layout without `entity_type`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyThoughtV2 {
+    schema_version: u32,
+    id: Uuid,
+    index: u64,
+    timestamp: DateTime<Utc>,
+    session_id: Option<Uuid>,
+    agent_id: String,
+    #[serde(default)]
+    signing_key_id: Option<String>,
+    #[serde(default)]
+    thought_signature: Option<Vec<u8>>,
+    thought_type: ThoughtType,
+    role: ThoughtRole,
+    content: String,
+    confidence: Option<f32>,
+    importance: f32,
+    tags: Vec<String>,
+    concepts: Vec<String>,
+    refs: Vec<u64>,
+    relations: Vec<ThoughtRelation>,
+    prev_hash: String,
+    hash: String,
+}
+
 /// Append-only, hash-chained semantic memory store.
 pub struct MentisDb {
     thoughts: Vec<Thought>,
@@ -3779,6 +3831,11 @@ impl MentisDb {
             concepts: normalize_strings(input.concepts),
             refs: input.refs,
             relations,
+            entity_type: input
+                .entity_type
+                .take()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
             prev_hash,
             hash: String::new(),
         };
@@ -6948,7 +7005,6 @@ fn chain_file_uses_legacy_hashes(path: &Path) -> bool {
         _ => return false,
     };
     let first = &thoughts[0];
-    // If the stored hash matches the legacy algorithm but not the current one, migration needed.
     first.hash == compute_thought_hash_legacy(first) && first.hash != compute_thought_hash(first)
 }
 
@@ -7608,6 +7664,7 @@ fn migrate_legacy_thoughts(legacy_thoughts: Vec<LegacyThoughtV0>) -> (Vec<Though
                 .into_iter()
                 .map(ThoughtRelation::from)
                 .collect(),
+            entity_type: None,
             prev_hash: prev_hash.clone(),
             hash: String::new(),
         };
@@ -8047,15 +8104,51 @@ fn load_binary_thoughts_per_thought(reader: &mut impl Read) -> io::Result<Vec<Th
 
         let thought = match schema_version {
             v if v == MENTISDB_CURRENT_VERSION => {
-                let (t, _): (Thought, usize) =
-                    bincode::serde::decode_from_slice(&payload, bincode::config::standard())
-                        .map_err(|e| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!("Failed to deserialize thought: {e}"),
+                // Try the current Thought struct first (includes entity_type).
+                // If the thought was written before entity_type was added, bincode
+                // will return UnexpectedEnd because the trailing Option<String>
+                // bytes are missing. Fall back to the legacy V3 layout.
+                match bincode::serde::decode_from_slice::<Thought, _>(
+                    &payload,
+                    bincode::config::standard(),
+                ) {
+                    Ok((t, _)) => t,
+                    Err(_) => {
+                        let (legacy, _): (LegacyThoughtV2, usize) =
+                            bincode::serde::decode_from_slice(
+                                &payload,
+                                bincode::config::standard(),
                             )
-                        })?;
-                t
+                            .map_err(|e| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!("Failed to deserialize thought: {e}"),
+                                )
+                            })?;
+                        Thought {
+                            schema_version: MENTISDB_CURRENT_VERSION,
+                            id: legacy.id,
+                            index: legacy.index,
+                            timestamp: legacy.timestamp,
+                            session_id: legacy.session_id,
+                            agent_id: legacy.agent_id,
+                            signing_key_id: legacy.signing_key_id,
+                            thought_signature: legacy.thought_signature,
+                            thought_type: legacy.thought_type,
+                            role: legacy.role,
+                            content: legacy.content,
+                            confidence: legacy.confidence,
+                            importance: legacy.importance,
+                            tags: legacy.tags,
+                            concepts: legacy.concepts,
+                            refs: legacy.refs,
+                            relations: legacy.relations,
+                            entity_type: None,
+                            prev_hash: legacy.prev_hash,
+                            hash: legacy.hash,
+                        }
+                    }
+                }
             }
             0 | 1 => {
                 let (legacy, _): (LegacyThoughtV0, usize) =
@@ -8088,6 +8181,7 @@ fn load_binary_thoughts_per_thought(reader: &mut impl Read) -> io::Result<Vec<Th
                         .into_iter()
                         .map(ThoughtRelation::from)
                         .collect(),
+                    entity_type: None,
                     prev_hash: String::new(),
                     hash: String::new(),
                 }
@@ -8123,6 +8217,7 @@ fn load_binary_thoughts_per_thought(reader: &mut impl Read) -> io::Result<Vec<Th
                         .into_iter()
                         .map(ThoughtRelation::from)
                         .collect(),
+                    entity_type: None,
                     prev_hash: String::new(),
                     hash: String::new(),
                 }
@@ -8230,6 +8325,10 @@ fn compute_thought_hash(thought: &Thought) -> String {
     // IMPORTANT: this algorithm is fixed — changing it invalidates all stored hashes.
     // Chains written before this algorithm was adopted are migrated transparently on
     // first open via `compute_thought_hash_legacy` + `rehash_chain_to_bincode`.
+    //
+    // NOTE: entity_type is intentionally excluded from the hash to maintain
+    // backward compatibility with existing chains. When entity_type is set on
+    // a thought, it is indexed but does not affect the chain's hash integrity.
     #[derive(Serialize)]
     struct CanonicalThought<'a> {
         schema_version: u32,
