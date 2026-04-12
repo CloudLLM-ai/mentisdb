@@ -1,4 +1,4 @@
-use mentisdb::cli::run_with_io;
+use mentisdb::cli::{parse_node_major, run_with_io};
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -227,4 +227,44 @@ fn wizard_yes_does_not_overwrite_existing_configured_entry() {
         std::fs::read_to_string(config_path).unwrap(),
         "[mcp_servers.mentisdb]\nurl = \"http://127.0.0.1:9471\"\n"
     );
+}
+
+#[test]
+fn parse_node_major_extracts_major_from_version_string() {
+    assert_eq!(parse_node_major("v22.18.0").unwrap(), 22);
+    assert_eq!(parse_node_major("v20.0.0").unwrap(), 20);
+    assert_eq!(parse_node_major("v18.17.1").unwrap(), 18);
+    assert_eq!(parse_node_major("22.18.0").unwrap(), 22);
+}
+
+#[test]
+fn wizard_continues_when_claude_desktop_node_check_warns() {
+    let _guard = env_lock();
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+
+    let previous_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &home);
+
+    let mut input = Cursor::new("\n\nY\n");
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+
+    let code = run_with_io(
+        ["mentisdbd", "setup", "codex"],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+
+    match previous_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert!(errors.is_empty());
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(stdout.contains("Codex ->"));
 }

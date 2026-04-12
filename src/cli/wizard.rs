@@ -11,7 +11,7 @@ use super::prompt::{
     boxed_apply_summary, boxed_selection_prompt, boxed_skip_notice, boxed_text_prompt,
     boxed_yn_prompt,
 };
-use super::setup::ensure_prerequisites;
+use super::setup::{ensure_prerequisites, PrerequisiteStatus};
 use super::{render_setup_plan, WizardCommand};
 
 pub(super) fn run_wizard(
@@ -115,27 +115,56 @@ pub(super) fn run_wizard(
     }
 
     writeln!(out)?;
+    let mut had_errors = false;
     for plan in final_plans {
-        ensure_prerequisites(plan.integration, out)?;
-        let result = crate::integrations::apply::apply_setup_with_environment(
+        match ensure_prerequisites(plan.integration, out) {
+            Ok(PrerequisiteStatus::Ok) | Ok(PrerequisiteStatus::Warning(_)) => {}
+            Err(e) => {
+                writeln!(
+                    out,
+                    "Skipping {} — prerequisite check failed: {e}",
+                    plan.integration.display_name()
+                )?;
+                had_errors = true;
+                continue;
+            }
+        }
+        match crate::integrations::apply::apply_setup_with_environment(
             plan.integration,
             plan.url.clone(),
             platform,
             &env,
-        )?;
-        writeln!(
-            out,
-            "{} -> {} ({})",
-            plan.integration.display_name(),
-            result.path.display(),
-            if result.changed {
-                "updated"
-            } else {
-                "unchanged"
+        ) {
+            Ok(result) => {
+                writeln!(
+                    out,
+                    "{} -> {} ({})",
+                    plan.integration.display_name(),
+                    result.path.display(),
+                    if result.changed {
+                        "updated"
+                    } else {
+                        "unchanged"
+                    }
+                )?;
             }
-        )?;
+            Err(e) => {
+                writeln!(
+                    out,
+                    "Skipping {} — apply failed: {e}",
+                    plan.integration.display_name()
+                )?;
+                had_errors = true;
+            }
+        }
     }
 
+    if had_errors {
+        writeln!(
+            out,
+            "\nSome integrations could not be configured. See warnings above."
+        )?;
+    }
     Ok(())
 }
 

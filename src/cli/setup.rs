@@ -1,4 +1,3 @@
-use crate::integrations::apply::apply_setup_with_environment;
 use crate::integrations::plan::{build_setup_plan_for_integration, SetupPlan};
 use crate::integrations::IntegrationKind;
 use crate::paths::{HostPlatform, PathEnvironment};
@@ -66,22 +65,56 @@ pub(super) fn run_setup(
     }
 
     writeln!(out)?;
+    let mut had_errors = false;
     for plan in plans {
-        ensure_prerequisites(plan.integration, out)?;
-        let result = apply_setup_with_environment(plan.integration, plan.url, platform, &env)?;
-        writeln!(
-            out,
-            "{} -> {} ({})",
-            plan.integration.display_name(),
-            result.path.display(),
-            if result.changed {
-                "updated"
-            } else {
-                "unchanged"
+        match ensure_prerequisites(plan.integration, out) {
+            Ok(PrerequisiteStatus::Ok) | Ok(PrerequisiteStatus::Warning(_)) => {}
+            Err(e) => {
+                writeln!(
+                    out,
+                    "Skipping {} — prerequisite check failed: {e}",
+                    plan.integration.display_name()
+                )?;
+                had_errors = true;
+                continue;
             }
-        )?;
+        }
+        match crate::integrations::apply::apply_setup_with_environment(
+            plan.integration,
+            plan.url.clone(),
+            platform,
+            &env,
+        ) {
+            Ok(result) => {
+                writeln!(
+                    out,
+                    "{} -> {} ({})",
+                    plan.integration.display_name(),
+                    result.path.display(),
+                    if result.changed {
+                        "updated"
+                    } else {
+                        "unchanged"
+                    }
+                )?;
+            }
+            Err(e) => {
+                writeln!(
+                    out,
+                    "Skipping {} — apply failed: {e}",
+                    plan.integration.display_name()
+                )?;
+                had_errors = true;
+            }
+        }
     }
 
+    if had_errors {
+        writeln!(
+            out,
+            "\nSome integrations could not be configured. See warnings above."
+        )?;
+    }
     Ok(())
 }
 
@@ -118,65 +151,86 @@ pub fn render_setup_plan(plan: &SetupPlan) -> String {
     rendered
 }
 
+/// Prerequisite check result for an integration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrerequisiteStatus {
+    /// All prerequisites met; proceed with apply.
+    Ok,
+    /// Prerequisites not met but setup can still write the config with a warning.
+    /// The user can fix the issue later without re-running the wizard.
+    Warning(String),
+}
+
 pub(super) fn ensure_prerequisites(
     integration: IntegrationKind,
     out: &mut dyn Write,
-) -> io::Result<()> {
+) -> io::Result<PrerequisiteStatus> {
     if integration != IntegrationKind::ClaudeDesktop {
-        return Ok(());
+        return Ok(PrerequisiteStatus::Ok);
     }
 
     if command_on_path(&["mcp-remote", "mcp-remote.cmd"]).is_some() {
         if let Some(node) = command_on_path(&["node", "node.exe"]) {
             match node_major_version(&node) {
-                Ok(major) if major >= MCP_REMOTE_MIN_NODE_MAJOR => return Ok(()),
+                Ok(major) if major >= MCP_REMOTE_MIN_NODE_MAJOR => {
+                    return Ok(PrerequisiteStatus::Ok)
+                }
                 Ok(major) => {
-                    return Err(io::Error::other(format!(
-                        "Claude Desktop requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR} for mcp-remote, but {} is Node {major}. Install Node >= {MCP_REMOTE_MIN_NODE_MAJOR} or switch via nvm/fnm.",
+                    let msg = format!(
+                        "Claude Desktop requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR} for mcp-remote, but {} is Node {major}. The config will be written but Claude Desktop will not connect until you install Node >= {MCP_REMOTE_MIN_NODE_MAJOR} (e.g. via nvm/fnm).",
                         node.display()
-                    )));
+                    );
+                    writeln!(out, "WARNING: {msg}")?;
+                    return Ok(PrerequisiteStatus::Warning(msg));
                 }
                 Err(e) => {
-                    return Err(io::Error::other(format!(
-                        "Could not determine Node.js version from {}: {e}",
+                    let msg = format!(
+                        "Could not determine Node.js version from {}: {e}. The config will be written but Claude Desktop may not work correctly.",
                         node.display()
-                    )));
+                    );
+                    writeln!(out, "WARNING: {msg}")?;
+                    return Ok(PrerequisiteStatus::Warning(msg));
                 }
             }
         }
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("Claude Desktop requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR} for mcp-remote, but `node` was not found on PATH."),
-        ));
+        let msg = format!(
+            "Claude Desktop requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR} for mcp-remote, but `node` was not found on PATH. The config will be written but Claude Desktop will not connect until Node is installed."
+        );
+        writeln!(out, "WARNING: {msg}")?;
+        return Ok(PrerequisiteStatus::Warning(msg));
     }
 
     let Some(npm) = command_on_path(&["npm", "npm.cmd"]) else {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "Claude Desktop integration requires npm so MentisDB can install mcp-remote.",
-        ));
+        let msg = "Claude Desktop integration requires npm so MentisDB can install mcp-remote. The config will be written but Claude Desktop will not connect until npm is installed.".to_string();
+        writeln!(out, "WARNING: {msg}")?;
+        return Ok(PrerequisiteStatus::Warning(msg));
     };
 
     let Some(node) = command_on_path(&["node", "node.exe"]) else {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("Claude Desktop requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR} for mcp-remote, but `node` was not found on PATH."),
-        ));
+        let msg = format!(
+            "Claude Desktop requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR} for mcp-remote, but `node` was not found on PATH. The config will be written but Claude Desktop will not connect until Node is installed."
+        );
+        writeln!(out, "WARNING: {msg}")?;
+        return Ok(PrerequisiteStatus::Warning(msg));
     };
 
     match node_major_version(&node) {
         Ok(major) if major < MCP_REMOTE_MIN_NODE_MAJOR => {
-            return Err(io::Error::other(format!(
-                "Claude Desktop requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR} for mcp-remote, but {} is Node {major}. Install Node >= {MCP_REMOTE_MIN_NODE_MAJOR} or switch via nvm/fnm.",
+            let msg = format!(
+                "Claude Desktop requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR} for mcp-remote, but {} is Node {major}. The config will be written but Claude Desktop will not connect until you install Node >= {MCP_REMOTE_MIN_NODE_MAJOR} (e.g. via nvm/fnm).",
                 node.display()
-            )));
+            );
+            writeln!(out, "WARNING: {msg}")?;
+            return Ok(PrerequisiteStatus::Warning(msg));
         }
         Ok(_) => {}
         Err(e) => {
-            return Err(io::Error::other(format!(
-                "Could not determine Node.js version from {}: {e}",
+            let msg = format!(
+                "Could not determine Node.js version from {}: {e}. The config will be written but Claude Desktop may not work correctly.",
                 node.display()
-            )));
+            );
+            writeln!(out, "WARNING: {msg}")?;
+            return Ok(PrerequisiteStatus::Warning(msg));
         }
     }
 
@@ -189,11 +243,13 @@ pub(super) fn ensure_prerequisites(
         .args(["install", "-g", "mcp-remote"])
         .status()?;
     if !status.success() {
-        return Err(io::Error::other(format!(
-            "npm install -g mcp-remote failed with status {status}"
-        )));
+        let msg = format!(
+            "npm install -g mcp-remote failed with status {status}. The config will be written but Claude Desktop will not connect until mcp-remote is installed."
+        );
+        writeln!(out, "WARNING: {msg}")?;
+        return Ok(PrerequisiteStatus::Warning(msg));
     }
-    Ok(())
+    Ok(PrerequisiteStatus::Ok)
 }
 
 fn node_major_version(node: &PathBuf) -> io::Result<u32> {
