@@ -169,6 +169,7 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
         )
         // Merge all thoughts from a source chain into a target chain, then delete the source
         .route("/chains/merge", post(api_merge_chains))
+        .route("/chains/branch", post(api_branch_chain))
         // Skill listing, reading, and uploading
         .route("/skills", get(api_skills).post(api_upload_skill))
         .route("/skills/{skill_id}", get(api_get_skill))
@@ -2319,6 +2320,101 @@ async fn api_merge_chains(
         thoughts_copied,
         agents_remapped,
         source_deleted: true,
+    }))
+}
+
+/// Request body for `POST /dashboard/api/chains/branch`.
+#[derive(Debug, Deserialize)]
+struct BranchChainDashboardRequest {
+    source_chain_key: String,
+    branch_thought_id: String,
+    branch_chain_key: String,
+}
+
+/// Success response for `POST /dashboard/api/chains/branch`.
+#[derive(Debug, Serialize)]
+struct BranchChainDashboardResponse {
+    branch_chain_key: String,
+    genesis_thought_id: String,
+    source_chain_key: String,
+    branch_thought_id: String,
+}
+
+/// `POST /dashboard/api/chains/branch`
+///
+/// Creates a new chain that diverges from a specific thought on an existing
+/// chain. The new chain receives a genesis `StateSnapshot` thought with a
+/// `BranchesFrom` relation pointing back to the branch-point thought.
+async fn api_branch_chain(
+    State(state): State<DashboardState>,
+    Json(body): Json<BranchChainDashboardRequest>,
+) -> Result<Json<BranchChainDashboardResponse>, (StatusCode, Json<Value>)> {
+    let branch_thought_id = match uuid::Uuid::parse_str(&body.branch_thought_id) {
+        Ok(id) => id,
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("Invalid branch_thought_id: {e}")})),
+            ))
+        }
+    };
+
+    if body.branch_chain_key.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "branch_chain_key must not be empty"})),
+        ));
+    }
+
+    if state.chains.contains_key(&body.branch_chain_key) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({"error": format!("chain '{}' already exists", body.branch_chain_key)})),
+        ));
+    }
+
+    let source_arc = get_or_open_chain(&state, &body.source_chain_key).await.map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("source chain '{}' does not exist", body.source_chain_key)})),
+        )
+    })?;
+
+    {
+        let source = source_arc.read().await;
+        if source.get_thought_by_id(branch_thought_id).is_none() {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(
+                    json!({"error": format!("Thought {branch_thought_id} not found in chain '{}'", body.source_chain_key)}),
+                ),
+            ));
+        }
+    }
+
+    let source_key = body.source_chain_key.clone();
+    let branch_key = body.branch_chain_key.clone();
+    let chain_dir = state.mentisdb_dir.clone();
+
+    let (branch, genesis_id): (MentisDb, uuid::Uuid) = tokio::task::spawn_blocking(move || {
+        let branch =
+            MentisDb::branch_from(&chain_dir, &source_key, branch_thought_id, &branch_key)?;
+        let gid = branch.thoughts()[0].id;
+        Ok((branch, gid))
+    })
+    .await
+    .map_err(|e: tokio::task::JoinError| internal_error(format!("branch task failed: {e}")))?
+    .map_err(|e: std::io::Error| internal_error(e.to_string()))?;
+
+    state
+        .chains
+        .insert(body.branch_chain_key.clone(), Arc::new(RwLock::new(branch)));
+
+    Ok(Json(BranchChainDashboardResponse {
+        branch_chain_key: body.branch_chain_key,
+        genesis_thought_id: genesis_id.to_string(),
+        source_chain_key: body.source_chain_key,
+        branch_thought_id: branch_thought_id.to_string(),
     }))
 }
 

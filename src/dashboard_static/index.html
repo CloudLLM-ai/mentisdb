@@ -994,6 +994,34 @@
         </div>
       </div>
 
+      <!-- ── Branch chain modal ───────────────────────── -->
+      <div id="cl-branch-modal" style="display:none">
+        <div class="card" style="border-color:rgba(88,166,255,0.5);margin-bottom:16px">
+          <div class="card-title" style="color:#58a6ff">⑂ Branch Chain</div>
+          <p style="color:#c9d1d9;margin-bottom:6px">
+            Create a new chain that diverges from a specific thought on
+            <strong id="cl-br-src" style="color:#58a6ff"></strong>.
+            The branch chain will have a genesis thought with a <code>BranchesFrom</code> relation
+            pointing back to the fork point. Searches on the branch will transparently include
+            results from the parent chain.
+          </p>
+          <div class="form-group" style="margin-bottom:14px">
+            <label>New branch chain name</label>
+            <input type="text" id="cl-br-name" class="filter-input" placeholder="e.g. experiment-1" />
+          </div>
+          <div class="form-group" style="margin-bottom:14px">
+            <label>Branch from thought (UUID)</label>
+            <input type="text" id="cl-br-thought-id" class="filter-input mono" placeholder="Paste thought UUID or pick from recent thoughts" style="font-size:0.85rem" />
+          </div>
+          <div id="cl-br-thoughts" style="margin-bottom:14px;max-height:200px;overflow-y:auto"></div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.5)" id="cl-br-submit">Create Branch</button>
+            <button class="btn btn-secondary btn-sm" id="cl-br-cancel">Cancel</button>
+            <span id="cl-br-fb" class="feedback"></span>
+          </div>
+        </div>
+      </div>
+
       <div class="card"><div id="cl-body"></div></div>
     `;
 
@@ -1117,6 +1145,69 @@
         });
     });
 
+    // ── Branch chain ──────────────────────────────────────────────
+    let _branchSourceKey = null;
+
+    window._openBranchChain = function(ck) {
+      _branchSourceKey = ck;
+      document.getElementById('cl-br-src').textContent = ck;
+      document.getElementById('cl-br-name').value = ck + '-branch';
+      document.getElementById('cl-br-thought-id').value = '';
+      document.getElementById('cl-br-fb').textContent = '';
+      document.getElementById('cl-br-fb').className = 'feedback';
+      document.getElementById('cl-branch-modal').style.display = '';
+      // Load recent thoughts from the source chain for picking
+      const container = document.getElementById('cl-br-thoughts');
+      container.innerHTML = '<div style="color:#8b949e;font-size:0.85rem">Loading thoughts…</div>';
+      api(`/dashboard/api/chains/${encodeURIComponent(ck)}/thoughts?per_page=20&order=desc`)
+        .then(data => {
+          const thoughts = data.thoughts || [];
+          if (!thoughts.length) { container.innerHTML = '<div style="color:#8b949e;font-size:0.85rem">No thoughts found</div>'; return; }
+          container.innerHTML = thoughts.map(t => {
+            const preview = (t.content || '').slice(0, 80).replace(/</g, '&lt;');
+            return `<div class="clickable" style="padding:4px 8px;border-radius:4px;margin-bottom:2px;font-size:0.85rem;cursor:pointer;border:1px solid rgba(88,166,255,0.2)" onclick="document.getElementById('cl-br-thought-id').value='${t.id}'">
+              <span class="mono" style="color:#58a6ff">${t.id}</span>
+              <span style="color:#8b949e;margin-left:8px">${preview}</span>
+            </div>`;
+          }).join('');
+        })
+        .catch(() => { container.innerHTML = '<div style="color:#f85149;font-size:0.85rem">Failed to load thoughts</div>'; });
+    };
+
+    document.getElementById('cl-br-cancel').addEventListener('click', () => {
+      document.getElementById('cl-branch-modal').style.display = 'none';
+      _branchSourceKey = null;
+    });
+
+    document.getElementById('cl-br-submit').addEventListener('click', () => {
+      const fb  = document.getElementById('cl-br-fb');
+      const btn = document.getElementById('cl-br-submit');
+      const name = document.getElementById('cl-br-name').value.trim();
+      const thoughtId = document.getElementById('cl-br-thought-id').value.trim();
+      if (!name) { showFeedback(fb, false, 'Enter a branch chain name'); return; }
+      if (!thoughtId) { showFeedback(fb, false, 'Enter or pick a thought UUID to branch from'); return; }
+      btn.disabled = true;
+      fb.textContent = 'Branching…';
+      fb.className = 'feedback show';
+      api('/dashboard/api/chains/branch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_chain_key: _branchSourceKey, branch_thought_id: thoughtId, branch_chain_key: name })
+      })
+        .then(res => {
+          showFeedback(fb, true, `✓ Branch '${res.branch_chain_key}' created from thought ${res.branch_thought_id.slice(0,8)}…`);
+          setTimeout(() => {
+            document.getElementById('cl-branch-modal').style.display = 'none';
+            _branchSourceKey = null;
+            renderChainList();
+          }, 1800);
+        })
+        .catch(err => {
+          showFeedback(fb, false, err.message);
+          btn.disabled = false;
+        });
+    });
+
     const el = document.getElementById('cl-body');
     spinner(el);
     api('/dashboard/api/chains')
@@ -1134,6 +1225,7 @@
                   <td onclick="event.stopPropagation()"><a href="${agentListHash(c.chain_key)}" class="mono" style="color:#58a6ff;text-decoration:none">${esc(String(c.agent_count  ?? '—'))}</a></td>
                   <td class="mono" style="color:#8b949e">${c.head_hash ? esc(c.head_hash.slice(0,8)) : '—'}</td>
                   <td onclick="event.stopPropagation()" style="white-space:nowrap">
+                    <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);margin-right:6px" onclick="window._openBranchChain('${esc(c.chain_key)}')">Branch…</button>
                     <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);margin-right:6px" onclick="window._openMergeChain('${esc(c.chain_key)}')">Merge into…</button>
                     <button class="btn btn-danger btn-sm" onclick="window._openDeleteChain('${esc(c.chain_key)}')">Delete</button>
                   </td>
