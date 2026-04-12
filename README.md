@@ -405,6 +405,7 @@ REST endpoints:
 - `GET /v1/skills/manifest`
 - `GET /v1/chains`
 - `POST /v1/chains/merge`
+- `POST /v1/chains/branch`
 - `POST /v1/vectors/rebuild`
 - `POST /v1/bootstrap`
 - `POST /v1/agents`
@@ -721,6 +722,14 @@ Starting in 0.8.2, ranked search adds temporal, scoped, and dedup-aware features
 - **Auto-dedup with `Supersedes` relations** — when `MENTISDB_DEDUP_THRESHOLD` is set, appending a thought whose content is sufficiently similar (Jaccard ≥ threshold) to a recent thought automatically creates a `Supersedes` relation instead of storing a duplicate. The superseded thought's id is recorded for fast exclusion.
 - **`invalidated_thought_ids` for O(1) superseded detection** — each thought tracks which earlier thoughts it supersedes. Ranked search uses this set to skip superseded thoughts in constant time without walking the full relation graph.
 
+### Search Scoring (0.8.6)
+
+Starting in 0.8.6, ranked search adds three features:
+
+- **Irregular verb lemma expansion** — the query tokenizer maps irregular past-tense verbs to their base form (e.g. "went" → "go", "gave" → "give", "ran" → "run"). About 170 mappings. Indexed content is not modified — expansion is query-time only.
+- **Reciprocal Rank Fusion (RRF)** — an opt-in reranking pass. When `enable_reranking=true` is set on a ranked search query, the engine produces separate lexical-only, vector-only, and graph-only rankings over the top `rerank_k` candidates (default 50), merges them via `1/(k + rank)` with `k=60`, and replaces the additive total with the RRF total plus non-rankable signal adjustments. Use when lexical and vector signals disagree on top candidates.
+- **Per-field BM25 DF cutoffs** — `Bm25DfCutoffs` on `LexicalQuery` allows configuring separate document-frequency cutoff ratios per field (content, tags, concepts, agent_id, agent_registry). Terms whose global DF exceeds the cutoff for a given field are skipped for that field only. Default cutoffs match the original behavior (content=0.30, tags=0.30, concepts=0.30, agent_id=0.70, agent_registry=0.60).
+
 ### Vector Sidecars
 
 MentisDB now exposes an additive Phase 3 vector sidecar surface for direct crate use:
@@ -836,13 +845,14 @@ When a managed vector sidecar such as the built-in `fastembed-minilm` provider i
 Ranked response contract fields:
 
 - `backend`
-- `results[].score.{lexical,vector,graph,relation,seed_support,importance,confidence,recency,total}`
+- `results[].score.{lexical,vector,graph,relation,seed_support,importance,confidence,recency,session_cohesion,rrf,total}`
 - `results[].matched_terms`
 - `results[].match_sources`
 - `results[].graph_distance`
 - `results[].graph_seed_paths`
 - `results[].graph_relation_kinds`
 - `results[].graph_path`
+- `results[].chain_key` (present when searching branch chains with ancestor results)
 
 Context-bundle response contract fields:
 
@@ -920,7 +930,7 @@ outside localhost.
 
 ## MCP Tool Catalog
 
-The daemon currently exposes 34 MCP tools:
+The daemon currently exposes 35 MCP tools:
 
 - `mentisdb_bootstrap`
   Create a chain if needed and write one bootstrap checkpoint when it is empty.
@@ -940,6 +950,8 @@ The daemon currently exposes 34 MCP tools:
   List known chains with version, storage adapter, counts, and storage location.
 - `mentisdb_merge_chains`
   Merge all thoughts from a source chain into a target chain, then permanently delete the source.
+- `mentisdb_branch_from`
+  Create a new chain that diverges from a thought on an existing chain. The branch receives a genesis thought with a BranchesFrom relation pointing back to the fork point. Searches on the branch chain transparently include ancestor chain results.
 - `mentisdb_list_agents`
   List the distinct agent identities participating in one chain.
 - `mentisdb_get_agent`

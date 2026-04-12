@@ -99,6 +99,7 @@ Every thought can link to prior thoughts via two mechanisms. **Always link when 
 | Supports | This thought supports the target's claim |
 | Contradicts | This thought contradicts the target |
 | ContinuesFrom | This continues work from the target |
+| BranchesFrom | This thought is the genesis of a branch diverging from the target (cross-chain) |
 | RelatedTo | Loose semantic connection |
 
 Relations support optional `valid_at` and `invalid_at` timestamps for time-bounded facts. When you know a fact's validity window, set these on the relation. `append_thought` auto-sets `valid_at` to the current time if you don't provide one.
@@ -119,6 +120,24 @@ When dispatching sub-agents:
 4. **Write handoffs as Summary with role Checkpoint** — include what was done, what's pending, and what the next agent should pick up
 5. **Use the PM pattern** — one project manager decomposes work, dispatches parallel specialists, and synthesizes results wave by wave
 6. **Sub-agents must flush pending memories** (LessonLearned, Decision, Constraint) before exiting — if an agent dies without writing, its learnings are lost
+7. **Branch for experiments** — use `mentisdb_branch_from` to create an isolated chain for risky or exploratory work. The branch chain starts with a `BranchesFrom` relation pointing back to the fork point. Searches on the branch transparently include ancestor chain results.
+
+### Branching
+
+`mentisdb_branch_from` creates a new chain that diverges from a thought on an existing chain:
+
+```
+mentisdb_branch_from(
+  source_chain_key="main-project",
+  branch_thought_id="<uuid>",
+  branch_chain_key="experiment-1"
+)
+```
+
+The new chain gets a single genesis thought with a `BranchesFrom` relation. Searches on `experiment-1` automatically include results from `main-project`. Use branching to:
+- Isolate risky experiments from the main chain
+- Let sub-agents work in their own space while still accessing shared context
+- Try alternative approaches without polluting the primary memory stream
 
 ## 🧩 SKILL REGISTRY
 
@@ -152,6 +171,14 @@ Tools: `mentisdb_upload_skill`, `mentisdb_read_skill`, `mentisdb_list_skills`, `
 | Scope-filtered search | `mentisdb_ranked_search` with `scope` parameter |
 
 **Always filter** — supply text, tags, concepts, types, or time window.
+
+### RRF Reranking
+
+Set `enable_reranking=true` and `rerank_k=50` (default) on `mentisdb_ranked_search` to enable Reciprocal Rank Fusion. RRF produces separate lexical-only, vector-only, and graph-only rankings over the top `rerank_k` candidates, then merges them via `1/(k + rank)`. Use RRF when lexical and vector signals disagree on top candidates — it's neutral on simple queries but can improve multi-hop and multi-type questions.
+
+### Branching and Cross-Chain Search
+
+When searching a branch chain, the server transparently searches ancestor chains (following `BranchesFrom` relations) and merges results. Each hit includes a `chain_key` field so you know where it came from. No special parameters needed — just search the branch chain normally.
 
 ## 🏷️ SEARCHABILITY
 
