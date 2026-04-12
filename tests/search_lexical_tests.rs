@@ -283,7 +283,7 @@ fn global_df_cutoffs_filter_common_terms_from_strict_fields() {
             "tester",
             ThoughtInput::new(
                 ThoughtType::Insight,
-                &format!("Common word appears in every document number {i}"),
+                format!("Common word appears in every document number {i}"),
             ),
         )
         .unwrap();

@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn test_rrf_single_list() {
-        let list = vec![10usize, 20, 30];
+        let list = [10usize, 20, 30];
         let result = rrf_merge(&[&list[..]], RRF_K);
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].0, 10);
@@ -76,8 +76,8 @@ mod tests {
 
     #[test]
     fn test_rrf_two_lists_agreement() {
-        let a = vec![1usize, 2, 3];
-        let b = vec![1usize, 2, 3];
+        let a = [1usize, 2, 3];
+        let b = [1usize, 2, 3];
         let result = rrf_merge(&[&a[..], &b[..]], RRF_K);
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].0, 1);
@@ -87,8 +87,8 @@ mod tests {
 
     #[test]
     fn test_rrf_two_lists_disagreement() {
-        let a = vec![10usize, 20, 30];
-        let b = vec![30usize, 20, 10];
+        let a = [10usize, 20, 30];
+        let b = [30usize, 20, 10];
         let k = 1;
         let result = rrf_merge(&[&a[..], &b[..]], k);
         assert_eq!(result.len(), 3);
@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn test_rrf_one_empty_one_nonempty() {
         let a: Vec<usize> = vec![];
-        let b = vec![1usize, 2];
+        let b = [1usize, 2];
         let result = rrf_merge(&[&a[..], &b[..]], RRF_K);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].0, 1);
