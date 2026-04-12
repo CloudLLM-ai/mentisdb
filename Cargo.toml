@@ -1,6 +1,6 @@
 [package]
 name = "mentisdb"
-version = "0.8.5"
+version = "0.8.6"
 authors = ["Angel Leon <gubatron@gmail.com>"]
 edition = "2021"
 license = "MIT"

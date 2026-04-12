@@ -1,3 +1,47 @@
+0.8.6.32 APR/12/2026
+  - feat(search): Reciprocal Rank Fusion (RRF) reranking for ranked search
+    - New `src/search/ranked.rs` with `rrf_merge()`, `rrf_merge_three()`, RRF_K=60
+    - `RankedSearchQuery` gains `enable_reranking: bool` (default false) and
+      `rerank_k: usize` (default 50) fields with `with_reranking()` builder
+    - When enabled, three single-signal rankings (lexical-only, vector-only,
+      graph-only) are merged via `1/(k + rank)` and replace the additive total;
+      importance, confidence, recency, session cohesion, and graph signals are
+      added back as small additive adjustments
+    - `RankedSearchScore` gains `rrf: f32` field (0.0 when reranking disabled)
+    - REST and MCP transports pass `enable_reranking`/`rerank_k` through
+    - 6 unit tests for RRF merge logic
+  - feat(search): per-field BM25 document-frequency cutoffs (global DF)
+    - `Bm25DfCutoffs` struct on `LexicalQuery` with configurable cutoff ratios
+      per field: content, tags, concepts, agent_id, agent_registry
+    - Terms whose global DF exceeds `cutoff_ratio * N` are filtered from that
+      field only — preserves original stop-word suppression while allowing
+      per-field tuning
+    - Default cutoffs: content=0.30, tags=0.30, concepts=0.30, agent_id=0.70,
+      agent_registry=0.60
+    - `with_df_cutoffs()` builder on `LexicalQuery`
+  - feat(search): irregular verb lemma expansion
+    - `src/search/lemmas.rs` with ~170 irregular English verb mappings
+    - Query tokenization expands "went"→"go", "gave"→"give", "ran"→"run", etc.
+    - Indexed content is NOT changed — lemma expansion is query-time only
+  - feat(branching): BranchesFrom relation and chain branching
+    - `ThoughtRelationKind::BranchesFrom` for cross-chain divergence points
+    - `MentisDb::branch_from()` creates a new chain with a genesis thought
+      pointing back to the branch-point thought on the source chain
+    - `ancestor_chain_keys()` walks BranchesFrom relations to discover parent
+      and grandparent chains
+    - Ranked search on branch chains transparently searches ancestor chains
+      and annotates results with chain_key
+    - REST endpoint: `POST /v1/chains/branch`
+    - MCP tool: `mentisdb_branch_from`
+  - fix(search): use global DF for Bm25DfCutoffs comparison
+    - Per-field DF calculation was less aggressive than original global DF check,
+      letting high-frequency terms pass through and adding noise
+    - Changed to use global DF (postings list length) for cutoff comparison,
+      matching the original stop-word suppression behavior
+  - docs(whitepaper): expanded BM25 explanation, per-field DF cutoffs table,
+    RRF section 6.8
+  - bench: LoCoMo 73.0% R@10 (fresh chain), LongMemEval 57.6% R@5
+
 0.8.5.31 APR/11/2026
   - fix(cli): panic in update/force-update subcommands — cannot start tokio runtime within runtime
     - run_update_standalone() created a nested tokio runtime inside #[tokio::main],
