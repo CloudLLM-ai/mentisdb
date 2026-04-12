@@ -283,8 +283,8 @@ Per-field document-frequency cutoffs prevent non-discriminative terms from domin
 | Field | Cutoff | Rationale |
 |-------|--------|-----------|
 | Content | 30% | Default; content is large and stop-word prone |
-| Tags | 50% | Tag vocabularies are smaller and more uniform |
-| Concepts | 40% | Concepts are curated, less noisy |
+| Tags | 30% | Same baseline; tag vocabularies are small but can be repetitive |
+| Concepts | 30% | Same baseline; concepts are curated but still need filtering |
 | Agent ID | 70% | Agent IDs are inherently repetitive |
 | Agent Registry | 60% | Registry text is short and repetitive |
 

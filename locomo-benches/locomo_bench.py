@@ -173,8 +173,9 @@ def rebuild_vectors(base_url: str, chain_key: str) -> None:
             print(f"  WARNING: vector rebuild failed ({provider_key}): {e}", flush=True)
 
 
-def ranked_search(base_url: str, chain_key: str, query: str, limit: int) -> list[dict]:
-    resp = _post(base_url, "/v1/ranked-search", {
+def ranked_search(base_url: str, chain_key: str, query: str, limit: int,
+                   enable_reranking: bool = False, rerank_k: int = 50) -> list[dict]:
+    payload: dict = {
         "chain_key": chain_key,
         "text": query,
         "limit": limit,
@@ -183,7 +184,11 @@ def ranked_search(base_url: str, chain_key: str, query: str, limit: int) -> list
             "max_visited": 200,
             "include_seeds": False,
         },
-    })
+    }
+    if enable_reranking:
+        payload["enable_reranking"] = True
+        payload["rerank_k"] = rerank_k
+    resp = _post(base_url, "/v1/ranked-search", payload)
     return resp.get("results", [])
 
 
@@ -450,7 +455,11 @@ def main():
     ap.add_argument("--skip-vectors", action="store_true",
                     help="Skip vector sidecar rebuild after ingestion")
     ap.add_argument("--force-reingest", action="store_true",
-                    help="Force re-ingest even if chain exists")
+                    help="Force re-ingest even if chain already exists")
+    ap.add_argument("--reranking", action="store_true",
+                    help="Enable RRF reranking in ranked search")
+    ap.add_argument("--rerank-k", type=int, default=50,
+                    help="Number of candidates to rerank (default 50)")
     ap.add_argument("--output", help="Write per-type JSON results here")
     args = ap.parse_args()
 
