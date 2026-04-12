@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.8.6 — RRF, Branching, and Better Search</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 12, 2026</div>
+
+<h1>MentisDB 0.8.6 — RRF, Branching, and Better Search</h1>
+
+<p>
+  0.8.6 adds three significant features to the retrieval engine: Reciprocal Rank Fusion
+  (RRF) reranking, memory chain branching, and irregular verb lemma expansion — plus a
+  critical fix to the BM25 document-frequency cutoff logic.
+</p>
+
+<h2 id="the-numbers">The Numbers</h2>
+
+<table>
+  <thead>
+    <tr><th>Benchmark</th><th>Metric</th><th>0.8.5</th><th>0.8.6</th><th>Notes</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>LoCoMo 10-persona</td><td>R@10</td><td>73.0%</td><td>73.0%</td><td>Stable; no regression</td></tr>
+    <tr><td>LongMemEval</td><td>R@5</td><td>—</td><td>57.6%</td><td>First baseline</td></tr>
+    <tr><td>LoCoMo w/ RRF</td><td>R@10</td><td>—</td><td>73.0%</td><td>Neutral; multi-type +0.5%</td></tr>
+  </tbody>
+</table>
+
+<div class="highlight">
+  <p>
+    <strong>LoCoMo 73.0%</strong> on a fresh chain with rebuilt vector sidecar. The
+    previously reported 74.6% was from a different chain state. The 0.8.5 baseline
+    binary also scores 72.9% on that same chain, confirming no regression from 0.8.6
+    code changes.
+  </p>
+</div>
+
+<h2 id="rrf-reranking">RRF Reranking</h2>
+
+<p>
+  <a href="https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf">Reciprocal Rank Fusion</a>
+  merges multiple ranked lists by assigning each document a score of
+  <code>1/(k + rank)</code> from each list and summing them. This is robust to score
+  scale differences between signals.
+</p>
+
+<p>
+  When <code>enable_reranking</code> is set on a <code>RankedSearchQuery</code>, the
+  engine produces three independent rankings — lexical-only, vector-only, and
+  graph-only — over the top <code>rerank_k</code> candidates, then merges them via
+  RRF with <code>k=60</code>. Non-rankable signals (importance, confidence, recency,
+  session cohesion) are added back as small additive adjustments.
+</p>
+
+<p>
+  RRF is <strong>opt-in</strong> (default off). On LoCoMo it's neutral overall but
+  improves multi-type queries by +0.5%. It may help more on datasets where lexical
+  and vector signals disagree on top candidates.
+</p>
+
+<h2 id="branching">Memory Chain Branching</h2>
+
+<p>
+  New <code>ThoughtRelationKind::BranchesFrom</code> enables cross-chain divergence.
+  <code>MentisDb::branch_from()</code> creates a new chain with a genesis thought
+  pointing back to the branch-point on the source chain.
+</p>
+
+<p>
+  When searching a branch chain, the server transparently searches ancestor chains
+  (walking <code>BranchesFrom</code> relations) and merges results, annotated with
+  <code>chain_key</code> so callers know where each hit came from.
+</p>
+
+<pre><code>// Create a branch from an existing thought
+let branch = MentisDb::branch_from(
+    &chain_dir,
+    "main-chain",
+    thought_id,
+    "experiment-1",
+)?;
+
+// Searches on experiment-1 automatically include main-chain results
+let results = branch.query_ranked(&query);</code></pre>
+
+<h2 id="lemma-expansion">Irregular Verb Lemma Expansion</h2>
+
+<p>
+  Query tokenization now expands irregular English verbs to their base form:
+  "went" → "go", "gave" → "give", "ran" → "run". About 170 mappings are included.
+  The expansion is query-time only — indexed content is not modified.
+</p>
+
+<p>
+  This helps when a user asks "when did Caroline go to the museum?" and the
+  evidence contains "went to the museum yesterday."
+</p>
+
+<h2 id="df-cutoff-fix">BM25 DF Cutoff Fix</h2>
+
+<p>
+  The per-field BM25 document-frequency cutoffs introduced in an earlier commit
+  used <em>per-field</em> DF for the cutoff comparison. Per-field DF is always
+  ≤ global DF, so more terms passed through the filter, adding noise to search
+  results.
+</p>
+
+<p>
+  The fix: <code>Bm25DfCutoffs</code> now uses <strong>global DF</strong>
+  (postings list length) for the cutoff comparison. A term is filtered from a
+  specific field if its global document frequency exceeds that field's cutoff
+  ratio. This preserves the original stop-word suppression behavior while still
+  allowing per-field tuning via the cutoff configuration.
+</p>
+
+<h2 id="benchmarks">Benchmark Details</h2>
+
+<h3>LoCoMo 10-persona</h3>
+
+<table>
+  <thead><tr><th>Config</th><th>R@10</th><th>Single</th><th>Multi</th></tr></thead>
+  <tbody>
+    <tr><td>0.8.6 (default)</td><td>73.0%</td><td>77.1%</td><td>57.7%</td></tr>
+    <tr><td>0.8.6 + RRF (k=50)</td><td>73.0%</td><td>76.3%</td><td>58.2%</td></tr>
+  </tbody>
+</table>
+
+<h3>LongMemEval</h3>
+
+<table>
+  <thead><tr><th>Question Type</th><th>R@5</th><th>R@10</th><th>R@20</th></tr></thead>
+  <tbody>
+    <tr><td>Overall</td><td><strong>57.6%</strong></td><td>62.6%</td><td>69.2%</td></tr>
+    <tr><td>single-session-assistant</td><td>83.9%</td><td>85.7%</td><td>89.3%</td></tr>
+    <tr><td>knowledge-update</td><td>82.1%</td><td>88.5%</td><td>89.7%</td></tr>
+    <tr><td>single-session-user</td><td>68.6%</td><td>77.1%</td><td>84.3%</td></tr>
+    <tr><td>temporal-reasoning</td><td>67.7%</td><td>71.4%</td><td>76.7%</td></tr>
+    <tr><td>multi-session</td><td>26.3%</td><td>27.1%</td><td>33.8%</td></tr>
+    <tr><td>single-session-preference</td><td>13.3%</td><td>20.0%</td><td>40.0%</td></tr>
+  </tbody>
+</table>
+
+<p>
+  LongMemEval is significantly harder for mentisdb because multi-session and
+  preference questions require cross-session reasoning that pure retrieval
+  alone cannot solve. Future work on LLM-based reranking (as shown by MemPalace's
+  100% R@5 with hybrid + Haiku rerank) should close this gap.
+</p>
+
+<h2 id="upgrade">Upgrade</h2>
+
+<pre><code>cargo install mentisdb --force</code></pre>
+
+<footer>
+  <p>
+    <a href="https://crates.io/crates/mentisdb">crates.io</a> ·
+    <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> ·
+    <a href="https://docs.mentisdb.com">Documentation</a>
+  </p>
+</footer>
+</body>
+</html>
