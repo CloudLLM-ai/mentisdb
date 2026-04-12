@@ -2101,6 +2101,7 @@ fn current_version_jsonl_chain_is_reconciled_to_default_binary_storage() {
                         storage_location,
                         thought_count: 1,
                         agent_count: 1,
+                        entity_type_count: 0,
                         created_at: now,
                         updated_at: now,
                     },
@@ -3743,6 +3744,177 @@ fn test_entity_type_in_json_serialization() {
         json_str2.contains("entity_type"),
         "entity_type should appear in JSON even when None: {json_str2}"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn entity_type_registry_auto_observes_on_append() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "et-registry").unwrap();
+
+    assert!(
+        chain.entity_type_registry().entity_types.is_empty(),
+        "registry should start empty"
+    );
+
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Decision, "Decide on API").with_entity_type("project"),
+        )
+        .unwrap();
+
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Insight, "Another insight")
+                .with_entity_type("api-endpoint"),
+        )
+        .unwrap();
+
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Decision, "Same project decision")
+                .with_entity_type("project"),
+        )
+        .unwrap();
+
+    chain
+        .append("agent1", ThoughtType::Insight, "No entity type here")
+        .unwrap();
+
+    let registry = chain.entity_type_registry();
+    assert_eq!(registry.entity_types.len(), 2);
+
+    let project = registry.entity_types.get("project").unwrap();
+    assert_eq!(project.entity_type, "project");
+    assert_eq!(project.thought_count, 2);
+    assert_eq!(project.first_seen_index, Some(0));
+    assert_eq!(project.last_seen_index, Some(2));
+
+    let api = registry.entity_types.get("api-endpoint").unwrap();
+    assert_eq!(api.thought_count, 1);
+    assert_eq!(api.first_seen_index, Some(1));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn entity_type_registry_persists_and_reloads() {
+    let dir = unique_chain_dir();
+    let chain_key = "et-persist";
+
+    {
+        let mut chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+        chain
+            .append_thought(
+                "agent1",
+                ThoughtInput::new(ThoughtType::Decision, "Project decision")
+                    .with_entity_type("project"),
+            )
+            .unwrap();
+        chain
+            .append_thought(
+                "agent1",
+                ThoughtInput::new(ThoughtType::Insight, "API insight")
+                    .with_entity_type("api-endpoint"),
+            )
+            .unwrap();
+    }
+
+    let reopened = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    let registry = reopened.entity_type_registry();
+    assert_eq!(registry.entity_types.len(), 2);
+    assert!(registry.entity_types.contains_key("project"));
+    assert!(registry.entity_types.contains_key("api-endpoint"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn entity_type_registry_upsert_pre_registers_type() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "et-upsert").unwrap();
+
+    let record = chain.upsert_entity_type("project").unwrap();
+    assert_eq!(record.entity_type, "project");
+    assert_eq!(record.thought_count, 1);
+
+    let record2 = chain.upsert_entity_type("project").unwrap();
+    assert_eq!(record2.thought_count, 1);
+
+    assert_eq!(chain.entity_type_registry().entity_types.len(), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn entity_type_query_filter() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "et-query").unwrap();
+
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Decision, "Decide A").with_entity_type("project"),
+        )
+        .unwrap();
+    chain
+        .append("agent1", ThoughtType::Insight, "No entity type")
+        .unwrap();
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Decision, "Decide B").with_entity_type("api-endpoint"),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Insight, "More project").with_entity_type("project"),
+        )
+        .unwrap();
+
+    let results = chain.query(&ThoughtQuery::new().with_entity_type("project"));
+    assert_eq!(results.len(), 2);
+    assert!(results
+        .iter()
+        .all(|t| t.entity_type.as_deref() == Some("project")));
+
+    let no_match = chain.query(&ThoughtQuery::new().with_entity_type("nonexistent"));
+    assert!(no_match.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn entity_type_count_in_registration() {
+    let dir = unique_chain_dir();
+    let chain_key = "et-reg-count";
+
+    {
+        let mut chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+        chain
+            .append_thought(
+                "agent1",
+                ThoughtInput::new(ThoughtType::Decision, "Decide").with_entity_type("project"),
+            )
+            .unwrap();
+        chain
+            .append_thought(
+                "agent1",
+                ThoughtInput::new(ThoughtType::Insight, "Insight").with_entity_type("task"),
+            )
+            .unwrap();
+    }
+
+    let registry_path = dir.join("mentisdb-registry.json");
+    let registry: mentisdb::MentisDbRegistry =
+        serde_json::from_str(&std::fs::read_to_string(&registry_path).unwrap()).unwrap();
+    let reg = registry.chains.get(chain_key).unwrap();
+    assert_eq!(reg.entity_type_count, 2);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

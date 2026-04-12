@@ -358,6 +358,7 @@ const CHAIN_REGISTRATION_FLUSH_THRESHOLD: usize = FLUSH_THRESHOLD;
 /// Number of append-driven agent-registry sidecar updates to batch before
 /// rewriting the per-chain registry JSON when buffered writes are enabled.
 const AGENT_REGISTRY_FLUSH_THRESHOLD: usize = FLUSH_THRESHOLD;
+const ENTITY_TYPE_REGISTRY_FLUSH_THRESHOLD: usize = FLUSH_THRESHOLD;
 
 /// Maximum allowed bincode payload size for a single thought record (DoS protection).
 const MAX_THOUGHT_PAYLOAD_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
@@ -1185,6 +1186,61 @@ impl AgentRegistry {
     }
 }
 
+/// Registry entry describing one observed entity type in a chain.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EntityTypeRecord {
+    /// The entity type label.
+    pub entity_type: String,
+    /// First thought index where this entity type was observed.
+    pub first_seen_index: Option<u64>,
+    /// Most recent thought index where this entity type was observed.
+    pub last_seen_index: Option<u64>,
+    /// First observed timestamp for this entity type in the chain.
+    pub first_seen_at: Option<DateTime<Utc>>,
+    /// Most recent observed timestamp for this entity type in the chain.
+    pub last_seen_at: Option<DateTime<Utc>>,
+    /// Number of thoughts attributed to this entity type in the chain.
+    pub thought_count: u64,
+}
+
+impl EntityTypeRecord {
+    fn new(entity_type: &str, index: u64, timestamp: DateTime<Utc>) -> Self {
+        Self {
+            entity_type: entity_type.to_string(),
+            first_seen_index: Some(index),
+            last_seen_index: Some(index),
+            first_seen_at: Some(timestamp),
+            last_seen_at: Some(timestamp),
+            thought_count: 1,
+        }
+    }
+
+    fn observe(&mut self, index: u64, timestamp: DateTime<Utc>) {
+        self.last_seen_index = Some(index);
+        self.last_seen_at = Some(timestamp);
+        self.thought_count += 1;
+    }
+}
+
+/// Per-chain registry of the entity types that have been observed on thoughts.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EntityTypeRegistry {
+    /// Registry entries keyed by entity type label.
+    pub entity_types: BTreeMap<String, EntityTypeRecord>,
+}
+
+impl EntityTypeRegistry {
+    fn observe(&mut self, entity_type: &str, index: u64, timestamp: DateTime<Utc>) {
+        match self.entity_types.get_mut(entity_type) {
+            Some(record) => record.observe(index, timestamp),
+            None => {
+                let record = EntityTypeRecord::new(entity_type, index, timestamp);
+                self.entity_types.insert(entity_type.to_string(), record);
+            }
+        }
+    }
+}
+
 /// Metadata describing one registered thought chain.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MentisDbRegistration {
@@ -1200,6 +1256,9 @@ pub struct MentisDbRegistration {
     pub thought_count: u64,
     /// Number of agents in the per-chain registry.
     pub agent_count: usize,
+    /// Number of distinct entity types in the per-chain registry.
+    #[serde(default)]
+    pub entity_type_count: usize,
     /// UTC timestamp when the registration was created.
     pub created_at: DateTime<Utc>,
     /// UTC timestamp when the registration was last updated.
@@ -2230,6 +2289,12 @@ impl ThoughtQuery {
         self
     }
 
+    /// Limit matches to thoughts with the specified entity type.
+    pub fn with_entity_type(mut self, entity_type: impl Into<String>) -> Self {
+        self.entity_type = Some(entity_type.into());
+        self
+    }
+
     fn candidate_position_bounds(&self, thoughts: &[Thought]) -> (usize, usize) {
         let start = self
             .since
@@ -2261,6 +2326,12 @@ impl ThoughtQuery {
                 .iter()
                 .any(|agent_id| agent_id == &thought.agent_id)
             {
+                return false;
+            }
+        }
+
+        if let Some(entity_type) = &self.entity_type {
+            if thought.entity_type.as_deref() != Some(entity_type.as_str()) {
                 return false;
             }
         }
@@ -3301,6 +3372,7 @@ pub struct MentisDb {
     id_to_index: HashMap<Uuid, usize>,
     hash_to_index: HashMap<String, usize>,
     agent_registry: AgentRegistry,
+    entity_type_registry: EntityTypeRegistry,
     query_indexes: QueryIndexes,
     storage: Box<dyn StorageAdapter>,
     auto_flush: bool,
@@ -3308,6 +3380,8 @@ pub struct MentisDb {
     managed_vector_sidecars: HashMap<crate::search::EmbeddingMetadata, ManagedSidecarEntry>,
     pending_agent_registry_sync: bool,
     pending_agent_registry_updates: usize,
+    pending_entity_type_registry_sync: bool,
+    pending_entity_type_registry_updates: usize,
     pending_chain_registration_sync: bool,
     pending_chain_registration_updates: usize,
     /// Set of thought IDs that have been superseded, corrected, or invalidated
@@ -3385,6 +3459,16 @@ impl MentisDb {
             AgentRegistry::default()
         };
 
+        let mut entity_type_registry = if let Some(metadata) = &persistence {
+            load_entity_type_registry(
+                &metadata.chain_dir,
+                &metadata.chain_key,
+                metadata.storage_kind,
+            )?
+        } else {
+            EntityTypeRegistry::default()
+        };
+
         let mut id_to_index = HashMap::new();
         let mut hash_to_index = HashMap::new();
         for (position, thought) in thoughts.iter().enumerate() {
@@ -3406,6 +3490,9 @@ impl MentisDb {
                 thought.index,
                 thought.timestamp,
             );
+            if let Some(et) = &thought.entity_type {
+                entity_type_registry.observe(et, thought.index, thought.timestamp);
+            }
         }
 
         let mut chain = Self {
@@ -3414,12 +3501,15 @@ impl MentisDb {
             id_to_index,
             hash_to_index,
             agent_registry,
+            entity_type_registry,
             storage,
             auto_flush: true,
             persistence,
             managed_vector_sidecars: HashMap::new(),
             pending_agent_registry_sync: false,
             pending_agent_registry_updates: 0,
+            pending_entity_type_registry_sync: false,
+            pending_entity_type_registry_updates: 0,
             pending_chain_registration_sync: false,
             pending_chain_registration_updates: 0,
             invalidated_thought_ids: HashSet::new(),
@@ -3852,6 +3942,9 @@ impl MentisDb {
             index,
             timestamp,
         );
+        if let Some(et) = &thought.entity_type {
+            self.entity_type_registry.observe(et, index, timestamp);
+        }
         let agent_count_changed = self.agent_registry.agents.len() != previous_agent_count;
         // Insert into all in-memory indexes before pushing so that
         // self.thoughts.len() still equals `index` (the correct 0-based position).
@@ -3879,6 +3972,8 @@ impl MentisDb {
         self.maybe_flush_agent_registry(
             self.auto_flush || self.thoughts.len() == 1 || agent_count_changed,
         )?;
+        self.mark_entity_type_registry_dirty();
+        self.maybe_flush_entity_type_registry(self.auto_flush || self.thoughts.len() == 1)?;
         self.mark_chain_registration_dirty();
         self.maybe_flush_chain_registration(self.thoughts.len() == 1 || agent_count_changed)?;
         Ok(self.thoughts.last().unwrap())
@@ -4224,6 +4319,39 @@ impl MentisDb {
         record.status = AgentStatus::Revoked;
         let updated = record.clone();
         self.persist_registries()?;
+        Ok(updated)
+    }
+
+    /// Return a reference to the per-chain entity type registry.
+    pub fn entity_type_registry(&self) -> &EntityTypeRegistry {
+        &self.entity_type_registry
+    }
+
+    /// Return one registered entity type record by label.
+    pub fn get_entity_type(&self, entity_type: &str) -> Option<&EntityTypeRecord> {
+        self.entity_type_registry.entity_types.get(entity_type)
+    }
+
+    /// Return the full per-chain entity type registry as an ordered list of records.
+    pub fn list_entity_types(&self) -> Vec<&EntityTypeRecord> {
+        self.entity_type_registry.entity_types.values().collect()
+    }
+
+    /// Create or update an entity type record in the per-chain registry.
+    ///
+    /// This allows callers to pre-register entity types before they appear in
+    /// thoughts or to enrich existing records.
+    pub fn upsert_entity_type(&mut self, entity_type: &str) -> io::Result<EntityTypeRecord> {
+        let entity_type = normalize_non_empty_label(entity_type, "entity_type")?;
+        let now = Utc::now();
+        let record = self
+            .entity_type_registry
+            .entity_types
+            .entry(entity_type.clone())
+            .or_insert_with(|| EntityTypeRecord::new(&entity_type, 0, now));
+        let updated = record.clone();
+        self.mark_entity_type_registry_dirty();
+        self.maybe_flush_entity_type_registry(true)?;
         Ok(updated)
     }
 
@@ -6421,6 +6549,8 @@ impl MentisDb {
         self.persistence = None;
         self.pending_agent_registry_sync = false;
         self.pending_agent_registry_updates = 0;
+        self.pending_entity_type_registry_sync = false;
+        self.pending_entity_type_registry_updates = 0;
         self.pending_chain_registration_sync = false;
         self.pending_chain_registration_updates = 0;
     }
@@ -6460,6 +6590,41 @@ impl MentisDb {
         Ok(())
     }
 
+    fn persist_entity_type_registry(&self) -> io::Result<()> {
+        if let Some(metadata) = &self.persistence {
+            save_entity_type_registry(
+                &metadata.chain_dir,
+                &metadata.chain_key,
+                metadata.storage_kind,
+                &self.entity_type_registry,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn mark_entity_type_registry_dirty(&mut self) {
+        if self.persistence.is_some() {
+            self.pending_entity_type_registry_sync = true;
+            self.pending_entity_type_registry_updates =
+                self.pending_entity_type_registry_updates.saturating_add(1);
+        }
+    }
+
+    fn maybe_flush_entity_type_registry(&mut self, force: bool) -> io::Result<()> {
+        if !self.pending_entity_type_registry_sync {
+            return Ok(());
+        }
+        if force
+            || self.auto_flush
+            || self.pending_entity_type_registry_updates >= ENTITY_TYPE_REGISTRY_FLUSH_THRESHOLD
+        {
+            self.persist_entity_type_registry()?;
+            self.pending_entity_type_registry_sync = false;
+            self.pending_entity_type_registry_updates = 0;
+        }
+        Ok(())
+    }
+
     fn mark_chain_registration_dirty(&mut self) {
         if self.persistence.is_some() {
             self.pending_chain_registration_sync = true;
@@ -6483,6 +6648,8 @@ impl MentisDb {
     fn persist_registries(&mut self) -> io::Result<()> {
         self.mark_agent_registry_dirty();
         self.maybe_flush_agent_registry(true)?;
+        self.mark_entity_type_registry_dirty();
+        self.maybe_flush_entity_type_registry(true)?;
         self.mark_chain_registration_dirty();
         self.maybe_flush_chain_registration(true)
     }
@@ -6508,6 +6675,7 @@ impl MentisDb {
                 storage_location: self.storage.storage_location(),
                 thought_count: self.thoughts.len() as u64,
                 agent_count: self.agent_registry.agents.len(),
+                entity_type_count: self.entity_type_registry.entity_types.len(),
                 created_at,
                 updated_at: now,
             },
@@ -6519,6 +6687,7 @@ impl MentisDb {
 impl Drop for MentisDb {
     fn drop(&mut self) {
         let _ = self.maybe_flush_agent_registry(true);
+        let _ = self.maybe_flush_entity_type_registry(true);
         let _ = self.maybe_flush_chain_registration(true);
     }
 }
@@ -6823,6 +6992,54 @@ fn save_agent_registry(
         .map_err(|error| io::Error::other(format!("Failed to serialize agent registry: {error}")))
 }
 
+fn chain_entity_type_registry_path(
+    chain_dir: &Path,
+    chain_key: &str,
+    storage_kind: StorageAdapterKind,
+) -> PathBuf {
+    let storage_file = chain_storage_filename(chain_key, storage_kind);
+    let stem = storage_file
+        .strip_suffix(&format!(".{}", storage_kind.file_extension()))
+        .unwrap_or(&storage_file);
+    chain_dir.join(format!("{stem}.entity-types.json"))
+}
+
+fn load_entity_type_registry(
+    chain_dir: &Path,
+    chain_key: &str,
+    storage_kind: StorageAdapterKind,
+) -> io::Result<EntityTypeRegistry> {
+    let path = chain_entity_type_registry_path(chain_dir, chain_key, storage_kind);
+    if !path.exists() {
+        return Ok(EntityTypeRegistry::default());
+    }
+
+    let file = fs::File::open(path)?;
+    serde_json::from_reader(file).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Failed to deserialize entity type registry: {error}"),
+        )
+    })
+}
+
+fn save_entity_type_registry(
+    chain_dir: &Path,
+    chain_key: &str,
+    storage_kind: StorageAdapterKind,
+    registry: &EntityTypeRegistry,
+) -> io::Result<()> {
+    let path = chain_entity_type_registry_path(chain_dir, chain_key, storage_kind);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = fs::File::create(path)?;
+    let writer = BufWriter::new(file);
+    serde_json::to_writer(writer, registry).map_err(|error| {
+        io::Error::other(format!("Failed to serialize entity type registry: {error}"))
+    })
+}
+
 fn load_mentisdb_registry(chain_dir: &Path) -> io::Result<MentisDbRegistry> {
     let path = resolve_registry_path(chain_dir)?;
     if !path.exists() {
@@ -6934,6 +7151,11 @@ pub fn deregister_chain<P: AsRef<Path>>(chain_dir: P, chain_key: &str) -> io::Re
             chain_agent_registry_path(chain_dir, chain_key, entry.storage_adapter);
         if agent_registry_path.exists() {
             fs::remove_file(agent_registry_path)?;
+        }
+        let entity_type_registry_path =
+            chain_entity_type_registry_path(chain_dir, chain_key, entry.storage_adapter);
+        if entity_type_registry_path.exists() {
+            fs::remove_file(entity_type_registry_path)?;
         }
         let vector_config_path =
             chain_vector_sidecar_config_path(chain_dir, chain_key, entry.storage_adapter);
@@ -7338,6 +7560,13 @@ fn upsert_chain_registration_from_report(
             agent_count: load_agent_registry(chain_dir, &report.chain_key, report.storage_adapter)?
                 .agents
                 .len(),
+            entity_type_count: load_entity_type_registry(
+                chain_dir,
+                &report.chain_key,
+                report.storage_adapter,
+            )?
+            .entity_types
+            .len(),
             created_at,
             updated_at: now,
         },
