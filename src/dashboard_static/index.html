@@ -848,6 +848,9 @@
       ${searchMetaHtml}
       <div class="field-label" style="margin-top:16px">Content</div>
       <pre>${esc(thought.content || '')}</pre>
+      <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4)" onclick="window._openBranchChain(_modalChainKey || '', '${esc(thought.id || thought.thought_id || '')}')">⑂ Branch from this thought</button>
+      </div>
     `;
 
     const overlay = document.getElementById('modal-overlay');
@@ -1782,7 +1785,7 @@
         }
         body.innerHTML = `
           <div class="table-wrap"><table>
-            <thead><tr><th>#</th><th>Type</th><th>Role</th><th>Agent</th><th>Content</th><th>Date</th></tr></thead>
+            <thead><tr><th>#</th><th>Type</th><th>Role</th><th>Agent</th><th>Content</th><th>Date</th><th></th></tr></thead>
             <tbody>
               ${thoughts.map((t, i) => {
                 const meta = t.__search && typeof t.__search === 'object' ? t.__search : null;
@@ -1824,6 +1827,7 @@
                       ${metaLine}
                     </td>
                     <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.timestamp||t.created_at))}</td>
+                    <td style="white-space:nowrap"><button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);padding:2px 6px;font-size:0.75rem" title="Branch from this thought" onclick="event.stopPropagation();window._openBranchChain('${esc(EX.chainKey||'')}', '${esc(t.id||t.thought_id||'')}')">⑂</button></td>
                   </tr>
                 `;
               }).join('')}
@@ -2141,7 +2145,7 @@
         if (!thoughts.length) { tEl.innerHTML = '<div class="empty-state">No thoughts recorded.</div>'; return; }
         tEl.innerHTML = `
           <div class="table-wrap"><table>
-            <thead><tr><th>#</th><th>Type</th><th>Content</th><th>Date</th></tr></thead>
+            <thead><tr><th>#</th><th>Type</th><th>Content</th><th>Date</th><th></th></tr></thead>
             <tbody>
               ${thoughts.map((t,i) => `
                 <tr class="clickable" data-tidx="${i}">
@@ -2151,6 +2155,7 @@
                     ${esc((t.content||'').slice(0,100))}${(t.content||'').length>100?'…':''}
                   </td>
                   <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.timestamp||t.created_at))}</td>
+                  <td style="white-space:nowrap"><button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);padding:2px 6px;font-size:0.75rem" title="Branch from this thought" onclick="event.stopPropagation();window._openBranchChain('${esc(chainKey||'')}', '${esc(t.id||t.thought_id||'')}')">⑂</button></td>
                 </tr>
               `).join('')}
             </tbody>
@@ -2419,7 +2424,7 @@
 
           ${thoughts.length ? `
           <div class="table-wrap"><table>
-            <thead><tr><th>#</th><th>Type</th><th>Role</th><th>Content</th><th>Date</th></tr></thead>
+            <thead><tr><th>#</th><th>Type</th><th>Role</th><th>Content</th><th>Date</th><th></th></tr></thead>
             <tbody>
               ${thoughts.map((t,i) => `
                 <tr class="clickable" data-tidx="${i}">
@@ -2430,6 +2435,7 @@
                     ${esc((t.content||'').slice(0,120))}${(t.content||'').length>120?'…':''}
                   </td>
                   <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.timestamp||t.created_at))}</td>
+                  <td style="white-space:nowrap"><button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);padding:2px 6px;font-size:0.75rem" title="Branch from this thought" onclick="event.stopPropagation();window._openBranchChain('${esc(chainKey||'')}', '${esc(t.id||t.thought_id||'')}')">⑂</button></td>
                 </tr>
               `).join('')}
             </tbody>
