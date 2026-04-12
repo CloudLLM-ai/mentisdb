@@ -24,9 +24,9 @@ Design the release as independent work items that can be dispatched to parallel 
 4. **Hand off via MentisDB memory** — the next agent reads the checkpoint, not the previous agent's raw context. Use `mentisdb_recent_context` to resume, never copy-paste between instances.
 5. **Granular commits per workstream** — each agent commits its own completed workstream with a descriptive message before finishing.
 
-## Phase 2 — Build, Lint, Test
+## Phase 2 — Build, Lint, Test, CI
 
-After all code changes are done, run the full quality gate:
+After each logical group of code changes, commit and push. The code must compile cleanly before pushing. After all code changes are done, run the full local quality gate:
 
 ```bash
 cargo fmt
@@ -34,7 +34,16 @@ cargo clippy --all-features -- -D warnings
 cargo test --all-features
 ```
 
-**All three must pass with zero warnings and zero failures.** If any fail, fix the code and re-run until clean. Do not proceed to Phase 3 until the gate is green.
+**All three must pass with zero warnings and zero failures.** If any fail, fix the code and re-run until clean.
+
+Then verify the **GitHub CI jobs pass** on the pushed commits:
+
+```bash
+gh run list --limit 3
+gh run watch
+```
+
+CI may catch issues that local runs miss (different platform, different Rust version, stricter checks). **Do not proceed to Phase 3 until CI is green.** If CI fails, fix the code, push, and re-verify.
 
 ## Phase 3 — Benchmarks & Regression Testing
 
