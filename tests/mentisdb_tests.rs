@@ -3918,3 +3918,215 @@ fn entity_type_count_in_registration() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn query_with_tags_any_returns_all_matching_thoughts() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "frostwire", "Analyst", Some("memory"), None).unwrap();
+
+    chain
+        .append_thought(
+            "frostwire",
+            ThoughtInput::new(ThoughtType::LessonLearned, "Security lesson one")
+                .with_tags(["security"]),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "frostwire",
+            ThoughtInput::new(ThoughtType::LessonLearned, "Security lesson two")
+                .with_tags(["security"]),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "frostwire",
+            ThoughtInput::new(ThoughtType::Insight, "Not a security thought")
+                .with_tags(["architecture"]),
+        )
+        .unwrap();
+
+    let results = chain.query(&ThoughtQuery::new().with_tags_any(["security"]));
+    assert_eq!(
+        results.len(),
+        2,
+        "tags_any filter should return all thoughts with 'security' tag"
+    );
+    for thought in &results {
+        assert!(
+            thought.tags.contains(&"security".to_string()),
+            "All returned thoughts must have the 'security' tag"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn query_with_types_returns_only_matching_types() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent1", "Analyst", Some("memory"), None).unwrap();
+
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Constraint, "Hard limit A"),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Constraint, "Hard limit B"),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Idea, "Not a constraint"),
+        )
+        .unwrap();
+
+    let results = chain.query(&ThoughtQuery::new().with_types(vec![ThoughtType::Constraint]));
+    assert_eq!(
+        results.len(),
+        2,
+        "type filter should return only Constraint thoughts"
+    );
+    for thought in &results {
+        assert_eq!(thought.thought_type, ThoughtType::Constraint);
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn query_returns_empty_when_no_match_exists() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent1", "Analyst", Some("memory"), None).unwrap();
+
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Decision, "A decision"),
+        )
+        .unwrap();
+
+    let results = chain.query(&ThoughtQuery::new().with_tags_any(["nonexistent"]));
+    assert_eq!(
+        results.len(),
+        0,
+        "query with no matching tags should return empty"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn query_with_text_search_finds_content() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent1", "Analyst", Some("memory"), None).unwrap();
+
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(
+                ThoughtType::Insight,
+                "Rust's borrow checker prevents data races",
+            ),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Decision, "Use async channels for IPC"),
+        )
+        .unwrap();
+
+    let results = chain.query(&ThoughtQuery::new().with_text("borrow"));
+    assert_eq!(results.len(), 1);
+    assert!(results[0].content.contains("borrow"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn query_with_text_search_is_case_insensitive() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent1", "Analyst", Some("memory"), None).unwrap();
+
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Insight, "PostgreSQL is the standard choice"),
+        )
+        .unwrap();
+
+    let results = chain.query(&ThoughtQuery::new().with_text("postgresql"));
+    assert_eq!(results.len(), 1);
+
+    let results_upper = chain.query(&ThoughtQuery::new().with_text("POSTGRESQL"));
+    assert_eq!(results_upper.len(), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn query_filter_by_importance_threshold() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent1", "Analyst", Some("memory"), None).unwrap();
+
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Constraint, "Critical constraint").with_importance(0.9),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Idea, "Minor idea").with_importance(0.1),
+        )
+        .unwrap();
+
+    let results = chain.query(&ThoughtQuery::new().with_min_importance(0.8));
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].thought_type, ThoughtType::Constraint);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn entity_type_filter_returns_only_matching_entity_types() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent1", "Analyst", Some("memory"), None).unwrap();
+
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Decision, "Use Rust for performance")
+                .with_entity_type("architecture_decision"),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::LessonLearned, "Fix the bug in the parser")
+                .with_entity_type("bug_report"),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Insight, "Regular insight with no entity type"),
+        )
+        .unwrap();
+
+    let results = chain.query(&ThoughtQuery::new().with_entity_type("architecture_decision"));
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].entity_type.as_deref(),
+        Some("architecture_decision")
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

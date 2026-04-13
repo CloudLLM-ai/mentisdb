@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.8.7 — Custom Entity Types and Better Dashboard UX</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 13, 2026</div>
+
+<h1>MentisDB 0.8.7 — Custom Entity Types and Better Dashboard UX</h1>
+
+<p>
+  0.8.7 adds structured memory categorization via the new <code>entity_type</code> field on
+  Thoughts, a per-chain type registry with persistence, and an overhaul of the dashboard
+  branch/delete/merge modal UX. Also includes a fix for the wizard setup crash when Claude
+  Desktop detects an older Node version.
+</p>
+
+<h2 id="entity-types">Entity Types — Structured Memory Categories</h2>
+
+<p>
+  Thoughts can now carry an optional <code>entity_type</code> label — a semantic category
+  that lets agents and users filter memories by what kind of thing they describe. Examples:
+</p>
+
+<ul>
+  <li><code>"bug_report"</code> — a specific bug and its fix</li>
+  <li><code>"architecture_decision"</code> — a design choice worth remembering</li>
+  <li><code>"retrospective"</code> — lessons from a project post-mortem</li>
+  <li><code>"security"</code> — security-relevant findings and constraints</li>
+  <li><code>"checkpoint"</code> — resumption points for agent handoffs</li>
+</ul>
+
+<p>
+  Entity types are set via the <code>entity_type</code> parameter on append and search.
+  They are auto-observed on every write — the registry tracks first_seen_index,
+  last_seen_index, and count per label. The registry persists as
+  <code>chain_key-entity-types.json</code> alongside the chain binary.
+</p>
+
+<h3>New Endpoints and Tools</h3>
+
+<ul>
+  <li><code>POST /v1/entity-types</code> — upsert an entity type label</li>
+  <li><code>GET /v1/entity-types</code> — list all entity types for a chain</li>
+  <li><code>mentisdb_upsert_entity_type</code> MCP tool</li>
+</ul>
+
+<p>
+  The dashboard now shows entity_type as an orange badge next to the thought_type badge
+  in all thought list views, and includes a text filter input in the explorer search bar.
+</p>
+
+<h2 id="dashboard-ux">Dashboard Modal UX Overhaul</h2>
+
+<p>
+  The Branch, Delete, and Merge chain modals were converted from inline
+  <code>display:none</code> divs at the bottom of the page to proper popup overlays
+  (same style as the thought detail modal). This means they now work correctly
+  regardless of which page you're on in the dashboard, and have proper backdrop
+  click-to-close and X button handlers.
+</p>
+
+<p>
+  The <code>resolve_chain_key</code> function also gained proper whitespace trimming
+  and empty-string filtering, matching the pattern already used in
+  <code>resolve_agent_identity</code>.
+</p>
+
+<h2 id="issue-14">Wizard Setup Fix (Issue #14)</h2>
+
+<p>
+  The CLI wizard setup was aborting entirely when Claude Desktop detected Node.js
+  version below 20 — even though other integrations had already been configured
+  successfully. The fix makes <code>ensure_prerequisites</code> return soft warnings
+  instead of hard errors, and the apply loop continues past failed integrations
+  instead of aborting on the first failure.
+</p>
+
+<h2 id="v4-compat">Schema v4+ Compatibility Fix</h2>
+
+<p>
+  Chains written by a temporary build that used schema v4 were being rejected on load
+  as "Unknown schema version." Changed the version check from
+  <code>v == MENTISDB_CURRENT_VERSION</code> to <code>v >= MENTISDB_CURRENT_VERSION</code>,
+  so any current or future-compatible version is accepted. The schema version is
+  normalized to <code>MENTISDB_CURRENT_VERSION</code> on next persist.
+</p>
+
+<h2 id="upgrade">Upgrade Instructions</h2>
+
+<pre><code>cargo install mentisdb --force</code></pre>
+
+<p>
+  The daemon binary is the same across all integrations. Force-reinstall to pick up
+  the new version, then restart the daemon.
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb/releases/tag/0.8.7.33">GitHub Release 0.8.7.33</a>
+  · <a href="https://crates.io/crates/mentisdb">crates.io</a>
+  · <a href="https://docs.mentisdb.com">Documentation</a>
+</footer>
+</body>
+</html>

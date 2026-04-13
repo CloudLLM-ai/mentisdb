@@ -123,11 +123,12 @@ Change types: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `chore`.
 Update `version` in `Cargo.toml` to `MAJOR.MINOR.ITERATION` (three components, matching crates.io convention). The fourth component (INCREMENT) is the git tag only.
 
 ### 5f. Blog post
-Write in `docs/` as HTML, following the style of existing posts. Include:
+Write in `docs/` (in the mentisdb repo, e.g. `docs/mentisdb-X.Y.Z.html`), following the style of existing posts. Include:
 - Benchmark results table
 - What changed and why
 - Upgrade instructions (`cargo install mentisdb --force`)
 - Links to GitHub release
+Then add an entry to `docs/index.html` linking to the new post.
 
 ### 5g. ROADMAP.md
 Move completed items to a "Shipped" section or remove them. Update benchmark numbers. Update competitive position table.
@@ -146,7 +147,8 @@ git push origin MAJOR.MINOR.ITERATION.INCREMENT
 ```
 
 ### 5j. GitHub release
-Port the blog post to Markdown and attach to the GitHub release:
+Port the blog post to Markdown and attach to the GitHub release. **Do NOT mark the release as pre-release** — the update checker uses the GitHub releases API which only returns non-prerelease releases as "latest", so pre-release tags silently break `mentisdbd update` for all users:
+
 ```bash
 gh release edit TAG --notes "$(cat <<'EOF'
 <blog post content in markdown>
