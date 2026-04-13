@@ -8332,16 +8332,21 @@ fn load_binary_thoughts_per_thought(reader: &mut impl Read) -> io::Result<Vec<Th
             })?;
 
         let thought = match schema_version {
-            v if v == MENTISDB_CURRENT_VERSION => {
+            v if v >= MENTISDB_CURRENT_VERSION => {
                 // Try the current Thought struct first (includes entity_type).
                 // If the thought was written before entity_type was added, bincode
                 // will return UnexpectedEnd because the trailing Option<String>
                 // bytes are missing. Fall back to the legacy V3 layout.
+                // This also handles chains written by a build that temporarily
+                // used a higher schema version (e.g. v4) with the same layout.
                 match bincode::serde::decode_from_slice::<Thought, _>(
                     &payload,
                     bincode::config::standard(),
                 ) {
-                    Ok((t, _)) => t,
+                    Ok((mut t, _)) => {
+                        t.schema_version = MENTISDB_CURRENT_VERSION;
+                        t
+                    }
                     Err(_) => {
                         let (legacy, _): (LegacyThoughtV2, usize) =
                             bincode::serde::decode_from_slice(
