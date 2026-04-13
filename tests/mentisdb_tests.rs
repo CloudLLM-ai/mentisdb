@@ -4130,3 +4130,93 @@ fn entity_type_filter_returns_only_matching_entity_types() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn cross_chain_relation_traversal() {
+    let dir = unique_chain_dir();
+
+    let mut chain_a = MentisDb::open_with_key(&dir, "chain-a").unwrap();
+    let thought_a = chain_a
+        .append(
+            "agent1",
+            ThoughtType::Insight,
+            "Cache invalidation is the hard problem.",
+        )
+        .unwrap()
+        .clone();
+
+    let mut chain_b = MentisDb::open_with_key(&dir, "chain-b").unwrap();
+    chain_b
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(
+                ThoughtType::Decision,
+                "Use cache aside pattern for read-through caching.",
+            )
+            .with_cross_chain_relation(ThoughtRelationKind::Supports, "chain-a", thought_a.id),
+        )
+        .unwrap();
+
+    let adjacency = ThoughtAdjacencyIndex::from_thoughts(chain_b.thoughts());
+    let plan_locator = adjacency.local_locator_for_index(0).unwrap();
+    let outgoing = adjacency.outgoing(plan_locator);
+    assert_eq!(outgoing.len(), 1);
+    let target_locator = &outgoing[0].target;
+    assert_eq!(target_locator.chain_key.as_deref(), Some("chain-a"));
+    assert_eq!(target_locator.thought_id, thought_a.id);
+    assert!(target_locator.thought_index.is_none());
+
+    let remote_locator = ThoughtLocator::cross_chain("chain-a", thought_a.id);
+    let incoming_remote = adjacency.incoming(&remote_locator);
+    assert_eq!(incoming_remote.len(), 1);
+    assert_eq!(incoming_remote[0].source, *plan_locator);
+    assert_eq!(incoming_remote[0].target, remote_locator);
+
+    let resolved = chain_b.resolve_context(0);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].id, thought_a.id);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn query_respects_cross_chain_chain_key() {
+    let dir = unique_chain_dir();
+
+    let mut chain_a = MentisDb::open_with_key(&dir, "chain-a-key-test").unwrap();
+    let _thought_in_a = chain_a
+        .append("agent1", ThoughtType::FactLearned, "Hot dog is a sandwich.")
+        .unwrap()
+        .clone();
+
+    let remote_id = Uuid::new_v4();
+    let mut chain_b = MentisDb::open_with_key(&dir, "chain-b-key-test").unwrap();
+    chain_b
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(
+                ThoughtType::Hypothesis,
+                "This hypothesis relates to a thought on another chain.",
+            )
+            .with_cross_chain_relation(
+                ThoughtRelationKind::RelatedTo,
+                "chain-a-key-test",
+                remote_id,
+            ),
+        )
+        .unwrap();
+
+    let adjacency = ThoughtAdjacencyIndex::from_thoughts(chain_b.thoughts());
+    let hypothesis_locator = adjacency.local_locator_for_index(0).unwrap();
+    let outgoing = adjacency.outgoing(hypothesis_locator);
+    assert_eq!(outgoing.len(), 1);
+    let target = &outgoing[0].target;
+    assert_eq!(target.chain_key.as_deref(), Some("chain-a-key-test"));
+    assert_eq!(target.thought_id, remote_id);
+
+    let resolved = chain_b.resolve_context(0);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].thought_type, ThoughtType::Hypothesis);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

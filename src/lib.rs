@@ -1818,6 +1818,9 @@ pub struct ThoughtInput {
     /// "project", "api-endpoint") rather than a generic memory. Entity types
     /// are auto-registered in the per-chain [`EntityTypeRegistry`] on append.
     pub entity_type: Option<String>,
+    /// Optional episode or conversational context identifier.
+    #[serde(default)]
+    pub source_episode: Option<String>,
 }
 
 impl ThoughtInput {
@@ -1855,6 +1858,7 @@ impl ThoughtInput {
             refs: Vec::new(),
             relations: Vec::new(),
             entity_type: None,
+            source_episode: None,
         }
     }
 
@@ -1949,6 +1953,12 @@ impl ThoughtInput {
     /// Set the entity type label for this thought.
     pub fn with_entity_type(mut self, entity_type: impl Into<String>) -> Self {
         self.entity_type = Some(entity_type.into());
+        self
+    }
+
+    /// Set the episode or conversational context identifier for this thought.
+    pub fn with_source_episode(mut self, source_episode: impl Into<String>) -> Self {
+        self.source_episode = Some(source_episode.into());
         self
     }
 
@@ -2108,6 +2118,14 @@ pub struct Thought {
     /// that have been observed across the chain.
     #[serde(default)]
     pub entity_type: Option<String>,
+    /// Optional episode or conversational context identifier this thought originated from.
+    ///
+    /// This groups thoughts that belong to the same episode (e.g., a conversation turn,
+    /// a debugging session, a planning meeting). Episodes can be used to retrieve all
+    /// thoughts from a specific context — useful for session replay, episode summaries,
+    /// and tracing a line of reasoning across time.
+    #[serde(default)]
+    pub source_episode: Option<String>,
     /// Hash of the previous thought in the chain.
     ///
     /// This links the record to the prior committed chain state.
@@ -2175,6 +2193,8 @@ pub struct ThoughtQuery {
     pub limit: Option<usize>,
     /// Match thoughts with a specific entity type.
     pub entity_type: Option<String>,
+    /// Match thoughts with a specific source episode.
+    pub source_episode: Option<String>,
 }
 
 impl ThoughtQuery {
@@ -2295,6 +2315,12 @@ impl ThoughtQuery {
         self
     }
 
+    /// Limit matches to thoughts with the specified source episode.
+    pub fn with_source_episode(mut self, source_episode: impl Into<String>) -> Self {
+        self.source_episode = Some(source_episode.into());
+        self
+    }
+
     fn candidate_position_bounds(&self, thoughts: &[Thought]) -> (usize, usize) {
         let start = self
             .since
@@ -2332,6 +2358,12 @@ impl ThoughtQuery {
 
         if let Some(entity_type) = &self.entity_type {
             if thought.entity_type.as_deref() != Some(entity_type.as_str()) {
+                return false;
+            }
+        }
+
+        if let Some(source_episode) = &self.source_episode {
+            if thought.source_episode.as_deref() != Some(source_episode.as_str()) {
                 return false;
             }
         }
@@ -2527,6 +2559,24 @@ pub struct RankedSearchQuery {
     /// best match is ranked low by one signal but high by another, at the
     /// cost of a second scoring pass over more documents.
     pub rerank_k: usize,
+    /// When `true`, use an LLM to rerank the top `llm_rerank_top_k` candidates.
+    ///
+    /// This is truly opt-in: no LLM API calls are made unless this field is
+    /// `true`. When enabled, the top N candidates from the existing scoring
+    /// pipeline are passed to the configured LLM which ranks them by relevance
+    /// to the query. The LLM's ranking is then used to reorder the hits.
+    pub llm_rerank: bool,
+    /// Model identifier for the LLM reranking call (e.g. "gpt-4", "claude-3-sonnet").
+    ///
+    /// Required when `llm_rerank` is `true`. The model should support
+    /// structured JSON output for reliable parsing of the ranking.
+    pub llm_model: Option<String>,
+    /// Number of top candidates to send to the LLM for reranking.
+    ///
+    /// Defaults to 20. Only the top N candidates by the existing scoring
+    /// pipeline are included in the LLM reranking prompt to keep token
+    /// usage manageable and latency reasonable.
+    pub llm_rerank_top_k: usize,
 }
 
 impl RankedSearchQuery {
@@ -2585,6 +2635,19 @@ impl RankedSearchQuery {
         self.rerank_k = rerank_k.max(1);
         self
     }
+
+    /// Enable LLM-based reranking on this query.
+    ///
+    /// The `model` parameter specifies the LLM model to use (e.g. "gpt-4",
+    /// "claude-3-sonnet"). The `top_k` parameter controls how many of the
+    /// top-scored candidates from the existing pipeline are sent to the LLM
+    /// for reranking.
+    pub fn with_llm_reranking(mut self, model: impl Into<String>, top_k: usize) -> Self {
+        self.llm_rerank = true;
+        self.llm_model = Some(model.into());
+        self.llm_rerank_top_k = top_k.max(1);
+        self
+    }
 }
 
 impl Default for RankedSearchQuery {
@@ -2598,6 +2661,9 @@ impl Default for RankedSearchQuery {
             scope: None,
             enable_reranking: false,
             rerank_k: 50,
+            llm_rerank: false,
+            llm_model: None,
+            llm_rerank_top_k: 20,
         }
     }
 }
@@ -2625,6 +2691,9 @@ pub struct RankedSearchScore {
     pub session_cohesion: f32,
     /// Reciprocal Rank Fusion score (set when `enable_reranking` is true).
     pub rrf: f32,
+    /// LLM-based relevance score from opt-in reranking (set when `llm_rerank` is true).
+    /// This is a normalized 0.0–1.0 score derived from the LLM's ranking positions.
+    pub llm_score: f32,
     /// Final combined score used for ranking.
     pub total: f32,
 }
@@ -3926,6 +3995,7 @@ impl MentisDb {
                 .take()
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty()),
+            source_episode: input.source_episode.take(),
             prev_hash,
             hash: String::new(),
         };
@@ -4046,6 +4116,9 @@ impl MentisDb {
             if let Some(&position) = self.id_to_index.get(&id) {
                 let thought = &self.thoughts[position];
                 for relation in &thought.relations {
+                    if relation.chain_key.is_some() {
+                        continue;
+                    }
                     if !visited.contains(&relation.target_id) {
                         stack.push(relation.target_id);
                     }
@@ -4615,6 +4688,7 @@ impl MentisDb {
             "prev_hash": thought.prev_hash,
             "hash": thought.hash,
             "entity_type": thought.entity_type,
+            "source_episode": thought.source_episode,
         })
     }
 
@@ -5764,6 +5838,7 @@ impl MentisDb {
                 recency,
                 session_cohesion: 0.0,
                 rrf: 0.0,
+                llm_score: 0.0,
                 total,
             },
             graph_distance,
@@ -7895,6 +7970,7 @@ fn migrate_legacy_thoughts(legacy_thoughts: Vec<LegacyThoughtV0>) -> (Vec<Though
                 .map(ThoughtRelation::from)
                 .collect(),
             entity_type: None,
+            source_episode: None,
             prev_hash: prev_hash.clone(),
             hash: String::new(),
         };
@@ -8379,6 +8455,7 @@ fn load_binary_thoughts_per_thought(reader: &mut impl Read) -> io::Result<Vec<Th
                             refs: legacy.refs,
                             relations: legacy.relations,
                             entity_type: None,
+                            source_episode: None,
                             prev_hash: legacy.prev_hash,
                             hash: legacy.hash,
                         }
@@ -8417,6 +8494,7 @@ fn load_binary_thoughts_per_thought(reader: &mut impl Read) -> io::Result<Vec<Th
                         .map(ThoughtRelation::from)
                         .collect(),
                     entity_type: None,
+                    source_episode: None,
                     prev_hash: String::new(),
                     hash: String::new(),
                 }
@@ -8453,6 +8531,7 @@ fn load_binary_thoughts_per_thought(reader: &mut impl Read) -> io::Result<Vec<Th
                         .map(ThoughtRelation::from)
                         .collect(),
                     entity_type: None,
+                    source_episode: None,
                     prev_hash: String::new(),
                     hash: String::new(),
                 }
