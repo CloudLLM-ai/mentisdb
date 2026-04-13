@@ -435,6 +435,10 @@ REST endpoints:
 - `POST /v1/skills/versions`
 - `POST /v1/skills/deprecate`
 - `POST /v1/skills/revoke`
+- `POST /v1/webhooks`
+- `GET /v1/webhooks`
+- `GET /v1/webhooks/{id}`
+- `DELETE /v1/webhooks/{id}`
 - `POST /v1/head`
 
 ### Append Thought — `POST /v1/thoughts`
@@ -936,7 +940,7 @@ outside localhost.
 
 ## MCP Tool Catalog
 
-The daemon currently exposes 35 MCP tools:
+The daemon currently exposes 37 MCP tools:
 
 - `mentisdb_bootstrap`
   Create a chain if needed and write one bootstrap checkpoint when it is empty.
@@ -1008,6 +1012,12 @@ The daemon currently exposes 35 MCP tools:
   Mark a skill as revoked while preserving audit history.
 - `mentisdb_head`
   Return head metadata, the latest thought at the current chain tip, and integrity state.
+- `mentisdb_register_webhook`
+  Register a webhook to receive HTTP POST notifications when thoughts are appended. Delivery is fire-and-forget with exponential backoff retries (up to 5 attempts).
+- `mentisdb_list_webhooks`
+  List all registered webhooks.
+- `mentisdb_delete_webhook`
+  Remove a webhook registration by its UUID.
 
 The detailed request and response shapes for the MCP surface live in
 [`MENTISDB_MCP.md`](../MENTISDB_MCP.md). The REST equivalents live in
