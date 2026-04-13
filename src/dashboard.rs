@@ -618,6 +618,14 @@ fn dashboard_search_filter(params: &DashboardSearchQuery) -> ThoughtQuery {
     if let Some(types) = parse_type_filter(params.types.as_deref()) {
         query = query.with_types(types);
     }
+    if let Some(entity_type) = params
+        .entity_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|et| !et.is_empty())
+    {
+        query = query.with_entity_type(entity_type);
+    }
     query
 }
 
@@ -747,6 +755,8 @@ struct DashboardSearchQuery {
     text: Option<String>,
     /// Optional producing agent id.
     agent_id: Option<String>,
+    /// Optional entity type label to filter by.
+    entity_type: Option<String>,
 }
 
 #[derive(Serialize)]

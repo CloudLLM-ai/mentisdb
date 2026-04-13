@@ -4614,6 +4614,7 @@ impl MentisDb {
             "relations": thought.relations,
             "prev_hash": thought.prev_hash,
             "hash": thought.hash,
+            "entity_type": thought.entity_type,
         })
     }
 

@@ -719,6 +719,11 @@
     return `<span class="badge badge-${c}">${esc(t)}</span>`;
   }
 
+  function entityTypeBadge(et) {
+    if (!et) return '';
+    return ` <span class="badge badge-orange" title="Entity type">${esc(et)}</span>`;
+  }
+
   function statusBadge(s) {
     if (!s) return '<span class="badge badge-gray">Unknown</span>';
     const sl = s.toLowerCase();
@@ -1093,7 +1098,7 @@
           <span id="modal-hash-val">${esc(thought.hash || thought.thought_hash || '—')}</span>
           ${(thought.hash||thought.thought_hash) ? `<button onclick="navigator.clipboard.writeText('${esc(thought.hash||thought.thought_hash)}').then(()=>{this.textContent='✓';setTimeout(()=>this.textContent='⎘',1200)})" title="Copy hash" style="background:none;border:1px solid #30363d;border-radius:4px;color:#8b949e;cursor:pointer;font-size:0.75rem;padding:1px 6px;flex-shrink:0">⎘</button>` : ''}
         </dd>
-        <dt>Type</dt>   <dd>${typeBadge(thought.thought_type)}</dd>
+        <dt>Type</dt>   <dd>${typeBadge(thought.thought_type)}${entityTypeBadge(thought.entity_type)}</dd>
         <dt>Role</dt>   <dd>${thought.role ? `<span class="badge badge-gray">${esc(thought.role)}</span>` : '<span style="color:#484f58">—</span>'}</dd>
         <dt>Agent</dt>  <dd class="mono" style="font-size:0.82rem">${esc(thought.agent_id || '—')}</dd>
         <dt>Created</dt><dd>${esc(fmtDate(thought.timestamp||thought.created_at))}</dd>
@@ -1430,10 +1435,10 @@
       });
   }
 
-  let EX = { chainKey: null, page: 1, perPage: 50, sel: [], order: 'desc', searchText: '', searchAgentId: '' };
+  let EX = { chainKey: null, page: 1, perPage: 50, sel: [], order: 'desc', searchText: '', searchAgentId: '', searchEntityType: '' };
 
   function renderExplorer(chainKey) {
-    if (EX.chainKey !== chainKey) EX = { chainKey, page: 1, perPage: 50, sel: [], order: 'desc', searchText: '', searchAgentId: '' };
+    if (EX.chainKey !== chainKey) EX = { chainKey, page: 1, perPage: 50, sel: [], order: 'desc', searchText: '', searchAgentId: '', searchEntityType: '' };
     const app = document.getElementById('app');
     app.innerHTML = `
       <a href="#chains" class="back-link">← Back to Chains</a>
@@ -1477,6 +1482,10 @@
           <select id="ex-agent-select">
             <option value="">All agents</option>
           </select>
+        </div>
+        <div class="filter-item" style="min-width:160px">
+          <label>Entity Type</label>
+          <input type="text" id="ex-entity-type" class="filter-input" placeholder="Filter by entity type" value="${esc(EX.searchEntityType||'')}">
         </div>
         <div class="filter-item">
           <label>Search</label>
@@ -1548,8 +1557,10 @@
     document.getElementById('ex-clear-search-btn').addEventListener('click', () => {
       EX.searchText = '';
       EX.searchAgentId = '';
+      EX.searchEntityType = '';
       document.getElementById('ex-search-text').value = '';
       document.getElementById('ex-agent-select').value = '';
+      document.getElementById('ex-entity-type').value = '';
       EX.page = 1;
       updateExplorerOrderUi();
       loadThoughts();
@@ -1640,7 +1651,7 @@
   }
 
   function explorerHasSearchFilters() {
-    return !!(EX.searchText.trim() || EX.searchAgentId);
+    return !!(EX.searchText.trim() || EX.searchAgentId || EX.searchEntityType.trim());
   }
 
   function explorerHasTextSearch() {
@@ -1673,6 +1684,7 @@
   function applyExplorerSearch() {
     EX.searchText = document.getElementById('ex-search-text').value.trim();
     EX.searchAgentId = document.getElementById('ex-agent-select').value;
+    EX.searchEntityType = document.getElementById('ex-entity-type').value.trim();
     EX.page = 1;
     updateExplorerOrderUi();
     loadThoughts();
@@ -1775,7 +1787,7 @@
     if (!body) return;
     spinner(body);
     if (bundlesEl) bundlesEl.innerHTML = '';
-    const { chainKey, page, perPage, sel, order, searchText, searchAgentId } = EX;
+    const { chainKey, page, perPage, sel, order, searchText, searchAgentId, searchEntityType } = EX;
     const searching = explorerHasSearchFilters();
     let url = searching
       ? `/dashboard/api/chains/${encodeURIComponent(chainKey)}/search?page=${page}&per_page=${perPage}&order=${order}`
@@ -1783,6 +1795,7 @@
     if (sel.length) url += '&types=' + sel.map(encodeURIComponent).join(',');
     if (searching && searchText) url += '&text=' + encodeURIComponent(searchText);
     if (searching && searchAgentId) url += '&agent_id=' + encodeURIComponent(searchAgentId);
+    if (searching && searchEntityType) url += '&entity_type=' + encodeURIComponent(searchEntityType);
     api(url)
       .then(data => {
         const normalized = searching
@@ -1835,7 +1848,10 @@
                 return `
                   <tr class="clickable" data-idx="${i}">
                     <td>${rankOrIndex}</td>
-                    <td>${typeBadge(t.thought_type)}</td>
+                  <td>${typeBadge(t.thought_type)}${entityTypeBadge(t.entity_type)}</td>
+                  <td style="max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9d1d9">
+                    ${esc((t.content||'').slice(0,100))}${(t.content||'').length>100?'…':''}
+                  </td>
                     <td>${t.role ? `<span class="badge badge-gray">${esc(t.role)}</span>` : '<span style="color:#484f58">—</span>'}</td>
                     <td style="font-size:0.82rem">
                       ${t.agent_id
@@ -2170,10 +2186,7 @@
               ${thoughts.map((t,i) => `
                 <tr class="clickable" data-tidx="${i}">
                   <td class="mono" style="color:#8b949e;font-size:0.81rem">${esc(String(t.index ?? i+1))}</td>
-                  <td>${typeBadge(t.thought_type)}</td>
-                  <td style="max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9d1d9">
-                    ${esc((t.content||'').slice(0,100))}${(t.content||'').length>100?'…':''}
-                  </td>
+                  <td>${typeBadge(t.thought_type)}${entityTypeBadge(t.entity_type)}</td>
                   <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.timestamp||t.created_at))}</td>
                   <td style="white-space:nowrap"><button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);padding:2px 6px;font-size:0.75rem" title="Branch from this thought" onclick="event.stopPropagation();window._openBranchChain('${esc(chainKey||'')}', '${esc(t.id||t.thought_id||'')}')">⑂</button></td>
                 </tr>
@@ -2449,7 +2462,7 @@
               ${thoughts.map((t,i) => `
                 <tr class="clickable" data-tidx="${i}">
                   <td class="mono" style="color:#8b949e;font-size:0.81rem">${esc(String(t.index ?? ''))}</td>
-                  <td>${typeBadge(t.thought_type)}</td>
+                  <td>${typeBadge(t.thought_type)}${entityTypeBadge(t.entity_type)}</td>
                   <td><span class="badge badge-gray">${esc(t.role||'')}</span></td>
                   <td style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9d1d9">
                     ${esc((t.content||'').slice(0,120))}${(t.content||'').length>120?'…':''}
