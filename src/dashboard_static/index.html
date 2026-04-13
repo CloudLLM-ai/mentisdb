@@ -1151,11 +1151,11 @@
     // ── Branch chain ──────────────────────────────────────────────
     let _branchSourceKey = null;
 
-    window._openBranchChain = function(ck) {
+    window._openBranchChain = function(ck, thoughtId) {
       _branchSourceKey = ck;
       document.getElementById('cl-br-src').textContent = ck;
       document.getElementById('cl-br-name').value = ck + '-branch';
-      document.getElementById('cl-br-thought-id').value = '';
+      document.getElementById('cl-br-thought-id').value = thoughtId || '';
       document.getElementById('cl-br-fb').textContent = '';
       document.getElementById('cl-br-fb').className = 'feedback';
       document.getElementById('cl-branch-modal').style.display = '';
