@@ -52,7 +52,7 @@ fn build_test_chain() -> MentisDb {
 
 #[test]
 fn normalizer_lowercases_and_splits_on_non_alphanumeric_boundaries() {
-    let tokens = normalize_lexical_tokens("BM25-style Search_v1; Graph+Expansion");
+    let tokens = normalize_lexical_tokens("BM25-style Search_v1; Graph+Expansion", false);
     assert_eq!(
         tokens,
         vec!["bm25", "style", "search", "v1", "graph", "expans"]

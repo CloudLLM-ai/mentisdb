@@ -347,18 +347,18 @@ impl LexicalIndex {
         let mut total_agent_registry_len = 0_u64;
 
         for (doc_position, thought) in thoughts.iter().enumerate() {
-            let content_tokens = normalize_lexical_tokens(&thought.content);
+            let content_tokens = normalize_lexical_tokens(&thought.content, false);
             let tag_tokens = thought
                 .tags
                 .iter()
-                .flat_map(|tag| normalize_lexical_tokens(tag))
+                .flat_map(|tag| normalize_lexical_tokens(tag, false))
                 .collect::<Vec<_>>();
             let concept_tokens = thought
                 .concepts
                 .iter()
-                .flat_map(|concept| normalize_lexical_tokens(concept))
+                .flat_map(|concept| normalize_lexical_tokens(concept, false))
                 .collect::<Vec<_>>();
-            let agent_id_tokens = normalize_lexical_tokens(&thought.agent_id);
+            let agent_id_tokens = normalize_lexical_tokens(&thought.agent_id, false);
             let agent_registry_tokens = registry
                 .agents
                 .get(&thought.agent_id)
@@ -696,7 +696,14 @@ impl LexicalIndex {
 /// Tokenization splits on non-alphanumeric boundaries, lowercases, and then
 /// applies Porter stemming so that word variants share a common root
 /// (e.g. "prefers", "preferred", "preferences" → "prefer").
-pub fn normalize_lexical_tokens(text: &str) -> Vec<String> {
+///
+/// If `expand_lemmas` is true (for query-time use), irregular verb forms
+/// are also expanded — e.g. "went" → "go" and "ran" → "run" — because
+/// Porter stemming cannot normalize irregular past tenses.
+///
+/// Set `expand_lemmas` to false during index building to avoid duplicate
+/// postings for terms whose lemma also appears explicitly in the text.
+pub fn normalize_lexical_tokens(text: &str, expand_lemmas: bool) -> Vec<String> {
     use rust_stemmers::{Algorithm, Stemmer};
 
     let stemmer = Stemmer::create(Algorithm::English);
@@ -708,14 +715,44 @@ pub fn normalize_lexical_tokens(text: &str) -> Vec<String> {
             current.extend(ch.to_lowercase());
         } else if !current.is_empty() {
             let stemmed = stemmer.stem(&current).to_string();
+            let lemma_stemmed = if expand_lemmas {
+                super::lemmas::expand_lemma(&current).and_then(|lemma| {
+                    let ls = stemmer.stem(lemma).to_string();
+                    if ls == stemmed {
+                        None
+                    } else {
+                        Some(ls)
+                    }
+                })
+            } else {
+                None
+            };
             tokens.push(stemmed);
+            if let Some(ls) = lemma_stemmed {
+                tokens.push(ls);
+            }
             current.clear();
         }
     }
 
     if !current.is_empty() {
         let stemmed = stemmer.stem(&current).to_string();
+        let lemma_stemmed = if expand_lemmas {
+            super::lemmas::expand_lemma(&current).and_then(|lemma| {
+                let ls = stemmer.stem(lemma).to_string();
+                if ls == stemmed {
+                    None
+                } else {
+                    Some(ls)
+                }
+            })
+        } else {
+            None
+        };
         tokens.push(stemmed);
+        if let Some(ls) = lemma_stemmed {
+            tokens.push(ls);
+        }
     }
 
     tokens
@@ -769,7 +806,7 @@ fn agent_registry_tokens(record: &crate::AgentRecord) -> Vec<String> {
         text_parts.push(description.clone());
     }
     text_parts.extend(record.aliases.iter().cloned());
-    normalize_lexical_tokens(&text_parts.join(" "))
+    normalize_lexical_tokens(&text_parts.join(" "), false)
 }
 
 fn unique_normalized_terms(text: &str) -> Vec<String> {
@@ -809,7 +846,7 @@ fn unique_normalized_terms(text: &str) -> Vec<String> {
 }
 
 fn normalized_single_term(term: &str) -> Option<String> {
-    let mut tokens = normalize_lexical_tokens(term).into_iter();
+    let mut tokens = normalize_lexical_tokens(term, true).into_iter();
     let first = tokens.next()?;
     if tokens.next().is_some() {
         return None;

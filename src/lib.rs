@@ -3916,7 +3916,7 @@ impl MentisDb {
         // a Supersedes relation pointing to the most similar prior thought.
         if let Some(threshold) = self.dedup_threshold {
             let new_tokens: HashSet<String> =
-                search::lexical::normalize_lexical_tokens(&input.content)
+                search::lexical::normalize_lexical_tokens(&input.content, true)
                     .into_iter()
                     .collect();
             if !new_tokens.is_empty() {
@@ -3925,7 +3925,7 @@ impl MentisDb {
                 let mut best_target_id = None;
                 for prior in &self.thoughts[scan_start..] {
                     let prior_tokens: HashSet<String> =
-                        search::lexical::normalize_lexical_tokens(&prior.content)
+                        search::lexical::normalize_lexical_tokens(&prior.content, true)
                             .into_iter()
                             .collect();
                     if prior_tokens.is_empty() {
