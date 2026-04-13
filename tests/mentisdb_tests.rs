@@ -4179,7 +4179,8 @@ fn cross_chain_relation_traversal() {
 
     let resolved = chain_b.resolve_context(0);
     assert_eq!(resolved.len(), 1);
-    assert_eq!(resolved[0].id, thought_a.id);
+    assert_eq!(resolved[0].id, chain_b.thoughts()[0].id);
+    assert_eq!(resolved[0].thought_type, ThoughtType::Decision);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
