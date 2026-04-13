@@ -722,6 +722,12 @@ Starting in 0.8.2, ranked search adds temporal, scoped, and dedup-aware features
 - **Auto-dedup with `Supersedes` relations** — when `MENTISDB_DEDUP_THRESHOLD` is set, appending a thought whose content is sufficiently similar (Jaccard ≥ threshold) to a recent thought automatically creates a `Supersedes` relation instead of storing a duplicate. The superseded thought's id is recorded for fast exclusion.
 - **`invalidated_thought_ids` for O(1) superseded detection** — each thought tracks which earlier thoughts it supersedes. Ranked search uses this set to skip superseded thoughts in constant time without walking the full relation graph.
 
+### Search Scoring (0.8.7)
+
+Starting in 0.8.7, ranked search adds:
+
+- **Entity type filtering** — thoughts can carry an optional `entity_type` label (e.g. "bug_report", "architecture_decision", "retrospective"). The `ThoughtQuery` accepts `entity_type` as a filter, and the dashboard exposes an entity_type text filter in the explorer. Entity types are auto-observed per chain and persisted in a `chain_key-entity-types.json` sidecar.
+
 ### Search Scoring (0.8.6)
 
 Starting in 0.8.6, ranked search adds three features:

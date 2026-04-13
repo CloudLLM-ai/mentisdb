@@ -1,7 +1,7 @@
 # MentisDB Roadmap
 
 ## 0.8.7 — Knowledge Structure
-- Custom entity/relation types (entity_type field, type registry per chain)
+- ~~Custom entity/relation types (entity_type field, type registry per chain)~~ ✓
 - Episode provenance tracking (DerivedFrom relation, source_episode field)
 - LLM-based reranking (opt-in, for closing the LongMemEval gap)
 
@@ -17,7 +17,7 @@
 - Self-improving agent primitives
 - Browser extension
 
-## Benchmarks (as of 0.8.6)
+## Benchmarks (as of 0.8.7)
 - LoCoMo 10-persona: 73.0% R@10 (fresh chain)
 - LoCoMo 10-persona w/ RRF: 73.0% R@10 (multi-type +0.5%)
 - LongMemEval: 57.6% R@5, 62.6% R@10 (first baseline)

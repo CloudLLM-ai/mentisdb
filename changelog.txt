@@ -1,3 +1,48 @@
+0.8.7.33 APR/13/2026
+  - feat(entity_type): add entity_type field to Thought struct with V3 backward-compatible deserialization
+    - Thought struct gains optional `entity_type: Option<String>` field with `#[serde(default)]`
+    - Per-thought version detection for V3 chains with and without entity_type field
+    - `ThoughtInput` gains `entity_type` field, passed through builder pattern
+    - `Thought::with_entity_type()` builder method
+    - entity_type is NOT included in the thought hash (backward-compatible)
+    - bincode 2.0.1 respects `skip_serializing_if` — must NOT use it on entity_type
+  - feat(entity_type): EntityTypeRegistry per chain with auto-observe, persistence, query filter
+    - New `EntityTypeRegistry` struct tracking first_seen_index, last_seen_index, count
+    - Auto-observed on every append when entity_type is set
+    - Persisted as `chain_key-entity-types.json` alongside the chain binary
+    - `list_entity_types()`, `get_entity_type()`, `upsert_entity_type()` on MentisDb
+    - MCP endpoint: `POST /v1/entity-types` for upsert, `GET /v1/entity-types` for list
+    - MCP tool: `mentisdb_upsert_entity_type`
+    - ThoughtQuery gains `entity_type` filter for semantic filtering
+    - Dashboard search UI gains entity_type filter input
+  - feat(dashboard): display entity_type badge in thought rows and add entity_type filter
+    - `thought_json()` now includes entity_type field in output
+    - entity_type badge next to thought_type badge in all thought row views
+    - entity_type badge in thought detail modal
+    - DashboardSearchQuery gains entity_type filter parameter
+    - dashboard_search_filter wires entity_type to ThoughtQuery
+  - fix(dashboard): convert branch/delete/merge modals to popup overlays
+    - Modals now use .modal-overlay hidden popup dialogs instead of inline display:none divs
+    - Moved modal HTML and JS handlers to top-level of script for availability from any page
+    - Added X close buttons and backdrop click-to-close for all modals
+    - All style.display toggles replaced with classList.add/remove('hidden')
+  - fix(server): resolve_chain_key now trims and filters empty strings before fallback
+    - Added `.map(str::trim).filter(|value| !value.is_empty())` before `unwrap_or`
+    - Matches the pattern already used in `resolve_agent_identity`
+    - Handles `Some("")` and `Some("  ")` correctly
+  - fix(wizard): continue past failed integrations instead of aborting (Issue #14)
+    - `ensure_prerequisites` returns `PrerequisiteStatus` (Ok or Warning) not errors
+    - `apply` loop in wizard.rs catches per-integration failures and continues
+    - `apply_setup_with_environment` returns warnings not errors for soft checks
+  - fix(dashboard): _openBranchChain accepts optional thoughtId parameter
+    - Branch button on thought rows passes thought UUID to the modal
+  - fix(dashboard): define global onclick handlers early as stubs with queue-draining
+    - Branch/delete/merge onclick handlers are now top-level functions available from any page
+  - fix(server): accept schema v4+ chains by trying current Thought deserialization first
+    - Changed `v == MENTISDB_CURRENT_VERSION` to `v >= MENTISDB_CURRENT_VERSION`
+    - Falls back to LegacyThoughtV2 for older schemas
+    - Schema version normalized to MENTISDB_CURRENT_VERSION on next persist
+
 0.8.6.32 APR/12/2026
   - feat(search): Reciprocal Rank Fusion (RRF) reranking for ranked search
     - New `src/search/ranked.rs` with `rrf_merge()`, `rrf_merge_three()`, RRF_K=60
