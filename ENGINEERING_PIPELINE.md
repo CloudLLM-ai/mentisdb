@@ -47,17 +47,61 @@ CI may catch issues that local runs miss (different platform, different Rust ver
 
 ## Phase 3 — Benchmarks & Regression Testing
 
-1. **Start the release daemon** with the current binary on a fresh chain.
-2. **Run LoCoMo benchmark** against the fresh chain:
+### Before benchmarking — daemon binary swap
+
+`cargo build --release` produces a new binary while the **running** daemon is still the old one. You must restart the daemon after building to benchmark the correct version:
+
+```bash
+# Build first
+cargo build --release
+
+# Stop old daemon, start new one
+pkill mentisdbd
+MENTISDB_DIR=~/.cloudllm/mentisdb nohup target/release/mentisdbd > /tmp/mentisdbd.log 2>&1 &
+sleep 2
+curl -sf http://localhost:9472/health || exit 1  # verify it's up
+```
+
+**Always verify the running daemon is the correct binary** by checking the process start time or checking `/proc/$(pgrep mentisdbd)/exe`.
+
+### Benchmark execution — use subagents
+
+Run all long-running benchmarks via the `Task` tool as subagents, never directly in the shell. Background Python processes (LoCoMo, LongMemEval) get killed when the shell session ends, even with `nohup`. Subagents keep polling until completion.
+
+Launch the benchmark as a subagent and wait for it to return the result line (e.g., "LoCoMo R@10: ...").
+
+### LoCoMo regression detection
+
+LoCoMo has non-trivial run-to-run variance (±1–2pp). Treat a **single run below baseline** as a possible signal, not confirmed regression. To confirm a real regression:
+
+1. Run at least two full benchmark passes on the same binary.
+2. If both runs are ≥0.5pp below baseline, investigate and fix before proceeding.
+3. If only one run is below baseline, run a third to confirm.
+
+### Scoring iteration — smoke test first
+
+When iterating on scoring parameters (BM25 cutoffs, vector boost, decay rate, etc.), a full 1977-query LoCoMo run takes ~15–20 min. Before committing to a full run:
+
+1. Run a **smoke test** on the first 200 queries only:
+   ```bash
+   python3 locomo-benches/locomo_bench.py --top-k 10 --chain smoke-$(date +%s) --data-dir data --workers 8 --limit 200
+   ```
+2. If smoke test improves or holds, run the full benchmark as a subagent.
+3. If smoke test regresses significantly, tune parameters before running full benchmark.
+
+### Full benchmark sequence
+
+1. Start the release daemon on a fresh chain.
+2. **Run LoCoMo benchmark**:
    ```bash
    python3 locomo-benches/locomo_bench.py --top-k 10 --chain locomo-$(date +%s) --data-dir data --workers 8
    ```
-3. **Compare against the baseline** stored in `results/`. If R@10 regresses more than 0.5pp from the baseline, **investigate and fix** before proceeding.
+3. Compare against baseline. If R@10 regresses more than 0.5pp (confirmed across multiple runs), **investigate and fix** before proceeding.
 4. **Run LongMemEval benchmark**:
    ```bash
    bash lme-benches/run_longmemeval.sh
    ```
-5. **Record results** — save benchmark outputs and note R@10 / R@5 in the changelog and blog post.
+5. **Record results** — save benchmark outputs to `results/` and note R@10 / R@5 in the changelog. If LongMemEval R@5 regresses more than 2pp from baseline, note the regression in the release notes.
 6. **If regression detected** — use the systematic debugging skill: test the baseline binary on the same chain first to confirm the regression is from code changes and not from chain state differences (vector sidecar freshness, data mutations). Never assume a regression is from code without verifying.
 
 **Regression investigation rules:**
@@ -67,6 +111,16 @@ CI may catch issues that local runs miss (different platform, different Rust ver
 - Use `--chain KEY` directly with the Python benchmark script, not via `run_locomo.sh EXTRA_ARGS` (the shell script generates its own chain key that may override).
 - LoCoMo ingestion takes >2 minutes — run benchmarks in background with `nohup`.
 - RRF reranking (k=50) is neutral on LoCoMo — it may help on other datasets where lexical and vector signals disagree on top candidates.
+
+### LongMemEval is always post-release
+
+LongMemEval results (~45 min for 500 instances) are not available at blog-post time for the initial release. The GitHub release notes can be edited after shipping to add LME numbers. Update the release notes via:
+```bash
+gh release edit TAG --notes "$(cat <<'EOF'
+<updated content with benchmark results>
+EOF
+)"
+```
 
 ## Phase 4 — Code Review
 
@@ -188,3 +242,6 @@ Format: `MAJOR.MINOR.ITERATION.INCREMENT`
 5. **Always checkpoint to MentisDB before compaction** — agents must write `Summary` with `role: Checkpoint` so the next agent can resume without losing progress.
 6. **Keep the skill file under 200 lines** — if it grows, compress or move details to the changelog/roadmap.
 7. **DRY in code and docs** — if two places say the same thing, extract it once.
+8. **Daemon binary and running process may differ** — always restart after `cargo build --release` before benchmarking.
+9. **Run long benchmarks as subagents** — never directly in the shell; `nohup` alone is insufficient to keep Python benchmark processes alive across shell sessions.
+10. **Confirm LoCoMo regressions across multiple runs** — variance is ±1–2pp; one run below baseline is a signal, not a verdict.
