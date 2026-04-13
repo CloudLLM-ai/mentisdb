@@ -1,3 +1,22 @@
+0.8.9.35 APR/13/2026
+  - feat: webhooks — HTTP callbacks on thought append events
+    - WebhookManager registered at MentisDbService level, cloned per chain
+    - Registration: POST /v1/webhooks with url, chain_key_filter, thought_type_filter
+    - List: GET /v1/webhooks, Get one: GET /v1/webhooks/{id}, Delete: DELETE /v1/webhooks/{id}
+    - MCP tools: mentisdb_register_webhook, mentisdb_list_webhooks, mentisdb_delete_webhook
+    - WebhookPayload includes webhook_id, chain_key, thought full details, timestamp
+    - Delivery is fire-and-forget (tokio::spawn, non-blocking from append path)
+    - Exponential backoff retries: up to 5 attempts, max 32s delay
+    - Persisted to $MENTISDB_DIR/webhooks.json
+  - feat(search): irregular verb lemma expansion at query time in lexical search
+    - normalize_lexical_tokens() gains expand_lemmas bool parameter
+    - expand_lemmas=false at index time (avoids duplicate postings)
+    - expand_lemmas=true at query time (bridges went→go, ran→run, etc.)
+    - Uses existing lemmas.rs lookup table (160+ irregular verbs)
+    - Dedup logic (dedup_threshold) also uses expand_lemmas=true
+  - fix: duplicate closing braces in lexical.rs (syntax error from prior edit)
+  - test: add integration tests for webhook manager persistence and delete
+
 0.8.8.34 APR/13/2026
   - feat: add source_episode field to Thought for episode provenance tracking
     - Optional episode/conversational context identifier groups related thoughts
