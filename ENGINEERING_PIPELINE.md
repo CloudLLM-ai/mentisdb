@@ -147,18 +147,28 @@ git push origin MAJOR.MINOR.ITERATION.INCREMENT
 ```
 
 ### 5j. GitHub release
-Port the blog post to Markdown and attach to the GitHub release. **Do NOT mark the release as pre-release** — the update checker uses the GitHub releases API which only returns non-prerelease releases as "latest", so pre-release tags silently break `mentisdbd update` for all users:
+**CRITICAL: Edit the release notes BEFORE publishing to crates.io.** The `gh release create --generate-notes` auto-generates notes but does NOT include the blog post. You must edit immediately after creation.
 
-```bash
-gh release edit TAG --notes "$(cat <<'EOF'
-<blog post content in markdown>
-EOF
-)"
-```
+Steps:
+1. Create the release (do NOT use `--generate-notes` as primary — it will overwrite your blog content):
+   ```bash
+   gh release create TAG --title "MentisDB TAG"
+   ```
+2. Immediately edit with the blog post content in Markdown:
+   ```bash
+   gh release edit TAG --notes "$(cat <<'EOF'
+   <full blog post content in markdown>
+   EOF
+   )"
+   ```
+3. Verify: `gh release view TAG --json isPrerelease` — must be `false`
+
+**Do NOT mark the release as pre-release** — the update checker uses the GitHub releases API which only returns non-prerelease releases as "latest", so pre-release tags silently break `mentisdbd update` for all users.
 
 ### 5k. crates.io publish
+**Do this AFTER step 5j** — once the GitHub release has the correct notes and is verified non-prerelease:
 ```bash
-cargo publish --features local-embeddings
+cargo publish
 ```
 
 ## Version Numbering
