@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB in Perspective — April 2026 Competitive Review</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.88rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.6rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.3rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+    .comparison-table { font-size: 0.82rem; }
+    .comparison-table th, .comparison-table td { padding: 0.35rem 0.5rem; }
+    .yes { color: #16a34a; font-weight: 600; }
+    .no { color: #dc2626; }
+    .partial { color: #d97706; }
+    .new { color: #7c3aed; font-weight: 600; font-size: 0.75rem; }
+    .updated { color: #059669; font-weight: 600; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 13, 2026</div>
+
+<h1>MentisDB in Perspective — April 2026 Competitive Review</h1>
+
+<p>
+  Three weeks ago we published a competitive analysis comparing MentisDB to Mem0,
+  Graphiti/Zep, Letta, Neo4j LLM Graph Builder, and Cognee. That analysis was
+  accurate as of April 10. This is a refresh — same competitors, but updated to
+  reflect what shipped in 0.8.7 and 0.8.8, and what we've learned since.
+</p>
+
+<h2 id="where-we-stand-today">Where We Stand Today</h2>
+
+<p>
+  MentisDB 0.8.8 now has:
+</p>
+
+<ul>
+  <li><strong>entity_type field + per-chain registry</strong> (0.8.7) — typed entity categories, auto-observed, query-filterable</li>
+  <li><strong>source_episode field</strong> (0.8.8) — conversational context grouping for session replay and provenance</li>
+  <li><strong>Temporal facts with valid_at/invalid_at</strong> (0.8.2) — time-bounded relations queryable with as_of</li>
+  <li><strong>Memory dedup via Jaccard threshold</strong> (0.8.2) — auto-Supersedes near-duplicates</li>
+  <li><strong>RRF reranking</strong> (0.8.6) — Reciprocal Rank Fusion over lexical+vector+graph signals</li>
+  <li><strong>Memory branching + cross-chain traversal</strong> (0.8.6) — BranchesFrom relations, ancestor chain search</li>
+  <li><strong>Opt-in LLM reranking</strong> (0.8.8) — OpenAI/Anthropic rerank pass on top-k candidates</li>
+  <li><strong>Irregular verb lemma expansion</strong> (0.8.6) — 170 mappings at query time</li>
+  <li><strong>Per-field BM25 DF cutoffs</strong> (0.8.6) — configurable term frequency suppression per field</li>
+  <li><strong>Versioned skill registry</strong> — git-like immutable skill versioning with Ed25519 signing</li>
+  <li><strong>Dashboard with entity_type filter + popup modals</strong> (0.8.7) — fully redesigned</li>
+</ul>
+
+<p>
+  The comparison table has changed significantly. Here's what the competitive
+  landscape looks like as of April 13, 2026.
+</p>
+
+<h2 id="feature-table">Feature Comparison (April 2026)</h2>
+
+<table class="comparison-table">
+  <thead>
+    <tr>
+      <th>Feature</th>
+      <th>MentisDB</th>
+      <th>Mem0</th>
+      <th>Graphiti/Zep</th>
+      <th>Letta</th>
+      <th>Cognee</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Language / Runtime</strong></td>
+      <td>Rust (static binary)</td>
+      <td>Python</td>
+      <td>Python</td>
+      <td>Python/TS</td>
+      <td>Python</td>
+    </tr>
+    <tr>
+      <td><strong>Storage</strong></td>
+      <td class="yes">Embedded (sled)</td>
+      <td class="no">External DB</td>
+      <td class="no">External DB</td>
+      <td class="no">External DB</td>
+      <td class="no">External DB</td>
+    </tr>
+    <tr>
+      <td><strong>LLM Required for Core</strong></td>
+      <td class="yes">No (opt-in reranking only)</td>
+      <td class="no">Yes</td>
+      <td class="no">Yes</td>
+      <td class="no">Yes</td>
+      <td class="no">Yes</td>
+    </tr>
+    <tr>
+      <td><strong>Cryptographic Integrity</strong></td>
+      <td class="yes">Hash chain (SHA-256)</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+    </tr>
+    <tr>
+      <td><strong>Hybrid Retrieval</strong></td>
+      <td class="yes">BM25+vec+graph+RRF</td>
+      <td class="partial">vec+keyword</td>
+      <td class="yes">semantic+kw+graph</td>
+      <td class="no">No</td>
+      <td class="yes">vec+graph</td>
+    </tr>
+    <tr>
+      <td><strong>Memory Branching</strong></td>
+      <td class="yes new">BranchesFrom (0.8.6)</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+    </tr>
+    <tr>
+      <td><strong>Temporal Facts</strong></td>
+      <td class="yes updated">valid_at/invalid_at (0.8.2)</td>
+      <td class="partial">Updates</td>
+      <td class="yes">valid_at / invalid_at</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+    </tr>
+    <tr>
+      <td><strong>Memory Dedup</strong></td>
+      <td class="yes updated">Jaccard threshold (0.8.2)</td>
+      <td class="yes">LLM-based</td>
+      <td class="partial">Merge</td>
+      <td class="no">No</td>
+      <td class="partial">Partial</td>
+    </tr>
+    <tr>
+      <td><strong>Entity Types (Custom Ontology)</strong></td>
+      <td class="yes new">entity_type field (0.8.7)</td>
+      <td class="no">No</td>
+      <td class="yes">Pydantic models</td>
+      <td class="no">No</td>
+      <td class="yes">Yes</td>
+    </tr>
+    <tr>
+      <td><strong>Episode Provenance</strong></td>
+      <td class="yes new">source_episode (0.8.8)</td>
+      <td class="no">No</td>
+      <td class="yes">Episodes</td>
+      <td class="no">No</td>
+      <td class="partial">Partial</td>
+    </tr>
+    <tr>
+      <td><strong>LLM Reranking</strong></td>
+      <td class="yes new">Opt-in (0.8.8)</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+    </tr>
+    <tr>
+      <td><strong>RRF Reranking</strong></td>
+      <td class="yes new">RRF k=60 (0.8.6)</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+    </tr>
+    <tr>
+      <td><strong>MCP Server</strong></td>
+      <td class="yes">Built-in (0.8.0)</td>
+      <td class="no">No</td>
+      <td class="yes">Yes</td>
+      <td class="no">No</td>
+      <td class="partial">Partial</td>
+    </tr>
+    <tr>
+      <td><strong>Versioned Skill Registry</strong></td>
+      <td class="yes new">Ed25519-signed (0.8.4)</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+    </tr>
+    <tr>
+      <td><strong>Agent Registry + Aliases</strong></td>
+      <td class="yes">Ed25519 keys + status</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="yes">Yes</td>
+      <td class="no">No</td>
+    </tr>
+    <tr>
+      <td><strong>Cross-Chain Graph Queries</strong></td>
+      <td class="yes new">BranchesFrom traversal (0.8.6)</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+    </tr>
+    <tr>
+      <td><strong>Webhook Notifications</strong></td>
+      <td class="no">Planned</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+    </tr>
+    <tr>
+      <td><strong>LangChain/LlamaIndex</strong></td>
+      <td class="no">Planned</td>
+      <td class="yes">Yes</td>
+      <td class="partial">Partial</td>
+      <td class="yes">Yes</td>
+      <td class="yes">Yes</td>
+    </tr>
+    <tr>
+      <td><strong>Token Tracking</strong></td>
+      <td class="no">Planned (1.0)</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="yes">Yes</td>
+      <td class="no">No</td>
+    </tr>
+    <tr>
+      <td><strong>Browser Extension</strong></td>
+      <td class="no">Planned (1.0)</td>
+      <td class="yes">Yes</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+      <td class="no">No</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>
+  <span class="new">new</span> = shipped since April 10 &nbsp;
+  <span class="updated">updated</span> = was partial/incorrect in prior analysis
+</p>
+
+<h2 id="what-changed">What Changed Since April 10</h2>
+
+<p>
+  Three weeks is a long time in a fast-moving space. Here's what was wrong or
+  incomplete in our prior analysis:
+</p>
+
+<h3>Temporal Facts — We Already Had It</h3>
+<p>
+  The April 10 analysis listed "Temporal Fact Management" as our #1 gap and
+  explained how we'd implement <code>valid_at</code>/<code>invalid_at</code> on
+  relations. We already shipped this in 0.8.2 (April 11). The feature was on
+  the prior roadmap and implemented before the analysis was published — we
+  simply didn't update the doc in time. Temporal facts are a
+  <strong>solved problem for MentisDB</strong>.
+</p>
+
+<h3>Memory Dedup — Also Already Shipped</h3>
+<p>
+  Same situation. Jaccard-threshold dedup with auto-Supersedes relations was
+  implemented in 0.8.2. The competitive analysis called this a gap; it wasn't.
+</p>
+
+<h3>Custom Ontology — Implemented in 0.8.7</h3>
+<p>
+  The analysis said we'd need to add <code>entity_type</code> and
+  <code>relation_type</code> fields. We shipped the entity_type field plus a
+  full per-chain registry with auto-observation and persistence in 0.8.7.
+</p>
+
+<h3>Episode Provenance — Implemented in 0.8.8</h3>
+<p>
+  The analysis recommended adding a <code>source_episode</code> field. We
+  implemented it in 0.8.8, complete with ThoughtQuery filter, dashboard
+  display, and JSON serialization.
+</p>
+
+<h3>LLM Reranking — New Since Analysis</h3>
+<p>
+  This was not on our radar three weeks ago. The LongMemEval benchmark
+  showed our lexical+vector+graph pipeline leaves room for improvement on
+  complex multi-hop queries. LLM reranking (0.8.8) is our first explicit
+  step toward closing that gap — opt-in, with graceful fallback if the
+  LLM API is unavailable.
+</p>
+
+<h2 id="what-remains">What Actually Remains on Our Roadmap</h2>
+
+<p>
+  After shipping everything above, here are the honest gaps still on the
+  0.9.0 list:
+</p>
+
+<ul>
+  <li><strong>Optional LLM-extracted memories</strong> — keep no-LLM as the core,
+    add opt-in LLM ingestion pipeline for users who want semantic extraction
+    without giving up the no-API-key guarantee</li>
+  <li><strong>LangChain/LlamaIndex integration</strong> — Python bindings via REST
+    so the Python agent ecosystem can use MentisDB as a drop-in memory backend</li>
+  <li><strong>Webhooks</strong> — notify external systems on thought append
+    (e.g., trigger a Slack message, call a webhook URL, invalidate a cache)</li>
+</ul>
+
+<p>
+  Token tracking and the browser extension are 1.0 items — we're not rushing
+  those.
+</p>
+
+<h2 id="benchmarks">Benchmark Progress</h2>
+
+<p>
+  Retrieval quality metrics as of April 13:
+</p>
+
+<table>
+  <thead>
+    <tr><th>Benchmark</th><th>Metric</th><th>Score</th><th>Notes</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>LoCoMo 10-persona</td>
+      <td>R@10</td>
+      <td><strong>73.0%</strong></td>
+      <td>Fresh chain, rebuilt vector sidecar</td>
+    </tr>
+    <tr>
+      <td>LoCoMo 10-persona w/ RRF</td>
+      <td>R@10</td>
+      <td><strong>73.0%</strong></td>
+      <td>Multi-type +0.5%; RRF neutral on simple queries</td>
+    </tr>
+    <tr>
+      <td>LongMemEval</td>
+      <td>R@5</td>
+      <td><strong>57.6%</strong></td>
+      <td>First baseline established (0.8.6)</td>
+    </tr>
+    <tr>
+      <td>LongMemEval</td>
+      <td>R@10</td>
+      <td><strong>62.6%</strong></td>
+      <td>Room to improve; LLM reranking is the path</td>
+    </tr>
+    <tr>
+      <td>Write latency</td>
+      <td>vs pre-0.8.0</td>
+      <td><strong>-13.8%</strong></td>
+      <td>After 0.8.0 write performance improvements</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>
+  The LongMemEval numbers (57.6% R@5 / 62.6% R@10) are the focus area.
+  Our hybrid BM25+vector+graph pipeline works well for single-hop factual
+  recall (LoCoMo 73%) but gaps appear on multi-entity, multi-hop
+  reasoning tasks. LLM reranking is the current approach — we're tuning
+  the prompt and model selection.
+</p>
+
+<h2 id="bottom-line">Bottom Line</h2>
+
+<p>
+  Three weeks ago we called out five gaps. Two were already shipped (temporal
+  facts, dedup). Two are now shipped (entity_type, source_episode). LLM
+  reranking is new. The remaining roadmap is narrower: webhooks, Python
+  bindings, and opt-in LLM extraction.
+</p>
+
+<p>
+  The architectural advantages we lead with — Rust, embedded storage,
+  no-LLM core, hash chain integrity, versioned skill registry, MCP server,
+  agent identity — remain intact and differentiated. What we've added in
+  retrieval quality, temporal reasoning, and semantic organization closes
+  most of the feature gap that made other systems look compelling.
+</p>
+
+<div class="highlight">
+  <p>
+    MentisDB is now the only local-first, cryptographically-verified,
+    hybrid-retrieval memory system with a built-in MCP server, versioned
+    skill registry, and zero mandatory external dependencies — in Rust.
+  </p>
+</div>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a>
+  · <a href="https://crates.io/crates/mentisdb">crates.io</a>
+  · <a href="https://docs.mentisdb.com">Documentation</a>
+</footer>
+</body>
+</html>
