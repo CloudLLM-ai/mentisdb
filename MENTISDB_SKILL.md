@@ -29,20 +29,20 @@ triggers:
 
 Write **immediately** when any becomes true:
 
-| Trigger | Type | Role |
-|---------|------|------|
-| Non-obvious bug cause | LessonLearned | Retrospective |
-| Architectural decision | Decision | Memory |
-| Security boundary found | Constraint | Memory |
-| Stable convention established | Decision | Memory |
-| Dangerous assumption corrected | Correction | Memory |
-| Restart point reached | Summary | Checkpoint |
-| Framework/ecosystem trap | LessonLearned | Retrospective |
-| Expensive operation ahead | Summary | Checkpoint |
-| Tool call surprise | LessonLearned | Retrospective |
-| Task finished durably | TaskComplete | Memory |
-| Uncertain about direction | Wonder | Memory |
-| Tentative explanation | Hypothesis | Memory |
+| Trigger | Type | Role | entity_type (optional) |
+|---------|------|------|------------------------|
+| Non-obvious bug cause | LessonLearned | Retrospective | bug_report |
+| Architectural decision | Decision | Memory | architecture_decision |
+| Security boundary found | Constraint | Memory | security |
+| Stable convention established | Decision | Memory | convention |
+| Dangerous assumption corrected | Correction | Memory | bug_report |
+| Restart point reached | Summary | Checkpoint | checkpoint |
+| Framework/ecosystem trap | LessonLearned | Retrospective | lesson_learned |
+| Expensive operation ahead | Summary | Checkpoint | checkpoint |
+| Tool call surprise | LessonLearned | Retrospective | lesson_learned |
+| Task finished durably | TaskComplete | Memory | task_complete |
+| Uncertain about direction | Wonder | Memory | question |
+| Tentative explanation | Hypothesis | Memory | hypothesis |
 
 **One strong memory > many weak ones.** Link to prior thoughts with `refs` or `relations`.
 
@@ -167,10 +167,9 @@ Tools: `mentisdb_upload_skill`, `mentisdb_read_skill`, `mentisdb_list_skills`, `
 | First thought | `mentisdb_get_genesis_thought` |
 | Page history | `mentisdb_traverse_thoughts` |
 | Grouped context | `mentisdb_context_bundles` |
-| Export markdown | `mentisdb_memory_markdown` |
-| Import markdown | `mentisdb_import_memory_markdown` |
-| Point-in-time query | `mentisdb_ranked_search` with `as_of` parameter |
-| Scope-filtered search | `mentisdb_ranked_search` with `scope` parameter |
+| Entity types | `mentisdb_upsert_entity_type`, `mentisdb_list_chains` (shows counts) |
+
+**Entity types** — use `entity_type` parameter on `mentisdb_search`, `mentisdb_ranked_search`, and `mentisdb_lexical_search` to filter by semantic category (e.g. `"bug_report"`, `"architecture_decision"`, `"retrospective"`). Call `mentisdb_upsert_entity_type` to register a label before using it.
 
 **Always filter** — supply text, tags, concepts, types, or time window.
 
