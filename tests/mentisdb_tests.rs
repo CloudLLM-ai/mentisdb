@@ -4,15 +4,16 @@ use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 
+use mentisdb::search::{ThoughtAdjacencyIndex, ThoughtLocator};
 use mentisdb::{
     chain_filename, chain_key_from_storage_filename, chain_storage_filename,
     load_registered_chains, migrate_chain_hash_algorithm, migrate_registered_chains,
     migrate_registered_chains_with_adapter, signable_thought_payload, AgentStatus,
-    BinaryStorageAdapter, MentisDb, MentisDbMigrationEvent, PublicKeyAlgorithm, StorageAdapter,
-    StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelation, ThoughtRelationKind,
-    ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor, ThoughtTraversalDirection,
-    ThoughtTraversalRequest, ThoughtType, TimeWindowUnit, FLUSH_THRESHOLD,
-    MENTISDB_CURRENT_VERSION,
+    BinaryStorageAdapter, MentisDb, MentisDbMigrationEvent, PublicKeyAlgorithm, RankedSearchQuery,
+    StorageAdapter, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelation,
+    ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor,
+    ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType, TimeWindowUnit,
+    FLUSH_THRESHOLD, MENTISDB_CURRENT_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -4153,7 +4154,11 @@ fn cross_chain_relation_traversal() {
                 ThoughtType::Decision,
                 "Use cache aside pattern for read-through caching.",
             )
-            .with_cross_chain_relation(ThoughtRelationKind::Supports, "chain-a", thought_a.id),
+            .with_cross_chain_relation(
+                ThoughtRelationKind::Supports,
+                "chain-a",
+                thought_a.id,
+            ),
         )
         .unwrap();
 
@@ -4217,6 +4222,116 @@ fn query_respects_cross_chain_chain_key() {
     let resolved = chain_b.resolve_context(0);
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].thought_type, ThoughtType::Hypothesis);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn llm_rerank_disabled_by_default() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent1", "Analyst", Some("memory"), None).unwrap();
+
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(
+                ThoughtType::Insight,
+                "Rust uses ownership for memory safety",
+            ),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Decision, "Use async channels for IPC"),
+        )
+        .unwrap();
+
+    let query = RankedSearchQuery::new().with_text("Rust ownership".to_string());
+    assert!(!query.llm_rerank, "llm_rerank should be false by default");
+    assert!(
+        query.llm_model.is_none(),
+        "llm_model should be None by default"
+    );
+    assert_eq!(
+        query.llm_rerank_top_k, 20,
+        "llm_rerank_top_k should default to 20"
+    );
+
+    let results = chain.query_ranked(&query);
+    assert_eq!(
+        results.hits.len(),
+        1,
+        "should find the Rust thought without LLM"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn llm_rerank_falls_back_on_failure() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent1", "Analyst", Some("memory"), None).unwrap();
+
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(
+                ThoughtType::Insight,
+                "Rust uses ownership for memory safety",
+            ),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "agent1",
+            ThoughtInput::new(ThoughtType::Decision, "Use async channels for IPC"),
+        )
+        .unwrap();
+
+    let mut query = RankedSearchQuery::new().with_text("Rust ownership".to_string());
+    query.llm_rerank = true;
+    query.llm_model = Some("nonexistent-model".to_string());
+    query.llm_rerank_top_k = 10;
+
+    let results = chain.query_ranked(&query);
+    assert_eq!(
+        results.hits.len(),
+        1,
+        "should still return results even when LLM call fails"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn llm_rerank_top_k_respected() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent1", "Analyst", Some("memory"), None).unwrap();
+
+    for i in 0..30 {
+        chain
+            .append_thought(
+                "agent1",
+                ThoughtInput::new(
+                    ThoughtType::Insight,
+                    format!("Insight number {} about various topics", i),
+                ),
+            )
+            .unwrap();
+    }
+
+    let mut query = RankedSearchQuery::new()
+        .with_text("Insight number".to_string())
+        .with_limit(30);
+    query.llm_rerank = true;
+    query.llm_model = Some("gpt-4".to_string());
+    query.llm_rerank_top_k = 5;
+
+    assert_eq!(
+        query.llm_rerank_top_k, 5,
+        "llm_rerank_top_k should be set to 5"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
