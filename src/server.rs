@@ -40,6 +40,7 @@
 //! - `POST /v1/skills/deprecate`
 //! - `POST /v1/skills/revoke`
 
+use crate::webhooks::{WebhookManager, WebhookRegistration};
 use crate::{
     deregister_chain, load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus,
     EntityTypeRecord, ManagedVectorProviderKind, MemoryScope, MentisDb, PublicKeyAlgorithm,
@@ -51,10 +52,10 @@ use crate::{
     MENTISDB_CURRENT_VERSION,
 };
 use async_trait::async_trait;
-use axum::extract::{Query, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header::CONTENT_TYPE, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -1452,6 +1453,9 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         )
         .route("/v1/vectors/rebuild", post(rest_rebuild_vectors_handler))
         .route("/v1/chains/merge", post(rest_merge_chains_handler))
+        .route("/v1/webhooks", get(rest_list_webhooks_handler))
+        .route("/v1/webhooks", post(rest_register_webhook_handler))
+        .route("/v1/webhooks/{id}", delete(rest_delete_webhook_handler))
         .with_state(service)
 }
 
@@ -1684,6 +1688,9 @@ pub fn rest_router(config: MentisDbServiceConfig) -> Router {
             "/v1/entity-types/upsert",
             post(rest_upsert_entity_type_handler),
         )
+        .route("/v1/webhooks", get(rest_list_webhooks_handler))
+        .route("/v1/webhooks", post(rest_register_webhook_handler))
+        .route("/v1/webhooks/{id}", delete(rest_delete_webhook_handler))
         .with_state(service)
 }
 
@@ -1703,6 +1710,7 @@ struct MentisDbService {
     pub(crate) chains: Arc<DashMap<String, Arc<RwLock<MentisDb>>>>,
     pub(crate) skills: Arc<RwLock<SkillRegistry>>,
     interaction_log: Arc<InteractionLogSink>,
+    webhook_manager: WebhookManager,
 }
 
 #[derive(Debug)]
@@ -1926,6 +1934,15 @@ impl ToolProtocol for MentisDbMcpProtocol {
             "mentisdb_branch_from" => {
                 parse_and_call(parameters, |request| self.service.branch_chain(request)).await
             }
+            "mentisdb_list_webhooks" => {
+                parse_and_call(parameters, |request| self.service.list_webhooks(request)).await
+            }
+            "mentisdb_register_webhook" => {
+                parse_and_call(parameters, |request| self.service.register_webhook(request)).await
+            }
+            "mentisdb_delete_webhook" => {
+                parse_and_call(parameters, |request| self.service.delete_webhook(request)).await
+            }
             _ => {
                 return Err(Box::new(ToolError::NotFound(tool_name.to_string())));
             }
@@ -1987,6 +2004,13 @@ impl MentisDbService {
                 panic!("failed to open MentisDB interaction log at {target}: {error}");
             }),
         );
+        let webhook_manager =
+            WebhookManager::new(config.chain_dir.clone()).unwrap_or_else(|error| {
+                panic!(
+                    "failed to open MentisDB webhook manager at {}: {error}",
+                    config.chain_dir.display()
+                )
+            });
         Self {
             skills: Arc::new(RwLock::new(
                 SkillRegistry::open(&config.chain_dir).unwrap_or_else(|error| {
@@ -1999,6 +2023,7 @@ impl MentisDbService {
             interaction_log,
             config,
             chains: Arc::new(DashMap::new()),
+            webhook_manager,
         }
     }
 
@@ -2030,12 +2055,14 @@ impl MentisDbService {
         let auto_flush = self.config.auto_flush;
         let dedup_threshold = self.config.dedup_threshold;
         let dedup_scan_window = self.config.dedup_scan_window;
+        let webhook_manager = self.webhook_manager.clone();
         let entry = self.chains.entry(chain_key).or_try_insert_with(|| {
             MentisDb::open_with_key_and_storage_kind(&chain_dir, &chain_key_clone, storage_kind)
                 .and_then(|mut db| {
                     db.set_auto_flush(auto_flush)?;
                     db.with_dedup_threshold(dedup_threshold);
                     db.with_dedup_scan_window(dedup_scan_window);
+                    db.with_webhook_manager(webhook_manager);
                     db.apply_persisted_managed_vector_sidecars()?;
                     Ok(Arc::new(RwLock::new(db)))
                 })
@@ -3420,6 +3447,37 @@ impl MentisDbService {
         Ok(SkillSummaryResponse { skill })
     }
 
+    async fn list_webhooks(
+        &self,
+        _request: ListSkillsRequest,
+    ) -> Result<ListWebhooksResponse, Box<dyn Error + Send + Sync>> {
+        let webhooks = self.webhook_manager.list_webhooks();
+        Ok(ListWebhooksResponse { webhooks })
+    }
+
+    async fn register_webhook(
+        &self,
+        request: RegisterWebhookRequest,
+    ) -> Result<WebhookRegistrationResponse, Box<dyn Error + Send + Sync>> {
+        let thought_type_filter = request
+            .thought_type_filter
+            .map(|types| types.into_iter().collect());
+        let webhook = self.webhook_manager.register_webhook(
+            request.url,
+            request.chain_key_filter,
+            thought_type_filter,
+        )?;
+        Ok(WebhookRegistrationResponse { webhook })
+    }
+
+    async fn delete_webhook(
+        &self,
+        request: DeleteWebhookRequest,
+    ) -> Result<DeleteWebhookResponse, Box<dyn Error + Send + Sync>> {
+        let deleted = self.webhook_manager.delete_webhook(request.id)?;
+        Ok(DeleteWebhookResponse { deleted })
+    }
+
     async fn head(
         &self,
         request: ChainHeadRequest,
@@ -4252,6 +4310,37 @@ struct SkillSummaryResponse {
     skill: SkillSummary,
 }
 
+#[derive(Debug, Deserialize)]
+struct RegisterWebhookRequest {
+    #[allow(dead_code)]
+    chain_key: Option<String>,
+    url: String,
+    chain_key_filter: Option<String>,
+    thought_type_filter: Option<Vec<ThoughtType>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteWebhookRequest {
+    #[allow(dead_code)]
+    chain_key: Option<String>,
+    id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+struct ListWebhooksResponse {
+    webhooks: Vec<WebhookRegistration>,
+}
+
+#[derive(Debug, Serialize)]
+struct WebhookRegistrationResponse {
+    webhook: WebhookRegistration,
+}
+
+#[derive(Debug, Serialize)]
+struct DeleteWebhookResponse {
+    deleted: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct ThoughtResponse {
     chain_key: String,
@@ -5035,6 +5124,34 @@ async fn rest_revoke_skill_handler(
     service_call(service.revoke_skill(request).await)
 }
 
+async fn rest_list_webhooks_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Query(request): Query<ListSkillsRequest>,
+) -> Result<Json<ListWebhooksResponse>, (StatusCode, Json<Value>)> {
+    service_call(service.list_webhooks(request).await)
+}
+
+async fn rest_register_webhook_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<RegisterWebhookRequest>,
+) -> Result<Json<WebhookRegistrationResponse>, (StatusCode, Json<Value>)> {
+    service_call(service.register_webhook(request).await)
+}
+
+async fn rest_delete_webhook_handler(
+    State(service): State<Arc<MentisDbService>>,
+    AxumPath(id): AxumPath<Uuid>,
+) -> Result<Json<DeleteWebhookResponse>, (StatusCode, Json<Value>)> {
+    service_call(
+        service
+            .delete_webhook(DeleteWebhookRequest {
+                chain_key: None,
+                id,
+            })
+            .await,
+    )
+}
+
 async fn rest_head_handler(
     State(service): State<Arc<MentisDbService>>,
     Json(request): Json<ChainHeadRequest>,
@@ -5540,6 +5657,28 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
                 .with_description("Chain key for the new branch chain.")
                 .required(),
         ),
+        ToolMetadata::new(
+            "mentisdb_list_webhooks",
+            "Returns all webhook registrations stored in mentisdb-webhooks.json.",
+        )
+        .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key.")),
+        ToolMetadata::new(
+            "mentisdb_register_webhook",
+            "Register a new webhook to receive HTTP POST notifications when thoughts are appended. \
+             Webhook delivery is async and non-blocking: append operations never wait for webhook completion. \
+             On delivery failure, webhooks are retried up to 3 times with exponential backoff (1s, 2s, 4s). \
+             Failures are logged but do not affect the caller.",
+        )
+        .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
+        .with_parameter(ToolParameter::new("url", ToolParameterType::String).with_description("The HTTP endpoint URL to call on thought append events.").required())
+        .with_parameter(ToolParameter::new("chain_key_filter", ToolParameterType::String).with_description("Optional chain key filter. If set, only fire for this chain. If None, fire for all chains."))
+        .with_parameter(ToolParameter::new("thought_type_filter", ToolParameterType::Array).with_description("Optional list of ThoughtType names to filter. If set, only fire for these thought types.").with_items(ToolParameterType::String)),
+        ToolMetadata::new(
+            "mentisdb_delete_webhook",
+            "Remove a webhook registration by its UUID. Returns whether the webhook was found and deleted.",
+        )
+        .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
+        .with_parameter(ToolParameter::new("id", ToolParameterType::String).with_description("Stable UUID of the webhook registration to delete.").required()),
     ]
 }
 

@@ -13,7 +13,7 @@ use mentisdb::{
     StorageAdapter, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelation,
     ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor,
     ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType, TimeWindowUnit,
-    FLUSH_THRESHOLD, MENTISDB_CURRENT_VERSION,
+    WebhookManager, FLUSH_THRESHOLD, MENTISDB_CURRENT_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -4332,6 +4332,86 @@ fn llm_rerank_top_k_respected() {
     assert_eq!(
         query.llm_rerank_top_k, 5,
         "llm_rerank_top_k should be set to 5"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn webhook_manager_list_persists_and_reloads() {
+    let dir = unique_chain_dir();
+
+    {
+        let mgr = WebhookManager::new(dir.clone()).unwrap();
+        mgr.register_webhook(
+            "https://example.com/hook1".to_string(),
+            Some("my-chain".to_string()),
+            None,
+        )
+        .unwrap();
+        mgr.register_webhook("https://example.com/hook2".to_string(), None, None)
+            .unwrap();
+    }
+
+    {
+        let mgr = WebhookManager::new(dir.clone()).unwrap();
+        let all = mgr.list_webhooks();
+        assert_eq!(all.len(), 2);
+        let filtered = all
+            .iter()
+            .filter(|w| w.chain_key_filter.as_deref() == Some("my-chain"))
+            .collect::<Vec<_>>();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].url, "https://example.com/hook1");
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn webhook_delete_nonexistent_returns_false() {
+    let dir = unique_chain_dir();
+    let mgr = WebhookManager::new(dir.clone()).unwrap();
+    let result = mgr.delete_webhook(Uuid::new_v4()).unwrap();
+    assert!(!result, "deleting nonexistent webhook should return false");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn webhook_chain_key_filter() {
+    let dir = unique_chain_dir();
+
+    let manager = WebhookManager::new(dir.clone()).unwrap();
+    let reg_a = manager
+        .register_webhook(
+            "https://a.com/h".to_string(),
+            Some("chain-a".to_string()),
+            None,
+        )
+        .unwrap();
+    let reg_b = manager
+        .register_webhook(
+            "https://b.com/h".to_string(),
+            Some("chain-b".to_string()),
+            None,
+        )
+        .unwrap();
+
+    let all = manager.list_webhooks();
+    assert_eq!(all.len(), 2);
+
+    let found_a = manager.get_webhook(reg_a.id);
+    assert!(found_a.is_some());
+    assert_eq!(
+        found_a.unwrap().chain_key_filter.as_deref(),
+        Some("chain-a")
+    );
+
+    let found_b = manager.get_webhook(reg_b.id);
+    assert!(found_b.is_some());
+    assert_eq!(
+        found_b.unwrap().chain_key_filter.as_deref(),
+        Some("chain-b")
     );
 
     let _ = std::fs::remove_dir_all(&dir);

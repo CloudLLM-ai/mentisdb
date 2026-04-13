@@ -16,6 +16,11 @@ pub mod search;
 #[cfg(feature = "server")]
 pub mod server;
 mod skills;
+#[cfg(feature = "server")]
+/// Webhook notification system for notifying external HTTP endpoints on thought append events.
+pub mod webhooks;
+#[cfg(feature = "server")]
+pub use webhooks::{WebhookManager, WebhookPayload, WebhookRegistration, WebhookThought};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize, Serializer};
@@ -3469,6 +3474,8 @@ pub struct MentisDb {
     /// Maximum number of recent thoughts to scan during dedup checking.
     /// Limits the cost of the similarity comparison on large chains.
     dedup_scan_window: usize,
+    #[cfg(feature = "server")]
+    webhook_manager: Option<crate::webhooks::WebhookManager>,
 }
 
 impl MentisDb {
@@ -3584,6 +3591,8 @@ impl MentisDb {
             invalidated_thought_ids: HashSet::new(),
             dedup_threshold: None,
             dedup_scan_window: 64,
+            #[cfg(feature = "server")]
+            webhook_manager: None,
         };
 
         // Build the invalidated-thoughts index: any thought that is the target
@@ -4046,6 +4055,17 @@ impl MentisDb {
         self.maybe_flush_entity_type_registry(self.auto_flush || self.thoughts.len() == 1)?;
         self.mark_chain_registration_dirty();
         self.maybe_flush_chain_registration(self.thoughts.len() == 1 || agent_count_changed)?;
+
+        #[cfg(feature = "server")]
+        if let Some(ref webhook_manager) = self.webhook_manager {
+            let thought = self.thoughts.last().unwrap().clone();
+            let chain_key = self.chain_key().to_string();
+            let manager = webhook_manager.clone();
+            tokio::spawn(async move {
+                manager.deliver_for_thought(&chain_key, &thought);
+            });
+        }
+
         Ok(self.thoughts.last().unwrap())
     }
 
@@ -6613,6 +6633,18 @@ impl MentisDb {
     /// per append on long chains.
     pub fn with_dedup_scan_window(&mut self, window: usize) -> &mut Self {
         self.dedup_scan_window = window.max(1);
+        self
+    }
+
+    /// Attaches a webhook manager to receive notifications when thoughts are appended.
+    ///
+    /// When set, each successful [`append_thought`](Self::append_thought) call
+    /// fires webhook deliveries asynchronously without blocking the caller.
+    /// Use this when embedding MentisDb in a server context where webhook
+    /// notifications are desired.
+    #[cfg(feature = "server")]
+    pub fn with_webhook_manager(&mut self, manager: crate::webhooks::WebhookManager) -> &mut Self {
+        self.webhook_manager = Some(manager);
         self
     }
 
