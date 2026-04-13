@@ -1,12 +1,10 @@
 # MentisDB Roadmap
 
-## 0.8.7 — Knowledge Structure
-- ~~Custom entity/relation types (entity_type field, type registry per chain)~~ ✓
-- Episode provenance tracking (DerivedFrom relation, source_episode field)
-- LLM-based reranking (opt-in, for closing the LongMemEval gap)
+## 0.8.8 — Episode Provenance & LLM Reranking
+- ~~Episode provenance tracking (source_episode field)~~ ✓
+- ~~LLM-based reranking (opt-in, for closing the LongMemEval gap)~~ ✓
 
 ## 0.9.0 — Interop & Scale
-- Cross-chain graph queries (follow ThoughtRelation.chain_key at query time)
 - Optional LLM-extracted memories (keep no-LLM core, add opt-in pipeline)
 - LangChain/LlamaIndex integration (Python bindings via REST)
 - Webhooks (notify external systems on thought append)
@@ -17,7 +15,12 @@
 - Self-improving agent primitives
 - Browser extension
 
-## Benchmarks (as of 0.8.7)
+## Shipped
+- 0.8.7: entity_type field, type registry per chain, dashboard entity_type display/filter, dashboard modal UX overhaul, resolve_chain_key trim/filter, wizard Issue #14 fix, schema v4+ compatibility
+- 0.8.6: RRF reranking, memory branching with BranchesFrom, irregular verb lemma expansion, BM25 DF cutoffs
+- 0.8.5: Session cohesion tuning, graph relation scores, fastembed integration
+
+## Benchmarks (as of 0.8.8)
 - LoCoMo 10-persona: 73.0% R@10 (fresh chain)
 - LoCoMo 10-persona w/ RRF: 73.0% R@10 (multi-type +0.5%)
 - LongMemEval: 57.6% R@5, 62.6% R@10 (first baseline)

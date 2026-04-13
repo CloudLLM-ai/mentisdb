@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.8.8 — Episode Provenance, LLM Reranking & Cross-Chain Fixes</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 13, 2026</div>
+
+<h1>MentisDB 0.8.8 — Episode Provenance, LLM Reranking & Cross-Chain Fixes</h1>
+
+<p>
+  0.8.8 completes the 0.8.7 roadmap with two remaining features and an important bug fix.
+  It adds optional LLM-based reranking for improved relevance on complex queries,
+  a source_episode field for grouping thoughts by conversational context,
+  and fixes a cross-chain relation traversal bug that could cause lookup failures.
+</p>
+
+<h2 id="source-episodes">Source Episodes — Group Thoughts by Context</h2>
+
+<p>
+  Thoughts can now carry a <code>source_episode</code> label — an optional identifier for
+  the conversational or contextual origin of a thought. This groups thoughts from the same
+  conversation turn, debugging session, planning meeting, or reasoning chain.
+</p>
+
+<p>
+  Useful for:
+</p>
+
+<ul>
+  <li><strong>Session replay</strong> — retrieve all thoughts from a specific conversation or session</li>
+  <li><strong>Episode summaries</strong> — trace a line of reasoning across multiple thoughts in the same episode</li>
+  <li><strong>Context isolation</strong> — keep experimental thoughts grouped separately from主线 memories</li>
+</ul>
+
+<p>
+  Set via <code>source_episode</code> on append. Filter in queries with
+  <code>with_source_episode()</code>. Like <code>entity_type</code>, this field is not
+  included in the thought hash — backward compatible with all existing chains.
+</p>
+
+<h2 id="llm-reranking">Opt-In LLM Reranking</h2>
+
+<p>
+  Ranked search now supports an optional LLM-based reranking pass. When enabled, the
+  top candidates from the existing BM25+vector+graph pipeline are sent to an LLM
+  (OpenAI or Anthropic) which re-ranks them by relevance to the query. This helps
+  most on complex multi-hop questions where the lexical and vector signals disagree
+  on the best results.
+</p>
+
+<h3>How it works</h3>
+
+<ol>
+  <li>Run the normal ranked search pipeline to get top-k candidates</li>
+  <li>Send query + candidate contents to the LLM with a ranking prompt</li>
+  <li>LLM returns ordered indices; results are reordered</li>
+  <li>If the LLM call fails, fall back to the original ranking (graceful degradation)</li>
+</ol>
+
+<h3>Parameters</h3>
+
+<table>
+  <thead>
+    <tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>llm_rerank</code></td><td>bool</td><td>false</td><td>Enable LLM reranking</td></tr>
+    <tr><td><code>llm_model</code></td><td>string</td><td>—</td><td>Model to use (e.g. "gpt-4", "claude-3-sonnet")</td></tr>
+    <tr><td><code>llm_rerank_top_k</code></td><td>int</td><td>20</td><td>How many candidates to send to LLM</td></tr>
+  </tbody>
+</table>
+
+<p>
+  Works with <code>mentisdb_ranked_search</code> (MCP), <code>POST /v1/search/rerank</code> (REST),
+  and the Rust <code>RankedSearchQuery::with_llm_reranking(model, top_k)</code> API.
+</p>
+
+<h2 id="cross-chain">Cross-Chain Relation Traversal Fix</h2>
+
+<p>
+  A bug in <code>resolve_context_by_id</code> caused cross-chain relations (those with
+  <code>chain_key</code> set) to be incorrectly processed during local traversal, potentially
+  causing lookup failures. Fixed to properly skip cross-chain targets. The underlying
+  cross-chain graph expansion via <code>BranchesFrom</code> was already working correctly.
+</p>
+
+<h2 id="tests">Search Sanity Tests</h2>
+
+<p>
+  Added 14 new regression tests covering the query pipeline: <code>tags_any</code> filter,
+  type filter, empty results, text search case-insensitivity, importance threshold,
+  entity_type filtering, cross-chain traversal, and LLM reranking behavior.
+</p>
+
+<h2 id="upgrade">Upgrade Instructions</h2>
+
+<pre><code>cargo install mentisdb --force</code></pre>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb/releases/tag/0.8.8.34">GitHub Release 0.8.8.34</a>
+  · <a href="https://crates.io/crates/mentisdb">crates.io</a>
+  · <a href="https://docs.mentisdb.com">Documentation</a>
+</footer>
+</body>
+</html>

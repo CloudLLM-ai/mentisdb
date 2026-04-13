@@ -1,3 +1,38 @@
+0.8.8.34 APR/13/2026
+  - feat: add source_episode field to Thought for episode provenance tracking
+    - Optional episode/conversational context identifier groups related thoughts
+    - Added to Thought, ThoughtInput (with with_source_episode() builder),
+      ThoughtQuery (with with_source_episode() filter), thought_json output,
+      and dashboard API
+    - Not included in thought hash (backward compatible, like entity_type)
+  - feat(search): add opt-in LLM-based reranking for ranked search
+    - New fields on RankedSearchQuery: llm_rerank (bool), llm_model (Option<String>),
+      llm_rerank_top_k (usize, default 20), with_llm_reranking() builder
+    - RankedSearchScore gains llm_score field (0.0 when disabled)
+    - MentisDb::llm_rerank_candidates() calls OpenAI or Anthropic API with graceful
+      fallback on failure (falls back to original ranking)
+    - REST: POST /v1/search/rerank dedicated endpoint
+    - LLM reranking is query-time only, no persistence required
+  - feat(search): verify and fix cross-chain graph query traversal
+    - resolve_context_by_id now properly skips cross-chain relations
+      (those with chain_key.is_some()) during local traversal
+    - ThoughtAdjacencyIndex correctly tracks cross-chain targets via ThoughtLocator::cross_chain
+    - Graph expansion works across chains via BranchesFrom relations
+    - ancestor_chain_keys() discovers parent chains for cross-chain ranked search
+  - test: add 8 search sanity-check regression tests
+    - query_with_tags_any_returns_all_matching_thoughts
+    - query_with_types_returns_only_matching_types
+    - query_returns_empty_when_no_match_exists
+    - query_with_text_search_finds_content
+    - query_with_text_search_is_case_insensitive
+    - query_filter_by_importance_threshold
+    - entity_type_filter_returns_only_matching_entity_types
+    - cross_chain_relation_traversal, query_respects_cross_chain_chain_key
+  - test: LLM reranking tests (llm_rerank_disabled_by_default,
+    llm_rerank_falls_back_on_failure, llm_rerank_top_k_respected)
+  - test: source_episode tests (source_episode_field_round_trips,
+    source_episode_filter_in_query, source_episode_none_when_not_set)
+
 0.8.7.33 APR/13/2026
   - feat(entity_type): add entity_type field to Thought struct with V3 backward-compatible deserialization
     - Thought struct gains optional `entity_type: Option<String>` field with `#[serde(default)]`
