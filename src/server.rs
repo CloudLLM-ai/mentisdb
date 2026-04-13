@@ -2905,7 +2905,8 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
-        let entity_types: Vec<EntityTypeRecord> = chain.list_entity_types().into_iter().cloned().collect();
+        let entity_types: Vec<EntityTypeRecord> =
+            chain.list_entity_types().into_iter().cloned().collect();
         self.log_interaction(InteractionLogEntry {
             access: "read",
             operation: "list_entity_types",
@@ -3463,6 +3464,8 @@ impl MentisDbService {
 
     fn resolve_chain_key(&self, chain_key: Option<&str>) -> String {
         chain_key
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
             .unwrap_or(&self.config.default_chain_key)
             .to_string()
     }

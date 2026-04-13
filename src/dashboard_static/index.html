@@ -581,6 +581,104 @@
     </div>
   </div>
 
+  <!-- Static modals (always in DOM so Branch/Delete/Merge work from any page) -->
+  <div id="cl-bootstrap-modal" style="display:none">
+    <div class="card" style="border-color:#388bfd;margin-bottom:16px">
+      <div class="card-title">Bootstrap New Chain</div>
+      <div class="form-group"><label>Chain Key <span style="color:#f85149">*</span></label><input type="text" id="cl-ck" placeholder="e.g. my-project-brain"></div>
+      <div class="form-group"><label>Initial Memory Content <span style="color:#f85149">*</span></label><textarea id="cl-content" placeholder="Describe what this chain is for..."></textarea></div>
+      <div class="form-group"><label>Agent ID <span style="color:#8b949e;font-weight:400">(optional)</span></label><input type="text" id="cl-agent" placeholder="system"></div>
+      <div class="form-group"><label>Tags <span style="color:#8b949e;font-weight:400">(comma-separated, optional)</span></label><input type="text" id="cl-tags" placeholder="project, memory"></div>
+      <div class="form-group"><label>Concepts <span style="color:#8b949e;font-weight:400">(comma-separated, optional)</span></label><input type="text" id="cl-concepts" placeholder="context, bootstrap"></div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" id="cl-bootstrap-submit">Bootstrap</button>
+        <button class="btn btn-secondary btn-sm" id="cl-bootstrap-cancel">Cancel</button>
+        <span id="cl-bootstrap-fb" class="feedback"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete Chain Modal -->
+  <div id="cl-delete-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal" style="max-width:540px">
+      <div class="modal-hdr">
+        <h3 style="color:#f85149">⚠ Delete Chain</h3>
+        <button class="modal-close" id="cl-del-x" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="color:#c9d1d9;margin-bottom:14px">You are about to permanently delete chain <strong id="cl-del-name" style="color:#f85149"></strong>. All memories stored in this chain will be lost forever and cannot be recovered.</p>
+        <div class="form-group"><label>Type the chain key to confirm deletion</label><input type="text" id="cl-del-confirm" placeholder=""></div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-danger btn-sm" id="cl-del-submit" disabled>Delete Forever</button>
+          <button class="btn btn-secondary btn-sm" id="cl-del-cancel">Cancel</button>
+          <span id="cl-del-fb" class="feedback"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Merge Chain Modal -->
+  <div id="cl-merge-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal" style="max-width:560px">
+      <div class="modal-hdr">
+        <h3 style="color:#58a6ff">⇢ Merge Chain Into Another</h3>
+        <button class="modal-close" id="cl-mrg-x" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="color:#c9d1d9;margin-bottom:6px">
+          All thoughts from <strong id="cl-mrg-src" style="color:#58a6ff"></strong>
+          will be copied into the selected target chain. Agent identities will be
+          remapped automatically to the closest match in the target chain.
+        </p>
+        <p style="color:#f85149;font-size:0.85rem;margin-bottom:14px">
+          ⚠ After copying, <strong id="cl-mrg-src2" style="color:#f85149"></strong> will be permanently deleted and cannot be recovered.
+        </p>
+        <div class="form-group" style="margin-bottom:14px">
+          <label>Merge into target chain</label>
+          <select id="cl-mrg-target" class="filter-select"></select>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.5)" id="cl-mrg-submit">Merge &amp; Delete Source</button>
+          <button class="btn btn-secondary btn-sm" id="cl-mrg-cancel">Cancel</button>
+          <span id="cl-mrg-fb" class="feedback"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Branch Chain Modal -->
+  <div id="cl-branch-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal" style="max-width:620px">
+      <div class="modal-hdr">
+        <h3 style="color:#58a6ff">⑂ Branch Chain</h3>
+        <button class="modal-close" id="cl-br-x" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="color:#c9d1d9;margin-bottom:6px">
+          Create a new chain that diverges from a specific thought on
+          <strong id="cl-br-src" style="color:#58a6ff"></strong>.
+          The branch chain will have a genesis thought with a <code>BranchesFrom</code> relation
+          pointing back to the fork point. Searches on the branch will transparently include
+          results from the parent chain.
+        </p>
+        <div class="form-group" style="margin-bottom:14px">
+          <label>New branch chain name</label>
+          <input type="text" id="cl-br-name" class="filter-input" placeholder="e.g. experiment-1" />
+        </div>
+        <div class="form-group" style="margin-bottom:14px">
+          <label>Branch from thought (UUID)</label>
+          <input type="text" id="cl-br-thought-id" class="filter-input mono" placeholder="Paste thought UUID or pick from recent thoughts" style="font-size:0.85rem" />
+        </div>
+        <div id="cl-br-thoughts" style="margin-bottom:14px;max-height:200px;overflow-y:auto"></div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.5)" id="cl-br-submit">Create Branch</button>
+          <button class="btn btn-secondary btn-sm" id="cl-br-cancel">Cancel</button>
+          <span id="cl-br-fb" class="feedback"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
   // =====================================================================
   // CONSTANTS
@@ -630,35 +728,164 @@
     return `<span class="badge badge-gray">${esc(s)}</span>`;
   }
 
-  // ── Early global stubs for onclick handlers ──────────────────────
-  // These must exist before any dynamically rendered HTML calls them.
-  // The full implementations are wired up later in the script.
+  let _delChainKey = null;
+  let _mergeSourceKey = null;
+  let _branchSourceKey = null;
+  let _chainListCache = [];
+
   window._openBranchChain = function(ck, thoughtId) {
-    if (!window._openBranchChainImpl) {
-      window._openBranchChainQueue = window._openBranchChainQueue || [];
-      window._openBranchChainQueue.push([ck, thoughtId]);
-      return;
-    }
-    window._openBranchChainImpl(ck, thoughtId);
+    _branchSourceKey = ck;
+    document.getElementById('cl-br-src').textContent = ck;
+    document.getElementById('cl-br-name').value = ck + '-branch';
+    document.getElementById('cl-br-thought-id').value = thoughtId || '';
+    document.getElementById('cl-br-fb').textContent = '';
+    document.getElementById('cl-br-fb').className = 'feedback';
+    document.getElementById('cl-branch-modal').classList.remove('hidden');
+    const container = document.getElementById('cl-br-thoughts');
+    container.innerHTML = '<div style="color:#8b949e;font-size:0.85rem">Loading thoughts…</div>';
+    api(`/dashboard/api/chains/${encodeURIComponent(ck)}/thoughts?per_page=20&order=desc`)
+      .then(data => {
+        const thoughts = data.thoughts || [];
+        if (!thoughts.length) { container.innerHTML = '<div style="color:#8b949e;font-size:0.85rem">No thoughts found</div>'; return; }
+        container.innerHTML = thoughts.map(t => {
+          const preview = (t.content || '').slice(0, 80).replace(/</g, '&lt;');
+          return `<div class="clickable" style="padding:4px 8px;border-radius:4px;margin-bottom:2px;font-size:0.85rem;cursor:pointer;border:1px solid rgba(88,166,255,0.2)" onclick="document.getElementById('cl-br-thought-id').value='${t.id}'">
+            <span class="mono" style="color:#58a6ff">${t.id}</span>
+            <span style="color:#8b949e;margin-left:8px">${preview}</span>
+          </div>`;
+        }).join('');
+      })
+      .catch(() => { container.innerHTML = '<div style="color:#f85149;font-size:0.85rem">Failed to load thoughts</div>'; });
   };
 
   window._openDeleteChain = function(ck) {
-    if (!window._openDeleteChainImpl) {
-      window._openDeleteChainQueue = window._openDeleteChainQueue || [];
-      window._openDeleteChainQueue.push(ck);
-      return;
-    }
-    window._openDeleteChainImpl(ck);
+    _delChainKey = ck;
+    document.getElementById('cl-del-name').textContent = ck;
+    document.getElementById('cl-del-confirm').value = '';
+    document.getElementById('cl-del-submit').disabled = true;
+    document.getElementById('cl-delete-modal').classList.remove('hidden');
+    document.getElementById('cl-del-confirm').focus();
   };
 
   window._openMergeChain = function(ck) {
-    if (!window._openMergeChainImpl) {
-      window._openMergeChainQueue = window._openMergeChainQueue || [];
-      window._openMergeChainQueue.push(ck);
-      return;
+    _mergeSourceKey = ck;
+    document.getElementById('cl-mrg-src').textContent = ck;
+    document.getElementById('cl-mrg-src2').textContent = ck;
+    const sel = document.getElementById('cl-mrg-target');
+    sel.innerHTML = '';
+    const populate = (chains) => {
+      (chains || []).forEach(c => {
+        if (c.chain_key === ck) return;
+        const opt = document.createElement('option');
+        opt.value = c.chain_key;
+        opt.textContent = c.chain_key + ' (' + (c.thought_count ?? 0) + ' thoughts)';
+        sel.appendChild(opt);
+      });
+    };
+    if (_chainListCache.length) {
+      populate(_chainListCache);
+    } else {
+      api('/dashboard/api/chains').then(chains => { _chainListCache = chains; populate(chains); }).catch(() => {});
     }
-    window._openMergeChainImpl(ck);
+    document.getElementById('cl-merge-modal').classList.remove('hidden');
+    document.getElementById('cl-mrg-fb').textContent = '';
+    document.getElementById('cl-mrg-fb').className = 'feedback';
   };
+
+  (function wireChainModals() {
+    document.getElementById('cl-del-cancel').addEventListener('click', () => {
+      document.getElementById('cl-delete-modal').classList.add('hidden');
+      _delChainKey = null;
+    });
+    document.getElementById('cl-del-confirm').addEventListener('input', function() {
+      document.getElementById('cl-del-submit').disabled = this.value !== _delChainKey;
+    });
+    document.getElementById('cl-del-submit').addEventListener('click', () => {
+      if (!_delChainKey) return;
+      const fb  = document.getElementById('cl-del-fb');
+      const btn = document.getElementById('cl-del-submit');
+      btn.disabled = true;
+      api(`/dashboard/api/chains/${encodeURIComponent(_delChainKey)}`, { method: 'DELETE' })
+        .then(() => {
+          showFeedback(fb, true, 'Chain deleted');
+          setTimeout(() => { document.getElementById('cl-delete-modal').classList.add('hidden'); renderChainList(); }, 800);
+        })
+        .catch(err => { showFeedback(fb, false, err.message); btn.disabled = false; });
+    });
+
+    document.getElementById('cl-mrg-cancel').addEventListener('click', () => {
+      document.getElementById('cl-merge-modal').classList.add('hidden');
+      _mergeSourceKey = null;
+    });
+    document.getElementById('cl-mrg-submit').addEventListener('click', () => {
+      const fb  = document.getElementById('cl-mrg-fb');
+      const btn = document.getElementById('cl-mrg-submit');
+      const target = document.getElementById('cl-mrg-target').value;
+      if (!target) { showFeedback(fb, false, 'Select a target chain'); return; }
+      btn.disabled = true;
+      fb.textContent = 'Merging…';
+      fb.className = 'feedback show';
+      api('/dashboard/api/chains/merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_chain_key: _mergeSourceKey, target_chain_key: target })
+      })
+        .then(res => {
+          showFeedback(fb, true, `✓ Copied ${res.thoughts_copied} thoughts → ${target}. Source deleted.`);
+          setTimeout(() => {
+            document.getElementById('cl-merge-modal').classList.add('hidden');
+            _mergeSourceKey = null;
+            renderChainList();
+          }, 1800);
+        })
+        .catch(err => {
+          showFeedback(fb, false, err.message);
+          btn.disabled = false;
+        });
+    });
+
+    document.getElementById('cl-br-cancel').addEventListener('click', () => {
+      document.getElementById('cl-branch-modal').classList.add('hidden');
+      _branchSourceKey = null;
+    });
+    document.getElementById('cl-br-submit').addEventListener('click', () => {
+      const fb  = document.getElementById('cl-br-fb');
+      const btn = document.getElementById('cl-br-submit');
+      const name = document.getElementById('cl-br-name').value.trim();
+      const thoughtId = document.getElementById('cl-br-thought-id').value.trim();
+      if (!name) { showFeedback(fb, false, 'Enter a branch chain name'); return; }
+      if (!thoughtId) { showFeedback(fb, false, 'Enter or pick a thought UUID to branch from'); return; }
+      btn.disabled = true;
+      fb.textContent = 'Branching…';
+      fb.className = 'feedback show';
+      api('/dashboard/api/chains/branch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_chain_key: _branchSourceKey, branch_thought_id: thoughtId, branch_chain_key: name })
+      })
+        .then(res => {
+          showFeedback(fb, true, `✓ Branch '${res.branch_chain_key}' created from thought ${res.branch_thought_id.slice(0,8)}…`);
+          setTimeout(() => {
+            document.getElementById('cl-branch-modal').classList.add('hidden');
+            _branchSourceKey = null;
+            renderChainList();
+          }, 1800);
+        })
+        .catch(err => {
+          showFeedback(fb, false, err.message);
+          btn.disabled = false;
+        });
+    });
+
+    ['cl-delete-modal','cl-merge-modal','cl-branch-modal'].forEach(id => {
+      const overlay = document.getElementById(id);
+      if (!overlay) return;
+      overlay.addEventListener('click', e => { if (e.target === overlay) overlay.classList.add('hidden'); });
+    });
+    document.getElementById('cl-del-x').addEventListener('click', () => { document.getElementById('cl-delete-modal').classList.add('hidden'); _delChainKey = null; });
+    document.getElementById('cl-mrg-x').addEventListener('click', () => { document.getElementById('cl-merge-modal').classList.add('hidden'); _mergeSourceKey = null; });
+    document.getElementById('cl-br-x').addEventListener('click', () => { document.getElementById('cl-branch-modal').classList.add('hidden'); _branchSourceKey = null; });
+  })();
 
   function thoughtKeyFromThought(thought) {
     if (!thought || typeof thought !== 'object') return null;
@@ -972,281 +1199,37 @@
         </div>
       </div>
 
-      <!-- Bootstrap modal -->
-      <div id="cl-bootstrap-modal" style="display:none">
-        <div class="card" style="border-color:#388bfd;margin-bottom:16px">
-          <div class="card-title">Bootstrap New Chain</div>
-          <div class="form-group"><label>Chain Key <span style="color:#f85149">*</span></label><input type="text" id="cl-ck" placeholder="e.g. my-project-brain"></div>
-          <div class="form-group"><label>Initial Memory Content <span style="color:#f85149">*</span></label><textarea id="cl-content" placeholder="Describe what this chain is for..."></textarea></div>
-          <div class="form-group"><label>Agent ID <span style="color:#8b949e;font-weight:400">(optional)</span></label><input type="text" id="cl-agent" placeholder="system"></div>
-          <div class="form-group"><label>Tags <span style="color:#8b949e;font-weight:400">(comma-separated, optional)</span></label><input type="text" id="cl-tags" placeholder="project, memory"></div>
-          <div class="form-group"><label>Concepts <span style="color:#8b949e;font-weight:400">(comma-separated, optional)</span></label><input type="text" id="cl-concepts" placeholder="context, bootstrap"></div>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-primary btn-sm" id="cl-bootstrap-submit">Bootstrap</button>
-            <button class="btn btn-secondary btn-sm" id="cl-bootstrap-cancel">Cancel</button>
-            <span id="cl-bootstrap-fb" class="feedback"></span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Delete confirmation modal -->
-      <div id="cl-delete-modal" style="display:none">
-        <div class="card" style="border-color:#f85149;margin-bottom:16px">
-          <div class="card-title" style="color:#f85149">⚠ Delete Chain</div>
-          <p style="color:#c9d1d9;margin-bottom:14px">You are about to permanently delete chain <strong id="cl-del-name" style="color:#f85149"></strong>. All memories stored in this chain will be lost forever and cannot be recovered.</p>
-          <div class="form-group"><label>Type the chain key to confirm deletion</label><input type="text" id="cl-del-confirm" placeholder=""></div>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-danger btn-sm" id="cl-del-submit" disabled>Delete Forever</button>
-            <button class="btn btn-secondary btn-sm" id="cl-del-cancel">Cancel</button>
-            <span id="cl-del-fb" class="feedback"></span>
-          </div>
-        </div>
-      </div>
-
-      <!-- ── Merge chain modal ───────────────────────── -->
-      <div id="cl-merge-modal" style="display:none">
-        <div class="card" style="border-color:rgba(88,166,255,0.5);margin-bottom:16px">
-          <div class="card-title" style="color:#58a6ff">⇢ Merge Chain Into Another</div>
-          <p style="color:#c9d1d9;margin-bottom:6px">
-            All thoughts from <strong id="cl-mrg-src" style="color:#58a6ff"></strong>
-            will be copied into the selected target chain. Agent identities will be
-            remapped automatically to the closest match in the target chain.
-          </p>
-          <p style="color:#f85149;font-size:0.85rem;margin-bottom:14px">
-            ⚠ After copying, <strong id="cl-mrg-src2" style="color:#f85149"></strong> will be permanently deleted and cannot be recovered.
-          </p>
-          <div class="form-group" style="margin-bottom:14px">
-            <label>Merge into target chain</label>
-            <select id="cl-mrg-target" class="filter-select"></select>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.5)" id="cl-mrg-submit">Merge &amp; Delete Source</button>
-            <button class="btn btn-secondary btn-sm" id="cl-mrg-cancel">Cancel</button>
-            <span id="cl-mrg-fb" class="feedback"></span>
-          </div>
-        </div>
-      </div>
-
-      <!-- ── Branch chain modal ───────────────────────── -->
-      <div id="cl-branch-modal" style="display:none">
-        <div class="card" style="border-color:rgba(88,166,255,0.5);margin-bottom:16px">
-          <div class="card-title" style="color:#58a6ff">⑂ Branch Chain</div>
-          <p style="color:#c9d1d9;margin-bottom:6px">
-            Create a new chain that diverges from a specific thought on
-            <strong id="cl-br-src" style="color:#58a6ff"></strong>.
-            The branch chain will have a genesis thought with a <code>BranchesFrom</code> relation
-            pointing back to the fork point. Searches on the branch will transparently include
-            results from the parent chain.
-          </p>
-          <div class="form-group" style="margin-bottom:14px">
-            <label>New branch chain name</label>
-            <input type="text" id="cl-br-name" class="filter-input" placeholder="e.g. experiment-1" />
-          </div>
-          <div class="form-group" style="margin-bottom:14px">
-            <label>Branch from thought (UUID)</label>
-            <input type="text" id="cl-br-thought-id" class="filter-input mono" placeholder="Paste thought UUID or pick from recent thoughts" style="font-size:0.85rem" />
-          </div>
-          <div id="cl-br-thoughts" style="margin-bottom:14px;max-height:200px;overflow-y:auto"></div>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.5)" id="cl-br-submit">Create Branch</button>
-            <button class="btn btn-secondary btn-sm" id="cl-br-cancel">Cancel</button>
-            <span id="cl-br-fb" class="feedback"></span>
-          </div>
-        </div>
-      </div>
-
       <div class="card"><div id="cl-body"></div></div>
     `;
 
-    // Bootstrap modal wiring
-    let _delChainKey = null;
-    let _chainListCache = [];
-    document.getElementById('cl-refresh-btn').addEventListener('click', () => {
-      renderChainList();
-    });
-    document.getElementById('cl-bootstrap-btn').addEventListener('click', () => {
-      document.getElementById('cl-bootstrap-modal').style.display = '';
-      document.getElementById('cl-ck').focus();
-    });
-    document.getElementById('cl-bootstrap-cancel').addEventListener('click', () => {
-      document.getElementById('cl-bootstrap-modal').style.display = 'none';
-    });
-    document.getElementById('cl-bootstrap-submit').addEventListener('click', () => {
-      const fb  = document.getElementById('cl-bootstrap-fb');
-      const btn = document.getElementById('cl-bootstrap-submit');
-      const ck  = document.getElementById('cl-ck').value.trim();
-      const content = document.getElementById('cl-content').value.trim();
-      if (!ck || !content) { showFeedback(fb, false, 'Chain key and content are required'); return; }
-      const tags     = document.getElementById('cl-tags').value.split(',').map(s=>s.trim()).filter(Boolean);
-      const concepts = document.getElementById('cl-concepts').value.split(',').map(s=>s.trim()).filter(Boolean);
-      const agentRaw = document.getElementById('cl-agent').value.trim();
-      btn.disabled = true;
-      api('/dashboard/api/chains', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ chain_key: ck, content, tags, concepts, agent_id: agentRaw || undefined })
-      })
-      .then(r => {
-        showFeedback(fb, true, r.bootstrapped ? `Chain "${ck}" created!` : `Chain "${ck}" already exists`);
-        setTimeout(() => { document.getElementById('cl-bootstrap-modal').style.display = 'none'; renderChainList(); }, 1200);
-      })
-      .catch(err => showFeedback(fb, false, err.message))
-      .finally(() => { btn.disabled = false; });
-    });
-
-    // Delete modal wiring
-    document.getElementById('cl-del-cancel').addEventListener('click', () => {
-      document.getElementById('cl-delete-modal').style.display = 'none';
-      _delChainKey = null;
-    });
-    document.getElementById('cl-del-confirm').addEventListener('input', function() {
-      document.getElementById('cl-del-submit').disabled = this.value !== _delChainKey;
-    });
-    document.getElementById('cl-del-submit').addEventListener('click', () => {
-      if (!_delChainKey) return;
-      const fb  = document.getElementById('cl-del-fb');
-      const btn = document.getElementById('cl-del-submit');
-      btn.disabled = true;
-      api(`/dashboard/api/chains/${encodeURIComponent(_delChainKey)}`, { method: 'DELETE' })
-        .then(() => {
-          showFeedback(fb, true, 'Chain deleted');
-          setTimeout(() => { document.getElementById('cl-delete-modal').style.display = 'none'; renderChainList(); }, 800);
-        })
-        .catch(err => { showFeedback(fb, false, err.message); btn.disabled = false; });
-    });
-
-    window._openDeleteChainImpl = function(ck) {
-      _delChainKey = ck;
-      document.getElementById('cl-del-name').textContent = ck;
-      document.getElementById('cl-del-confirm').value = '';
-      document.getElementById('cl-del-submit').disabled = true;
-      document.getElementById('cl-delete-modal').style.display = '';
-      document.getElementById('cl-del-confirm').focus();
-    };
-    (window._openDeleteChainQueue || []).forEach(args => window._openDeleteChainImpl(args));
-    window._openDeleteChainQueue = [];
-
-    // ── Merge chain ──────────────────────────────────────────────
-    let _mergeSourceKey = null;
-
-    window._openMergeChainImpl = function(ck) {
-      _mergeSourceKey = ck;
-      document.getElementById('cl-mrg-src').textContent = ck;
-      document.getElementById('cl-mrg-src2').textContent = ck;
-      // Populate target dropdown with all chains except source
-      const sel = document.getElementById('cl-mrg-target');
-      sel.innerHTML = '';
-      (_chainListCache || []).forEach(c => {
-        if (c.chain_key === ck) return;
-        const opt = document.createElement('option');
-        opt.value = c.chain_key;
-        opt.textContent = c.chain_key + ' (' + (c.thought_count ?? 0) + ' thoughts)';
-        sel.appendChild(opt);
+    if (!window._chainBootstrapWired) {
+      window._chainBootstrapWired = true;
+      document.getElementById('cl-bootstrap-cancel').addEventListener('click', () => {
+        document.getElementById('cl-bootstrap-modal').style.display = 'none';
       });
-      document.getElementById('cl-merge-modal').style.display = '';
-      document.getElementById('cl-mrg-fb').textContent = '';
-      document.getElementById('cl-mrg-fb').className = 'feedback';
-    };
-    (window._openMergeChainQueue || []).forEach(args => window._openMergeChainImpl(args));
-    window._openMergeChainQueue = [];
-
-    document.getElementById('cl-mrg-cancel').addEventListener('click', () => {
-      document.getElementById('cl-merge-modal').style.display = 'none';
-      _mergeSourceKey = null;
-    });
-
-    document.getElementById('cl-mrg-submit').addEventListener('click', () => {
-      const fb  = document.getElementById('cl-mrg-fb');
-      const btn = document.getElementById('cl-mrg-submit');
-      const target = document.getElementById('cl-mrg-target').value;
-      if (!target) { showFeedback(fb, false, 'Select a target chain'); return; }
-      btn.disabled = true;
-      fb.textContent = 'Merging…';
-      fb.className = 'feedback show';
-      api('/dashboard/api/chains/merge', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_chain_key: _mergeSourceKey, target_chain_key: target })
-      })
-        .then(res => {
-          showFeedback(fb, true, `✓ Copied ${res.thoughts_copied} thoughts → ${target}. Source deleted.`);
-          setTimeout(() => {
-            document.getElementById('cl-merge-modal').style.display = 'none';
-            _mergeSourceKey = null;
-            renderChainList();
-          }, 1800);
+      document.getElementById('cl-bootstrap-submit').addEventListener('click', () => {
+        const fb  = document.getElementById('cl-bootstrap-fb');
+        const btn = document.getElementById('cl-bootstrap-submit');
+        const ck  = document.getElementById('cl-ck').value.trim();
+        const content = document.getElementById('cl-content').value.trim();
+        if (!ck || !content) { showFeedback(fb, false, 'Chain key and content are required'); return; }
+        const tags     = document.getElementById('cl-tags').value.split(',').map(s=>s.trim()).filter(Boolean);
+        const concepts = document.getElementById('cl-concepts').value.split(',').map(s=>s.trim()).filter(Boolean);
+        const agentRaw = document.getElementById('cl-agent').value.trim();
+        btn.disabled = true;
+        api('/dashboard/api/chains', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ chain_key: ck, content, tags, concepts, agent_id: agentRaw || undefined })
         })
-        .catch(err => {
-          showFeedback(fb, false, err.message);
-          btn.disabled = false;
-        });
-    });
-
-    // ── Branch chain ──────────────────────────────────────────────
-    let _branchSourceKey = null;
-
-    window._openBranchChainImpl = function(ck, thoughtId) {
-      _branchSourceKey = ck;
-      document.getElementById('cl-br-src').textContent = ck;
-      document.getElementById('cl-br-name').value = ck + '-branch';
-      document.getElementById('cl-br-thought-id').value = thoughtId || '';
-      document.getElementById('cl-br-fb').textContent = '';
-      document.getElementById('cl-br-fb').className = 'feedback';
-      document.getElementById('cl-branch-modal').style.display = '';
-      // Load recent thoughts from the source chain for picking
-      const container = document.getElementById('cl-br-thoughts');
-      container.innerHTML = '<div style="color:#8b949e;font-size:0.85rem">Loading thoughts…</div>';
-      api(`/dashboard/api/chains/${encodeURIComponent(ck)}/thoughts?per_page=20&order=desc`)
-        .then(data => {
-          const thoughts = data.thoughts || [];
-          if (!thoughts.length) { container.innerHTML = '<div style="color:#8b949e;font-size:0.85rem">No thoughts found</div>'; return; }
-          container.innerHTML = thoughts.map(t => {
-            const preview = (t.content || '').slice(0, 80).replace(/</g, '&lt;');
-            return `<div class="clickable" style="padding:4px 8px;border-radius:4px;margin-bottom:2px;font-size:0.85rem;cursor:pointer;border:1px solid rgba(88,166,255,0.2)" onclick="document.getElementById('cl-br-thought-id').value='${t.id}'">
-              <span class="mono" style="color:#58a6ff">${t.id}</span>
-              <span style="color:#8b949e;margin-left:8px">${preview}</span>
-            </div>`;
-          }).join('');
+        .then(r => {
+          showFeedback(fb, true, r.bootstrapped ? `Chain "${ck}" created!` : `Chain "${ck}" already exists`);
+          setTimeout(() => { document.getElementById('cl-bootstrap-modal').style.display = 'none'; renderChainList(); }, 1200);
         })
-        .catch(() => { container.innerHTML = '<div style="color:#f85149;font-size:0.85rem">Failed to load thoughts</div>'; });
-    };
-    // Drain any queued branch requests from before the impl was ready.
-    (window._openBranchChainQueue || []).forEach(args => window._openBranchChainImpl(...args));
-    window._openBranchChainQueue = [];
-
-    document.getElementById('cl-br-cancel').addEventListener('click', () => {
-      document.getElementById('cl-branch-modal').style.display = 'none';
-      _branchSourceKey = null;
-    });
-
-    document.getElementById('cl-br-submit').addEventListener('click', () => {
-      const fb  = document.getElementById('cl-br-fb');
-      const btn = document.getElementById('cl-br-submit');
-      const name = document.getElementById('cl-br-name').value.trim();
-      const thoughtId = document.getElementById('cl-br-thought-id').value.trim();
-      if (!name) { showFeedback(fb, false, 'Enter a branch chain name'); return; }
-      if (!thoughtId) { showFeedback(fb, false, 'Enter or pick a thought UUID to branch from'); return; }
-      btn.disabled = true;
-      fb.textContent = 'Branching…';
-      fb.className = 'feedback show';
-      api('/dashboard/api/chains/branch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_chain_key: _branchSourceKey, branch_thought_id: thoughtId, branch_chain_key: name })
-      })
-        .then(res => {
-          showFeedback(fb, true, `✓ Branch '${res.branch_chain_key}' created from thought ${res.branch_thought_id.slice(0,8)}…`);
-          setTimeout(() => {
-            document.getElementById('cl-branch-modal').style.display = 'none';
-            _branchSourceKey = null;
-            renderChainList();
-          }, 1800);
-        })
-        .catch(err => {
-          showFeedback(fb, false, err.message);
-          btn.disabled = false;
-        });
-    });
+        .catch(err => showFeedback(fb, false, err.message))
+        .finally(() => { btn.disabled = false; });
+      });
+    }
 
     const el = document.getElementById('cl-body');
     spinner(el);
