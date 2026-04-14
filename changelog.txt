@@ -1,5 +1,47 @@
-0.8.9.35 APR/13/2026
-  - feat: webhooks — HTTP callbacks on thought append events
+0.9.0.36 APR/14/2026
+  - feat: LLM-extracted memories — GPT-4o (or any OpenAI-compatible endpoint) converts
+    raw agent text/logs/transcripts into structured ThoughtInput records for review
+    and append; opt-in behind llm-extraction feature (default), uses openai-rust2
+    with 3× retry on 429/5xx, 60s timeout, ResponseFormat::JsonObject, temperature 0.1;
+    LlmExtractionConfig::from_env() reads OPENAI_API_KEY, LLM_BASE_URL, LLM_MODEL;
+    ExtractionResult includes model identifier and token usage; callers must review
+    and validate thoughts before appending
+  - feat: federated cross-chain search — ancestor_chain_keys() walks BranchesFrom
+    relations to discover parent chains; ranked search on branch chains transparently
+    includes ancestor chain results and annotates them with chain_key; enables fleet
+    memory hierarchies where specialist chains share a common base
+  - feat: pymentisdb Python client v0.9.0 — pip-installable Python package with
+    MentisDbClient (append_thought, ranked_search, context_bundles, list_chains,
+    upsert_agent, lexical_search, search, get_thought, traverse_thoughts, recent_context,
+    head, register/list/delete_webhook, skill methods, memory_markdown, import);
+    MentisDbMemory LangChain integration; full ThoughtType, ThoughtRole, MemoryScope,
+    ThoughtRelationKind enums; Typed relations; Complete working examples
+  - feat: wizard brew-first install — ensure_prerequisites tries brew install mcp-remote
+    before npm; added PrerequisiteStatus::Skipped variant; detect_brew_mcp_remote() reads
+    mcp-remote shebang to detect Homebrew-installed mcp-remote (which has a proper
+    shebang pointing to the correct Node version, usable directly without node wrapper)
+  - fix: wizard overwrite prompt changed to "Overwrite it with a fresh setup?" (was
+    "Overwrite or keep the existing config?") for clarity
+  - fix: CI doctest for LlmExtractionConfig uses unwrap_or_else instead of unwrap on
+    OPENAI_API_KEY to avoid panic in CI environments without the env var
+  - fix: LlmExtractionError::NotConfigured no longer panics on empty API key;
+    returns a proper error instead
+  - docs: two new blog posts covering complete MCP + REST integration:
+    docs/mentisdb-third-party-integrations.html (wizard setup, Claude Desktop
+    mcp-remote+Homebrew, OpenCode, REST API with full endpoint coverage, Python
+    requests examples, all 37 MCP tools, troubleshooting)
+    docs/pymentisdb-python-client.html (complete MentisDbClient API, LangChain
+    integration, typed relations, complete working example)
+  - docs(README): Python client section with pip install and example; consolidated
+    Setup Scenarios section for Claude Desktop, Claude Code, OpenCode, Codex, Qwen
+  - docs(docs.mentisdb.com): MCP section expanded with all 37 tools, REST section
+    back-to-back with complete endpoint coverage and request/response schemas
+  - docs: LLM extraction design doc (llm-extracted-memories-design.md) updated to
+    reflect openai-rust2 usage, extract_memories_from_text API, LlmExtractionConfig,
+    ExtractionResult, TokenUsage, LlmExtractionError variants
+  - docs(ENGINEERING_PIPELINE): Phase 5 step 5l added — doc audit requirement for all
+    public API changes reflected in docs/, README, docs.mentisdb.com, docs.rs
+  - bench: LoCoMo 10-persona R@10 72.0%, LongMemEval R@5 66.8% (fresh chain)
     - WebhookManager registered at MentisDbService level, cloned per chain
     - Registration: POST /v1/webhooks with url, chain_key_filter, thought_type_filter
     - List: GET /v1/webhooks, Get one: GET /v1/webhooks/{id}, Delete: DELETE /v1/webhooks/{id}

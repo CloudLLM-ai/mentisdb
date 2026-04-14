@@ -63,6 +63,9 @@
   <li><a href="#claude-desktop">Claude Desktop</a></li>
   <li><a href="#opencode">OpenCode</a></li>
   <li><a href="#rest">REST API (Any HTTP Client)</a></li>
+  <li><a href="#rest-schemas">Request/Response Schema Examples</a></li>
+  <li><a href="#rest-complete-python">Complete Python REST Examples</a></li>
+  <li><a href="#troubleshooting">Troubleshooting</a></li>
   <li><a href="#custom-mcp">Building Custom MCP Clients</a></li>
   <li><a href="#mcp-tools">Available MCP Tools Reference</a></li>
 </ul>
@@ -159,9 +162,12 @@ Omit it when using a public HTTPS endpoint with valid certificates.</p>
 <h3 id="claude-desktop-start">Starting Up</h3>
 
 <p>After saving the config, restart Claude Desktop. The mentisdb MCP server will be
-available — you can verify with:</p>
+available — verify by asking Claude directly:</p>
 
-<pre><code>/mnt/Users/gubatron/Library/Application Support/Claude/icc/amd64/binaries/CLAUDE_DESKTOP_MAC-arm64/Claude.app/Contents/MacOS/Claude --mcp-server mentisdb info</code></pre>
+<pre><code>What tools do you have from mentisdb?</code></pre>
+
+<p>Or use the MCP info command in any MCP client to confirm the mentisdb server is
+connected and responding.</p>
 
 <h3 id="claude-desktop-tools">Available Tools in Claude Desktop</h3>
 
@@ -257,6 +263,226 @@ results = r.json()
 for hit in results["results"]:
     print(f"[{hit['score']['total']:.3f}] {hit['thought']['content']}")</code></pre>
 
+<h3 id="rest-complete-python">Complete Python REST Examples</h3>
+
+<pre><code>import requests
+
+base = "http://127.0.0.1:9472"
+
+# ==================== THOUGHTS ====================
+
+# Append a thought
+r = requests.post(f"{base}/v1/thoughts", json={
+    "thought_type": "Insight",
+    "content": "The cache invalidation strategy needs rethinking.",
+    "role": "Memory",
+    "importance": 0.8,
+    "confidence": 0.9,
+    "tags": ["architecture", "cache"],
+    "concepts": ["invalidation", "consistency"],
+})
+thought = r.json()["thought"]
+print(f"Appended: {thought['id']}")
+
+# Get a thought by ID
+r = requests.get(f"{base}/v1/thoughts/{thought['id']}")
+print(r.json())
+
+# Get genesis (first) thought
+r = requests.post(f"{base}/v1/thoughts/genesis")
+print(r.json())
+
+# Traverse thoughts from anchor
+r = requests.post(f"{base}/v1/thoughts/traverse", json={
+    "anchor_index": 1,
+    "direction": "forward",
+    "chunk_size": 10
+})
+print(r.json())
+
+# ==================== SEARCH ====================
+
+# Ranked search
+r = requests.post(f"{base}/v1/ranked-search", json={
+    "text": "cache invalidation",
+    "limit": 5,
+    "min_importance": 0.5
+})
+print(r.json())
+
+# Lexical search
+r = requests.post(f"{base}/v1/lexical-search", json={
+    "text": "database performance",
+    "limit": 10
+})
+print(r.json())
+
+# Semantic search
+r = requests.post(f"{base}/v1/search", json={
+    "text": "architecture decisions",
+    "thought_types": ["Insight", "Finding"]
+})
+print(r.json())
+
+# Context bundles
+r = requests.post(f"{base}/v1/context-bundles", json={
+    "text": "cache consistency",
+    "limit": 3,
+    "graph": {"max_depth": 2, "include_seeds": True}
+})
+print(r.json())
+
+# ==================== CHAINS ====================
+
+# List all chains
+r = requests.get(f"{base}/v1/chains")
+print(r.json())
+
+# Branch from a thought
+r = requests.post(f"{base}/v1/chains/branch", json={
+    "source_chain_key": "default",
+    "branch_chain_key": "experiment-1",
+    "branch_thought_id": thought["id"]
+})
+print(r.json())
+
+# Merge chains
+r = requests.post(f"{base}/v1/chains/merge", json={
+    "source_chain_key": "experiment-1",
+    "target_chain_key": "default"
+})
+print(r.json())
+
+# ==================== AGENTS ====================
+
+# Upsert agent
+r = requests.post(f"{base}/v1/agents/upsert", json={
+    "agent_id": "my-agent-001",
+    "display_name": "My Agent",
+    "description": "Primary coding agent"
+})
+print(r.json())
+
+# List agents
+r = requests.get(f"{base}/v1/agents")
+print(r.json())
+
+# ==================== WEBHOOKS ====================
+
+# Register webhook
+r = requests.post(f"{base}/v1/webhooks", json={
+    "url": "https://myapp.com/webhook/mentisdb",
+    "chain_key_filter": "default",
+    "thought_type_filter": ["Insight", "Finding"]
+})
+webhook = r.json()["webhook"]
+print(f"Registered: {webhook['id']}")
+
+# List webhooks
+r = requests.get(f"{base}/v1/webhooks")
+print(r.json())
+
+# Delete webhook
+r = requests.delete(f"{base}/v1/webhooks/{webhook['id']}")
+print(r.json())
+
+# ==================== HEAD & HEALTH ====================
+
+# Get head metadata
+r = requests.post(f"{base}/v1/head")
+print(r.json())
+
+# Health check
+r = requests.get(f"{base}/health")
+print(r.json())
+
+# ==================== SKILLS ====================
+
+# List skills
+r = requests.get(f"{base}/v1/skills")
+print(r.json())
+
+# Upload skill
+r = requests.post(f"{base}/v1/skills/upload", json={
+    "agent_id": "my-agent-001",
+    "skill_id": "my-skill",
+    "content": "# My Skill\n\nA custom skill for...",
+    "format": "markdown"
+})
+print(r.json())
+
+# Search skills
+r = requests.post(f"{base}/v1/skills/search", json={
+    "text": "coding assistance"
+})
+print(r.json())
+
+# Read skill
+r = requests.post(f"{base}/v1/skills/read", json={
+    "skill_id": "my-skill"
+})
+print(r.json())
+
+# List skill versions
+r = requests.post(f"{base}/v1/skills/versions", json={
+    "skill_id": "my-skill"
+})
+print(r.json())
+
+# Deprecate skill
+r = requests.post(f"{base}/v1/skills/deprecate", json={
+    "skill_id": "my-skill",
+    "reason": "Superseded by new version"
+})
+print(r.json())
+
+# Revoke skill
+r = requests.post(f"{base}/v1/skills/revoke", json={
+    "skill_id": "my-skill",
+    "reason": "Security concern"
+})
+print(r.json())
+
+# ==================== MEMORY MARKDOWN ====================
+
+# Export as MEMORY.md
+r = requests.post(f"{base}/v1/memory-markdown", json={
+    "limit": 100
+})
+print(r.json())  # Returns { "markdown": "# MEMORY.md\n\n..." }
+
+# Import from MEMORY.md
+r = requests.post(f"{base}/v1/import-markdown", json={
+    "markdown": "# MEMORY.md\n\n## Thought\nContent here...",
+    "chain_key": "default"
+})
+print(r.json())
+
+# ==================== RECENT CONTEXT & BOOTSTRAP ====================
+
+# Get recent context for prompts
+r = requests.post(f"{base}/v1/recent-context", json={
+    "last_n": 10
+})
+print(r.json())
+
+# Bootstrap a chain if empty
+r = requests.post(f"{base}/v1/bootstrap", json={
+    "agent_id": "my-agent-001",
+    "content": "Initial bootstrap thought"
+})
+print(r.json())
+
+# ==================== RETROSPECTIVES ====================
+
+# Append retrospective
+r = requests.post(f"{base}/v1/retrospectives", json={
+    "content": "Lesson learned: always verify TLS certs in development.",
+    "agent_id": "my-agent-001",
+    "refs": [thought["id"]]
+})
+print(r.json())</code></pre>
+
 <h3 id="rest-swagger">Full REST API Reference</h3>
 
 <p>Generate a Swagger client for any language at
@@ -267,11 +493,161 @@ interactive docs at <code>http://127.0.0.1:9472/docs</code> (if running with
 <table>
   <tr><th>Method</th><th>Path</th><th>Description</th></tr>
   <tr><td><code>POST</code></td><td><code>/v1/thoughts</code></td><td>Append a thought</td></tr>
+  <tr><td><code>GET</code></td><td><code>/v1/thoughts/{id}</code></td><td>Get a thought by ID, index, or hash</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/thoughts/genesis</code></td><td>Get the first thought in the chain</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/thoughts/traverse</code></td><td>Traverse chain forward/backward from anchor</td></tr>
   <tr><td><code>POST</code></td><td><code>/v1/ranked-search</code></td><td>Ranked semantic search</td></tr>
-  <tr><td><code>POST</code></td><td><code>/v1/context-bundles</code></td><td>Seed + supporting context</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/context-bundles</code></td><td>Seed + supporting context bundles</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/lexical-search</code></td><td>Flat ranked lexical search</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/search</code></td><td>Semantic search with filters</td></tr>
   <tr><td><code>GET</code></td><td><code>/v1/chains</code></td><td>List all chains</td></tr>
-  <tr><td><code>POST</code></td><td><code>/v1/agents/upsert</code></td><td>Register an agent identity</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/chains/branch</code></td><td>Create a new chain from a thought</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/chains/merge</code></td><td>Merge source chain into target</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/agents/upsert</code></td><td>Create or update an agent registry record</td></tr>
+  <tr><td><code>GET</code></td><td><code>/v1/agents</code></td><td>List all registered agents</td></tr>
   <tr><td><code>POST</code></td><td><code>/v1/webhooks</code></td><td>Register a webhook</td></tr>
+  <tr><td><code>GET</code></td><td><code>/v1/webhooks</code></td><td>List all registered webhooks</td></tr>
+  <tr><td><code>DELETE</code></td><td><code>/v1/webhooks/{id}</code></td><td>Delete a webhook by UUID</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/head</code></td><td>Get head metadata and latest thought</td></tr>
+  <tr><td><code>GET</code></td><td><code>/health</code></td><td>Health check</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/skills/upload</code></td><td>Upload a new skill version</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/skills/read</code></td><td>Read a stored skill</td></tr>
+  <tr><td><code>GET</code></td><td><code>/v1/skills</code></td><td>List skill summaries</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/skills/search</code></td><td>Search skills by metadata</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/skills/versions</code></td><td>List versions for one skill</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/skills/deprecate</code></td><td>Mark a skill as deprecated</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/skills/revoke</code></td><td>Mark a skill as revoked</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/memory-markdown</code></td><td>Export chain as MEMORY.md</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/import-markdown</code></td><td>Import MEMORY.md into chain</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/recent-context</code></td><td>Get recent context for prompts</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/bootstrap</code></td><td>Bootstrap a chain if empty</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/retrospectives</code></td><td>Append a retrospective thought</td></tr>
+</table>
+
+<h3 id="rest-schemas">Request/Response Schema Examples</h3>
+
+<h4>POST /v1/thoughts — Append a Thought</h4>
+
+<p><strong>Request:</strong></p>
+<pre><code>{
+  "thought_type": "Insight",
+  "content": "The cache invalidation strategy needs rethinking.",
+  "role": "Memory",
+  "importance": 0.8,
+  "confidence": 0.9,
+  "tags": ["architecture", "cache"],
+  "concepts": ["invalidation", "consistency"],
+  "agent_id": "my-agent-001"
+}</code></pre>
+
+<p><strong>Response:</strong></p>
+<pre><code>{
+  "thought": {
+    "id": "01AR3WZFV3Q5MZ8...",
+    "thought_type": "Insight",
+    "content": "The cache invalidation strategy needs rethinking.",
+    "role": "Memory",
+    "importance": 0.8,
+    "confidence": 0.9,
+    "tags": ["architecture", "cache"],
+    "concepts": ["invalidation", "consistency"],
+    "created_at": "2026-04-14T10:30:00Z",
+    "chain_index": 42,
+    "content_hash": "sha256:abc123..."
+  }
+}</code></pre>
+
+<h4>POST /v1/ranked-search — Ranked Semantic Search</h4>
+
+<p><strong>Request:</strong></p>
+<pre><code>{
+  "text": "cache invalidation strategy",
+  "limit": 5,
+  "min_importance": 0.5,
+  "thought_types": ["Insight", "Finding"],
+  "tags_any": ["architecture"],
+  "concepts_any": ["consistency"],
+  "since": "2026-01-01T00:00:00Z"
+}</code></pre>
+
+<p><strong>Response:</strong></p>
+<pre><code>{
+  "results": [
+    {
+      "score": {
+        "total": 0.94,
+        "lexical": 0.42,
+        "semantic": 0.52
+      },
+      "thought": {
+        "id": "01AR3WZFV3Q5MZ8...",
+        "thought_type": "Insight",
+        "content": "The cache invalidation strategy needs rethinking.",
+        "importance": 0.8,
+        "tags": ["architecture", "cache"]
+      }
+    }
+  ],
+  "total_hits": 1,
+  "query_time_ms": 12
+}</code></pre>
+
+<h4>POST /v1/context-bundles — Context Bundles</h4>
+
+<p><strong>Request:</strong></p>
+<pre><code>{
+  "text": "cache consistency",
+  "limit": 3,
+  "thought_types": ["Insight", "Finding", "LessonLearned"],
+  "graph": {
+    "max_depth": 2,
+    "max_visited": 20,
+    "include_seeds": true
+  }
+}</code></pre>
+
+<p><strong>Response:</strong></p>
+<pre><code>{
+  "bundles": [
+    {
+      "seed": {
+        "id": "01AR3WZFV3Q5MZ8...",
+        "thought_type": "Insight",
+        "content": "The cache invalidation strategy needs rethinking."
+      },
+      "supporting": [
+        {
+          "id": "01AR3WZFV3Q5MZ9...",
+          "thought_type": "Finding",
+          "content": "Cache coherence protocol was causing 200ms delays.",
+          "relation": "related"
+        }
+      ]
+    }
+  ]
+}</code></pre>
+
+<h2 id="troubleshooting">Troubleshooting</h2>
+
+<h3>MCP Connection Issues</h3>
+
+<table>
+  <tr><th>Problem</th><th>Solution</th></tr>
+  <tr><td>"Certificate verify failed" errors</td><td>Set <code>NODE_TLS_REJECT_UNAUTHORIZED=0</code> in your mcp-remote config env, or use a valid TLS certificate.</td></tr>
+  <tr><td>"Connection refused" on localhost:9473</td><td>Ensure mentisdbd is running with <code>--https --port 9473</code>. Check with <code>curl https://127.0.0.1:9473/health</code>.</td></tr>
+  <tr><td>mcp-remote not found</td><td>Install via Homebrew: <code>brew install mcp-remote</code>, or npm: <code>npm install -g mcp-remote</code>. Requires Node.js >= 20 for npm.</td></tr>
+  <tr><td>Claude Desktop doesn't see mentisdb tools</td><td>Restart Claude Desktop after config changes. Verify config at <code>~/Library/Application Support/Claude/claude_desktop_config.json</code>.</td></tr>
+  <tr><td>Wrong mcp-remote path in config</td><td>Use <code>which mcp-remote</code> or <code>brew --prefix mcp-remote</code> to find the correct absolute path.</td></tr>
+  <tr><td>MCP server starts but tools return errors</td><td>Check mentisdbd logs. Ensure the chain exists and is accessible. Try <code>mentisdbd status</code>.</td></tr>
+</table>
+
+<h3>REST API Issues</h3>
+
+<table>
+  <tr><th>Problem</th><th>Solution</th></tr>
+  <tr><td>404 on all endpoints</td><td>Ensure mentisdbd is running with <code>--enable-http</code> (default port 9472 for HTTP, 9473 for HTTPS).</td></tr>
+  <tr><td>400 Bad Request on POST</td><td>Verify Content-Type is <code>application/json</code> and body is valid JSON.</td></tr>
+  <tr><td>401/403 auth errors</td><td>MentisDB currently does not require auth for local access. If using a reverse proxy, check its auth config.</td></tr>
 </table>
 
 <h2 id="custom-mcp">Building Custom MCP Clients</h2>
@@ -311,47 +687,45 @@ mentisdbd
 <h2 id="mcp-tools">Available MCP Tools Reference</h2>
 
 <table>
-  <tr><th>Tool</th><th>Arguments</th><th>Returns</th></tr>
-  <tr>
-    <td><code>mentisdb_append_thought</code></td>
-    <td>thought_type, content, role, importance, tags, concepts, confidence, ...</td>
-    <td>Committed thought record</td>
-  </tr>
-  <tr>
-    <td><code>mentisdb_ranked_search</code></td>
-    <td>text, limit, thought_types, tags_any, concepts_any, min_importance, ...</td>
-    <td>Ranked search results with scores</td>
-  </tr>
-  <tr>
-    <td><code>mentisdb_context_bundles</code></td>
-    <td>text, limit, thought_types, tags_any, ...</td>
-    <td>Seed thoughts + supporting graph context</td>
-  </tr>
-  <tr>
-    <td><code>mentisdb_list_chains</code></td>
-    <td>—</td>
-    <td>All chains with thought counts</td>
-  </tr>
-  <tr>
-    <td><code>mentisdb_get_thought</code></td>
-    <td>thought_id or thought_index</td>
-    <td>Single thought by ID or index</td>
-  </tr>
-  <tr>
-    <td><code>mentisdb_register_webhook</code></td>
-    <td>url, chain_key_filter, thought_type_filter</td>
-    <td>Webhook registration confirmation</td>
-  </tr>
-  <tr>
-    <td><code>mentisdb_list_webhooks</code></td>
-    <td>—</td>
-    <td>All registered webhooks</td>
-  </tr>
-  <tr>
-    <td><code>mentisdb_delete_webhook</code></td>
-    <td>webhook_id</td>
-    <td>Deletion confirmation</td>
-  </tr>
+  <tr><th>Tool</th><th>Description</th></tr>
+  <tr><td><code>mentisdb_bootstrap</code></td><td>Create a chain if needed and write one bootstrap checkpoint when it is empty.</td></tr>
+  <tr><td><code>mentisdb_append</code></td><td>Append a durable semantic thought with optional tags, concepts, refs, scope, and signature metadata.</td></tr>
+  <tr><td><code>mentisdb_append_retrospective</code></td><td>Append a retrospective memory intended to prevent future agents from repeating a hard failure.</td></tr>
+  <tr><td><code>mentisdb_search</code></td><td>Search thoughts by semantic filters, identity filters, time bounds, and scoring thresholds.</td></tr>
+  <tr><td><code>mentisdb_lexical_search</code></td><td>Return flat ranked lexical matches with explainable term and field provenance.</td></tr>
+  <tr><td><code>mentisdb_ranked_search</code></td><td>Return flat ranked lexical, graph-aware, or heuristic results with additive score breakdowns. Supports as_of for point-in-time queries and scope for memory scope filtering.</td></tr>
+  <tr><td><code>mentisdb_context_bundles</code></td><td>Return seed-anchored grouped support context beneath the best lexical seeds.</td></tr>
+  <tr><td><code>mentisdb_list_chains</code></td><td>List known chains with version, storage adapter, counts, and storage location.</td></tr>
+  <tr><td><code>mentisdb_merge_chains</code></td><td>Merge all thoughts from a source chain into a target chain, then permanently delete the source.</td></tr>
+  <tr><td><code>mentisdb_branch_from</code></td><td>Create a new chain that diverges from a thought on an existing chain.</td></tr>
+  <tr><td><code>mentisdb_list_agents</code></td><td>List the distinct agent identities participating in one chain.</td></tr>
+  <tr><td><code>mentisdb_get_agent</code></td><td>Return one full agent registry record.</td></tr>
+  <tr><td><code>mentisdb_list_agent_registry</code></td><td>Return the full per-chain agent registry.</td></tr>
+  <tr><td><code>mentisdb_upsert_agent</code></td><td>Create or update a registry record before or after an agent writes thoughts.</td></tr>
+  <tr><td><code>mentisdb_set_agent_description</code></td><td>Set or clear the description stored for one registered agent.</td></tr>
+  <tr><td><code>mentisdb_add_agent_alias</code></td><td>Add a historical or alternate alias to a registered agent.</td></tr>
+  <tr><td><code>mentisdb_add_agent_key</code></td><td>Add or replace one public verification key on a registered agent.</td></tr>
+  <tr><td><code>mentisdb_revoke_agent_key</code></td><td>Revoke one previously registered public key.</td></tr>
+  <tr><td><code>mentisdb_disable_agent</code></td><td>Disable one agent by marking its registry status as revoked.</td></tr>
+  <tr><td><code>mentisdb_recent_context</code></td><td>Render recent thoughts into a prompt snippet for session resumption.</td></tr>
+  <tr><td><code>mentisdb_memory_markdown</code></td><td>Export a MEMORY.md-style Markdown view of the full chain or a filtered subset.</td></tr>
+  <tr><td><code>mentisdb_import_memory_markdown</code></td><td>Import a MEMORY.md-formatted Markdown document into a target chain.</td></tr>
+  <tr><td><code>mentisdb_get_thought</code></td><td>Return one stored thought by stable id, chain index, or content hash.</td></tr>
+  <tr><td><code>mentisdb_get_genesis_thought</code></td><td>Return the first thought ever recorded in the chain.</td></tr>
+  <tr><td><code>mentisdb_traverse_thoughts</code></td><td>Traverse the chain forward or backward in append order from a chosen anchor.</td></tr>
+  <tr><td><code>mentisdb_skill_md</code></td><td>Return the official embedded MENTISDB_SKILL.md Markdown file.</td></tr>
+  <tr><td><code>mentisdb_list_skills</code></td><td>List versioned skill summaries from the skill registry.</td></tr>
+  <tr><td><code>mentisdb_skill_manifest</code></td><td>Return the versioned skill-registry manifest.</td></tr>
+  <tr><td><code>mentisdb_upload_skill</code></td><td>Upload a new immutable skill version from Markdown or JSON.</td></tr>
+  <tr><td><code>mentisdb_search_skill</code></td><td>Search skills by indexed metadata.</td></tr>
+  <tr><td><code>mentisdb_read_skill</code></td><td>Read one stored skill as Markdown or JSON.</td></tr>
+  <tr><td><code>mentisdb_skill_versions</code></td><td>List immutable uploaded versions for one skill.</td></tr>
+  <tr><td><code>mentisdb_deprecate_skill</code></td><td>Mark a skill as deprecated.</td></tr>
+  <tr><td><code>mentisdb_revoke_skill</code></td><td>Mark a skill as revoked.</td></tr>
+  <tr><td><code>mentisdb_head</code></td><td>Return head metadata, latest thought, and integrity state.</td></tr>
+  <tr><td><code>mentisdb_register_webhook</code></td><td>Register a webhook to receive HTTP POST notifications.</td></tr>
+  <tr><td><code>mentisdb_list_webhooks</code></td><td>List all registered webhooks.</td></tr>
+  <tr><td><code>mentisdb_delete_webhook</code></td><td>Remove a webhook registration by UUID.</td></tr>
 </table>
 
 <h2 id="next">Next Steps</h2>

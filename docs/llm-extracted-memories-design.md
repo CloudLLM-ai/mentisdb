@@ -1,7 +1,7 @@
 # LLM-Extracted Memories Pipeline — Design Document
 
 **Version:** 0.9.0  
-**Status:** Draft  
+**Status:** Implemented  
 **Author:** MentisDB Team
 
 ---
@@ -138,7 +138,7 @@ impl MentisDb {
     /// - `OPENAI_API_KEY` is not set
     /// - LLM API call fails or returns invalid JSON
     /// - The response cannot be parsed into structured memories
-    pub async fn extract_memories(
+    pub async fn extract_memories_from_text(
         &self,
         text: &str,
         config: &LlmExtractionConfig,
@@ -184,6 +184,7 @@ The LLM is asked to categorize extracted content into one of the following `Thou
 | `Surprise` | Unexpected outcome |
 | `Reframe` | Reinterpretation without deletion |
 | `Goal` | High-level objective |
+| `LLMExtracted` | Thought was produced by the LLM extraction pipeline |
 
 The `LLMExtracted` variant is **not** assigned to extracted memories directly — instead, each memory is typed according to its semantic category. The `LLMExtracted` variant exists to allow querying for thoughts that were produced via this pipeline.
 
@@ -199,11 +200,11 @@ LLM configuration is read from environment variables:
 |----------|----------|---------|-------------|
 | `OPENAI_API_KEY` | Yes | — | API key for the LLM provider |
 | `LLM_BASE_URL` | No | `<https://api.openai.com/v1>` | OpenAI-compatible API base URL |
-| `LLM_MODEL` | No | `gpt-4` | Model identifier |
+| `LLM_MODEL` | No | `gpt-4o` | Model identifier |
 
 ### 4.2 OpenAI-Compatible API
 
-The implementation uses the **OpenAI Chat Completions API** format:
+The implementation uses the **OpenAI Chat Completions API** format via `openai-rust2`:
 
 ```
 POST /v1/chat/completions
@@ -211,7 +212,7 @@ POST /v1/chat/completions
 
 ```json
 {
-  "model": "gpt-4",
+  "model": "gpt-4o",
   "messages": [
     {
       "role": "system",
@@ -228,14 +229,15 @@ POST /v1/chat/completions
 ```
 
 - `temperature` is set to `0.1` to reduce creativity and improve consistency
-- `response_format` uses `json_object` to request structured JSON output
+- `response_format` uses `ResponseFormat::JsonObject` to request structured JSON output
 
 ### 4.3 HTTP Client
 
-- Uses `reqwest` (already in `Cargo.toml` as a conditional dependency)
-- Client is initialized **lazily** — only when `extract_memories` is first called
-- No connection pooling issues since each call is independent
-- Timeout: 30 seconds per request
+- Uses the `openai-rust2` crate for OpenAI-compatible API calls
+- Client is initialized **lazily** — only when `extract_memories_from_text` is first called
+- Connection pooling is enabled via `Client::builder()` with a default `Client`
+- Automatic retries: 3x retries on HTTP 429 (rate limit) and 5xx (server error) responses
+- Request timeout: 60 seconds per request
 
 ### 4.4 Error Handling
 
@@ -288,6 +290,8 @@ Callers can provide a custom prompt template via `prompt_template`. The template
 - `{{text}}` is replaced with the input text
 - `{{types}}` is replaced with the comma-separated list of valid ThoughtType names
 
+The `EXTRACTION_PROMPT` constant uses `{{types}}` and `{{text}}` placeholders for substitution.
+
 If `prompt_template` is `null`, the default prompt above is used.
 
 ### 5.3 Output Schema
@@ -315,6 +319,8 @@ The LLM **must** return a JSON object matching this schema:
 
 ### 6.1 Trust Level: Untrusted
 
+> **Security Note:** LLM output is **untrusted** and callers must review and validate all extracted thoughts before appending them to the chain. The LLM may produce hallucinations, incorrect classifications, or data that does not accurately reflect the input text.
+
 LLM output is **never** automatically trusted:
 
 1. **No auto-append**: `extract_memories` returns `Vec<ThoughtInput>`, not `Vec<Thought>`. The caller must explicitly review and append each thought.
@@ -335,7 +341,7 @@ Before appending an LLM-extracted thought, callers should consider:
 
 ```rust
 // 1. Extract memories
-let extraction = chain.extract_memories(text, &config).await?;
+let extraction = chain.extract_memories_from_text(text, &config).await?;
 
 // 2. Review and sign each thought
 for input in extraction.thoughts {
@@ -367,11 +373,11 @@ for input in extraction.thoughts {
 |------|---------|
 | `src/lib.rs` | Add `ThoughtType::LLMExtracted` at END of enum; add `LlmExtractionConfig`, `ExtractionResult`, `TokenUsage`, `LlmExtractionError` types |
 | `src/server.rs` | Add REST endpoint `POST /v1/extract-memories`; add MCP tool `mentisdb_extract_memories` |
-| `Cargo.toml` | No changes needed — `reqwest` is already a conditional dependency |
+| `Cargo.toml` | Add `llm-extraction` feature (enabled by default), gated behind `openai-rust2` and `anyhow` dependencies |
 
 ### 7.3 Feature Flag
 
-No new feature flag is required. The LLM integration is conditionally initialized only when `extract_memories` is called.
+The `llm-extraction` feature is enabled by default. When disabled, the LLM integration is completely excluded from the build. The HTTP client is conditionally initialized only when `extract_memories_from_text` is called.
 
 ---
 
@@ -382,16 +388,9 @@ No new feature flag is required. The LLM integration is conditionally initialize
 ```rust
 use mentisdb::{MentisDb, LlmExtractionConfig};
 
-let config = LlmExtractionConfig {
-    base_url: std::env::var("LLM_BASE_URL")
-        .unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
-    api_key: std::env::var("OPENAI_API_KEY")
-        .expect("OPENAI_API_KEY must be set"),
-    model: std::env::var("LLM_MODEL")
-        .unwrap_or_else(|_| "gpt-4".to_string()),
-};
+let config = LlmExtractionConfig::from_env();
 
-let extraction = chain.extract_memories(
+let extraction = chain.extract_memories_from_text(
     "The user prefers dark mode and asked about enterprise pricing.",
     &config,
 ).await?;
@@ -432,9 +431,9 @@ curl -X POST http://localhost:9472/v1/extract-memories \
 
 ```rust
 pub enum LlmExtractionError {
-    /// LLM configuration is missing or invalid.
+    /// LLM configuration is missing or invalid (e.g., OPENAI_API_KEY not set).
     NotConfigured(String),
-    /// LLM API returned an error.
+    /// LLM API returned an HTTP error (4xx/5xx).
     ApiError { status: u16, message: String },
     /// LLM output could not be parsed as JSON.
     ParseError(String),

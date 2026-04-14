@@ -283,7 +283,317 @@ client.append_thought(
     ],
 )</code></pre>
 
-<h2 id="full-example">Complete Working Example</h2>
+<h2 id="complete-api">Complete API Reference</h2>
+
+<p>MentisDbClient exposes all MentisDB server operations. Methods currently implemented in the
+Python client are marked with <strong>✓</strong>. Methods not yet wrapped (but available via
+the REST API directly) are marked with <em>server-only</em> and can be called using
+<code>client._post()</code> or <code>client._get()</code> helpers.</p>
+
+<h3 id="imports">Imports</h3>
+
+<pre><code>from pymentisdb import (
+    MentisDbClient,
+    ThoughtType,
+    ThoughtRole,
+    ThoughtRelation,
+    ThoughtRelationKind,
+    MemoryScope,
+    Thought,
+    AgentRecord,
+    RankedSearchHit,
+    RankedSearchResponse,
+    ContextBundle,
+    ContextBundlesResponse,
+    ChainSummary,
+    ListChainsResponse,
+)</code></pre>
+
+<h3 id="connection-config">Connection Configuration</h3>
+
+<pre><code># Local instance (default)
+client = MentisDbClient()
+
+# Remote instance
+client = MentisDbClient(base_url="https://my.mentisdb.com:9473")
+
+# Custom timeout (seconds, default 30)
+import requests
+client = MentisDbClient()
+client._session.timeout = 60  # set timeout on underlying requests session
+
+# Add auth headers for remote instances
+client._session.headers["Authorization"] = "Bearer YOUR_API_KEY"</code></pre>
+
+<hr>
+
+<h3 id="api-memory">Memory Operations</h3>
+
+<h4>append_thought <strong>✓</strong></h4>
+<pre><code>thought = client.append_thought(
+    thought_type=ThoughtType.INSIGHT,
+    content="Rate limiting is the real bottleneck.",
+    chain_key="my-agent",        # uses default if omitted
+    agent_id="agent-001",
+    agent_name="assistant",
+    agent_owner="cloudllm",
+    role=ThoughtRole.MEMORY,    # Memory | WorkingMemory | Summary | Checkpoint | Handoff | Audit | Retrospective
+    importance=0.8,              # 0.0–1.0, default 0.5
+    confidence=0.95,            # optional, 0.0–1.0
+    tags=["performance", "api"],
+    concepts=["rate-limiting"],
+    refs=[5, 12],               # indices of referenced prior thoughts
+    relations=[                 # typed graph edges
+        ThoughtRelation(
+            kind=ThoughtRelationKind.SUPPORTS,
+            target_id="thought-uuid-abc",
+        )
+    ],
+    scope=MemoryScope.USER,     # User | Session | Agent
+)
+print(thought.id, thought.hash)</code></pre>
+
+<h4>ranked_search <strong>✓</strong></h4>
+<pre><code>results = client.ranked_search(
+    text="rate limiting",
+    chain_key="my-agent",
+    limit=10,
+    offset=0,
+    thought_types=[ThoughtType.DECISION, ThoughtType.INSIGHT],
+    roles=[ThoughtRole.MEMORY],
+    tags_any=["performance", "api"],
+    concepts_any=["rate-limiting"],
+    agent_ids=["agent-001"],
+    agent_names=["assistant"],
+    agent_owners=["cloudllm"],
+    min_importance=0.5,
+    min_confidence=0.6,
+    since=datetime(2026, 1, 1),
+    until=datetime(2026, 4, 14),
+    scope="user",
+    enable_reranking=True,
+    rerank_k=20,
+    entity_type="decision",
+)
+print(results.total)
+for hit in results.results:
+    print(f"[{hit.score.total:.3f}] {hit.thought.content}")
+    print(f"  lexical={hit.score.lexical:.3f} vector={hit.score.vector:.3f} graph={hit.score.graph:.3f}")
+    print(f"  matched_terms={hit.matched_terms}")</code></pre>
+
+<h4>context_bundles <strong>✓</strong></h4>
+<pre><code>resp = client.context_bundles(
+    text="why PostgreSQL",
+    limit=5,
+    thought_types=[ThoughtType.DECISION, ThoughtType.FINDING],
+)
+print(f"Total bundles: {resp.total_bundles}")
+for bundle in resp.bundles:
+    seed = bundle.seed
+    print(f"Seed: {seed.thought.content} (score={seed.lexical_score:.3f})")
+    for support in bundle.support:
+        print(f"  [{support.depth}] {support.thought.content}")
+        print(f"    via: {support.relation_kinds}")</code></pre>
+
+<h4>lexical_search <em>server-only</em></h4>
+<pre><code># Use the raw REST helpers until this is wrapped
+result = client._post("/v1/lexical-search", {
+    "text": "rate limiting",
+    "chain_key": "my-agent",
+    "limit": 10,
+    "offset": 0,
+})
+for hit in result["results"]:
+    thought = Thought.from_dict(hit["thought"])
+    print(f"[{hit['score']:.3f}] {thought.content}")</code></pre>
+
+<h4>search / query <em>server-only</em></h4>
+<pre><code># Alias for lexical_search on the server
+result = client._post("/v1/search", {
+    "text": "performance optimization",
+    "chain_key": "my-agent",
+    "limit": 10,
+})</code></pre>
+
+<h4>get_thought <em>server-only</em></h4>
+<pre><code># Retrieve a single thought by ID, hash, or index
+result = client._get("/v1/thoughts/abc123")           # by thought ID
+result = client._get("/v1/thoughts/by-hash/xyz789")   # by content hash
+result = client._get("/v1/thoughts/by-index/42")      # by append-order index
+result = client._get("/v1/thoughts/head")             # latest thought on chain
+
+thought = Thought.from_dict(result["thought"])
+print(f"Thought {thought.id} at index {thought.index}")</code></pre>
+
+<h4>traverse_thoughts <em>server-only</em></h4>
+<pre><code># Traverse forwards or backwards from an anchor point
+result = client._post("/v1/traverse-thoughts", {
+    "chain_key": "my-agent",
+    "anchor_id": "abc123",           # start from this thought ID
+    "direction": "forward",          # forward | backward
+    "limit": 20,
+    "include_anchor": True,
+    "thought_types": ["Insight", "Decision"],
+    "roles": ["Memory"],
+    "tags_any": ["performance"],
+    "since": "2026-01-01T00:00:00Z",
+    "until": "2026-04-14T00:00:00Z",
+})
+for thought_data in result["thoughts"]:
+    t = Thought.from_dict(thought_data)
+    print(f"[{t.index}] {t.content[:60]}...")</code></pre>
+
+<h4>recent_context <em>server-only</em></h4>
+<pre><code># Render recent context as a prompt snippet for agent handoff
+result = client._get("/v1/recent-context?chain_key=my-agent&last_n=10")
+print(result["content"])</code></pre>
+
+<h4>head <em>server-only</em></h4>
+<pre><code># Get chain tip metadata
+result = client._get("/v1/chains/head?chain_key=my-agent")
+print(f"Chain length: {result['length']}")
+print(f"Latest thought: {result['latest_thought_id']}")
+print(f"Head hash: {result['head_hash']}")</code></pre>
+
+<hr>
+
+<h3 id="api-chains">Chain & Agent Management</h3>
+
+<h4>list_chains <strong>✓</strong></h4>
+<pre><code>resp = client.list_chains()
+print(f"Default chain: {resp.default_chain_key}")
+print(f"All chains: {resp.chain_keys}")
+for chain in resp.chains:
+    print(f"  {chain.chain_key}: {chain.thought_count} thoughts, {chain.agent_count} agents")
+    print(f"    adapter={chain.storage_adapter} location={chain.storage_location}")</code></pre>
+
+<h4>upsert_agent <strong>✓</strong> (also: get_agent, list_agents)</h4>
+<pre><code># Create or update an agent identity
+agent = client.upsert_agent(
+    agent_id="agent-001",
+    chain_key="my-agent",
+    display_name="Assistant v3",
+    agent_owner="cloudllm",
+    description="Primary assistant agent for user tasks",
+    status="active",
+)
+print(f"Agent: {agent.display_name} ({agent.status})")
+print(f"  first seen: index {agent.first_seen_index}")
+print(f"  thought count: {agent.thought_count}")
+print(f"  aliases: {agent.aliases}")
+
+# Get a specific agent's full registry record
+agent_result = client._get(f"/v1/agents/agent-001?chain_key=my-agent")
+
+# List all agents on a chain
+agents_result = client._get("/v1/agents?chain_key=my-agent")
+for agent_data in agents_result["agents"]:
+    print(agent_data["display_name"])</code></pre>
+
+<hr>
+
+<h3 id="api-skills">Skills</h3>
+
+<h4>upload_skill <em>server-only</em></h4>
+<pre><code>result = client._post("/v1/skills/upload", {
+    "agent_id": "agent-001",
+    "chain_key": "my-agent",
+    "skill_id": "my-skill",
+    "content": "# My Skill\n\nThis skill helps with...",
+    "format": "markdown",
+    "signing_key_id": "key-2026",
+    "skill_signature": [1, 2, 3, 4],  # 64 bytes as int list
+})
+print(f"Uploaded skill ID: {result['skill_id']}")
+print(f"Version: {result['version_id']}")</code></pre>
+
+<h4>read_skill <em>server-only</em></h4>
+<pre><code>result = client._post("/v1/skills/read", {
+    "skill_id": "my-skill",
+    "version_id": "v1.0",    # optional, latest if omitted
+})
+print(result["content"])
+print(f"Format: {result['format']}")</code></pre>
+
+<h4>search_skill <em>server-only</em></h4>
+<pre><code>result = client._post("/v1/skills/search", {
+    "text": "debugging workflow",
+    "limit": 5,
+    "names": ["my-skill"],
+    "tags_any": ["debug"],
+    "statuses": ["active"],
+    "since": "2026-01-01T00:00:00Z",
+})
+for skill in result["skills"]:
+    print(f"{skill['skill_id']}: {skill['latest_version']['description']}")</code></pre>
+
+<h4>list_skills <em>server-only</em></h4>
+<pre><code>result = client._get("/v1/skills?chain_key=my-agent")
+for skill in result["skills"]:
+    print(f"{skill['skill_id']} ({skill['status']}) — latest version: {skill['latest_version_id']}")</code></pre>
+
+<hr>
+
+<h3 id="api-webhooks">Webhooks</h3>
+
+<h4>register_webhook <em>server-only</em></h4>
+<pre><code>result = client._post("/v1/webhooks/register", {
+    "chain_key": "my-agent",
+    "url": "https://my-app.com/mentisdb-hook",
+    "event_types": ["thought.appended", "chain.branched"],
+    "description": "Notify my app on new thoughts",
+    "secret": "my-webhook-secret",
+})
+print(f"Webhook registered: {result['webhook_id']}")</code></pre>
+
+<h4>list_webhooks <em>server-only</em></h4>
+<pre><code>result = client._get("/v1/webhooks?chain_key=my-agent")
+for wh in result["webhooks"]:
+    print(f"{wh['webhook_id']}: {wh['url']} [{', '.join(wh['event_types'])}]")</code></pre>
+
+<h4>delete_webhook <em>server-only</em></h4>
+<pre><code>result = client._post("/v1/webhooks/delete", {
+    "webhook_id": "wh-abc123",
+})</code></pre>
+
+<hr>
+
+<h3 id="api-markdown">Memory Markdown Export / Import</h3>
+
+<h4>memory_markdown <em>server-only</em></h4>
+<pre><code># Export chain as MEMORY.md formatted string
+result = client._post("/v1/memory-markdown", {
+    "chain_key": "my-agent",
+    "limit": 50,
+    "thought_types": ["Insight", "Decision"],
+    "since": "2026-01-01T00:00:00Z",
+})
+print(result["markdown"])
+# Output format:
+# ## [Insight] 2026-04-14T10:30:00
+# content here
+# Tags: performance, api
+# Agent: assistant</code></pre>
+
+<h4>import_memory_markdown <em>server-only</em></h4>
+<pre><code># Import a MEMORY.md formatted string back into a chain
+result = client._post("/v1/import-memory-markdown", {
+    "chain_key": "my-agent",
+    "markdown": """## [Insight] 2026-04-10
+Some insight here
+Tags: test
+
+## [Decision] 2026-04-11
+A decision made
+""",
+    "default_agent_id": "agent-001",
+})
+print(f"Imported {result['imported_count']} thoughts")
+print(f"Imported indices: {result['imported_indices']}")</code></pre>
+
+<hr>
+
+<h2 id="full-example-2">Complete Working Example</h2>
 
 <p>Here's a full example showing the full loop — appending thoughts, searching, and
 using context bundles — against a running mentisdbd:</p>
@@ -324,7 +634,21 @@ bundles = client.context_bundles(text="why PostgreSQL", limit=2)
 for bundle in bundles.bundles:
     print(f"\nSeed: {bundle.seed.thought.content}")
     for support in bundle.support:
-        print(f"  Evidence ({support.relation_kinds}): {support.thought.content}")</code></pre>
+        print(f"  Evidence ({support.relation_kinds}): {support.thought.content}")
+
+# 4. List all chains
+chains = client.list_chains()
+print(f"Default chain: {chains.default_chain_key}")
+for chain in chains.chains:
+    print(f"  {chain.chain_key}: {chain.thought_count} thoughts")
+
+# 5. Upsert an agent
+agent = client.upsert_agent(
+    agent_id="agent-001",
+    display_name="My Assistant",
+    description="Primary user assistant",
+)
+print(f"Agent: {agent.display_name} — {agent.thought_count} thoughts recorded")</code></pre>
 
 <h2 id="links">Links</h2>
 

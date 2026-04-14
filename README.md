@@ -1109,6 +1109,49 @@ Upload flow for signing agents:
 
 ---
 
+## Setup Scenarios
+
+### Claude Desktop
+
+1. Run `mentisdbd setup claude-desktop` or install prerequisites manually:
+   - Node.js >= 20
+   - `npm install -g mcp-remote`
+2. Edit `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`)
+3. Add the `mentisdb` MCP server entry using `node` as command with `mcp-remote` script path as args
+4. Set `NODE_TLS_REJECT_UNAUTHORIZED=0` for self-signed certificate support
+5. Restart Claude for Desktop
+
+### Claude Code
+
+1. Start the server: `mentisdbd run`
+2. Add the MCP server:
+   ```bash
+   claude mcp add --transport http mentisdb http://127.0.0.1:9471
+   ```
+3. Or run `mentisdbd setup claude-code` to auto-configure
+
+### OpenCode
+
+1. Start the server: `mentisdbd run`
+2. Add the MCP server:
+   ```bash
+   opencode mcp add mentisdb http://127.0.0.1:9471
+   ```
+
+### Codex
+
+```bash
+codex mcp add mentisdb --url http://127.0.0.1:9471
+```
+
+### Qwen Code
+
+```bash
+qwen mcp add --transport http mentisdb http://127.0.0.1:9471
+```
+
+---
+
 ## Using With MCP Clients
 
 `mentisdbd` exposes both:
@@ -1345,6 +1388,59 @@ You can also configure it manually in `~/.copilot/mcp-config.json` (or
   }
 }
 ```
+
+---
+
+## Python Client
+
+`pymentisdb` is the official Python client for MentisDB.
+
+### Install
+
+```bash
+pip install pymentisdb
+```
+
+### Basic Example
+
+```python
+from mentisdb import MentisDB
+
+client = MentisDB(base_url="http://127.0.0.1:9471")
+
+# Append a thought
+thought = client.append(
+    content="User prefers concise responses",
+    thought_type="PreferenceUpdate",
+    agent_id="my-agent",
+    tags=["style"]
+)
+
+# Ranked search
+results = client.ranked_search(text="user preferences", limit=5)
+
+# Context bundles
+bundles = client.context_bundles(text="my-agent preferences", limit=3)
+```
+
+### LangChain Integration
+
+```python
+from mentisdb import MentisDB
+from mentisdb.langchain import MentisDBVectorStore
+
+# Use as a LangChain vector store
+vectorstore = MentisDBVectorStore(
+    client=client,
+    chain_key="my-chain",
+    embeddings=embeddings_model
+)
+
+# Similarity search
+docs = vectorstore.similarity_search("user preferences")
+```
+
+See the [full pymentisdb guide](docs/pymentisdb-python-client.html) for detailed API reference.
 
 ---
 

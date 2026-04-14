@@ -14,6 +14,10 @@ triggers:
 
 Every release follows this pipeline in order. No step may be skipped.
 
+## Before Committing
+
+- Doc audit — verify all public API changes are reflected in docs/, README.md, docs.mentisdb.com, and docs.rs. Check: MCP tool catalog, REST endpoints, new ThoughtType variants, new config env vars, pymentisdb API coverage.
+
 ## Phase 1 — Plan for Parallel Execution
 
 Design the release as independent work items that can be dispatched to parallel sub-agents:
@@ -225,6 +229,14 @@ Steps:
 cargo publish
 ```
 
+### 5l. Doc audit
+Verify all public API changes are reflected in docs/, README.md, docs.mentisdb.com, and docs.rs. Check:
+- MCP tool catalog
+- REST endpoints
+- New ThoughtType variants
+- New config env vars
+- pymentisdb API coverage
+
 ## Version Numbering
 
 Format: `MAJOR.MINOR.ITERATION.INCREMENT`
@@ -237,7 +249,7 @@ Format: `MAJOR.MINOR.ITERATION.INCREMENT`
 
 1. **Never skip Phase 2** — clippy warnings are errors. All tests must pass.
 2. **Never skip Phase 3** — a regression in benchmarks means stop and fix before shipping.
-3. **Never skip Phase 5a–5e** — stale docs mean confused users and agents that don't use new features.
+3. **Never skip Phase 5a–5l** — stale docs mean confused users and agents that don't use new features.
 4. **Always compare benchmarks against the baseline on the same chain** — chain state matters. Fresh chains may differ from stored baselines.
 5. **Always checkpoint to MentisDB before compaction** — agents must write `Summary` with `role: Checkpoint` so the next agent can resume without losing progress.
 6. **Keep the skill file under 200 lines** — if it grows, compress or move details to the changelog/roadmap.
