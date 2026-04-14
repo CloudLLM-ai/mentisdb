@@ -79,7 +79,7 @@ pub(super) fn run_wizard(
             }
 
             let question = format!(
-                "{} already has a mentisdb integration.\nOverwrite or keep the existing config?",
+                "{} already has a mentisdb integration.\nOverwrite it with a fresh setup?",
                 plan.integration.display_name()
             );
             let decision = boxed_yn_prompt(out, &question, false, input)?;
