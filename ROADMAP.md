@@ -19,7 +19,7 @@
 ## Benchmarks (as of 0.8.9)
 - LoCoMo 10-persona: 72.0% R@10 (0.8.9)
 - LoCoMo 10-persona w/ RRF: 73.0% R@10 (multi-type +0.5%)
-- LongMemEval: 57.6% R@5, 68.7% R@10 (0.8.9)
+- LongMemEval (fresh chain): 66.8% R@5, 74.1% R@10 (0.8.9)
 
 ## Competitive Position
 | Property | MentisDB | Mem0 | Graphiti/Zep | Letta | Cognee |
