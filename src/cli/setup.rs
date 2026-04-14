@@ -169,7 +169,9 @@ pub(super) fn ensure_prerequisites(
         return Ok(PrerequisiteStatus::Ok);
     }
 
-    if command_on_path(&["mcp-remote", "mcp-remote.cmd"]).is_some() {
+    if command_on_path(&["mcp-remote", "mcp-remote.cmd"]).is_some()
+        || detect_brew_mcp_remote().is_some()
+    {
         if let Some(node) = command_on_path(&["node", "node.exe"]) {
             match node_major_version(&node) {
                 Ok(major) if major >= MCP_REMOTE_MIN_NODE_MAJOR => {
@@ -289,4 +291,13 @@ fn command_on_path(candidates: &[&str]) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn detect_brew_mcp_remote() -> Option<PathBuf> {
+    [
+        PathBuf::from("/opt/homebrew/bin/mcp-remote"),
+        PathBuf::from("/usr/local/bin/mcp-remote"),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.exists())
 }

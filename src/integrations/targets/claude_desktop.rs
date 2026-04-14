@@ -9,15 +9,28 @@ pub(super) fn build(
 ) -> IntegrationApplyPlan {
     let url = settings.url_for(plan.integration);
     let bridge = settings.bridge_command_for(plan.platform);
-    let mut patch = JsonPatch::new()
-        .set_path(
+    let mut patch = JsonPatch::new();
+
+    if bridge.directly_executable {
+        patch = patch.set_path(
+            ["mcpServers", settings.server_name(), "command"],
+            json!(bridge.mcp_remote_path),
+        );
+    } else {
+        patch = patch.set_path(
             ["mcpServers", settings.server_name(), "command"],
             json!(bridge.node_path),
-        )
-        .set_path(
+        );
+    }
+
+    if bridge.directly_executable {
+        patch = patch.set_path(["mcpServers", settings.server_name(), "args"], json!([url]));
+    } else {
+        patch = patch.set_path(
             ["mcpServers", settings.server_name(), "args"],
             json!([bridge.mcp_remote_path, url]),
         );
+    }
 
     // SECURITY: NODE_TLS_REJECT_UNAUTHORIZED=0 disables TLS certificate verification for the
     // mcp-remote bridge. This is required for self-signed certificates on private servers.

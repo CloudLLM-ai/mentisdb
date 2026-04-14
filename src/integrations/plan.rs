@@ -166,7 +166,7 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
             "{{\n  \"mcpServers\": {{\n    \"mentisdb\": {{\n      \"type\": \"http\",\n      \"url\": \"{url}\"\n    }}\n  }}\n}}"
         )),
         IntegrationKind::ClaudeDesktop => Some(format!(
-            "{{\n  \"mcpServers\": {{\n    \"mentisdb\": {{\n      \"command\": \"node\",\n      \"args\": [\"mcp-remote\", \"{url}\"],\n      \"env\": {{ \"NODE_TLS_REJECT_UNAUTHORIZED\": \"0\" }}\n    }}\n  }}\n}}\n// Requires Node.js >= 20 and the mcp-remote npm package."
+            "{{\n  \"mcpServers\": {{\n    \"mentisdb\": {{\n      \"command\": \"mcp-remote\",\n      \"args\": [\"{url}\"],\n      \"env\": {{ \"NODE_TLS_REJECT_UNAUTHORIZED\": \"0\" }}\n    }}\n  }}\n}}\n// Homebrew mcp-remote is directly executable. npm-installed mcp-remote requires Node >= 20."
         )),
         IntegrationKind::GeminiCli => Some(format!(
             "{{\n  \"mcpServers\": {{\n    \"mentisdb\": {{\n      \"type\": \"http\",\n      \"url\": \"{url}\",\n      \"httpUrl\": \"{url}\"\n    }}\n  }}\n}}"
@@ -190,7 +190,7 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
                     .to_string(),
             );
             notes.push(
-                "mcp-remote requires Node.js >= 20. The setup command writes the absolute path to the node binary to avoid shebang resolution picking an older version."
+                "When mcp-remote is installed via Homebrew it is directly executable. npm-installed mcp-remote requires Node.js >= 20."
                     .to_string(),
             );
             if url.starts_with("https://") {

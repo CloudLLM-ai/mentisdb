@@ -369,8 +369,8 @@ fn claude_desktop_plan_snippet_mentions_node_requirement() {
 
     let snippet = plan.snippet.as_deref().unwrap();
     assert!(
-        snippet.contains("\"command\": \"node\""),
-        "snippet should use node as command, got: {snippet}"
+        snippet.contains("\"command\": \"mcp-remote\""),
+        "snippet should use mcp-remote as command (directly executable), got: {snippet}"
     );
     assert!(
         snippet.contains("\"args\""),
@@ -379,8 +379,8 @@ fn claude_desktop_plan_snippet_mentions_node_requirement() {
     assert!(
         plan.notes
             .iter()
-            .any(|n| n.contains("Node.js >= 20") || n.contains("Node >= 20")),
-        "plan notes should mention Node >= 20 requirement, got: {:?}",
+            .any(|n| n.contains("Homebrew") || n.contains("Node.js")),
+        "plan notes should mention Homebrew or Node.js, got: {:?}",
         plan.notes
     );
 }

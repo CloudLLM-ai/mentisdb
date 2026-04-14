@@ -6,22 +6,32 @@ use crate::paths::HostPlatform;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+
+const MCP_REMOTE_MIN_NODE_MAJOR: u32 = 20;
 
 /// Resolved bridge command for Claude Desktop's mcp-remote transport.
 ///
 /// Claude Desktop launches stdio-based MCP servers by running a `command` with
-/// `args`.  The mcp-remote npm package installs a shell script whose shebang
-/// is `#!/usr/bin/env node` — which may resolve to a Node.js version that is
-/// too old (mcp-remote requires Node >= 20).  To avoid the shebang ambiguity
-/// we write the **absolute path to the `node` binary** as the command and pass
-/// the **absolute path to the mcp-remote script** as the first argument.
+/// `args`.  When mcp-remote is installed via npm, its shebang is `#!/usr/bin/env node`
+/// which may resolve to an older Node version (mcp-remote requires Node >= 20).
+/// In that case we write the **absolute path to the `node` binary** as the command
+/// and pass the **absolute path to the `mcp-remote` script** as the first argument.
+///
+/// When mcp-remote is installed via Homebrew, it has a proper shebang pointing
+/// to the correct Node and is directly executable — no node wrapper needed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BridgeCommand {
+    /// Whether mcp-remote is directly executable (e.g. Homebrew-installed)
+    /// and can be used as `command` without wrapping through `node`.
+    pub(crate) directly_executable: bool,
     /// Absolute path to the `node` binary that satisfies mcp-remote's
-    /// minimum Node version requirement (>= 20).
+    /// minimum Node version requirement (>= 20). Only meaningful when
+    /// `directly_executable` is false.
     pub(crate) node_path: String,
-    /// Absolute path to the `mcp-remote` script installed by npm.
+    /// Absolute path to the `mcp-remote` script.
     pub(crate) mcp_remote_path: String,
 }
 
@@ -110,8 +120,14 @@ impl IntegrationApplyPlan {
 
 fn detect_bridge_command(platform: HostPlatform) -> BridgeCommand {
     let mcp_remote_path = detect_mcp_remote_path(platform);
-    let node_path = detect_node_path(&mcp_remote_path, platform);
+    let directly_executable = is_directly_executable(&mcp_remote_path);
+    let node_path = if directly_executable {
+        String::new()
+    } else {
+        detect_node_path(&mcp_remote_path, platform)
+    };
     BridgeCommand {
+        directly_executable,
         node_path,
         mcp_remote_path,
     }
@@ -198,4 +214,63 @@ fn is_executable_file(path: &Path) -> bool {
     {
         fs::metadata(path).map(|m| m.is_file()).unwrap_or(false)
     }
+}
+
+/// Check whether mcp-remote has a valid shebang pointing to an existing node binary.
+///
+/// Homebrew-installed mcp-remote has a real shebang (e.g. `#!/opt/homebrew/bin/node`)
+/// and is directly executable without a node wrapper. npm-installed mcp-remote typically
+/// uses `#!/usr/bin/env node` which may resolve to a too-old node, so we need to wrap it.
+fn is_directly_executable(mcp_remote_path: &str) -> bool {
+    let path = Path::new(mcp_remote_path);
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let shebang_line = match content.strip_prefix("#!") {
+        Some(s) => s.split('\n').next(),
+        None => return false,
+    };
+    let node_in_shebang = match shebang_line {
+        Some(s) => s.split_whitespace().next(),
+        None => return false,
+    };
+    let node_path = match node_in_shebang {
+        Some(p) => PathBuf::from(p),
+        None => return false,
+    };
+    if !node_path.is_absolute() || !is_executable_file(&node_path) {
+        return false;
+    }
+
+    if let Ok(major) = node_major_version_from_path(&node_path) {
+        return major >= MCP_REMOTE_MIN_NODE_MAJOR;
+    }
+
+    false
+}
+
+fn node_major_version_from_path(node_path: &Path) -> io::Result<u32> {
+    let output = Command::new(node_path).arg("--version").output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "node --version exited with status {}",
+            output.status
+        )));
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    parse_node_major(&version)
+}
+
+pub fn parse_node_major(version: &str) -> io::Result<u32> {
+    let version = version.trim_start_matches('v');
+    let major_str = version
+        .split('.')
+        .next()
+        .ok_or_else(|| io::Error::other(format!("unexpected node version format: {version}")))?;
+    major_str.parse::<u32>().map_err(|e| {
+        io::Error::other(format!(
+            "could not parse node major version from {version}: {e}"
+        ))
+    })
 }
