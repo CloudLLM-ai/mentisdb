@@ -2289,6 +2289,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 name = "mentisdb"
 version = "0.8.9"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum",
  "axum-server",
@@ -2304,6 +2305,7 @@ dependencies = [
  "fastembed",
  "libc",
  "log",
+ "openai-rust2",
  "rcgen",
  "reqwest 0.13.2",
  "rodio",
@@ -2720,6 +2722,22 @@ name = "oorandom"
 version = "11.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
+
+[[package]]
+name = "openai-rust2"
+version = "1.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "244eb40b4d6f98363d84653506234ebf59685f0289ef7dca6a489f553e41ec01"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bytes",
+ "futures-util",
+ "lazy_static",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "openssl"

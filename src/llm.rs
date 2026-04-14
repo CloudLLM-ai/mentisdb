@@ -1,9 +1,9 @@
 //! LLM integration for the opt-in memory extraction pipeline.
 //!
-//! This module provides an OpenAI-compatible HTTP client that transforms
-//! free-form agent text into structured [`ThoughtInput`] records. The client
-//! is lazily initialized — no HTTP stacks are spun up unless
-//! [`extract_memories`](crate::MentisDb::extract_memories) is called.
+//! This module transforms free-form agent text into structured [`ThoughtInput`]
+//! records using an OpenAI-compatible chat completion API via `openai-rust2`,
+//! which provides connection pooling, automatic retries (up to 3 attempts on
+//! 429 / 5xx responses), and configurable timeouts.
 //!
 //! # Security
 //!
@@ -15,19 +15,13 @@ use crate::{
     ExtractionResult, LlmExtractionConfig, LlmExtractionError, ThoughtInput, ThoughtRole,
     ThoughtType,
 };
-use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use openai_rust2::chat::{ChatArguments, Message, ResponseFormat};
+use openai_rust2::Client;
+use serde::Deserialize;
 
-/// Default base URL for OpenAI-compatible APIs.
-const DEFAULT_LLM_BASE_URL: &str = "https://api.openai.com/v1";
-/// Default model when `LLM_MODEL` is not set.
-const DEFAULT_LLM_MODEL: &str = "gpt-4";
-/// Request timeout for LLM API calls.
-const LLM_REQUEST_TIMEOUT_SECS: u64 = 30;
-/// Temperature setting for extraction prompts (low = more consistent).
+const DEFAULT_LLM_MODEL: &str = "gpt-4o";
 const EXTRACTION_TEMPERATURE: f32 = 0.1;
 
-/// The extraction prompt sent to the LLM.
 const EXTRACTION_PROMPT: &str = r#"You are a memory analyst. Your task is to extract structured memory records from the provided text.
 
 For each distinct piece of information, emit a JSON object with these fields:
@@ -54,73 +48,6 @@ Rules:
 
 Input text:"#;
 
-/// Token usage returned by the LLM API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiTokenUsage {
-    #[serde(rename = "prompt_tokens")]
-    prompt_tokens: u32,
-    #[serde(rename = "completion_tokens")]
-    completion_tokens: u32,
-    #[serde(rename = "total_tokens")]
-    total_tokens: u32,
-}
-
-impl From<ApiTokenUsage> for crate::TokenUsage {
-    fn from(api: ApiTokenUsage) -> Self {
-        Self {
-            prompt_tokens: api.prompt_tokens,
-            completion_tokens: api.completion_tokens,
-            total_tokens: api.total_tokens,
-        }
-    }
-}
-
-/// API response shape from OpenAI-compatible `/v1/chat/completions` endpoints.
-#[derive(Debug, Deserialize)]
-struct ChatCompletionResponse {
-    choices: Vec<ChatCompletionChoice>,
-    usage: ApiTokenUsage,
-    model: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatCompletionChoice {
-    message: ChatMessageResponse,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatMessageResponse {
-    content: String,
-}
-
-/// Request shape sent to OpenAI-compatible `/v1/chat/completions` endpoints.
-#[derive(Debug, Serialize)]
-struct ChatCompletionRequest<'a> {
-    model: &'a str,
-    messages: [ChatMessageRequest<'a>; 2],
-    temperature: f32,
-    #[serde(rename = "response_format")]
-    response_format: ResponseFormat<'a>,
-}
-
-#[derive(Debug, Serialize)]
-struct ResponseFormat<'a> {
-    #[serde(rename = "type")]
-    r#type: &'a str,
-}
-
-#[derive(Debug, Serialize)]
-struct ChatMessageRequest<'a> {
-    role: &'a str,
-    content: &'a str,
-}
-
-/// JSON shape extracted from the LLM response.
-#[derive(Debug, Deserialize)]
-struct ExtractedThoughts {
-    thoughts: Vec<RawExtractedThought>,
-}
-
 #[derive(Debug, Deserialize)]
 struct RawExtractedThought {
     #[serde(rename = "thought_type")]
@@ -132,36 +59,16 @@ struct RawExtractedThought {
     concepts: Option<Vec<String>>,
 }
 
-/// Build the system+user message pair for a chat completion request.
-fn build_messages(
-    user_text: &str,
-    custom_prompt: Option<&str>,
-) -> [ChatMessageRequest<'static>; 2] {
-    let user_content = if let Some(template) = custom_prompt {
-        template
-            .replace("{{types}}", "PreferenceUpdate, UserTrait, RelationshipUpdate, Finding, Insight, FactLearned, PatternDetected, Hypothesis, Mistake, Correction, LessonLearned, AssumptionInvalidated, Constraint, Plan, Subgoal, Decision, StrategyShift, Wonder, Question, Idea, Experiment, ActionTaken, TaskComplete, Checkpoint, StateSnapshot, Handoff, Summary, Surprise, Reframe, Goal")
-            .replace("{{text}}", user_text)
-    } else {
-        format!("{}\n\n{}", EXTRACTION_PROMPT.trim(), user_text)
-    };
-
-    [
-        ChatMessageRequest {
-            role: "system",
-            content: "You are a helpful memory analyst.",
-        },
-        ChatMessageRequest {
-            role: "user",
-            content: Box::leak(user_content.into_boxed_str()),
-        },
-    ]
+#[derive(Debug, Deserialize)]
+struct ExtractedThoughts {
+    thoughts: Vec<RawExtractedThought>,
 }
 
 /// Extract structured memories from free-form text using an LLM.
 ///
-/// This is the underlying HTTP call used by [`crate::MentisDb::extract_memories`].
-/// It is exposed here so that callers who want to use the LLM integration
-/// without going through the `MentisDb` wrapper can do so.
+/// This is the underlying call used by [`crate::MentisDb::extract_memories`].
+/// It is exposed here so callers who want the LLM integration without going
+/// through the `MentisDb` wrapper can do so.
 pub async fn extract_memories_from_text(
     text: &str,
     config: &LlmExtractionConfig,
@@ -174,7 +81,7 @@ pub async fn extract_memories_from_text(
     }
 
     let base_url = if config.base_url.is_empty() {
-        DEFAULT_LLM_BASE_URL.to_string()
+        "https://api.openai.com/v1".to_string()
     } else {
         config.base_url.trim_end_matches('/').to_string()
     };
@@ -185,61 +92,45 @@ pub async fn extract_memories_from_text(
         config.model.clone()
     };
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(LLM_REQUEST_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| LlmExtractionError::IoError(std::io::Error::other(e.to_string())))?;
-
-    let messages = build_messages(text, prompt_template);
-
-    let request_body = ChatCompletionRequest {
-        model: &model,
-        messages,
-        temperature: EXTRACTION_TEMPERATURE,
-        response_format: ResponseFormat {
-            r#type: "json_object",
-        },
+    let user_content = if let Some(template) = prompt_template {
+        template
+            .replace(
+                "{{types}}",
+                "PreferenceUpdate, UserTrait, RelationshipUpdate, Finding, Insight, FactLearned, PatternDetected, Hypothesis, Mistake, Correction, LessonLearned, AssumptionInvalidated, Constraint, Plan, Subgoal, Decision, StrategyShift, Wonder, Question, Idea, Experiment, ActionTaken, TaskComplete, Checkpoint, StateSnapshot, Handoff, Summary, Surprise, Reframe, Goal",
+            )
+            .replace("{{text}}", text)
+    } else {
+        format!("{}\n\n{}", EXTRACTION_PROMPT.trim(), text)
     };
 
-    let response = client
-        .post(format!("{}/chat/completions", base_url))
-        .header("Authorization", format!("Bearer {}", config.api_key))
-        .header("Content-Type", "application/json")
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_connect() {
-                LlmExtractionError::NotConfigured(format!(
-                    "Failed to connect to LLM API at {}: {}",
-                    base_url, e
-                ))
-            } else {
-                LlmExtractionError::ApiError {
-                    status: 0,
-                    message: e.to_string(),
-                }
-            }
-        })?;
+    let client = Client::new_with_base_url(&config.api_key, &base_url);
 
-    let status = response.status();
+    let mut args = ChatArguments::new(
+        &model,
+        vec![
+            Message {
+                role: "system".to_owned(),
+                content: "You are a helpful memory analyst.".to_owned(),
+            },
+            Message {
+                role: "user".to_owned(),
+                content: user_content,
+            },
+        ],
+    );
+    args.response_format = Some(ResponseFormat::JsonObject);
+    args.temperature = Some(EXTRACTION_TEMPERATURE);
 
-    if !status.is_success() {
-        let message = response
-            .text()
+    let response =
+        client
+            .create_chat(args, None)
             .await
-            .unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(LlmExtractionError::ApiError {
-            status: status.as_u16(),
-            message,
-        });
-    }
+            .map_err(|e| LlmExtractionError::ApiError {
+                status: 0,
+                message: e.to_string(),
+            })?;
 
-    let api_response: ChatCompletionResponse = response.json().await.map_err(|e| {
-        LlmExtractionError::ParseError(format!("Failed to parse LLM response: {}", e))
-    })?;
-
-    let raw_content = api_response
+    let raw_content = response
         .choices
         .first()
         .ok_or_else(|| LlmExtractionError::ParseError("Empty response from LLM".to_string()))?
@@ -258,8 +149,12 @@ pub async fn extract_memories_from_text(
 
     Ok(ExtractionResult {
         thoughts,
-        model: api_response.model,
-        usage: api_response.usage.into(),
+        model: response.model.unwrap_or(model),
+        usage: crate::TokenUsage {
+            prompt_tokens: response.usage.prompt_tokens,
+            completion_tokens: response.usage.completion_tokens,
+            total_tokens: response.usage.total_tokens,
+        },
     })
 }
 
@@ -358,23 +253,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_build_messages_default_prompt() {
-        let messages = build_messages("User likes coffee.", None);
-        assert_eq!(messages[0].role, "system");
-        assert_eq!(messages[1].role, "user");
-        assert!(messages[1].content.contains("User likes coffee."));
-    }
-
-    #[test]
-    fn test_build_messages_custom_prompt() {
-        let template = "Analyze this text: {{text}}. Types: {{types}}";
-        let messages = build_messages("User likes coffee.", Some(template));
-        assert!(messages[1].content.contains("Analyze this text:"));
-        assert!(messages[1].content.contains("User likes coffee."));
-        assert!(messages[1].content.contains("Types:"));
-    }
-
-    #[test]
     fn test_parse_thought_type_valid() {
         assert!(parse_thought_type("Decision").is_ok());
         assert!(parse_thought_type(" PreferenceUpdate ").is_ok());
@@ -445,7 +323,7 @@ mod tests {
             RawExtractedThought {
                 thought_type: "Finding".to_string(),
                 content: "Test 1.".to_string(),
-                importance: Some(1.5), // Should be clamped to 1.0
+                importance: Some(1.5),
                 confidence: None,
                 tags: None,
                 concepts: None,
@@ -453,7 +331,7 @@ mod tests {
             RawExtractedThought {
                 thought_type: "Finding".to_string(),
                 content: "Test 2.".to_string(),
-                importance: Some(-0.5), // Should be clamped to 0.0
+                importance: Some(-0.5),
                 confidence: None,
                 tags: None,
                 concepts: None,
