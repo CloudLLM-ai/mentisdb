@@ -8,7 +8,7 @@ Modern agent frameworks treat long-term memory as an afterthought. In practice, 
 
 MentisDB stores thoughts -- structured, timestamped, typed, attributable records -- in an append-only hash chain. The chain model is storage-agnostic through a `StorageAdapter` interface, with binary (length-prefixed bincode) as the default backend. A dedicated ranked-retrieval layer combines BM25 lexical scoring, optional vector-semantic similarity, graph-aware expansion from typed relation edges, session cohesion signals, and importance weighting. Temporal edge validity (`valid_at`/`invalid_at`) enables point-in-time queries. Automatic deduplication via Jaccard similarity prevents near-duplicate pollution. Memory scopes (User/Session/Agent) provide visibility isolation without physical chain partitioning.
 
-Benchmarks on standard long-term memory evaluations confirm the retrieval quality: LoCoMo 2-persona R@10 = 88.7%, LoCoMo 10-persona R@10 = 74.6% (0.8.5), LongMemEval R@5 = 67.6% / R@10 = 73.2%.
+Benchmarks on standard long-term memory evaluations confirm the retrieval quality: LoCoMo 2-persona R@10 = 88.7%, LoCoMo 10-persona R@10 = 72.0% (0.8.9), LongMemEval R@5 = 66.8% / R@10 = 74.1% (0.8.9 fresh chain).
 
 The system ships as a single Rust crate with an optional daemon (`mentisdbd`) exposing MCP, REST, and HTTPS dashboard surfaces. It requires no external databases, no LLM API keys for core operation, and no cloud dependencies.
 
@@ -153,7 +153,7 @@ New variants are always appended at the end of the enum because bincode encodes 
 
 The type/role separation avoids mixing semantics with workflow mechanics. A hard-won fix might be stored as `Mistake` / `Correction` / `LessonLearned` (type) with role `Retrospective`, letting future agents retrieve not just what happened, but what they should do differently next time.
 
-### 4.3 ThoughtRelationKind (11 Values)
+### 4.3 ThoughtRelationKind (12 Values)
 
 | Kind | Semantics |
 |------|-----------|
@@ -166,6 +166,7 @@ The type/role separation avoids mixing semantics with workflow mechanics. A hard
 | `Contradicts` | Source contradicts target |
 | `DerivedFrom` | Source was derived from target |
 | `ContinuesFrom` | Source continues work from target |
+| `BranchesFrom` | Source is the genesis of a branch chain diverging from target |
 | `RelatedTo` | Generic semantic connection |
 | `Supersedes` | Source replaces target's framing (not an error; use `Reframe` as type) |
 
@@ -309,7 +310,7 @@ When `graph` is enabled, expansion starts from lexical seed hits and walks `refs
 - `graph_relation_kinds` (which relation types were traversed)
 - `graph_path` (full traversal provenance)
 
-`MAX_GRAPH_SEEDS = 20` bounds BFS cost. Relation-kind boosts: `ContinuesFrom` = 0.30, `Corrects`/`Invalidates` = 0.25, `Supersedes` = 0.22, `DerivedFrom` = 0.20. Graph proximity score = 1.0 / depth.
+`MAX_GRAPH_SEEDS = 20` bounds BFS cost. Relation-kind boosts: `ContinuesFrom` = 0.60, `Corrects`/`Invalidates` = 0.50, `Supersedes` = 0.45, `DerivedFrom` = 0.40, `BranchesFrom` = 0.55, `Summarizes` = 0.20, `CausedBy` = 0.20, `Supports` = 0.15, `Contradicts` = 0.15, `RelatedTo` = 0.08, `References` = 0.06. Graph proximity score = 1.0 / depth.
 
 ### 6.6 Session Cohesion Scoring
 
@@ -459,7 +460,7 @@ Lists the distinct agent identities writing to the specified chain.
 
 ### 9.1 Tool Catalog
 
-34 MCP tools are currently exposed, covering:
+35 MCP tools are currently exposed, covering:
 
 - **Bootstrap & append**: `mentisdb_bootstrap`, `mentisdb_append`, `mentisdb_append_retrospective`
 - **Search**: `mentisdb_search`, `mentisdb_lexical_search`, `mentisdb_ranked_search`, `mentisdb_context_bundles`
@@ -488,15 +489,17 @@ Modern MCP clients bootstrap from the MCP handshake:
 
 ### 10.1 Standard Evaluation Results
 
-| Benchmark | Metric | 0.8.1 | 0.8.5 |
-|-----------|--------|-------|-------|
-| LoCoMo 2-persona | R@10 | 88.7% | — |
-| LoCoMo 2-persona single-hop | R@10 | 90.7% | — |
-| LoCoMo 10-persona (1977 queries) | R@10 | 74.2% | **74.6%** |
-| LoCoMo 10-persona single-hop | R@10 | — | **79.0%** |
-| LoCoMo 10-persona multi-hop | R@10 | — | **58.4%** |
-| LongMemEval | R@5 | 67.6% | — |
-| LongMemEval | R@10 | 73.2% | — |
+| Benchmark | Metric | 0.8.1 | 0.8.5 | 0.8.9 |
+|-----------|--------|-------|-------|-------|
+| LoCoMo 2-persona | R@10 | 88.7% | — | — |
+| LoCoMo 2-persona single-hop | R@10 | 90.7% | — | — |
+| LoCoMo 10-persona (1977 queries) | R@10 | 74.2% | 74.6% | **72.0%** |
+| LoCoMo 10-persona single-hop | R@10 | — | **79.0%** | — |
+| LoCoMo 10-persona multi-hop | R@10 | — | **58.4%** | — |
+| LongMemEval (fresh chain) | R@5 | 67.6% | — | **66.8%** |
+| LongMemEval (fresh chain) | R@10 | 73.2% | — | **74.1%** |
+| LoCoMo 10-persona single-hop | R@10 | — | **79.0%** | — |
+| LoCoMo 10-persona multi-hop | R@10 | — | **58.4%** | — |
 
 The 0.8.5 LoCoMo 10-persona improvement comes from three tuning changes:
 
@@ -518,8 +521,8 @@ Of 503 misses (correct answer not in top-10):
 | Not in top-50 | 218 | 43.3% | Lexical gap — query terms absent from evidence |
 
 The 43.3% lexical gap represents the hard ceiling for BM25-only retrieval on this
-benchmark. Addressing it requires stronger stemming (irregular verb lemmas), larger
-embedding models, or query expansion via LLM.
+benchmark. Addressing it requires larger embedding models, query expansion via LLM,
+or external knowledge retrieval.
 
 ### 10.3 Scoring Evolution
 
@@ -530,6 +533,7 @@ embedding models, or query expansion via LLM.
 | 0.8.0 + tiered fusion + importance | Vector/lexical balance | 65.0% | — |
 | 0.8.1 + session cohesion + smooth fusion + DF cutoff | Retrieval quality | 67.6% | 74.2% |
 | 0.8.5 + cohesion tuning + graph scores + fastembed | Session/graph boost | — | **74.6%** |
+| 0.8.9 + irregular verb lemmas + webhooks | Lemma expansion + event callbacks | **57.6%** | — |
 
 ### 10.3 Criterion Micro-Benchmarks
 
@@ -562,11 +566,11 @@ The `DashMap` concurrent chain lookup refactor delivers 750-930 read req/s at 10
 
 ## 12. Future Direction
 
-### 0.8.3 -- Retrieval Quality
+### 0.8.3 -- Retrieval Quality (DONE)
 
-- **Irregular verb lemmas**: extend the Porter stemmer with a lookup table for common irregular verbs (`ran`/`run`, `went`/`go`) to improve recall on conversational phrasing
-- **RRF (Reciprocal Rank Fusion) reranking**: blend lexical and vector rank positions using RRF instead of the current score-level fusion, providing more robust cross-signal combination
-- **Per-field BM25 DF cutoffs**: apply document-frequency filtering independently per indexed field (content vs. tags vs. concepts vs. agent metadata) instead of a single corpus-wide threshold
+- **Irregular verb lemmas** (DONE in 0.8.9): extend the Porter stemmer with a lookup table for common irregular verbs (`ran`/`run`, `went`/`go`) to improve recall on conversational phrasing; ~170 entries; query-time expansion only
+- **RRF (Reciprocal Rank Fusion) reranking** (DONE in 0.8.6): blend lexical and vector rank positions using RRF instead of the current score-level fusion, providing more robust cross-signal combination
+- **Per-field BM25 DF cutoffs** (DONE in 0.8.6): apply document-frequency filtering independently per indexed field (content vs. tags vs. concepts vs. agent metadata) instead of a single corpus-wide threshold
 
 ### 0.8.4 -- Ontology & Provenance
 
@@ -575,10 +579,10 @@ The `DashMap` concurrent chain lookup refactor delivers 750-930 read req/s at 10
 
 ### 0.9.0 -- Ecosystem
 
+- **Webhooks** (DONE in 0.8.9): HTTP callbacks on thought append events; fire-and-forget delivery with exponential backoff retries; persisted to `webhooks.json`
 - Cross-chain queries
 - Optional LLM-extracted memories
 - LangChain integration
-- Webhooks
 
 ### 1.0.0 -- Production Stable
 
