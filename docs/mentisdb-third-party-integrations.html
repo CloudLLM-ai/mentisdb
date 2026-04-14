@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Integrating MentisDB with Claude Desktop, OpenCode, and any MCP Client</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #1a1a2e; color: #e0e0e0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; color: inherit; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+    .tip { background: #f0fff4; border-left: 3px solid #38a169; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .warning { background: #fffaf0; border-left: 3px solid #dd6b20; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .installed { background: #e6fffa; border-left: 3px solid #319795; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 14, 2026</div>
+
+<h1>Integrating MentisDB with Claude Desktop, OpenCode, and any MCP Client</h1>
+
+<p>
+  MentisDB supports multiple integration paths depending on your setup. The recommended
+  path is <strong>Model Context Protocol (MCP)</strong> — a stdio-based protocol that works
+  with Claude Desktop, OpenCode, Cursor, and any other MCP-compatible tool. For
+  non-MCP clients, the REST API works with any HTTP library.
+</p>
+
+<h2 id="toc">Table of Contents</h2>
+
+<ul>
+  <li><a href="#integration-paths">Integration Paths Overview</a></li>
+  <li><a href="#wizard">One-Command Setup with the Wizard</a></li>
+  <li><a href="#claude-desktop">Claude Desktop</a></li>
+  <li><a href="#opencode">OpenCode</a></li>
+  <li><a href="#rest">REST API (Any HTTP Client)</a></li>
+  <li><a href="#custom-mcp">Building Custom MCP Clients</a></li>
+  <li><a href="#mcp-tools">Available MCP Tools Reference</a></li>
+</ul>
+
+<h2 id="integration-paths">Integration Paths Overview</h2>
+
+<table>
+  <tr><th>Integration</th><th>Protocol</th><th>Best For</th><th>Setup Effort</th></tr>
+  <tr><td>Claude Desktop</td><td>MCP via mcp-remote</td><td>Claude Desktop users on macOS/Linux</td><td>~2 minutes with wizard</td></tr>
+  <tr><td>OpenCode</td><td>MCP</td><td>Terminal-based coding agents</td><td>~2 minutes with wizard</td></tr>
+  <tr><td>pymentisdb + LangChain</td><td>REST</td><td>Python agents, chatbots</td><td>pip install + 10 lines of code</td></tr>
+  <tr><td>Custom MCP client</td><td>MCP stdio</td><td>Building MCP-native integrations</td><td>Depends on complexity</td></tr>
+  <tr><td>REST API</td><td>HTTP/JSON</td><td>Any language, any platform</td><td>Read the OpenAPI spec</td></tr>
+</table>
+
+<h2 id="wizard">One-Command Setup with the Wizard</h2>
+
+<p>
+  The fastest path to any integration is <code>mentisdbd setup</code>:
+</p>
+
+<pre><code># Interactive wizard — picks the right config for your platform
+mentisdbd setup claude-desktop
+
+# Dry run to see what would be written
+mentisdbd setup claude-desktop --dry-run
+
+# Auto-accept everything (CI/CD friendly)
+mentisdbd setup claude-desktop --assume-yes</code></pre>
+
+<p>
+  The wizard detects your platform, checks for prerequisites (Node.js, mcp-remote, etc.),
+  writes the config file, and tells you what to do next. Run it and follow the prompts.
+</p>
+
+<div class="installed">
+  <p><strong>Homebrew-installed mcp-remote:</strong> If you installed mcp-remote via
+  <code>brew install mcp-remote</code>, the wizard detects this and writes the correct
+  <code>mcp-remote</code> as the command directly (no Node.js wrapper needed). The
+  generated config looks like:</p>
+  <pre><code>{
+  "mcpServers": {
+    "mentisdb": {
+      "command": "/opt/homebrew/bin/mcp-remote",
+      "args": ["https://my.mentisdb.com:9473"],
+      "env": { "NODE_TLS_REJECT_UNAUTHORIZED": "0" }
+    }
+  }
+}</code></pre>
+</div>
+
+<h2 id="claude-desktop">Claude Desktop</h2>
+
+<p>
+  Claude Desktop uses MCP over stdio. Since MCP servers run locally and can't handle
+  self-signed HTTPS certificates, MentisDB ships an <code>mcp-remote</code> bridge that
+  tunnels MCP stdio over HTTPS to your mentisdbd instance.
+</p>
+
+<h3 id="claude-desktop-prereqs">Prerequisites</h3>
+
+<ul>
+  <li>Running mentisdbd with HTTPS (<code>--https --port 9473</code>)</li>
+  <li><code>mcp-remote</code> installed (via Homebrew or npm)</li>
+  <li>Node.js >= 20 if using npm-installed mcp-remote</li>
+</ul>
+
+<div class="tip">
+  <p><strong>Homebrew users:</strong> <code>brew install mcp-remote</code> installs mcp-remote
+  with a proper shebang pointing to the correct Node version. The wizard detects this
+  automatically and writes the minimal config.</p>
+</div>
+
+<h3 id="claude-desktop-config">Manual Config (optional — wizard does this for you)</h3>
+
+<p>Edit <code>~/Library/Application Support/Claude/claude_desktop_config.json</code>:</p>
+
+<pre><code>{
+  "mcpServers": {
+    "mentisdb": {
+      "command": "/opt/homebrew/bin/mcp-remote",
+      "args": ["https://my.mentisdb.com:9473"],
+      "env": {
+        "NODE_TLS_REJECT_UNAUTHORIZED": "0"
+      }
+    }
+  }
+}</code></pre>
+
+<p>The <code>NODE_TLS_REJECT_UNAUTHORIZED=0</code> flag tells mcp-remote to accept
+self-signed certificates. This is required for private servers with self-signed certs.
+Omit it when using a public HTTPS endpoint with valid certificates.</p>
+
+<h3 id="claude-desktop-start">Starting Up</h3>
+
+<p>After saving the config, restart Claude Desktop. The mentisdb MCP server will be
+available — you can verify with:</p>
+
+<pre><code>/mnt/Users/gubatron/Library/Application Support/Claude/icc/amd64/binaries/CLAUDE_DESKTOP_MAC-arm64/Claude.app/Contents/MacOS/Claude --mcp-server mentisdb info</code></pre>
+
+<h3 id="claude-desktop-tools">Available Tools in Claude Desktop</h3>
+
+<table>
+  <tr><th>Tool</th><th>Description</th></tr>
+  <tr><td><code>mentisdb_append_thought</code></td><td>Append a structured memory thought</td></tr>
+  <tr><td><code>mentisdb_ranked_search</code></td><td>Semantic search with multi-signal ranking</td></tr>
+  <tr><td><code>mentisdb_context_bundles</code></td><td>Get seed thoughts with supporting evidence</td></tr>
+  <tr><td><code>mentisdb_list_chains</code></td><td>List all memory chains</td></tr>
+  <tr><td><code>mentisdb_register_webhook</code></td><td>Register HTTP callbacks on thought appends</td></tr>
+</table>
+
+<h2 id="opencode">OpenCode</h2>
+
+<p>
+  <a href="https://github.com/sunner/opencode">OpenCode</a> is a terminal-based coding agent.
+  It uses MCP for tool integration. The wizard handles the setup:
+</p>
+
+<pre><code>mentisdbd setup opencode</code></pre>
+
+<p>This writes the OpenCode MCP config to the standard location. OpenCode's MCP block
+uses a slightly different format:</p>
+
+<pre><code>{
+  "mcp": {
+    "mentisdb": {
+      "type": "remote",
+      "url": "https://my.mentisdb.com:9473",
+      "enabled": true
+    }
+  }
+}</code></pre>
+
+<h2 id="rest">REST API — Any HTTP Client</h2>
+
+<p>
+  If there's no MCP integration available for your tool, the REST API works from any
+  language with HTTP support. mentisdbd exposes a full REST API on port 9472 (HTTP)
+  or 9473 (HTTPS).
+</p>
+
+<h3 id="rest-quickstart">Quick HTTP Examples</h3>
+
+<pre><code># Append a thought (bash + curl)
+curl -X POST http://127.0.0.1:9472/v1/thoughts \
+  -H "Content-Type: application/json" \
+  -d '{
+    "thought_type": "Insight",
+    "content": "The cache invalidation strategy needs rethinking.",
+    "role": "Memory",
+    "importance": 0.8,
+    "tags": ["architecture", "cache"],
+    "concepts": ["invalidation", "consistency"]
+  }'
+
+# Ranked search
+curl -X POST http://127.0.0.1:9472/v1/ranked-search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "cache invalidation strategy",
+    "limit": 5,
+    "min_importance": 0.5
+  }'
+
+# List chains
+curl http://127.0.0.1:9472/v1/chains</code></pre>
+
+<h3 id="rest-python">Python with requests</h3>
+
+<pre><code>import requests
+
+base = "http://127.0.0.1:9472"
+
+# Append
+r = requests.post(f"{base}/v1/thoughts", json={
+    "thought_type": "Finding",
+    "content": "Query latency spiked after the last deploy.",
+    "role": "Memory",
+    "importance": 0.8,
+    "tags": ["performance", "database"],
+})
+thought = r.json()["thought"]
+print(f"Appended: {thought['id']}")
+
+# Search
+r = requests.post(f"{base}/v1/ranked-search", json={
+    "text": "database performance",
+    "limit": 5,
+    "thought_types": ["Finding", "Insight"],
+})
+results = r.json()
+for hit in results["results"]:
+    print(f"[{hit['score']['total']:.3f}] {hit['thought']['content']}")</code></pre>
+
+<h3 id="rest-swagger">Full REST API Reference</h3>
+
+<p>Generate a Swagger client for any language at
+<a href="https://editor.swagger.io">Swagger Editor</a> using the OpenAPI spec, or check the
+interactive docs at <code>http://127.0.0.1:9472/docs</code> (if running with
+<code>--enable-http-docs</code>).</p>
+
+<table>
+  <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/thoughts</code></td><td>Append a thought</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/ranked-search</code></td><td>Ranked semantic search</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/context-bundles</code></td><td>Seed + supporting context</td></tr>
+  <tr><td><code>GET</code></td><td><code>/v1/chains</code></td><td>List all chains</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/agents/upsert</code></td><td>Register an agent identity</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/webhooks</code></td><td>Register a webhook</td></tr>
+</table>
+
+<h2 id="custom-mcp">Building Custom MCP Clients</h2>
+
+<p>
+  mentisdbd ships a built-in MCP server — any MCP-compatible client can connect directly
+  via stdio. To use the MCP server, start mentisdbd and point your MCP client at it:
+</p>
+
+<pre><code># mentisdbd exposes MCP on stdio by default when run without --no-mcp
+mentisdbd
+
+# Your MCP client connects over stdio (not HTTP)</code></pre>
+
+<div class="warning">
+  <p><strong>Native MCP vs mcp-remote:</strong> Native MCP uses stdio, which works great for
+  local processes. mcp-remote wraps MCP over HTTPS — needed when Claude Desktop runs on
+  a different machine than mentisdbd, or when using self-signed HTTPS certificates.</p>
+</div>
+
+<h3 id="mcp-protocol">MCP Protocol Basics</h3>
+
+<p>MCP communicates over JSON-RPC 2.0 over stdio. Each request has this shape:</p>
+
+<pre><code>{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+  "name": "mentisdb_append_thought",
+  "arguments": {
+    "thought_type": "Insight",
+    "content": "...",
+    "importance": 0.8
+  }
+}}</code></pre>
+
+<p>Responses come back on stdout as JSON-RPC results. Check the
+<a href="https://modelcontextprotocol.io">MCP specification</a> for full details.</p>
+
+<h2 id="mcp-tools">Available MCP Tools Reference</h2>
+
+<table>
+  <tr><th>Tool</th><th>Arguments</th><th>Returns</th></tr>
+  <tr>
+    <td><code>mentisdb_append_thought</code></td>
+    <td>thought_type, content, role, importance, tags, concepts, confidence, ...</td>
+    <td>Committed thought record</td>
+  </tr>
+  <tr>
+    <td><code>mentisdb_ranked_search</code></td>
+    <td>text, limit, thought_types, tags_any, concepts_any, min_importance, ...</td>
+    <td>Ranked search results with scores</td>
+  </tr>
+  <tr>
+    <td><code>mentisdb_context_bundles</code></td>
+    <td>text, limit, thought_types, tags_any, ...</td>
+    <td>Seed thoughts + supporting graph context</td>
+  </tr>
+  <tr>
+    <td><code>mentisdb_list_chains</code></td>
+    <td>—</td>
+    <td>All chains with thought counts</td>
+  </tr>
+  <tr>
+    <td><code>mentisdb_get_thought</code></td>
+    <td>thought_id or thought_index</td>
+    <td>Single thought by ID or index</td>
+  </tr>
+  <tr>
+    <td><code>mentisdb_register_webhook</code></td>
+    <td>url, chain_key_filter, thought_type_filter</td>
+    <td>Webhook registration confirmation</td>
+  </tr>
+  <tr>
+    <td><code>mentisdb_list_webhooks</code></td>
+    <td>—</td>
+    <td>All registered webhooks</td>
+  </tr>
+  <tr>
+    <td><code>mentisdb_delete_webhook</code></td>
+    <td>webhook_id</td>
+    <td>Deletion confirmation</td>
+  </tr>
+</table>
+
+<h2 id="next">Next Steps</h2>
+
+<ul>
+  <li><a href="pymentisdb-python-client.html">pymentisdb Python client guide</a> — Full Python integration with LangChain examples</li>
+  <li><a href="https://github.com/CloudLLM-ai/mentisdb/tree/master/examples/langchain_memory_example.py">LangChain example source</a></li>
+  <li><a href="https://docs.mentisdb.com">Full documentation</a></li>
+  <li><a href="https://github.com/CloudLLM-ai/mentisdb">GitHub repository</a></li>
+</ul>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>

@@ -1627,7 +1627,7 @@ pub enum ThoughtRelationKind {
 ///
 /// let config = LlmExtractionConfig {
 ///     base_url: "https://api.openai.com/v1".to_string(),
-///     api_key: std::env::var("OPENAI_API_KEY").unwrap(),
+///     api_key: std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| "sk-placeholder".to_string()),
 ///     model: "gpt-4".to_string(),
 /// };
 /// ```

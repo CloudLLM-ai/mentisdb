@@ -117,8 +117,16 @@ pub(super) fn run_wizard(
     writeln!(out)?;
     let mut had_errors = false;
     for plan in final_plans {
-        match ensure_prerequisites(plan.integration, out) {
+        match ensure_prerequisites(plan.integration, command.assume_yes, out, input) {
             Ok(PrerequisiteStatus::Ok) | Ok(PrerequisiteStatus::Warning(_)) => {}
+            Ok(PrerequisiteStatus::Skipped) => {
+                writeln!(
+                    out,
+                    "Skipping {} — mcp-remote installation declined.",
+                    plan.integration.display_name()
+                )?;
+                continue;
+            }
             Err(e) => {
                 writeln!(
                     out,

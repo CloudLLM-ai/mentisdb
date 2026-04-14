@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>pymentisdb — Python Client for MentisDB</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #1a1a2e; color: #e0e0e0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; color: inherit; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+    .tip { background: #f0fff4; border-left: 3px solid #38a169; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .warning { background: #fffaf0; border-left: 3px solid #dd6b20; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .installed { background: #e6fffa; border-left: 3px solid #319795; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 14, 2026</div>
+
+<h1>pymentisdb — Python Client for MentisDB</h1>
+
+<p>
+  mentisdb ships a first-class Python client called <code>pymentisdb</code>. Whether you're
+  building a LangChain agent, a custom chatbot, or any Python application that needs durable
+  semantic memory, pymentisdb gives you a clean interface to store and retrieve thoughts
+  from MentisDB's append-only hash-chained store.
+</p>
+
+<h2 id="installation">Installation</h2>
+
+<p>Install from source or via pip:</p>
+
+<pre><code># Core client only (no LangChain dependency)
+pip install pymentisdb
+
+# With LangChain integration
+pip install pymentisdb[langchain]</code></pre>
+
+<p>Requires Python 3.10+ and a running mentisdbd instance. Start one with:</p>
+
+<pre><code>mentisdbd</code></pre>
+
+<p>Or for production with TLS:</p>
+
+<pre><code>MENTISDB_DIR=/path/to/data mentisdbd --https --port 9473</code></pre>
+
+<h2 id="basic-client">Basic Client Usage</h2>
+
+<p>The <code>MentisDbClient</code> wraps the MentisDB REST API. It handles connection pooling,
+authentication headers, and type conversion automatically.</p>
+
+<h3 id="connecting">Connecting</h3>
+
+<pre><code>from pymentisdb import MentisDbClient
+
+# Connect to local mentisdbd (default)
+client = MentisDbClient()
+
+# Connect to a remote instance
+client = MentisDbClient(base_url="https://my.mentisdb.com:9473")</code></pre>
+
+<h3 id="appending-thoughts">Appending Thoughts</h3>
+
+<p>Thoughts are the atomic memory records in MentisDB. Every append is cryptographically
+chained to the previous thought — you can't rewrite history, only extend it.</p>
+
+<pre><code>from pymentisdb import ThoughtType, ThoughtRole
+
+# Record an insight
+thought = client.append_thought(
+    thought_type=ThoughtType.INSIGHT,
+    content="Rate limiting is the real bottleneck for our API.",
+    agent_name="assistant",
+    importance=0.8,
+    tags=["performance", "api"],
+)
+print(f"Appended: {thought.id}")
+
+# Record a decision
+decision = client.append_thought(
+    thought_type=ThoughtType.DECISION,
+    content="We will implement a sliding window rate limiter.",
+    agent_name="assistant",
+    importance=0.9,
+    tags=["architecture", "api"],
+    concepts=["rate-limiting", "sliding-window"],
+)
+
+# Record a lesson learned
+lesson = client.append_thought(
+    thought_type=ThoughtType.LESSON_LEARNED,
+    content="Never deploy on a Friday afternoon.",
+    agent_name="assistant",
+    importance=1.0,
+    confidence=0.95,
+)</code></pre>
+
+<h3 id="semantic-search">Semantic Search</h3>
+
+<p>Ranked search combines lexical matching, vector similarity, and graph traversal into a
+single scored result set:</p>
+
+<pre><code># Search by text
+results = client.ranked_search(
+    text="rate limiting",
+    limit=5,
+)
+print(f"Found {results.total} results")
+for hit in results.results:
+    print(f"  [{hit.score.total:.3f}] {hit.thought.content}")
+
+# Filter by importance
+results = client.ranked_search(
+    text="performance",
+    min_importance=0.7,
+)
+
+# Filter by tags and thought type
+results = client.ranked_search(
+    text="api",
+    thought_types=[ThoughtType.DECISION, ThoughtType.INSIGHT],
+    tags_any=["architecture", "performance"],
+)</code></pre>
+
+<h3 id="context-bundles">Context Bundles — Retrieval with Supporting Memories</h3>
+
+<p>Context bundles go beyond flat search results. They group each top-scoring "seed" match
+with the supporting memories reachable through graph relations — giving you not just the
+answer but the trail of evidence that led to it:</p>
+
+<pre><code>response = client.context_bundles(
+    text="why did we choose PostgreSQL",
+    limit=3,
+)
+for bundle in response.bundles:
+    seed = bundle.seed
+    print(f"Seed: {seed.thought.content} (score: {seed.lexical_score:.3f})")
+    for support_hit in bundle.support:
+        print(f"  Supporting: {support_hit.thought.content}")
+        print(f"    Depth: {support_hit.depth}, via: {support_hit.relation_kinds}")</code></pre>
+
+<h2 id="langchain">LangChain Integration</h2>
+
+<p>pymentisdb includes a first-class <code>MentisDbMemory</code> class that implements
+LangChain's <code>BaseMemory</code> interface. Drop it into any LangChain agent to give
+it persistent, retrievable conversation history.</p>
+
+<h3 id="langchain-example">Full LangChain Example</h3>
+
+<pre><code>from pymentisdb import MentisDbClient, MentisDbMemory, ThoughtType, ThoughtRole
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableWithMessageHistory
+from langchain_community.chat_message_histories import ChatMessageHistory
+
+# 1. Set up memory
+memory = MentisDbMemory(
+    base_url="http://127.0.0.1:9472",
+    chain_key="my-agent",        # persists across sessions
+    agent_name="assistant",
+    thought_type=ThoughtType.SUMMARY,
+    role=ThoughtRole.MEMORY,
+)
+
+# 2. Build the chain
+llm = ChatOpenAI(model="gpt-4o")
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are a helpful assistant with persistent memory."),
+    ("placeholder", "{chat_history}"),
+    ("human", "{question}"),
+])
+chain = prompt | llm
+
+# 3. Add message history (in-memory for demo, use Redis/SQL in prod)
+chain_with_history = chain.with_message_history(
+    ChatMessageHistory(session_id="user-123"),
+)
+
+# 4. Run — memory is automatically loaded and saved
+response = chain_with_history.invoke(
+    {"question": "What did I tell you about my project?"},
+    config={"configurable": {"session_id": "user-123"}},
+)
+print(response.content)</code></pre>
+
+<h3 id="how-it-works">How MentisDbMemory Works</h3>
+
+<p><code>MentisDbMemory</code> implements four LangChain lifecycle methods:</p>
+
+<ul>
+  <li><strong><code>load_memory_variables(inputs)</code></strong> — retrieves recent thoughts from MentisDB
+    via <code>ranked_search()</code> and formats them as a chat history string for the prompt.</li>
+  <li><strong><code>add_messages(messages)</code></strong> — converts each LangChain message to a
+    <code>ThoughtType.SUMMARY</code> thought and appends it via <code>append_thought()</code>.</li>
+  <li><strong><code>get_messages()</code></strong> — retrieves thoughts and reconstructs them as
+    <code>HumanMessage</code>/<code>AIMessage</code> objects.</li>
+  <li><strong><code>clear()</code></strong> — a no-op (MentisDB is append-only; use a different
+    <code>chain_key</code> to isolate sessions).</li>
+</ul>
+
+<div class="tip">
+  <p><strong>Tip:</strong> Use different <code>chain_key</code> values for different users or
+  conversation threads. MentisDB's cross-chain search lets you query across all of them when needed.</p>
+</div>
+
+<h2 id="thought-types">Thought Types Reference</h2>
+
+<p>MentisDB uses typed thoughts instead of generic key-value pairs. This gives retrieval
+semantic meaning — a <code>Decision</code> is scored differently from a
+<code>Mistake</code>, and you can filter by type:</p>
+
+<table>
+  <tr><th>ThoughtType</th><th>When to Use</th></tr>
+  <tr><td><code>INSIGHT</code></td><td>A non-obvious realization or lesson</td></tr>
+  <tr><td><code>DECISION</code></td><td>A committed choice affecting future behavior</td></tr>
+  <tr><td><code>PREFERENCE_UPDATE</code></td><td>A stable user preference discovered or changed</td></tr>
+  <tr><td><code>MISTAKE</code></td><td>A wrong action taken (distinct from Correction)</td></tr>
+  <tr><td><code>CORRECTION</code></td><td>A prior assumption was wrong — this replaces it</td></tr>
+  <tr><td><code>LESSON_LEARNED</code></td><td>A rule distilled from failure or expensive fix</td></tr>
+  <tr><td><code>FINDING</code></td><td>A fact or data point discovered during work</td></tr>
+  <tr><td><code>QUESTION</code></td><td>An unresolved issue worth preserving</td></tr>
+  <tr><td><code>SUMMARY</code></td><td>Compressed state (pair with <code>Checkpoint</code> role)</td></tr>
+  <tr><td><code>LLM_EXTRACTED</code></td><td>Memories auto-extracted from text via the LLM pipeline</td></tr>
+</table>
+
+<h2 id="advanced">Advanced: Typed Relations</h2>
+
+<p>Thoughts can link to each other with typed graph relations. This enables multi-hop
+reasoning — "show me what led to this decision":</p>
+
+<pre><code>from pymentisdb import ThoughtRelation, ThoughtRelationKind
+
+# Link a correction to the original mistake
+client.append_thought(
+    thought_type=ThoughtType.CORRECTION,
+    content="The old assumption about retry logic was flawed.",
+    relations=[
+        ThoughtRelation(
+            kind=ThoughtRelationKind.CORRECTS,
+            target_id=mistake_thought.id,
+        )
+    ],
+)
+
+# Link evidence to a hypothesis
+client.append_thought(
+    thought_type=ThoughtType.FINDING,
+    content="Cache invalidation is the real issue.",
+    relations=[
+        ThoughtRelation(
+            kind=ThoughtRelationKind.SUPPORTS,
+            target_id=hypothesis_thought.id,
+        )
+    ],
+)</code></pre>
+
+<h2 id="full-example">Complete Working Example</h2>
+
+<p>Here's a full example showing the full loop — appending thoughts, searching, and
+using context bundles — against a running mentisdbd:</p>
+
+<pre><code>#!/usr/bin/env python3
+"""Complete pymentisdb example — append, search, and retrieve."""
+
+from pymentisdb import MentisDbClient, ThoughtType, ThoughtRole
+
+client = MentisDbClient(base_url="http://127.0.0.1:9472")
+
+# 1. Seed some memories
+client.append_thought(
+    thought_type=ThoughtType.DECISION,
+    content="We chose PostgreSQL for the primary database.",
+    agent_name="architect",
+    importance=0.9,
+    tags=["database", "architecture"],
+)
+
+client.append_thought(
+    thought_type=ThoughtType.FINDING,
+    content="PostgreSQL handles 10k TPS with our current schema.",
+    agent_name="engineer",
+    importance=0.7,
+    tags=["database", "performance"],
+)
+
+# 2. Semantic search
+results = client.ranked_search(text="database performance", limit=5)
+print(f"Search results: {results.total} found")
+for hit in results.results:
+    print(f"  [{hit.score.total:.3f}] {hit.thought.thought_type.value}: "
+          f"{hit.thought.content}")
+
+# 3. Get context with supporting evidence
+bundles = client.context_bundles(text="why PostgreSQL", limit=2)
+for bundle in bundles.bundles:
+    print(f"\nSeed: {bundle.seed.thought.content}")
+    for support in bundle.support:
+        print(f"  Evidence ({support.relation_kinds}): {support.thought.content}")</code></pre>
+
+<h2 id="links">Links</h2>
+
+<ul>
+  <li><a href="https://github.com/CloudLLM-ai/mentisdb/tree/master/pymentisdb">pymentisdb source</a></li>
+  <li><a href="https://github.com/CloudLLM-ai/mentisdb/tree/master/examples/langchain_memory_example.py">Full LangChain example</a></li>
+  <li><a href="https://docs.mentisdb.com">MentisDB documentation</a></li>
+  <li><a href="mentisdb-third-party-integrations.html">Integrating MentisDB with Claude Desktop, OpenCode, and more</a></li>
+</ul>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>
