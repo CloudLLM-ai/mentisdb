@@ -416,6 +416,7 @@ async fn dashboard_can_disable_and_resync_vector_sidecar() {
         .iter()
         .find(|s| s["provider_key"] == provider_key)
         .unwrap();
+    // Use serde_json Value's PartialEq — handles type mismatch gracefully
     assert_eq!(disabled_sidecar["enabled"], false);
     assert_ne!(disabled_sidecar["freshness"], "Fresh");
 
@@ -453,6 +454,7 @@ async fn dashboard_can_disable_and_resync_vector_sidecar() {
         .iter()
         .find(|s| s["provider_key"] == provider_key)
         .unwrap();
+    // Use serde_json Value's PartialEq — handles type mismatch gracefully
     assert_eq!(synced_sidecar["enabled"], false);
     assert_eq!(synced_sidecar["freshness"], "Fresh");
 
