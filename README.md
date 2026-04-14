@@ -1399,48 +1399,77 @@ You can also configure it manually in `~/.copilot/mcp-config.json` (or
 
 ```bash
 pip install pymentisdb
+pip install pymentisdb[langchain]  # with LangChain integration
 ```
 
 ### Basic Example
 
 ```python
-from mentisdb import MentisDB
+from pymentisdb import MentisDbClient, ThoughtType
 
-client = MentisDB(base_url="http://127.0.0.1:9471")
+client = MentisDbClient()  # defaults to http://127.0.0.1:9472
 
 # Append a thought
-thought = client.append(
-    content="User prefers concise responses",
-    thought_type="PreferenceUpdate",
-    agent_id="my-agent",
-    tags=["style"]
+thought = client.append_thought(
+    thought_type=ThoughtType.INSIGHT,
+    content="Rate limiting is the real bottleneck."
 )
 
 # Ranked search
-results = client.ranked_search(text="user preferences", limit=5)
+results = client.ranked_search(text="performance optimization")
+for hit in results.results:
+    print(f"[{hit.score.total:.3f}] {hit.thought.content}")
 
 # Context bundles
-bundles = client.context_bundles(text="my-agent preferences", limit=3)
+bundles = client.context_bundles(text="cache invalidation", limit=5)
 ```
 
 ### LangChain Integration
 
 ```python
-from mentisdb import MentisDB
-from mentisdb.langchain import MentisDBVectorStore
+from pymentisdb import MentisDbMemory
 
-# Use as a LangChain vector store
-vectorstore = MentisDBVectorStore(
-    client=client,
-    chain_key="my-chain",
-    embeddings=embeddings_model
-)
+memory = MentisDbMemory(chain_key="my-project", agent_id="assistant")
 
-# Similarity search
-docs = vectorstore.similarity_search("user preferences")
+llm = ChatOpenAI(model="gpt-4")
+chain = llm.with_memory(memory)  # LangChain 0.3+
 ```
 
-See the [full pymentisdb guide](docs/pymentisdb-python-client.html) for detailed API reference.
+See the [full pymentisdb guide](docs/pymentisdb-python-client.html) for complete API reference.
+
+---
+
+## LLM-Extracted Memories
+
+MentisDB can convert raw agent text, conversation logs, or transcripts into structured
+`ThoughtInput` records using GPT-4o (or any OpenAI-compatible endpoint). Review the
+extracted records and append them to your chain.
+
+This feature is enabled by default. Configure with environment variables:
+
+```bash
+export OPENAI_API_KEY="sk-..."           # required
+export LLM_BASE_URL="https://api.openai.com/v1"  # defaults to OpenAI
+export LLM_MODEL="gpt-4o"                # defaults to gpt-4o
+```
+
+```rust,ignore
+use mentisdb::{LlmExtractionConfig, extract_memories_from_text};
+
+let config = LlmExtractionConfig::from_env()?;
+let result = extract_memories_from_text(raw_text, &config, None).await?;
+
+// Review before appending
+for thought in &result.thoughts {
+    println!("{:?}", thought);
+}
+```
+
+The extraction uses `openai-rust2` with connection pooling, 3× retry on 429/5xx,
+60s timeout, and JSON object response format. LLM output is **untrusted** — always
+review and optionally sign extracted thoughts before appending.
+
+See [docs/llm-extracted-memories-design.md](docs/llm-extracted-memories-design.md) for the full design.
 
 ---
 
