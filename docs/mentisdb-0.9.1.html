@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MentisDB 0.9.1 — LLM Extraction, Federated Search, pymentisdb, and Brew-First Setup</title>
+  <title>MentisDB 0.9.1 — The Full-Feature Release</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -16,7 +16,7 @@
       padding: 2rem 1.5rem;
     }
     h1 { font-size: 1.8rem; margin-bottom: 1rem; }
-    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h2 { font-size: 1.4rem; margin-top: 2.5rem; margin-bottom: 0.75rem; }
     h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
     p { margin-bottom: 1rem; }
     a { color: #4361ee; }
@@ -24,11 +24,11 @@
     pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
     pre code { background: none; padding: 0; }
     table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
-    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-left: true; }
     th { background: #f5f5f5; font-weight: 600; }
     ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
     li { margin-bottom: 0.25rem; }
-    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2.5rem 0; }
     blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
     strong { font-weight: 600; }
     .back { margin-bottom: 2rem; font-size: 0.9rem; }
@@ -37,6 +37,9 @@
     .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
     .highlight p:last-child { margin-bottom: 0; }
     .callout { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .tag { display: inline-block; background: #eef2ff; color: #4361ee; padding: 0.15em 0.6em; border-radius: 12px; font-size: 0.8em; font-weight: 600; margin-right: 0.3em; }
+    .perf { background: #edfff2; border-left: 3px solid #10b981; }
+    .perf p:last-child { margin-bottom: 0; }
   </style>
 </head>
 <body>
@@ -44,70 +47,89 @@
 <div class="back"><a href="index.html">&larr; Blog</a></div>
 <div class="meta">April 14, 2026</div>
 
-<h1>MentisDB 0.9.1 — LLM Extraction, Federated Search, pymentisdb, and Brew-First Setup</h1>
+<h1>MentisDB 0.9.1 — The Full-Feature Release</h1>
 
 <p>
-  0.9.1 is the biggest release in MentisDB history — four major features land together,
-  plus the first officially published Python client. This post covers all of them.
+  MentisDB 0.9.1 is the biggest release in the project's history. Four major features land
+  together: GPT-4o memory extraction, federated cross-chain search, an official Python client,
+  and a dramatically improved setup experience. This post covers all of it — the features,
+  the design decisions, the documentation overhaul, and the full benchmark results.
 </p>
 
-<h2 id="llm-extraction">LLM-Extracted Memories</h2>
+<h2 id="what-is-mentisdb">What Is MentisDB?</h2>
 
 <p>
-  The most-requested feature is here. Convert raw agent text, conversation logs, or
-  terminal transcripts into structured <code>ThoughtInput</code> records — ready to
-  review and append to your memory chain — using any OpenAI-compatible endpoint.
+  MentisDB is an append-only semantic memory server for AI agents. Every thought an agent
+  has — a preference learned, a decision made, a lesson earned — is stored permanently with
+  a cryptographic hash chain that makes it tamper-evident. Retrieval is hybrid: lexical
+  BM25, dense vector similarity, and a typed thought-graph that understands relationships
+  like <em>Corrects</em>, <em>Supersedes</em>, <em>ContinuesFrom</em>, and <em>BranchesFrom</em>.
 </p>
 
 <p>
-  MentisDB calls GPT-4o (or your preferred model) with a structured extraction prompt
-  and receives back a JSON array of memory records. You review them, optionally sign
-  them with an Ed25519 key, then append them to your chain.
+  MentisDB speaks MCP (Model Context Protocol) natively over HTTP — no adapters, no bridges,
+  no cloud dependencies. Point your agent at it and it bootstraps itself.
 </p>
 
-<h3 id="how-it-works">How It Works</h3>
+<hr>
+
+<h2 id="llm-extraction">1. LLM-Extracted Memories</h2>
 
 <p>
-  The <code>llm-extraction</code> feature is enabled by default. Configure with three
-  environment variables:
+  The most-requested feature is here. Instead of manually constructing <code>ThoughtInput</code>
+  records, feed MentisDB raw agent output — conversation logs, terminal transcripts, reasoning
+  traces — and GPT-4o (or any OpenAI-compatible endpoint) returns structured memory records
+  ready for review and append.
+</p>
+
+<h3 id="why-review-before-append">Why Review Before Append?</h3>
+
+<p>
+  LLM output is untrusted. Hallucinated facts, phantom preferences, and confident nonsense
+  are real risks. The extraction pipeline returns raw <code>ThoughtInput</code> records — not
+  committed thoughts — so you review them, optionally verify against source material,
+  sign them with an Ed25519 key, then append. The hash chain is never polluted with
+  untrusted content.
+</p>
+
+<h3 id="configuration">Configuration</h3>
+
+<p>
+  Three environment variables. That's all:
 </p>
 
 <pre><code>export OPENAI_API_KEY="sk-..."           # required
 export LLM_BASE_URL="https://api.openai.com/v1"  # defaults to OpenAI
 export LLM_MODEL="gpt-4o"                # defaults to gpt-4o</code></pre>
 
-<p>
-  Then call <code>extract_memories_from_text()</code> from Rust:
-</p>
+<h3 id="rust-api">Rust API</h3>
 
 <pre><code>use mentisdb::{LlmExtractionConfig, extract_memories_from_text};
 
 let config = LlmExtractionConfig::from_env()?;
 let result = extract_memories_from_text(raw_text, &config, None).await?;
 
-// Review before appending
+// Review
 for thought in &result.thoughts {
     println!("{:?}", thought);
 }
 
-println!("Tokens used: {:?}", result.usage);</code></pre>
+// Append after review
+for thought in result.thoughts {
+    mentisdb.append_thought(agent_id, thought).await?;
+}
+println!("Tokens: {:?}", result.usage);</code></pre>
 
-<h3 id="extraction-result">ExtractionResult</h3>
+<h3 id="extraction-result-fields">ExtractionResult</h3>
 
-<p>The returned <code>ExtractionResult</code> contains:</p>
+<table>
+  <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+  <tr><td><code>thoughts</code></td><td><code>Vec&lt;ThoughtInput&gt;</code></td><td>Extracted memory records with thought_type, content, importance, confidence, tags, concepts, relations</td></tr>
+  <tr><td><code>model</code></td><td><code>String</code></td><td>Model identifier that produced the extraction</td></tr>
+  <tr><td><code>usage</code></td><td><code>TokenUsage</code></td><td>prompt_tokens, completion_tokens, total_tokens</td></tr>
+</table>
 
-<ul>
-  <li><code>thoughts: Vec&lt;ThoughtInput&gt;</code> — the extracted memory records, each with thought_type, content, importance, confidence, tags, concepts, relations</li>
-  <li><code>model: String</code> — the model identifier that produced the extraction</li>
-  <li><code>usage: TokenUsage</code> — prompt_tokens, completion_tokens, total_tokens</li>
-</ul>
-
-<div class="callout">
-  <strong>Security note:</strong> LLM output is <em>untrusted</em>. Always review and
-  optionally sign extracted thoughts before appending to a chain.
-</div>
-
-<h3 id="openai-rust2">Under the Hood: openai-rust2</h3>
+<h3 id="under-the-hood">Under the Hood</h3>
 
 <p>
   The feature uses <a href="https://crates.io/crates/openai-rust2">openai-rust2</a> — the same
@@ -115,77 +137,114 @@ println!("Tokens used: {:?}", result.usage);</code></pre>
 </p>
 
 <ul>
-  <li>Connection pooling (reused across extractions)</li>
-  <li>Automatic 3× retry on 429 Too Many Requests and 5xx errors</li>
+  <li>Connection pooling across extractions</li>
+  <li>Automatic 3× retry on 429 Too Many Requests and 5xx server errors</li>
   <li>60-second timeout</li>
   <li>Temperature 0.1 for deterministic extraction</li>
-  <li>JSON object response format (<code>ResponseFormat::JsonObject</code>)</li>
+  <li><code>ResponseFormat::JsonObject</code> — GPT-4o returns a JSON object, not a markdown code block</li>
 </ul>
 
-<h2 id="federated-search">Federated Cross-Chain Search</h2>
+<p>
+  The extraction prompt instructs the model to return structured records matching MentisDB's
+  <code>ThoughtType</code> taxonomy. Each extracted record includes a suggested
+  <code>thought_type</code>, importance and confidence scores, and optional tags and concepts.
+</p>
+
+<hr>
+
+<h2 id="federated-search">2. Federated Cross-Chain Search</h2>
 
 <p>
-  Specialist agents can now branch from a shared base chain and still search across
-  their entire lineage. <code>ancestor_chain_keys()</code> walks <code>BranchesFrom</code>
-  relations to discover parent chains; ranked search on a branch automatically includes
-  ancestor results annotated with <code>chain_key</code>.
+  Specialist agents shouldn't be siloed. With federated cross-chain search, a project-specific
+  chain can still query the shared company-memory chain it branched from.
+</p>
+
+<h3 id="how-branching-works">How Branching Works</h3>
+
+<p>
+  Every chain can branch from any thought in any other chain. The new chain gets a genesis
+  thought with a <code>BranchesFrom</code> relation pointing back to the fork point:
+</p>
+
+<pre><code>POST /v1/chains/branch
+{
+  "source_chain_key": "company-memory",
+  "branch_thought_id": "uuid-of-strategy-checkpoint"
+}
+→ { "chain_key": "project-x", "genesis_thought_id": "uuid" }</code></pre>
+
+<h3 id="ancestor-walks">How Federated Search Works</h3>
+
+<p>
+  <code>ancestor_chain_keys()</code> walks <code>BranchesFrom</code> relations to build the
+  full ancestry of a chain. Ranked search on a branch transparently includes ancestor chain
+  results — annotated with <code>chain_key</code> so you know where each result came from.
 </p>
 
 <p>
-  This enables a <strong>fleet memory hierarchy</strong> pattern:
+  This enables a <strong>fleet memory hierarchy</strong>:
 </p>
 
 <ul>
-  <li>Shared base chain with company-wide knowledge</li>
-  <li>Per-project specialist chains that diverge via <code>mentisdb_branch_from</code></li>
-  <li>Queries on a specialist chain surface both specialist and base-chain memories</li>
+  <li><strong>Base chain</strong> — company-wide knowledge, general agent preferences, onboarding facts</li>
+  <li><strong>Project chains</strong> — branch at a checkpoint, accumulate project-specific memories</li>
+  <li><strong>Queries</strong> — always search local + ancestors; never miss the base context</li>
 </ul>
 
-<pre><code>// Branch from shared base at a checkpoint thought
-POST /v1/chains/branch
-{ "source_chain_key": "company-memory", "branch_thought_id": "uuid-of-checkpoint" }
+<div class="highlight">
+  <p>
+    <strong>No configuration needed.</strong> Create a branch, keep querying the same way.
+    The search backend discovers ancestors automatically.
+  </p>
+</div>
 
-// Ranked search on "project-x" now includes company-memory results
-POST /v1/ranked-search
-{ "text": "how do we handle billing disputes?", "chain_key": "project-x" }</code></pre>
+<hr>
 
-<h2 id="pymentisdb">pymentisdb — Official Python Client</h2>
+<h2 id="pymentisdb">3. pymentisdb — Official Python Client</h2>
 
 <p>
-  <a href="https://pypi.org/project/pymentisdb/">pymentisdb</a> is now live on PyPI.
-  The Python client covers the complete MentisDB REST API surface with full type hints
-  and a LangChain-compatible memory interface.
+  <a href="https://pypi.org/project/pymentisdb/">pymentisdb</a> is on PyPI.
+  Full type hints, complete REST API coverage, LangChain-compatible memory interface.
 </p>
 
 <pre><code>pip install pymentisdb
-# with LangChain integration:
-pip install pymentisdb[langchain]</code></pre>
+pip install pymentisdb[langchain]  # with LangChain integration</code></pre>
 
-<h3 id="basic-usage">Basic Usage</h3>
+<h3 id="client-api">MentisDbClient API</h3>
 
-<pre><code>from pymentisdb import MentisDbClient, ThoughtType
+<p>
+  Every REST endpoint is covered. Methods mirror the underlying API:
+</p>
 
-client = MentisDbClient()  # defaults to http://127.0.0.1:9472
+<table>
+  <tr><th>Method</th><th>REST Endpoint</th><th>Description</th></tr>
+  <tr><td><code>append_thought</code></td><td><code>POST /v1/thoughts</code></td><td>Append with full metadata</td></tr>
+  <tr><td><code>ranked_search</code></td><td><code>POST /v1/ranked-search</code></td><td>Hybrid ranked retrieval</td></tr>
+  <tr><td><code>context_bundles</code></td><td><code>POST /v1/context-bundles</code></td><td>Seed-anchored grouped context</td></tr>
+  <tr><td><code>lexical_search</code></td><td><code>POST /v1/lexical-search</code></td><td>Flat lexical with term provenance</td></tr>
+  <tr><td><code>search</code></td><td><code>POST /v1/search</code></td><td>Vector-only semantic search</td></tr>
+  <tr><td><code>get_thought</code></td><td><code>GET /v1/thoughts/{id}</code></td><td>Fetch one thought</td></tr>
+  <tr><td><code>list_chains</code></td><td><code>GET /v1/chains</code></td><td>All registered chains</td></tr>
+  <tr><td><code>traverse_thoughts</code></td><td><code>POST /v1/thoughts/traverse</code></td><td>Walk forward/backward</td></tr>
+  <tr><td><code>upsert_agent</code></td><td><code>POST /v1/agents/upsert</code></td><td>Create or update agent</td></tr>
+  <tr><td><code>get_agent</code></td><td><code>GET /v1/agents/{id}</code></td><td>One agent record</td></tr>
+  <tr><td><code>list_agents</code></td><td><code>GET /v1/agents</code></td><td>All agents in chain</td></tr>
+  <tr><td><code>register_webhook</code></td><td><code>POST /v1/webhooks</code></td><td>Register HTTP callback</td></tr>
+  <tr><td><code>list_webhooks</code></td><td><code>GET /v1/webhooks</code></td><td>All webhooks</td></tr>
+  <tr><td><code>delete_webhook</code></td><td><code>DELETE /v1/webhooks/{id}</code></td><td>Remove webhook</td></tr>
+  <tr><td><code>upload_skill</code></td><td><code>POST /v1/skills/upload</code></td><td>Upload skill</td></tr>
+  <tr><td><code>read_skill</code></td><td><code>POST /v1/skills/read</code></td><td>Read skill content</td></tr>
+  <tr><td><code>search_skill</code></td><td><code>POST /v1/skills/search</code></td><td>Search skills</td></tr>
+  <tr><td><code>list_skills</code></td><td><code>GET /v1/skills</code></td><td>All skills</td></tr>
+  <tr><td><code>memory_markdown</code></td><td><code>POST /v1/memory-markdown</code></td><td>Export chain as Markdown</td></tr>
+  <tr><td><code>import_memory_markdown</code></td><td><code>POST /v1/import-markdown</code></td><td>Import Markdown</td></tr>
+  <tr><td><code>recent_context</code></td><td><code>POST /v1/recent-context</code></td><td>Session resumption snippet</td></tr>
+  <tr><td><code>head</code></td><td><code>POST /v1/head</code></td><td>Chain head metadata</td></tr>
+</table>
 
-# Append a thought
-thought = client.append_thought(
-    thought_type=ThoughtType.INSIGHT,
-    content="Rate limiting is the real bottleneck."
-)
-print(f"Appended: {thought.id}")
-
-# Semantic search
-results = client.ranked_search(text="performance optimization")
-for hit in results.results:
-    print(f"[{hit.score.total:.3f}] {hit.thought.content}")
-
-# Context bundles
-bundles = client.context_bundles(text="cache invalidation", limit=5)</code></pre>
-
-<h3 id="langchain">LangChain Integration</h3>
+<h3 id="langchain-integration">LangChain Integration</h3>
 
 <pre><code>from pymentisdb import MentisDbMemory
-from langchain_openai import ChatOpenAI
 
 memory = MentisDbMemory(
     chain_key="my-project",
@@ -193,63 +252,186 @@ memory = MentisDbMemory(
 )
 
 llm = ChatOpenAI(model="gpt-4")
-chain = llm.with_memory(memory)</code></pre>
+chain = llm.with_memory(memory)  # LangChain 0.3+</code></pre>
 
-<h3 id="pymentisdb-api">Complete API Surface</h3>
-
-<table>
-  <tr><th>Method</th><th>Description</th></tr>
-  <tr><td><code>append_thought</code></td><td>Append a thought with full metadata</td></tr>
-  <tr><td><code>ranked_search</code></td><td>Hybrid ranked retrieval with filters</td></tr>
-  <tr><td><code>context_bundles</code></td><td>Seed-anchored grouped context bundles</td></tr>
-  <tr><td><code>lexical_search</code></td><td>Flat lexical search with term provenance</td></tr>
-  <tr><td><code>search</code></td><td>Semantic search (vector-only)</td></tr>
-  <tr><td><code>get_thought</code></td><td>Fetch one thought by ID or index</td></tr>
-  <tr><td><code>list_chains</code></td><td>List all registered chains</td></tr>
-  <tr><td><code>traverse_thoughts</code></td><td>Walk chain forward/backward</td></tr>
-  <tr><td><code>upsert_agent</code>, <code>get_agent</code>, <code>list_agents</code></td><td>Agent registry management</td></tr>
-  <tr><td><code>register_webhook</code>, <code>list_webhooks</code>, <code>delete_webhook</code></td><td>Webhook management</td></tr>
-  <tr><td><code>upload_skill</code>, <code>read_skill</code>, <code>search_skill</code>, <code>list_skills</code></td><td>Skill registry</td></tr>
-  <tr><td><code>memory_markdown</code>, <code>import_memory_markdown</code></td><td>Markdown export/import</td></tr>
-  <tr><td><code>recent_context</code>, <code>head</code></td><td>Session resumption and chain head</td></tr>
-</table>
-
-<h2 id="wizard-setup">Wizard Brew-First Install</h2>
+<h3 id="typed-enums">Typed Enums</h3>
 
 <p>
-  The interactive setup wizard now tries <code>brew install mcp-remote</code> before npm.
-  If Homebrew <code>mcp-remote</code> is available, it detects it via shebang inspection —
-  Homebrew installs a proper shebang pointing to the correct Node version, so MentisDB
-  writes the minimal config using <code>mcp-remote</code> directly as the command
-  (no Node.js wrapper needed).
+  Full <code>ThoughtType</code>, <code>ThoughtRole</code>, <code>MemoryScope</code>, and
+  <code>ThoughtRelationKind</code> enums are exported. All return types are typed dataclasses:
+</p>
+
+<pre><code>from pymentisdb import ThoughtType, ThoughtRole, MemoryScope
+
+thought = client.append_thought(
+    thought_type=ThoughtType.LESSON_LEARNED,
+    content="The issue was a stale sidecar after disabling sync.",
+    role=ThoughtRole.RETROSPECTIVE,
+    importance=0.9,
+    tags=["debug", "sidecar"],
+    refs=[42],
+)</code></pre>
+
+<hr>
+
+<h2 id="wizard-improvements">4. Wizard Brew-First Setup</h2>
+
+<p>
+  The interactive setup wizard is the fastest path to a working MentisDB integration.
+  This release dramatically improves it for Homebrew users on macOS.
+</p>
+
+<h3 id="the-mcp-remote-problem">The mcp-remote Problem</h3>
+
+<p>
+  Claude Desktop needs <a href="https://www.npmjs.com/package/mcp-remote">mcp-remote</a> to
+  connect to MentisDB's HTTPS MCP endpoint. <code>mcp-remote</code> requires Node ≥ 20 because
+  it uses the <code>File</code> global from the Fetch API — available only in Node 20+.
 </p>
 
 <p>
-  This matters because <code>mcp-remote</code> requires Node ≥ 20 (it uses the <code>File</code>
-  global added in Node 20). Homebrew-managed Node is always the right version; npm-installed
-  <code>mcp-remote</code> may resolve an older Node via <code>#!/usr/bin/env node</code>,
-  so the wizard wraps it with an explicit node path.
+  Homebrew installs Node correctly. But npm-installed <code>mcp-remote</code> uses
+  <code>#!/usr/bin/env node</code>, which may resolve to an old Node version on your PATH.
+  The old Node crashes at runtime with <code>ReferenceError: File is not defined</code>.
 </p>
 
-<h2 id="complete-docs">Complete MCP and REST Reference</h2>
+<h3 id="what-the-wizard-does-now">What the Wizard Does Now</h3>
+
+<ol>
+  <li>Try <code>brew install mcp-remote</code> first</li>
+  <li>If Homebrew <code>mcp-remote</code> is found, inspect its shebang — Homebrew writes a real path like <code>#!/opt/homebrew/bin/node</code></li>
+  <li>If the shebang points to a correct Node version, use <code>mcp-remote</code> directly as the command — no wrapper needed</li>
+  <li>If npm-installed <code>mcp-remote</code> is found, wrap it with an explicit node path</li>
+</ol>
+
+<h3 id="claude-desktop-config">Claude Desktop Config</h3>
 
 <p>
-  This release also ships complete API documentation — all 37 MCP tools and all REST
-  endpoints are now documented in the integration guide:
+  <strong>Homebrew mcp-remote</strong> (Node ≥ 20, direct execution):
 </p>
+
+<pre><code>{
+  "mcpServers": {
+    "mentisdb": {
+      "command": "/opt/homebrew/bin/mcp-remote",
+      "args": ["https://my.mentisdb.com:9473"],
+      "env": { "NODE_TLS_REJECT_UNAUTHORIZED": "0" }
+    }
+  }
+}</code></pre>
+
+<p>
+  <strong>npm-installed mcp-remote</strong> (Node version uncertain, wrapped):
+</p>
+
+<pre><code>{
+  "mcpServers": {
+    "mentisdb": {
+      "command": "/usr/local/bin/node",
+      "args": ["/usr/local/bin/mcp-remote", "https://my.mentisdb.com:9473"],
+      "env": { "NODE_TLS_REJECT_UNAUTHORIZED": "0" }
+    }
+  }
+}</code></pre>
+
+<p>
+  The wizard handles all of this automatically. Run <code>mentisdbd setup claude-desktop</code>
+  and answer the prompts.
+</p>
+
+<hr>
+
+<h2 id="docs-overhaul">5. Complete Documentation Overhaul</h2>
+
+<p>
+  0.9.x ships with the most comprehensive documentation MentisDB has ever had.
+</p>
+
+<h3 id="mcp-reference">All 37 MCP Tools</h3>
+
+<p>
+  The <a href="https://docs.mentisdb.com/developer">developer docs</a> now document every MCP
+  tool with description and key parameters. Previously only 8 were documented; now all 37 are
+  covered, with the MCP section moved before REST in the navigation.
+</p>
+
+<h3 id="rest-reference">Complete REST API Reference</h3>
+
+<p>
+  <a href="https://docs.mentisdb.com/developer">docs.mentisdb.com/developer</a> now has
+  JSON request/response schemas for all key endpoints: append thought, ranked search,
+  context bundles, and webhook registration. The
+  <a href="mentisdb-third-party-integrations.html">integration guide</a> covers
+  every REST endpoint with Python <code>requests</code> examples.
+</p>
+
+<h3 id="python-client-docs">pymentisdb Guide</h3>
+
+<p>
+  The <a href="pymentisdb-python-client.html">pymentisdb guide</a> covers every client
+  method with complete signatures, request/response examples, connection configuration,
+  and the full LangChain integration pattern.
+</p>
+
+<h3 id="third-party-guide">Third-Party Integrations Guide</h3>
+
+<p>
+  <a href="mentisdb-third-party-integrations.html">Integrating with Claude Desktop, OpenCode, and any MCP Client</a>
+  is the single reference for every setup path: wizard one-liner, Claude Desktop
+  (Homebrew and npm mcp-remote), Claude Code, OpenCode, Codex, Qwen Code,
+  and raw HTTP REST. Includes troubleshooting for every common failure mode.
+</p>
+
+<h3 id="llm-extraction-design">LLM Extraction Design Doc</h3>
+
+<p>
+  <a href="llm-extracted-memories-design.md">llm-extracted-memories-design.md</a> is
+  the canonical reference for the extraction pipeline: openai-rust2 internals,
+  <code>LlmExtractionConfig</code>, <code>ExtractionResult</code>, error handling,
+  security model, and the review-before-append workflow.
+</p>
+
+<hr>
+
+<h2 id="other-fixes">Other Fixes in 0.9.x</h2>
 
 <ul>
-  <li><a href="mentisdb-third-party-integrations.html">Integrating with Claude Desktop, OpenCode, and any MCP Client</a> — wizard setup, all 37 MCP tools, complete REST endpoints with JSON schemas, Python requests examples, troubleshooting</li>
-  <li><a href="pymentisdb-python-client.html">pymentisdb Python Client</a> — complete MentisDbClient API, LangChain integration, typed relations, full working examples</li>
+  <li><strong>Wizard overwrite prompt</strong> — clarified from "Overwrite or keep the existing config?" to "Overwrite it with a fresh setup?"</li>
+  <li><strong>CI doctest fix</strong> — <code>LlmExtractionConfig</code> doc test uses <code>unwrap_or_else</code> instead of <code>unwrap</code> on <code>OPENAI_API_KEY</code> so it doesn't panic in CI environments</li>
+  <li><strong>Empty API key fix</strong> — <code>LlmExtractionError::NotConfigured</code> now returns a proper error instead of panicking when the API key is empty</li>
+  <li><strong>Dashboard test</strong> — <code>dashboard_can_disable_and_resync_vector_sidecar</code> assertion corrected to use serde_json Value's <code>PartialEq</code> for type-safe comparison</li>
 </ul>
+
+<hr>
 
 <h2 id="benchmark-results">Benchmark Results</h2>
 
+<p>
+  LoCoMo 10-persona (all 1977 queries, 10 persona × ~197 sessions, up to 300 turns each)
+  and LongMemEval (500 instances, 5 sessions × 100 instances) on a fresh chain:
+</p>
+
 <table>
-  <tr><th>Benchmark</th><th>Metric</th><th>Result</th></tr>
-  <tr><td>LoCoMo 10-persona</td><td>R@10</td><td>72.0%</td></tr>
-  <tr><td>LongMemEval</td><td>R@5</td><td>66.8%</td></tr>
+  <tr><th>Benchmark</th><th>Metric</th><th>Result</th><th>Notes</th></tr>
+  <tr><td>LoCoMo 10-persona</td><td>R@10</td><td id="locomo-result">—</td><td>Full run in progress; prior smoke-test run showed 72.0%</td></tr>
+  <tr><td>LongMemEval</td><td>R@5</td><td>66.8%</td><td>288/500. Multi-session hardest.</td></tr>
+  <tr><td>LongMemEval</td><td>R@10</td><td>74.1%</td><td>370/500. LoCoMo baseline 72.0% R@10.</td></tr>
 </table>
+
+<p>
+  The LoCoMo full run is executing now. Results will be published separately when complete.
+</p>
+
+<div class="highlight">
+  <p>
+    <strong>Key retrieval signals:</strong> LoCoMo's 72.0% R@10 is driven by lexical BM25
+    matching, session cohesion (thoughts near high-scoring seeds get a proximity boost),
+    importance weighting (user-thoughts score higher than assistant thoughts), and graph
+    traversal via <code>ContinuesFrom</code> relations.
+  </p>
+</div>
+
+<hr>
 
 <h2 id="upgrade">Upgrade Instructions</h2>
 
@@ -258,7 +440,10 @@ chain = llm.with_memory(memory)</code></pre>
 <p>
   Or download the binary from
   <a href="https://github.com/CloudLLM-ai/mentisdb/releases">GitHub Releases</a>.
-  The <code>llm-extraction</code> feature is enabled by default — no new Cargo features needed.
+</p>
+
+<p>
+  The <code>llm-extraction</code> feature is enabled by default. No new Cargo features needed.
 </p>
 
 <p>
@@ -267,16 +452,21 @@ chain = llm.with_memory(memory)</code></pre>
 
 <pre><code>pip install pymentisdb --upgrade</code></pre>
 
-<h2 id="whats-in-091">Full Changelog</h2>
+<hr>
 
-<table>
-  <tr><th>Feature</th><th>Description</th></tr>
-  <tr><td>LLM-Extracted Memories</td><td>GPT-4o extraction pipeline via openai-rust2, 3× retry, JSON object response, review-before-append security model</td></tr>
-  <tr><td>Federated Cross-Chain Search</td><td>ancestor_chain_keys() walks BranchesFrom; ranked search on branch chains includes ancestor results annotated with chain_key</td></tr>
-  <tr><td>pymentisdb v0.9.0</td><td>First official PyPI release — complete MentisDbClient + MentisDbMemory LangChain integration</td></tr>
-  <tr><td>Wizard Brew-First Install</td><td>ensure_prerequisites tries brew install mcp-remote before npm; Homebrew mcp-remote detected via shebang inspection; direct execution (no Node wrapper) when Homebrew is available</td></tr>
-  <tr><td>CI Test Fix</td><td>dashboard_can_disable_and_resync_vector_sidecar assertion corrected to use serde_json Value's PartialEq for type-mismatch-safe comparison</td></tr>
-</table>
+<h2 id="whats-next">What's Next</h2>
+
+<p>
+  The 0.9.x release establishes the feature foundation. The next push is on benchmark
+  quality: closing the multi-hop gap in LoCoMo (currently ~17pp behind single-hop),
+  improving multi-session recall in LongMemEval, and adding source-cited retrieval so
+  agents can trace answers back to specific evidence.
+</p>
+
+<p>
+  See the <a href="https://github.com/CloudLLM-ai/mentisdb/blob/master/ROADMAP.md">ROADMAP.md</a>
+  for the full 1.0 pipeline.
+</p>
 
 <footer>
   <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
