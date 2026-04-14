@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB vs the Field — April 2026 Competitive Update</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #1a1a2e; color: #e0e0e0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; color: inherit; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.82rem; }
+    th, td { border: 1px solid #ddd; padding: 0.4rem 0.6rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.3rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+    .callout { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .perf { background: #edfff2; border-left: 3px solid #10b981; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .perf p:last-child { margin-bottom: 0; }
+    .yes { color: #16a34a; font-weight: 600; }
+    .no { color: #dc2626; }
+    .partial { color: #d97706; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 14, 2026 · Follow-up to <a href="competitive-analysis.html">the April 10 analysis</a></div>
+
+<h1>MentisDB vs the Field — April 2026 Update</h1>
+
+<p>
+  Four days after publishing our original competitive analysis, the landscape has shifted
+  significantly. Hindsight emerged as a credible SOTA benchmark contender, Cognee crossed
+  15k stars with v1.0, and LangMem became the default in LangGraph Platform. This post
+  is the updated analysis — see the <a href="competitive-analysis.html">original April 10
+  analysis</a> for where we started.
+</p>
+
+<h2 id="executive-summary">Executive Summary</h2>
+
+<ul>
+  <li>MentisDB closed 15+ feature gaps since April 10 (0.8.2 → 0.9.1)</li>
+  <li>New benchmark: <strong>74.0% R@10</strong> on full 10-persona LoCoMo (1,977 queries)</li>
+  <li>New competitive threats: Hindsight (independently verified SOTA), Cognee v1.0, LangMem ecosystem</li>
+  <li>The original unique combination — Rust + embedded + no-LLM-required + hash chain — remains unmatched</li>
+  <li>Biggest gaps remaining: academic benchmark verification, LangChain native store, multi-hop recall</li>
+</ul>
+
+<hr>
+
+<h2 id="new-entrants">New Entrants</h2>
+
+<h3>Hindsight — The SOTA Benchmark Threat</h3>
+
+<p>
+  <strong>9.2k GitHub stars</strong> · Python + TypeScript + Rust · From Vectorize
+</p>
+
+<p>
+  Hindsight is the most credible new entrant in the agentic memory space. Its claim to fame
+  is state-of-the-art performance on LongMemEval with independently verified scores from
+  Virginia Tech and The Washington Post — a level of benchmark credibility no other system
+  has achieved.
+</p>
+
+<p><strong>Architecture:</strong></p>
+<ul>
+  <li>Server mode: external PostgreSQL + separate services</li>
+  <li>Embedded mode (<code>hindsight-all</code>): Python-only, no external DB, LLM still required</li>
+  <li>Three memory pathways: World (facts), Experiences (agent's own), Mental Models (reflected higher-order understanding)</li>
+</ul>
+
+<p><strong>Memory model:</strong></p>
+<ul>
+  <li><code>retain()</code>: LLM extracts entities, relationships, time series from raw input</li>
+  <li><code>recall()</code>: merges 4 retrieval strategies (semantic, keyword, graph, temporal) via RRF + cross-encoder reranking</li>
+  <li><code>reflect()</code>: generates new observations/insights from existing memories using LLM — Mental Models</li>
+</ul>
+
+<p><strong>Weaknesses:</strong></p>
+<ul>
+  <li>LLM required for all core operations (retain, reflect)</li>
+  <li>External PostgreSQL required for production</li>
+  <li>No cryptographic integrity</li>
+  <li>Not local-first</li>
+  <li>No agent registry or multi-agent coordination primitives</li>
+</ul>
+
+<h3>Cognee v1.0 — Hermes Integration</h3>
+
+<p>
+  <strong>15.3k GitHub stars</strong> · Python · Apache 2.0 · v1.0.0 shipped April 11, 2026
+</p>
+
+<p>
+  Cognee crossed 15k stars and released v1.0 with three notable additions: a
+  <code>cognify-mcp</code> package for MCP server integration, Cognee Cloud managed service,
+  and native Hermes Agent integration as memory provider. The most full-featured knowledge
+  engine combining vector search, graph databases, and cognitive science approaches.
+</p>
+
+<p>Still requires external databases and an LLM for the cognify pipeline.</p>
+
+<h3>LangMem — The Ecosystem Advantage</h3>
+
+<p>
+  <strong>1.4k GitHub stars</strong> · Python · MIT · From LangChain
+</p>
+
+<p>
+  LangMem is LangChain's memory primitives library, integrated natively into LangGraph
+  Platform. This gives it massive distribution: every LangGraph Platform deployment defaults
+  to LangMem for agent memory. Functional memory primitives
+  (<code>create_manage_memory_tool()</code>, <code>create_search_memory_tool()</code>)
+  are storage-backend agnostic but default to Postgres in production.
+</p>
+
+<p>
+  <strong>Weaknesses:</strong> LLM required, no graph traversal or temporal facts, no
+  cryptographic integrity, vec-only retrieval.
+</p>
+
+<hr>
+
+<h2 id="updated-comparison">Updated Feature Comparison (April 14)</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Feature</th>
+      <th>MentisDB</th>
+      <th>Hindsight</th>
+      <th>Cognee</th>
+      <th>LangMem</th>
+      <th>Mem0</th>
+      <th>Graphiti</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>Language</strong></td><td>Rust</td><td>Python</td><td>Python</td><td>Python</td><td>Python</td><td>Python</td></tr>
+    <tr><td><strong>Storage</strong></td><td class="yes">Embedded (sled)</td><td class="no">External (PG)</td><td class="no">External</td><td class="no">External</td><td class="no">External DB</td><td class="no">External DB</td></tr>
+    <tr><td><strong>LLM Required</strong></td><td class="yes">No (opt-in)</td><td class="no">Yes</td><td class="no">Yes</td><td class="no">Yes</td><td class="no">Yes</td><td class="no">Yes</td></tr>
+    <tr><td><strong>Local-First</strong></td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="partial">Partial</td><td class="no">No</td></tr>
+    <tr><td><strong>Crypto Integrity</strong></td><td class="yes">Hash chain</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+    <tr><td><strong>Hybrid Retrieval</strong></td><td class="yes">BM25+vec+graph</td><td class="yes">4-signal RRF</td><td class="yes">vec+graph</td><td class="partial">vec only</td><td class="partial">vec+keyword</td><td class="yes">sem+kw+graph</td></tr>
+    <tr><td><strong>MCP Support</strong></td><td class="yes">Built-in</td><td class="no">No</td><td class="partial">MCP client</td><td class="no">No</td><td class="no">No</td><td class="yes">Yes</td></tr>
+    <tr><td><strong>Agent Registry</strong></td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+    <tr><td><strong>Federated Search</strong></td><td class="yes">Cross-chain</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+    <tr><td><strong>Skills/Extensions</strong></td><td class="yes">Skill registry</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+    <tr><td><strong>Webhooks</strong></td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+    <tr><td><strong>Temporal Facts</strong></td><td class="yes">valid_at/invalid_at</td><td class="partial">Via metadata</td><td class="no">No</td><td class="no">No</td><td class="partial">Updates</td><td class="yes">valid_at</td></tr>
+    <tr><td><strong>Memory Dedup</strong></td><td class="yes">Jaccard threshold</td><td class="no">No</td><td class="partial">Merge</td><td class="no">No</td><td class="yes">Yes</td><td class="partial">Merge</td></tr>
+    <tr><td><strong>Custom Ontology</strong></td><td class="yes">entity_type registry</td><td class="partial">Via metadata</td><td class="yes">Schema</td><td class="no">No</td><td class="no">No</td><td class="yes">Pydantic</td></tr>
+    <tr><td><strong>Memory Branching</strong></td><td class="yes">BranchesFrom</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+    <tr><td><strong>Benchmark R@10</strong></td><td class="yes">74.0% (self)</td><td class="yes">SOTA (indep. verified)</td><td class="no">N/A</td><td class="no">N/A</td><td class="no">N/A</td><td class="no">N/A</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="gaps-closed">What MentisDB Closed Since April 10</h2>
+
+<p>
+  In 11 releases, we shipped everything on the original roadmap and several unplanned additions:
+</p>
+
+<table>
+  <thead>
+    <tr><th>Feature</th><th>Version</th><th>Status</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Temporal Facts</td><td>0.8.2</td><td class="yes">Shipped</td></tr>
+    <tr><td>Memory Dedup</td><td>0.8.2</td><td class="yes">Shipped (Jaccard)</td></tr>
+    <tr><td>Multi-Level Scopes</td><td>0.8.2</td><td class="yes">Shipped (tag-based)</td></tr>
+    <tr><td>CLI Tool</td><td>0.8.2</td><td class="yes">Shipped</td></tr>
+    <tr><td>RRF Reranking</td><td>0.8.6</td><td class="yes">Shipped</td></tr>
+    <tr><td>Memory Branching</td><td>0.8.6</td><td class="yes">Shipped (BranchesFrom)</td></tr>
+    <tr><td>Per-Field BM25 Cutoffs</td><td>0.8.6</td><td class="yes">Shipped</td></tr>
+    <tr><td>Custom Ontology</td><td>0.8.7</td><td class="yes">Shipped (entity_type + registry)</td></tr>
+    <tr><td>Episode Provenance</td><td>0.8.8</td><td class="yes">Shipped (source_episode field)</td></tr>
+    <tr><td>LLM Reranking</td><td>0.8.8</td><td class="yes">Shipped (opt-in)</td></tr>
+    <tr><td>Federated Cross-Chain Search</td><td>0.9.1</td><td class="yes">Shipped</td></tr>
+    <tr><td>Webhooks</td><td>0.9.1</td><td class="yes">Shipped</td></tr>
+    <tr><td>Opt-in LLM Extraction</td><td>0.9.1</td><td class="yes">Shipped</td></tr>
+    <tr><td>Python Client</td><td>0.9.1</td><td class="yes">Shipped (pymentisdb on PyPI)</td></tr>
+    <tr><td>Wizard Brew-First Setup</td><td>0.9.1</td><td class="yes">Shipped</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="what-remains">What MentisDB Is Still Missing</h2>
+
+<h3>1. Academic Benchmark Verification</h3>
+<p>
+  Hindsight's scores are independently verified by Virginia Tech. Ours are self-reported.
+  <strong>Fix:</strong> Partner with an academic group to independently verify our scores.
+</p>
+
+<h3>2. Native LangChain Store</h3>
+<p>
+  LangMem is the default in LangGraph Platform — massive structural distribution advantage.
+  <strong>Fix:</strong> Build <code>langchain-mentisdb</code> pip package with
+  <code>BaseStore</code> implementation.
+</p>
+
+<h3>3. Multi-Hop Recall (59.1% R@10 vs 78.0% single-hop)</h3>
+<p>
+  The 19pp gap is the biggest retrieval quality gap. Miss analysis shows near-zero vector
+  scores on misses — the semantic layer isn't contributing in multi-hop cases.
+  <strong>Fix:</strong> Entity coreference, deeper graph traversal, query expansion.
+</p>
+
+<h3>4. Managed Cloud Service</h3>
+<p>
+  Mem0, Cognee, Hindsight, and Fast.io all offer hosted versions.
+  <strong>Fix:</strong> MentisDB Cloud.
+</p>
+
+<h3>5. Memory Consolidation / Lifecycle</h3>
+<p>
+  agentmemory uses Ebbinghaus decay curves; Hindsight uses <code>reflect()</code>.
+  MentisDB has dedup and temporal validity but no automatic memory evolution.
+  <strong>Fix:</strong> Implement automatic memory consolidation tiers.
+</p>
+
+<hr>
+
+<h2 id="competitive-position">Competitive Position Today</h2>
+
+<blockquote>
+  <p>
+    MentisDB is the only local-first, zero-dependency, cryptographically-integrity-verified
+    semantic memory with built-in hybrid retrieval — in Rust. This combination is still unique.
+  </p>
+</blockquote>
+
+<p>
+  What we've added since April 10 that no competitor has:
+</p>
+
+<ul>
+  <li><strong>Federated cross-chain search</strong> — walk ancestor chains from any branch</li>
+  <li><strong>Skill registry with versioning and revocation</strong> — first-class skill lifecycle</li>
+  <li><strong>Webhooks</strong> — HTTP callbacks on thought append</li>
+  <li><strong>Opt-in LLM extraction</strong> — keep the no-LLM core; add LLM only when needed</li>
+</ul>
+
+<p>
+  The competitive threats are real: Hindsight's independently verified benchmarks and managed
+  service are credible; LangMem's LangGraph Platform distribution is a structural advantage.
+  But MentisDB's architectural properties — Rust performance, cryptographic integrity, embedded
+  storage — matter more in enterprise, audit-critical, and air-gapped deployments.
+</p>
+
+<p>
+  The next battle is ecosystem and distribution, not features. Native LangChain store,
+  academic benchmark verification, and MentisDB Cloud are the three moves that would make
+  1.0 a genuinely competitive release.
+</p>
+
+<hr>
+
+<p>
+  See the <a href="competitive-analysis.html">original April 10 analysis</a> for where
+  we started, and the <a href="mentisdb-0.9.1.html">0.9.1 announcement</a> for the
+  full benchmark results and feature breakdown.
+</p>
+
+<hr>
+
+<p>
+  <em>MentisDB is an open-source durable memory layer for AI agents. It stores memories
+  in an append-only hash-chained log, retrieves them with hybrid BM25+semantic+graph
+  search, and runs entirely locally with no cloud dependencies.
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">Website</a></em>
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>

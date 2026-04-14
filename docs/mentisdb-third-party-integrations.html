@@ -173,7 +173,7 @@ connected and responding.</p>
 
 <table>
   <tr><th>Tool</th><th>Description</th></tr>
-  <tr><td><code>mentisdb_append_thought</code></td><td>Append a structured memory thought</td></tr>
+  <tr><td><code>mentisdb_append</code></td><td>Append a structured memory thought</td></tr>
   <tr><td><code>mentisdb_ranked_search</code></td><td>Semantic search with multi-signal ranking</td></tr>
   <tr><td><code>mentisdb_context_bundles</code></td><td>Get seed thoughts with supporting evidence</td></tr>
   <tr><td><code>mentisdb_list_chains</code></td><td>List all memory chains</td></tr>
@@ -212,10 +212,11 @@ uses a slightly different format:</p>
 
 <h3 id="rest-quickstart">Quick HTTP Examples</h3>
 
-<pre><code># Append a thought (bash + curl)
+<pre><code># Append a thought to a specific chain (bash + curl)
 curl -X POST http://127.0.0.1:9472/v1/thoughts \
   -H "Content-Type: application/json" \
   -d '{
+    "chain_key": "my-project",
     "thought_type": "Insight",
     "content": "The cache invalidation strategy needs rethinking.",
     "role": "Memory",
@@ -224,13 +225,23 @@ curl -X POST http://127.0.0.1:9472/v1/thoughts \
     "concepts": ["invalidation", "consistency"]
   }'
 
-# Ranked search
+# Ranked search on a specific chain
 curl -X POST http://127.0.0.1:9472/v1/ranked-search \
   -H "Content-Type: application/json" \
   -d '{
+    "chain_key": "my-project",
     "text": "cache invalidation strategy",
     "limit": 5,
     "min_importance": 0.5
+  }'
+
+# Search across a branch chain AND its ancestor chains (federated)
+curl -X POST http://127.0.0.1:9472/v1/ranked-search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "chain_key": "project-x",
+    "text": "what is our company's position on cache consistency?",
+    "limit": 5
   }'
 
 # List chains
@@ -242,8 +253,9 @@ curl http://127.0.0.1:9472/v1/chains</code></pre>
 
 base = "http://127.0.0.1:9472"
 
-# Append
+# Append to a specific chain
 r = requests.post(f"{base}/v1/thoughts", json={
+    "chain_key": "my-project",
     "thought_type": "Finding",
     "content": "Query latency spiked after the last deploy.",
     "role": "Memory",
@@ -251,10 +263,11 @@ r = requests.post(f"{base}/v1/thoughts", json={
     "tags": ["performance", "database"],
 })
 thought = r.json()["thought"]
-print(f"Appended: {thought['id']}")
+print(f"Appended to {thought['chain_key']}: {thought['id']}")
 
-# Search
+# Search within a specific chain
 r = requests.post(f"{base}/v1/ranked-search", json={
+    "chain_key": "my-project",
     "text": "database performance",
     "limit": 5,
     "thought_types": ["Finding", "Insight"],
@@ -271,8 +284,9 @@ base = "http://127.0.0.1:9472"
 
 # ==================== THOUGHTS ====================
 
-# Append a thought
+# Append a thought to a specific chain
 r = requests.post(f"{base}/v1/thoughts", json={
+    "chain_key": "my-project",        # specify chain — omit to use default chain
     "thought_type": "Insight",
     "content": "The cache invalidation strategy needs rethinking.",
     "role": "Memory",
@@ -302,8 +316,9 @@ print(r.json())
 
 # ==================== SEARCH ====================
 
-# Ranked search
+# Ranked search within a specific chain
 r = requests.post(f"{base}/v1/ranked-search", json={
+    "chain_key": "my-project",
     "text": "cache invalidation",
     "limit": 5,
     "min_importance": 0.5
@@ -312,6 +327,7 @@ print(r.json())
 
 # Lexical search
 r = requests.post(f"{base}/v1/lexical-search", json={
+    "chain_key": "my-project",
     "text": "database performance",
     "limit": 10
 })
@@ -319,6 +335,7 @@ print(r.json())
 
 # Semantic search
 r = requests.post(f"{base}/v1/search", json={
+    "chain_key": "my-project",
     "text": "architecture decisions",
     "thought_types": ["Insight", "Finding"]
 })
@@ -326,6 +343,7 @@ print(r.json())
 
 # Context bundles
 r = requests.post(f"{base}/v1/context-bundles", json={
+    "chain_key": "my-project",
     "text": "cache consistency",
     "limit": 3,
     "graph": {"max_depth": 2, "include_seeds": True}
@@ -445,29 +463,32 @@ print(r.json())
 
 # ==================== MEMORY MARKDOWN ====================
 
-# Export as MEMORY.md
+# Export chain as MEMORY.md
 r = requests.post(f"{base}/v1/memory-markdown", json={
+    "chain_key": "my-project",       // optional — omit to export the default chain
     "limit": 100
 })
 print(r.json())  # Returns { "markdown": "# MEMORY.md\n\n..." }
 
-# Import from MEMORY.md
+# Import from MEMORY.md into a specific chain
 r = requests.post(f"{base}/v1/import-markdown", json={
     "markdown": "# MEMORY.md\n\n## Thought\nContent here...",
-    "chain_key": "default"
+    "chain_key": "my-project"
 })
 print(r.json())
 
 # ==================== RECENT CONTEXT & BOOTSTRAP ====================
 
-# Get recent context for prompts
+# Get recent context for prompts from a specific chain
 r = requests.post(f"{base}/v1/recent-context", json={
+    "chain_key": "my-project",      // optional — omit to use the default chain
     "last_n": 10
 })
 print(r.json())
 
 # Bootstrap a chain if empty
 r = requests.post(f"{base}/v1/bootstrap", json={
+    "chain_key": "my-project",       // optional — omit to bootstrap the default chain
     "agent_id": "my-agent-001",
     "content": "Initial bootstrap thought"
 })
@@ -475,8 +496,9 @@ print(r.json())
 
 # ==================== RETROSPECTIVES ====================
 
-# Append retrospective
+# Append retrospective to a specific chain
 r = requests.post(f"{base}/v1/retrospectives", json={
+    "chain_key": "my-project",      // optional — omit to use the default chain
     "content": "Lesson learned: always verify TLS certs in development.",
     "agent_id": "my-agent-001",
     "refs": [thought["id"]]
@@ -530,6 +552,7 @@ interactive docs at <code>http://127.0.0.1:9472/docs</code> (if running with
 
 <p><strong>Request:</strong></p>
 <pre><code>{
+  "chain_key": "my-project",          // optional — defaults to server's default chain
   "thought_type": "Insight",
   "content": "The cache invalidation strategy needs rethinking.",
   "role": "Memory",
@@ -561,6 +584,7 @@ interactive docs at <code>http://127.0.0.1:9472/docs</code> (if running with
 
 <p><strong>Request:</strong></p>
 <pre><code>{
+  "chain_key": "my-project",          // optional — omit to search the default chain
   "text": "cache invalidation strategy",
   "limit": 5,
   "min_importance": 0.5,
@@ -596,6 +620,7 @@ interactive docs at <code>http://127.0.0.1:9472/docs</code> (if running with
 
 <p><strong>Request:</strong></p>
 <pre><code>{
+  "chain_key": "my-project",          // optional — omit to use the default chain
   "text": "cache consistency",
   "limit": 3,
   "thought_types": ["Insight", "Finding", "LessonLearned"],
@@ -657,15 +682,23 @@ interactive docs at <code>http://127.0.0.1:9472/docs</code> (if running with
   via stdio. To use the MCP server, start mentisdbd and point your MCP client at it:
 </p>
 
-<pre><code># mentisdbd exposes MCP on stdio by default when run without --no-mcp
+<p>
+  mentisdbd exposes an MCP server on HTTP port 9471 (and HTTPS on 9473 when TLS is
+  enabled). MCP clients like Claude Desktop connect over HTTP/HTTPS — not stdio.
+  The <code>mcp-remote</code> bridge is used when your MCP client speaks stdio but
+  mentisdbd speaks HTTP/HTTPS, or when you need TLS.
+</p>
+
+<pre><code># mentisdbd starts with MCP on port 9471 (HTTP) and 9473 (HTTPS)
 mentisdbd
 
-# Your MCP client connects over stdio (not HTTP)</code></pre>
+# Your MCP client connects over HTTP/HTTPS to port 9471 or 9473</code></pre>
 
 <div class="warning">
-  <p><strong>Native MCP vs mcp-remote:</strong> Native MCP uses stdio, which works great for
-  local processes. mcp-remote wraps MCP over HTTPS — needed when Claude Desktop runs on
-  a different machine than mentisdbd, or when using self-signed HTTPS certificates.</p>
+  <p><strong>mcp-remote vs direct HTTP:</strong> If your MCP client (Claude Desktop, etc.)
+  uses stdio-based MCP, use <code>mcp-remote</code> to bridge to mentisdbd's HTTP MCP
+  endpoint. If you have a client that speaks HTTP MCP directly, you can connect to
+  port 9471 (HTTP) or 9473 (HTTPS/TLS) without mcp-remote.</p>
 </div>
 
 <h3 id="mcp-protocol">MCP Protocol Basics</h3>
@@ -673,8 +706,9 @@ mentisdbd
 <p>MCP communicates over JSON-RPC 2.0 over stdio. Each request has this shape:</p>
 
 <pre><code>{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-  "name": "mentisdb_append_thought",
+  "name": "mentisdb_append",
   "arguments": {
+    "chain_key": "my-project",       // omit to use the default chain
     "thought_type": "Insight",
     "content": "...",
     "importance": 0.8

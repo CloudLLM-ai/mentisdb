@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MentisDB 0.9.1 — The Full-Feature Release</title>
+  <title>MentisDB 0.9.1 — The 0.9.x Journey: From Competitive Analysis to 74% R@10 on LoCoMo</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -11,23 +11,23 @@
       line-height: 1.7;
       color: #1a1a2e;
       background: #fafafa;
-      max-width: 720px;
+      max-width: 800px;
       margin: 0 auto;
       padding: 2rem 1.5rem;
     }
-    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h1 { font-size: 1.9rem; margin-bottom: 1rem; }
     h2 { font-size: 1.4rem; margin-top: 2.5rem; margin-bottom: 0.75rem; }
     h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
     p { margin-bottom: 1rem; }
     a { color: #4361ee; }
     code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
-    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
-    pre code { background: none; padding: 0; }
-    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
-    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-left: true; }
+    pre { background: #1a1a2e; color: #e0e0e0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; color: inherit; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.88rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
     th { background: #f5f5f5; font-weight: 600; }
     ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
-    li { margin-bottom: 0.25rem; }
+    li { margin-bottom: 0.3rem; }
     hr { border: none; border-top: 1px solid #e0e0e0; margin: 2.5rem 0; }
     blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
     strong { font-weight: 600; }
@@ -37,9 +37,15 @@
     .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
     .highlight p:last-child { margin-bottom: 0; }
     .callout { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
-    .tag { display: inline-block; background: #eef2ff; color: #4361ee; padding: 0.15em 0.6em; border-radius: 12px; font-size: 0.8em; font-weight: 600; margin-right: 0.3em; }
-    .perf { background: #edfff2; border-left: 3px solid #10b981; }
+    .perf { background: #edfff2; border-left: 3px solid #10b981; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
     .perf p:last-child { margin-bottom: 0; }
+    .tag { display: inline-block; background: #eef2ff; color: #4361ee; padding: 0.15em 0.6em; border-radius: 12px; font-size: 0.8em; font-weight: 600; margin-right: 0.3em; }
+    .comparison-table { font-size: 0.82rem; }
+    .comparison-table th, .comparison-table td { padding: 0.4rem 0.5rem; }
+    .yes { color: #16a34a; font-weight: 600; }
+    .no { color: #dc2626; }
+    .partial { color: #d97706; }
+    .metric { display: inline-block; background: #f0f0f0; border-radius: 4px; padding: 0.2em 0.5em; font-size: 0.9em; margin: 0.1em; }
   </style>
 </head>
 <body>
@@ -47,389 +53,340 @@
 <div class="back"><a href="index.html">&larr; Blog</a></div>
 <div class="meta">April 14, 2026</div>
 
-<h1>MentisDB 0.9.1 — The Full-Feature Release</h1>
+<h1>MentisDB 0.9.1 — The 0.9.x Journey: From Competitive Analysis to 74% R@10</h1>
 
 <p>
-  MentisDB 0.9.1 is the biggest release in the project's history. Four major features land
-  together: GPT-4o memory extraction, federated cross-chain search, an official Python client,
-  and a dramatically improved setup experience. This post covers all of it — the features,
-  the design decisions, the documentation overhaul, and the full benchmark results.
-</p>
-
-<h2 id="what-is-mentisdb">What Is MentisDB?</h2>
-
-<p>
-  MentisDB is an append-only semantic memory server for AI agents. Every thought an agent
-  has — a preference learned, a decision made, a lesson earned — is stored permanently with
-  a cryptographic hash chain that makes it tamper-evident. Retrieval is hybrid: lexical
-  BM25, dense vector similarity, and a typed thought-graph that understands relationships
-  like <em>Corrects</em>, <em>Supersedes</em>, <em>ContinuesFrom</em>, and <em>BranchesFrom</em>.
+  Four days ago we published a competitive analysis and discovered MentisDB was missing
+  temporal facts, memory dedup, a CLI, webhooks, federated search, and an official Python
+  client. Today, after 11 releases (0.8.2 → 0.9.1), all of those gaps are closed and we've
+  run our first full 10-persona LoCoMo benchmark: <strong>74.0% R@10</strong> on 1,977 queries.
 </p>
 
 <p>
-  MentisDB speaks MCP (Model Context Protocol) natively over HTTP — no adapters, no bridges,
-  no cloud dependencies. Point your agent at it and it bootstraps itself.
+  This post is the full story: what we found, what we shipped, how we compare to the
+  competitive field today, and what the benchmark tells us about where to improve next.
 </p>
 
 <hr>
 
-<h2 id="llm-extraction">1. LLM-Extracted Memories</h2>
+<h2 id="the-starting-point">The Starting Point: April 10 Competitive Analysis</h2>
 
 <p>
-  The most-requested feature is here. Instead of manually constructing <code>ThoughtInput</code>
-  records, feed MentisDB raw agent output — conversation logs, terminal transcripts, reasoning
-  traces — and GPT-4o (or any OpenAI-compatible endpoint) returns structured memory records
-  ready for review and append.
+  On April 10, we published a detailed competitive analysis of six agentic memory systems.
+  The conclusion was honest: MentisDB had unique strengths (Rust, embedded storage,
+  cryptographic hash chain, no-LLM-required core) but was missing most of the features
+  users expected — temporal facts, memory dedup, multi-level scopes, custom ontology,
+  episode provenance, and an MCP server.
 </p>
-
-<h3 id="why-review-before-append">Why Review Before Append?</h3>
 
 <p>
-  LLM output is untrusted. Hallucinated facts, phantom preferences, and confident nonsense
-  are real risks. The extraction pipeline returns raw <code>ThoughtInput</code> records — not
-  committed thoughts — so you review them, optionally verify against source material,
-  sign them with an Ed25519 key, then append. The hash chain is never polluted with
-  untrusted content.
+  The competitive landscape we surveyed:
 </p>
 
-<h3 id="configuration">Configuration</h3>
-
-<p>
-  Three environment variables. That's all:
-</p>
-
-<pre><code>export OPENAI_API_KEY="sk-..."           # required
-export LLM_BASE_URL="https://api.openai.com/v1"  # defaults to OpenAI
-export LLM_MODEL="gpt-4o"                # defaults to gpt-4o</code></pre>
-
-<h3 id="rust-api">Rust API</h3>
-
-<pre><code>use mentisdb::{LlmExtractionConfig, extract_memories_from_text};
-
-let config = LlmExtractionConfig::from_env()?;
-let result = extract_memories_from_text(raw_text, &config, None).await?;
-
-// Review
-for thought in &result.thoughts {
-    println!("{:?}", thought);
-}
-
-// Append after review
-for thought in result.thoughts {
-    mentisdb.append_thought(agent_id, thought).await?;
-}
-println!("Tokens: {:?}", result.usage);</code></pre>
-
-<h3 id="extraction-result-fields">ExtractionResult</h3>
-
-<table>
-  <tr><th>Field</th><th>Type</th><th>Description</th></tr>
-  <tr><td><code>thoughts</code></td><td><code>Vec&lt;ThoughtInput&gt;</code></td><td>Extracted memory records with thought_type, content, importance, confidence, tags, concepts, relations</td></tr>
-  <tr><td><code>model</code></td><td><code>String</code></td><td>Model identifier that produced the extraction</td></tr>
-  <tr><td><code>usage</code></td><td><code>TokenUsage</code></td><td>prompt_tokens, completion_tokens, total_tokens</td></tr>
+<table class="comparison-table">
+  <thead>
+    <tr><th>System</th><th>Language</th><th>Storage</th><th>LLM Required</th><th>Local-First</th><th>Crypto Integrity</th><th>Hybrid Retrieval</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>MentisDB</strong></td><td>Rust</td><td class="yes">Embedded (sled)</td><td class="yes">No (opt-in)</td><td class="yes">Yes</td><td class="yes">Hash chain</td><td class="yes">BM25+vec+graph</td></tr>
+    <tr><td>Mem0</td><td>Python</td><td class="no">External DB</td><td class="no">Yes</td><td class="partial">Self-host option</td><td class="no">No</td><td class="partial">vec+keyword</td></tr>
+    <tr><td>Graphiti/Zep</td><td>Python</td><td class="no">External DB</td><td class="no">Yes</td><td class="partial">Self-host only</td><td class="no">No</td><td class="yes">semantic+kw+graph</td></tr>
+    <tr><td>Letta/MemGPT</td><td>Python/TS</td><td class="no">External DB</td><td class="no">Yes</td><td class="partial">Self-host option</td><td class="no">No</td><td class="no">No</td></tr>
+    <tr><td>Neo4j LLM KB</td><td>Python</td><td class="no">Neo4j</td><td class="no">Yes</td><td class="no">No</td><td class="no">No</td><td class="yes">Multi-mode</td></tr>
+    <tr><td>Cognee</td><td>Python</td><td class="no">External DB</td><td class="no">Yes</td><td class="partial">Partial</td><td class="no">No</td><td class="yes">vec+graph</td></tr>
+  </tbody>
 </table>
 
-<h3 id="under-the-hood">Under the Hood</h3>
-
 <p>
-  The feature uses <a href="https://crates.io/crates/openai-rust2">openai-rust2</a> — the same
-  HTTP client powering cloudllm — with:
-</p>
-
-<ul>
-  <li>Connection pooling across extractions</li>
-  <li>Automatic 3× retry on 429 Too Many Requests and 5xx server errors</li>
-  <li>60-second timeout</li>
-  <li>Temperature 0.1 for deterministic extraction</li>
-  <li><code>ResponseFormat::JsonObject</code> — GPT-4o returns a JSON object, not a markdown code block</li>
-</ul>
-
-<p>
-  The extraction prompt instructs the model to return structured records matching MentisDB's
-  <code>ThoughtType</code> taxonomy. Each extracted record includes a suggested
-  <code>thought_type</code>, importance and confidence scores, and optional tags and concepts.
+  The analysis identified six major gaps we needed to close before 1.0. We set a roadmap
+  targeting 0.8.2 for temporal facts, dedup, and CLI; 0.9.0 for ecosystem features.
+  We shipped all of it — and more.
 </p>
 
 <hr>
 
-<h2 id="federated-search">2. Federated Cross-Chain Search</h2>
+<h2 id="what-we-shipped">What We Shipped: 0.8.2 → 0.9.1</h2>
 
 <p>
-  Specialist agents shouldn't be siloed. With federated cross-chain search, a project-specific
-  chain can still query the shared company-memory chain it branched from.
+  In 11 releases, we closed every feature gap identified in the April 10 analysis:
 </p>
 
-<h3 id="how-branching-works">How Branching Works</h3>
+<table>
+  <thead>
+    <tr><th>Feature</th><th>Version</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>Temporal Facts</strong></td><td>0.8.2</td><td><code>valid_at</code> / <code>invalid_at</code> on thoughts; <code>as_of</code> query parameter for point-in-time retrieval</td></tr>
+    <tr><td><strong>Memory Dedup</strong></td><td>0.8.2</td><td>Jaccard similarity threshold on append; auto-<code>Supersedes</code> relation for near-duplicate thoughts</td></tr>
+    <tr><td><strong>Multi-Level Scopes</strong></td><td>0.8.2</td><td><code>MemoryScope</code> enum (<code>User</code>, <code>Session</code>, <code>Agent</code>) on thoughts; scoped search filters</td></tr>
+    <tr><td><strong>CLI Tool</strong></td><td>0.8.2</td><td><code>mentisdb</code> CLI: <code>add</code>, <code>search</code>, <code>list</code>, <code>agents</code>, <code>chain</code> subcommands</td></tr>
+    <tr><td><strong>Reciprocal Rank Fusion</strong></td><td>0.8.6</td><td>RRF reranking merges BM25, vector, and graph signals; <code>--reranking</code> flag on benchmark</td></tr>
+    <tr><td><strong>Memory Branching</strong></td><td>0.8.6</td><td><code>BranchesFrom</code> relation; <code>POST /v1/chains/branch</code> creates divergent chains from any checkpoint</td></tr>
+    <tr><td><strong>Per-Field BM25 DF Cutoffs</strong></td><td>0.8.6</td><td>Document-frequency-based field weighting improves precision on high-signal fields</td></tr>
+    <tr><td><strong>Custom Ontology</strong></td><td>0.8.7</td><td><code>entity_type</code> field on thoughts; per-chain entity type registry; schema validation at API layer</td></tr>
+    <tr><td><strong>Episode Provenance</strong></td><td>0.8.8</td><td><code>source_episode</code> field; <code>DerivedFrom</code> relation kind; full lineage from derived fact to source</td></tr>
+    <tr><td><strong>LLM Reranking</strong></td><td>0.8.8</td><td>Optional cross-encoder reranking on candidate lists; pluggable reranker interface</td></tr>
+    <tr><td><strong>Federated Cross-Chain Search</strong></td><td>0.9.1</td><td><code>ancestor_chain_keys()</code> walks <code>BranchesFrom</code>; ranked search transparently queries ancestors</td></tr>
+    <tr><td><strong>Webhooks</strong></td><td>0.9.1</td><td>HTTP POST callbacks on thought append; <code>mentisdb_register_webhook</code> MCP tool + REST endpoint</td></tr>
+    <tr><td><strong>Opt-in LLM Extraction</strong></td><td>0.9.1</td><td>GPT-4o (or any OpenAI-compatible endpoint) extracts structured <code>ThoughtInput</code> records from raw text; review-before-append workflow</td></tr>
+    <tr><td><strong>Python Client (pymentisdb)</strong></td><td>0.9.1</td><td>Full <code>MentisDbClient</code> on PyPI; LangChain <code>MentisDbMemory</code>; typed enums and relations</td></tr>
+    <tr><td><strong>Wizard Brew-First Setup</strong></td><td>0.9.1</td><td>Interactive setup wizard detects Homebrew <code>mcp-remote</code> and writes correct Claude Desktop config automatically</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="benchmark-results">LoCoMo Benchmark Results: 74.0% R@10</h2>
 
 <p>
-  Every chain can branch from any thought in any other chain. The new chain gets a genesis
-  thought with a <code>BranchesFrom</code> relation pointing back to the fork point:
+  We ran the full LoCoMo 10-persona benchmark against MentisDB 0.9.1: 1,977 queries
+  across 10 persona × ~197 sessions, with up to 300 conversation turns each, ingested
+  into a single chain with <code>ContinuesFrom</code> relations.
 </p>
 
-<pre><code>POST /v1/chains/branch
-{
-  "source_chain_key": "company-memory",
-  "branch_thought_id": "uuid-of-strategy-checkpoint"
-}
-→ { "chain_key": "project-x", "genesis_thought_id": "uuid" }</code></pre>
-
-<h3 id="ancestor-walks">How Federated Search Works</h3>
-
-<p>
-  <code>ancestor_chain_keys()</code> walks <code>BranchesFrom</code> relations to build the
-  full ancestry of a chain. Ranked search on a branch transparently includes ancestor chain
-  results — annotated with <code>chain_key</code> so you know where each result came from.
-</p>
-
-<p>
-  This enables a <strong>fleet memory hierarchy</strong>:
-</p>
-
-<ul>
-  <li><strong>Base chain</strong> — company-wide knowledge, general agent preferences, onboarding facts</li>
-  <li><strong>Project chains</strong> — branch at a checkpoint, accumulate project-specific memories</li>
-  <li><strong>Queries</strong> — always search local + ancestors; never miss the base context</li>
-</ul>
-
-<div class="highlight">
+<div class="perf">
+  <p><strong>LoCoMo 10-Persona Results (1977 queries)</strong></p>
   <p>
-    <strong>No configuration needed.</strong> Create a branch, keep querying the same way.
-    The search backend discovers ancestors automatically.
+    <span class="metric">R@10: 74.0%</span>
+    <span class="metric">R@20: 80.8%</span>
+    <span class="metric">R@50: 88.5%</span>
+  </p>
+  <p>
+    Single-hop: <strong>78.0%</strong> &nbsp;|&nbsp;
+    Multi-hop: <strong>59.1%</strong>
+  </p>
+  <p>
+    Evaluation: 94 seconds &nbsp;|&nbsp; 20.9 queries/second
   </p>
 </div>
 
-<hr>
-
-<h2 id="pymentisdb">3. pymentisdb — Official Python Client</h2>
-
-<p>
-  <a href="https://pypi.org/project/pymentisdb/">pymentisdb</a> is on PyPI.
-  Full type hints, complete REST API coverage, LangChain-compatible memory interface.
-</p>
-
-<pre><code>pip install pymentisdb
-pip install pymentisdb[langchain]  # with LangChain integration</code></pre>
-
-<h3 id="client-api">MentisDbClient API</h3>
-
-<p>
-  Every REST endpoint is covered. Methods mirror the underlying API:
-</p>
+<h3 id="by-question-type">By Question Type</h3>
 
 <table>
-  <tr><th>Method</th><th>REST Endpoint</th><th>Description</th></tr>
-  <tr><td><code>append_thought</code></td><td><code>POST /v1/thoughts</code></td><td>Append with full metadata</td></tr>
-  <tr><td><code>ranked_search</code></td><td><code>POST /v1/ranked-search</code></td><td>Hybrid ranked retrieval</td></tr>
-  <tr><td><code>context_bundles</code></td><td><code>POST /v1/context-bundles</code></td><td>Seed-anchored grouped context</td></tr>
-  <tr><td><code>lexical_search</code></td><td><code>POST /v1/lexical-search</code></td><td>Flat lexical with term provenance</td></tr>
-  <tr><td><code>search</code></td><td><code>POST /v1/search</code></td><td>Vector-only semantic search</td></tr>
-  <tr><td><code>get_thought</code></td><td><code>GET /v1/thoughts/{id}</code></td><td>Fetch one thought</td></tr>
-  <tr><td><code>list_chains</code></td><td><code>GET /v1/chains</code></td><td>All registered chains</td></tr>
-  <tr><td><code>traverse_thoughts</code></td><td><code>POST /v1/thoughts/traverse</code></td><td>Walk forward/backward</td></tr>
-  <tr><td><code>upsert_agent</code></td><td><code>POST /v1/agents/upsert</code></td><td>Create or update agent</td></tr>
-  <tr><td><code>get_agent</code></td><td><code>GET /v1/agents/{id}</code></td><td>One agent record</td></tr>
-  <tr><td><code>list_agents</code></td><td><code>GET /v1/agents</code></td><td>All agents in chain</td></tr>
-  <tr><td><code>register_webhook</code></td><td><code>POST /v1/webhooks</code></td><td>Register HTTP callback</td></tr>
-  <tr><td><code>list_webhooks</code></td><td><code>GET /v1/webhooks</code></td><td>All webhooks</td></tr>
-  <tr><td><code>delete_webhook</code></td><td><code>DELETE /v1/webhooks/{id}</code></td><td>Remove webhook</td></tr>
-  <tr><td><code>upload_skill</code></td><td><code>POST /v1/skills/upload</code></td><td>Upload skill</td></tr>
-  <tr><td><code>read_skill</code></td><td><code>POST /v1/skills/read</code></td><td>Read skill content</td></tr>
-  <tr><td><code>search_skill</code></td><td><code>POST /v1/skills/search</code></td><td>Search skills</td></tr>
-  <tr><td><code>list_skills</code></td><td><code>GET /v1/skills</code></td><td>All skills</td></tr>
-  <tr><td><code>memory_markdown</code></td><td><code>POST /v1/memory-markdown</code></td><td>Export chain as Markdown</td></tr>
-  <tr><td><code>import_memory_markdown</code></td><td><code>POST /v1/import-markdown</code></td><td>Import Markdown</td></tr>
-  <tr><td><code>recent_context</code></td><td><code>POST /v1/recent-context</code></td><td>Session resumption snippet</td></tr>
-  <tr><td><code>head</code></td><td><code>POST /v1/head</code></td><td>Chain head metadata</td></tr>
+  <thead>
+    <tr><th>Type</th><th>R@10</th><th>R@20</th><th>R@50</th><th>Correct / Total</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>Single-hop</strong></td><td>78.0%</td><td>84.0%</td><td>90.2%</td><td>1,212 / 1,554</td></tr>
+    <tr><td><strong>Multi-hop</strong></td><td>59.1%</td><td>69.0%</td><td>82.0%</td><td>250 / 423</td></tr>
+    <tr><td><strong>Overall</strong></td><td>74.0%</td><td>80.8%</td><td>88.5%</td><td>1,462 / 1,977</td></tr>
+  </tbody>
 </table>
 
-<h3 id="langchain-integration">LangChain Integration</h3>
-
-<pre><code>from pymentisdb import MentisDbMemory
-
-memory = MentisDbMemory(
-    chain_key="my-project",
-    agent_id="assistant"
-)
-
-llm = ChatOpenAI(model="gpt-4")
-chain = llm.with_memory(memory)  # LangChain 0.3+</code></pre>
-
-<h3 id="typed-enums">Typed Enums</h3>
+<h3 id="near-miss-analysis">Near-Miss Analysis</h3>
 
 <p>
-  Full <code>ThoughtType</code>, <code>ThoughtRole</code>, <code>MemoryScope</code>, and
-  <code>ThoughtRelationKind</code> enums are exported. All return types are typed dataclasses:
+  Of the 515 missed queries, 44.3% do not appear in the top-50 results at all — a
+  lexical coverage gap, not a ranking problem:
 </p>
 
-<pre><code>from pymentisdb import ThoughtType, ThoughtRole, MemoryScope
+<ul>
+  <li><strong>0.0%</strong> of misses appear in top-10 (ranking is working correctly)</li>
+  <li><strong>26.2%</strong> appear in top-20</li>
+  <li><strong>55.7%</strong> appear in top-50</li>
+  <li><strong>44.3%</strong> not in top-50 — lexical gap: relevant content uses different vocabulary than the query</li>
+</ul>
 
-thought = client.append_thought(
-    thought_type=ThoughtType.LESSON_LEARNED,
-    content="The issue was a stale sidecar after disabling sync.",
-    role=ThoughtRole.RETROSPECTIVE,
-    importance=0.9,
-    tags=["debug", "sidecar"],
-    refs=[42],
-)</code></pre>
+<h3 id="miss-samples">Sample Misses (Single-Hop)</h3>
+
+<p>
+  Missed queries consistently show <strong>high lexical scores but near-zero vector
+  scores</strong>. The lexical matcher finds related content using surface-term overlap,
+  but vector similarity fails to connect semantically related content with different
+  wording:
+</p>
+
+<blockquote>
+  <p><strong>Q:</strong> what did caroline research?<br>
+  <strong>Evidence:</strong> "researching adoption agencies — it's been a dream to have a family..."<br>
+  <strong>Retrieved:</strong> "that's great news. what did you do?" &nbsp;(lexical=9.9, vector=0.0)</p>
+</blockquote>
+
+<blockquote>
+  <p><strong>Q:</strong> when did caroline have a picnic?<br>
+  <strong>Evidence:</strong> "...picnic last week...talked about my transition journey..."<br>
+  <strong>Retrieved:</strong> "sounds good, when did you have in mind?" &nbsp;(lexical=9.7, vector=0.0)</p>
+</blockquote>
+
+<p>
+  This is the core improvement opportunity: closing the multi-hop gap and improving
+  semantic matching when vocabulary diverges between query and memory.
+</p>
 
 <hr>
 
-<h2 id="wizard-improvements">4. Wizard Brew-First Setup</h2>
+<h2 id="competitive-field-today">The Competitive Field Today</h2>
 
 <p>
-  The interactive setup wizard is the fastest path to a working MentisDB integration.
-  This release dramatically improves it for Homebrew users on macOS.
+  Since April 10, three significant new entrants have emerged that change the landscape:
 </p>
 
-<h3 id="the-mcp-remote-problem">The mcp-remote Problem</h3>
+<h3>Hindsight (<code>vectorize-io/hindsight</code>)</h3>
+<p>
+  9.2k GitHub stars. Server mode with external PostgreSQL, or embedded Python mode.
+  LLM required for core operations (retain/recall/reflect). Claims SOTA on LongMemEval
+  with independently verified scores from Virginia Tech. Four-signal retrieval (semantic,
+  keyword, graph, temporal) merged via RRF + cross-encoder reranking.
+  <strong>Unique: Mental Models — reflected higher-order understanding generated by the LLM.</strong>
+</p>
+
+<h3>Cognee (<code>topoteretes/cognee</code>)</h3>
+<p>
+  Crossed 15k GitHub stars and shipped v1.0.0 on April 11. Native Hermes Agent
+  integration as memory provider, MCP client package, and Cognee Cloud managed service.
+  <strong>Still requires external databases and an LLM for the cognify pipeline.</strong>
+</p>
+
+<h3>LangMem (<code>langchain-ai/langmem</code>)</h3>
+<p>
+  1.4k stars. Memory primitives library integrated natively into LangGraph Platform.
+  Pluggable storage backend (in-memory → Postgres). The default in LangGraph Platform
+  deployments gives it massive distribution advantage. <strong>LLM required; no graph
+  traversal or temporal facts.</strong>
+</p>
+
+<h3>Updated Feature Comparison (April 14)</h3>
+
+<table class="comparison-table">
+  <thead>
+    <tr>
+      <th>Feature</th>
+      <th>MentisDB</th>
+      <th>Hindsight</th>
+      <th>Cognee</th>
+      <th>LangMem</th>
+      <th>Mem0</th>
+      <th>Graphiti</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>Language</strong></td><td>Rust</td><td>Python</td><td>Python</td><td>Python</td><td>Python</td><td>Python</td></tr>
+    <tr><td><strong>Storage</strong></td><td class="yes">Embedded (sled)</td><td class="no">External (PG)</td><td class="no">External</td><td class="no">External</td><td class="no">External DB</td><td class="no">External DB</td></tr>
+    <tr><td><strong>LLM Required</strong></td><td class="yes">No (opt-in)</td><td class="no">Yes</td><td class="no">Yes</td><td class="no">Yes</td><td class="no">Yes</td><td class="no">Yes</td></tr>
+    <tr><td><strong>Local-First</strong></td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="partial">Partial</td><td class="no">No</td></tr>
+    <tr><td><strong>Crypto Integrity</strong></td><td class="yes">Hash chain</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+    <tr><td><strong>Hybrid Retrieval</strong></td><td class="yes">BM25+vec+graph</td><td class="yes">4-signal RRF</td><td class="yes">vec+graph</td><td class="partial">vec only</td><td class="partial">vec+keyword</td><td class="yes">sem+kw+graph</td></tr>
+    <tr><td><strong>MCP Server</strong></td><td class="yes">Built-in</td><td class="no">No</td><td class="partial">MCP client</td><td class="no">No</td><td class="no">No</td><td class="yes">Yes</td></tr>
+    <tr><td><strong>Agent Registry</strong></td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+    <tr><td><strong>Federated Search</strong></td><td class="yes">Cross-chain</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+    <tr><td><strong>Skills/Extensions</strong></td><td class="yes">Skill registry</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+    <tr><td><strong>Webhooks</strong></td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+    <tr><td><strong>Temporal Facts</strong></td><td class="yes">0.8.2</td><td class="partial">Via metadata</td><td class="no">No</td><td class="no">No</td><td class="partial">Updates</td><td class="yes">valid_at</td></tr>
+    <tr><td><strong>Memory Dedup</strong></td><td class="yes">0.8.2</td><td class="no">No</td><td class="partial">Merge</td><td class="no">No</td><td class="yes">Yes</td><td class="partial">Merge</td></tr>
+    <tr><td><strong>Benchmark R@10</strong></td><td class="yes">74.0%</td><td class="yes">SOTA (indep.)</td><td class="no">N/A</td><td class="no">N/A</td><td class="no">N/A</td><td class="no">N/A</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="what-makes-us-different">What Makes MentisDB Different Today</h2>
 
 <p>
-  Claude Desktop needs <a href="https://www.npmjs.com/package/mcp-remote">mcp-remote</a> to
-  connect to MentisDB's HTTPS MCP endpoint. <code>mcp-remote</code> requires Node ≥ 20 because
-  it uses the <code>File</code> global from the Fetch API — available only in Node 20+.
+  The combination of properties that no competitor shares has grown since April 10:
 </p>
-
-<p>
-  Homebrew installs Node correctly. But npm-installed <code>mcp-remote</code> uses
-  <code>#!/usr/bin/env node</code>, which may resolve to an old Node version on your PATH.
-  The old Node crashes at runtime with <code>ReferenceError: File is not defined</code>.
-</p>
-
-<h3 id="what-the-wizard-does-now">What the Wizard Does Now</h3>
 
 <ol>
-  <li>Try <code>brew install mcp-remote</code> first</li>
-  <li>If Homebrew <code>mcp-remote</code> is found, inspect its shebang — Homebrew writes a real path like <code>#!/opt/homebrew/bin/node</code></li>
-  <li>If the shebang points to a correct Node version, use <code>mcp-remote</code> directly as the command — no wrapper needed</li>
-  <li>If npm-installed <code>mcp-remote</code> is found, wrap it with an explicit node path</li>
+  <li>
+    <strong>Rust + embedded storage + no-LLM-required + cryptographic hash chain.</strong>
+    Still unique. Every competitor requires external databases and/or an LLM for core operations.
+  </li>
+  <li>
+    <strong>Federated cross-chain search (0.9.1).</strong> Walk <code>BranchesFrom</code>
+    relations to query parent chains from a branch. No competitor has this.
+  </li>
+  <li>
+    <strong>Skill registry with versioning, deprecation, and revocation (0.9.x).</strong>
+    Signed thought support. No competitor has anything comparable.
+  </li>
+  <li>
+    <strong>Webhooks (0.9.1).</strong> HTTP POST callbacks on thought append. Fire-and-forget
+    delivery via tokio spawn. No competitor has this.
+  </li>
+  <li>
+    <strong>Opt-in LLM extraction (0.9.1).</strong> Keep the no-LLM core for pure structural
+    retrieval; add LLM-powered extraction only when needed. All competitors require LLM for core.
+  </li>
+  <li>
+    <strong>pymentisdb Python client (0.9.1).</strong> Full MentisDbClient with LangChain
+    integration, complete enum coverage, typed relations. Enables Python ecosystem adoption.
+  </li>
 </ol>
 
-<h3 id="claude-desktop-config">Claude Desktop Config</h3>
-
-<p>
-  <strong>Homebrew mcp-remote</strong> (Node ≥ 20, direct execution):
-</p>
-
-<pre><code>{
-  "mcpServers": {
-    "mentisdb": {
-      "command": "/opt/homebrew/bin/mcp-remote",
-      "args": ["https://my.mentisdb.com:9473"],
-      "env": { "NODE_TLS_REJECT_UNAUTHORIZED": "0" }
-    }
-  }
-}</code></pre>
-
-<p>
-  <strong>npm-installed mcp-remote</strong> (Node version uncertain, wrapped):
-</p>
-
-<pre><code>{
-  "mcpServers": {
-    "mentisdb": {
-      "command": "/usr/local/bin/node",
-      "args": ["/usr/local/bin/mcp-remote", "https://my.mentisdb.com:9473"],
-      "env": { "NODE_TLS_REJECT_UNAUTHORIZED": "0" }
-    }
-  }
-}</code></pre>
-
-<p>
-  The wizard handles all of this automatically. Run <code>mentisdbd setup claude-desktop</code>
-  and answer the prompts.
-</p>
-
 <hr>
 
-<h2 id="docs-overhaul">5. Complete Documentation Overhaul</h2>
+<h2 id="what-were-still-missing">What We're Still Missing</h2>
 
 <p>
-  0.9.x ships with the most comprehensive documentation MentisDB has ever had.
-</p>
-
-<h3 id="mcp-reference">All 37 MCP Tools</h3>
-
-<p>
-  The <a href="https://docs.mentisdb.com/developer">developer docs</a> now document every MCP
-  tool with description and key parameters. Previously only 8 were documented; now all 37 are
-  covered, with the MCP section moved before REST in the navigation.
-</p>
-
-<h3 id="rest-reference">Complete REST API Reference</h3>
-
-<p>
-  <a href="https://docs.mentisdb.com/developer">docs.mentisdb.com/developer</a> now has
-  JSON request/response schemas for all key endpoints: append thought, ranked search,
-  context bundles, and webhook registration. The
-  <a href="mentisdb-third-party-integrations.html">integration guide</a> covers
-  every REST endpoint with Python <code>requests</code> examples.
-</p>
-
-<h3 id="python-client-docs">pymentisdb Guide</h3>
-
-<p>
-  The <a href="pymentisdb-python-client.html">pymentisdb guide</a> covers every client
-  method with complete signatures, request/response examples, connection configuration,
-  and the full LangChain integration pattern.
-</p>
-
-<h3 id="third-party-guide">Third-Party Integrations Guide</h3>
-
-<p>
-  <a href="mentisdb-third-party-integrations.html">Integrating with Claude Desktop, OpenCode, and any MCP Client</a>
-  is the single reference for every setup path: wizard one-liner, Claude Desktop
-  (Homebrew and npm mcp-remote), Claude Code, OpenCode, Codex, Qwen Code,
-  and raw HTTP REST. Includes troubleshooting for every common failure mode.
-</p>
-
-<h3 id="llm-extraction-design">LLM Extraction Design Doc</h3>
-
-<p>
-  <a href="llm-extracted-memories-design.md">llm-extracted-memories-design.md</a> is
-  the canonical reference for the extraction pipeline: openai-rust2 internals,
-  <code>LlmExtractionConfig</code>, <code>ExtractionResult</code>, error handling,
-  security model, and the review-before-append workflow.
-</p>
-
-<hr>
-
-<h2 id="other-fixes">Other Fixes in 0.9.x</h2>
-
-<ul>
-  <li><strong>Wizard overwrite prompt</strong> — clarified from "Overwrite or keep the existing config?" to "Overwrite it with a fresh setup?"</li>
-  <li><strong>CI doctest fix</strong> — <code>LlmExtractionConfig</code> doc test uses <code>unwrap_or_else</code> instead of <code>unwrap</code> on <code>OPENAI_API_KEY</code> so it doesn't panic in CI environments</li>
-  <li><strong>Empty API key fix</strong> — <code>LlmExtractionError::NotConfigured</code> now returns a proper error instead of panicking when the API key is empty</li>
-  <li><strong>Dashboard test</strong> — <code>dashboard_can_disable_and_resync_vector_sidecar</code> assertion corrected to use serde_json Value's <code>PartialEq</code> for type-safe comparison</li>
-</ul>
-
-<hr>
-
-<h2 id="benchmark-results">Benchmark Results</h2>
-
-<p>
-  LoCoMo 10-persona (all 1977 queries, 10 persona × ~197 sessions, up to 300 turns each)
-  and LongMemEval (500 instances, 5 sessions × 100 instances) on a fresh chain:
+  Honest gaps — what we'd need to win in specific competitive situations:
 </p>
 
 <table>
-  <tr><th>Benchmark</th><th>Metric</th><th>Result</th><th>Notes</th></tr>
-  <tr><td>LoCoMo 10-persona</td><td>R@10</td><td id="locomo-result">—</td><td>Full run in progress; prior smoke-test run showed 72.0%</td></tr>
-  <tr><td>LongMemEval</td><td>R@5</td><td>66.8%</td><td>288/500. Multi-session hardest.</td></tr>
-  <tr><td>LongMemEval</td><td>R@10</td><td>74.1%</td><td>370/500. LoCoMo baseline 72.0% R@10.</td></tr>
+  <thead>
+    <tr><th>Gap</th><th>Impact</th><th>Path to Close</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Academic benchmark verification</strong></td>
+      <td>Hindsight's scores are independently verified by Virginia Tech; ours are self-reported</td>
+      <td>Partner with an academic group (Sanghani Center at VT or similar)</td>
+    </tr>
+    <tr>
+      <td><strong>Native LangChain store</strong></td>
+      <td>LangMem is the default in LangGraph Platform; massive distribution advantage</td>
+      <td>Build <code>langchain-mentisdb</code> pip package with <code>BaseStore</code> implementation</td>
+    </tr>
+    <tr>
+      <td><strong>Multi-hop recall (59.1% R@10)</strong></td>
+      <td>Multi-hop is 19pp behind single-hop; biggest single improvement opportunity</td>
+      <td>Improve graph traversal depth, add entity coreference, expand <code>ContinuesFrom</code> chains</td>
+    </tr>
+    <tr>
+      <td><strong>Vector sidecar contribution</strong></td>
+      <td>Near-zero vector scores on misses; semantic layer not firing in many cases</td>
+      <td>Debug FastEmbed loading; improve embedding coverage; add query expansion</td>
+    </tr>
+    <tr>
+      <td><strong>Managed cloud service</strong></td>
+      <td>Mem0, Cognee, Hindsight, Fast.io all offer hosted versions</td>
+      <td>MentisDB Cloud — managed service with zero infrastructure setup</td>
+    </tr>
+    <tr>
+      <td><strong>Memory consolidation tiers</strong></td>
+      <td>agentmemory uses Ebbinghaus decay; Hindsight uses Mental Models reflection</td>
+      <td>Implement automatic memory consolidation (working → episodic → semantic)</td>
+    </tr>
+  </tbody>
 </table>
 
+<hr>
+
+<h2 id="whats-next">What's Next</h2>
+
 <p>
-  The LoCoMo full run is executing now. Results will be published separately when complete.
+  The 0.9.x release establishes the feature foundation. The next push is on three fronts:
 </p>
 
-<div class="highlight">
-  <p>
-    <strong>Key retrieval signals:</strong> LoCoMo's 72.0% R@10 is driven by lexical BM25
-    matching, session cohesion (thoughts near high-scoring seeds get a proximity boost),
-    importance weighting (user-thoughts score higher than assistant thoughts), and graph
-    traversal via <code>ContinuesFrom</code> relations.
-  </p>
-</div>
+<ol>
+  <li>
+    <strong>Benchmark quality:</strong> Multi-hop is the primary gap (59.1% vs 78.0%).
+    Improving <code>ContinuesFrom</code> chain density, adding entity coreference resolution,
+    and fixing the vector sidecar contribution should close most of the 19pp gap.
+  </li>
+  <li>
+    <strong>Ecosystem distribution:</strong> Native LangChain store, LlamaIndex connector,
+    and explicit Claude Code / Cursor plugins. The skill registry gives us a hook for
+    agent-specific memory capture.
+  </li>
+  <li>
+    <strong>Academic credibility:</strong> Independent benchmark verification would
+    put us on equal footing with Hindsight's independently verified claims.
+  </li>
+</ol>
+
+<p>
+  See the <a href="https://github.com/CloudLLM-ai/mentisdb/blob/master/ROADMAP.md">ROADMAP.md</a>
+  for the full 1.0 pipeline.
+</p>
 
 <hr>
 
@@ -442,31 +399,9 @@ thought = client.append_thought(
   <a href="https://github.com/CloudLLM-ai/mentisdb/releases">GitHub Releases</a>.
 </p>
 
-<p>
-  The <code>llm-extraction</code> feature is enabled by default. No new Cargo features needed.
-</p>
-
-<p>
-  For the Python client:
-</p>
-
 <pre><code>pip install pymentisdb --upgrade</code></pre>
 
 <hr>
-
-<h2 id="whats-next">What's Next</h2>
-
-<p>
-  The 0.9.x release establishes the feature foundation. The next push is on benchmark
-  quality: closing the multi-hop gap in LoCoMo (currently ~17pp behind single-hop),
-  improving multi-session recall in LongMemEval, and adding source-cited retrieval so
-  agents can trace answers back to specific evidence.
-</p>
-
-<p>
-  See the <a href="https://github.com/CloudLLM-ai/mentisdb/blob/master/ROADMAP.md">ROADMAP.md</a>
-  for the full 1.0 pipeline.
-</p>
 
 <footer>
   <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;

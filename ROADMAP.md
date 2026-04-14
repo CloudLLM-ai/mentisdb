@@ -1,34 +1,121 @@
 # MentisDB Roadmap
 
-## 0.9.0 — Interop & Scale
-- Optional LLM-extracted memories (keep no-LLM core, add opt-in pipeline)
-- LangChain/LlamaIndex integration (Python bindings via REST)
+## Shipped (0.8.2 → 0.9.1)
+
+### 0.9.1 — The Full-Feature Release
+- Federated cross-chain search — `BranchesFrom` walks ancestor chains; ranked search transparently queries branch + ancestors
+- Opt-in LLM extraction — GPT-4o (or any OpenAI-compatible endpoint) extracts structured `ThoughtInput` from raw text; review-before-append workflow
+- pymentisdb Python client — full `MentisDbClient` on PyPI; LangChain `MentisDbMemory`; typed enums and relations
+- Webhooks — HTTP POST callbacks on thought append with exponential backoff retries
+- Wizard brew-first setup — interactive setup detects Homebrew `mcp-remote` and writes Claude Desktop config automatically
+
+### 0.8.9 — Webhooks + Benchmark Stability
+- Webhook delivery for thought append events (async HTTP callbacks with retry)
+- Irregular verb lemma expansion in lexical search
+
+### 0.8.8 — Episode Provenance + LLM Reranking
+- `source_episode` field — full lineage from derived fact to source
+- `DerivedFrom` relation kind
+- Optional LLM reranking — pluggable cross-encoder reranker interface
+
+### 0.8.7 — Custom Ontology
+- `entity_type` field on thoughts (e.g. "bug_report", "architecture_decision")
+- Per-chain entity type registry persisted in a sidecar
+- Dashboard entity_type display and filter
+
+### 0.8.6 — Search Quality + Branching
+- Reciprocal Rank Fusion (RRF) — opt-in reranking merging lexical + vector + graph signals
+- Memory branching — `BranchesFrom` relation; `POST /v1/chains/branch`
+- Per-field BM25 DF cutoffs — document-frequency-based field weighting
+- Irregular verb lemma expansion (~170 mappings, query-time only)
+
+### 0.8.2 — Temporal, Dedup, Scopes, CLI
+- Temporal facts — `valid_at`/`invalid_at` on thoughts; `as_of` query parameter
+- Memory deduplication — Jaccard similarity threshold; auto-`Supersedes` relation
+- Multi-level memory scopes — `MemoryScope` enum (`User`, `Session`, `Agent`)
+- CLI tool — `mentisdb add`, `search`, `list`, `agents`, `chain` subcommands
+
+---
+
+## Benchmarks (0.9.1)
+
+| Benchmark | Score |
+|-----------|-------|
+| **LoCoMo 10-persona R@10** | **74.0%** (1462/1977) |
+| LoCoMo 10-persona R@20 | 80.8% |
+| LoCoMo 10-persona R@50 | 88.5% |
+| Single-hop | 78.0% |
+| Multi-hop | 59.1% |
+| Evaluation time | 94s (20.9 q/s) |
+
+**Near-miss analysis:** 44.3% of misses don't appear in top-50 — lexical coverage gap, not ranking. Vector scores on misses near zero. Multi-hop is 19pp behind single-hop.
+
+Reference scores (MemPalace BENCHMARKS.md):
+- Hybrid v5, top-10, no rerank: 88.9% R@10
+- Hybrid + Sonnet rerank, top-50: 100.0% R@5
+
+---
+
+## Competitive Position (April 2026)
+
+| Feature | MentisDB | Hindsight | Cognee | LangMem | Mem0 | Graphiti |
+|---------|----------|-----------|--------|---------|------|----------|
+| Language | **Rust** | Python | Python | Python | Python | Python |
+| Storage | **Embedded (sled)** | External (PG) | External | External | External | External |
+| LLM Required | **No (opt-in)** | Yes | Yes | Yes | Yes | Yes |
+| Local-First | **Yes** | No | No | No | Partial | No |
+| Crypto Integrity | **Hash chain** | No | No | No | No | No |
+| Hybrid Retrieval | **BM25+vec+graph** | 4-signal RRF | vec+graph | vec only | vec+kw | sem+kw+graph |
+| Federated Search | **Yes** | No | No | No | No | No |
+| Skills/Extensions | **Yes** | No | No | No | No | No |
+| Webhooks | **Yes** | No | No | No | No | No |
+| Benchmark | 74.0% (self) | SOTA (indep. verified) | N/A | N/A | N/A | N/A |
+
+**MentisDB is the only local-first, zero-dependency, cryptographically-integrity-verified semantic memory with built-in hybrid retrieval — in Rust.**
+
+---
 
 ## 1.0.0 — Production Stability
-- Token tracking (per-agent token budget and usage metrics)
-- Self-improving agent primitives
-- Browser extension
 
-## Shipped
-- 0.8.9: webhooks (HTTP callbacks on thought append — register/list/get/delete), irregular verb lemma expansion at query time
-- 0.8.7: entity_type field, type registry per chain, dashboard entity_type display/filter, dashboard modal UX overhaul, resolve_chain_key trim/filter, wizard Issue #14 fix, schema v4+ compatibility
-- 0.8.6: RRF reranking, per-field BM25 DF cutoffs, memory branching with BranchesFrom
-- 0.8.5: Session cohesion tuning, graph relation scores, fastembed integration
+The next phase closes the remaining competitive gaps and ships what enterprise users need:
 
-## Benchmarks (as of 0.8.9)
-- LoCoMo 10-persona: 72.0% R@10 (0.8.9)
-- LoCoMo 10-persona w/ RRF: 73.0% R@10 (multi-type +0.5%)
-- LongMemEval (fresh chain): 66.8% R@5, 74.1% R@10 (0.8.9)
+### Retrieval Quality (High Priority)
+- **Multi-hop recall** — 19pp gap (59.1% vs 78.0% single-hop); entity coreference, deeper graph traversal, query expansion
+- **Vector sidecar debugging** — near-zero vector scores on misses; FastEmbed loading issues
+- **Auto-capture hooks** — agentmemory-style hooks for automatic memory capture (Hindsight retain pattern)
 
-## Competitive Position
-| Property | MentisDB | Mem0 | Graphiti/Zep | Letta | Cognee |
-|----------|----------|------|-------------|-------|--------|
-| No LLM required | Yes | No | No | No | No |
-| Cryptographic integrity | Yes | No | No | No | No |
-| Embedded storage | Yes | No | No | No | No |
-| Language | Rust | Python | Python | Python | Python |
-| Temporal facts | Yes (0.8.2) | Updates | Yes | No | No |
-| Memory dedup | Yes (0.8.2) | Yes | Merge | No | Partial |
-| Hybrid retrieval | BM25+vec+graph | vec+kw | semantic+kw+graph | No | vec+graph |
-| RRF reranking | Yes (0.8.6) | No | No | No | No |
-| Memory branching | Yes (0.8.6) | No | No | No | No |
+### Ecosystem Distribution
+- **Native LangChain store** — `langchain-mentisdb` pip package with `BaseStore` implementation
+- **LlamaIndex connector** — complete Python ecosystem coverage
+- **Claude Code / Cursor plugins** — explicit integrations for major agent platforms
+
+### Academic Benchmark Verification
+- **Partner with an academic group** — Virginia Tech Sanghani Center or similar; independently verify LoCoMo and LongMemEval scores like Hindsight did
+
+### Enterprise
+- **MentisDB Cloud** — managed service, zero-infrastructure deployment
+- **Token tracking** — per-agent usage metrics
+- **Compliance exports** — SOC2, GDPR audit trails
+
+### Developer Experience
+- **Browser extension** — read/write memories from any webpage
+- **Self-improving agent primitives** — agents that update their own skill files
+
+---
+
+## What's Changed Since April 10
+
+MentisDB closed 15+ feature gaps in 11 releases (0.8.2 → 0.9.1). The original competitive analysis identified temporal facts, memory dedup, multi-level scopes, CLI, and episode provenance as major gaps. All shipped.
+
+New unique advantages since April 10:
+- Federated cross-chain search (no competitor has this)
+- Skill registry with versioning and revocation
+- Webhooks
+- Opt-in LLM extraction (keeps no-LLM core as differentiator)
+
+New competitive threats:
+- **Hindsight** — independently verified SOTA benchmarks; managed service
+- **Cognee v1.0** — 15k stars, Hermes integration
+- **LangMem** — default in LangGraph Platform deployments; massive distribution advantage
+
+The next battle is ecosystem and distribution, not features.
