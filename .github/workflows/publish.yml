@@ -29,4 +29,5 @@ jobs:
       - name: Publish to PyPI with trusted publishing
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          skip_existing: true
+          packages-dir: pymentisdb/dist
+          skip-existing: true
