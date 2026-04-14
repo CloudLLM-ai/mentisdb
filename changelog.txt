@@ -1,4 +1,4 @@
-0.9.0.36 APR/14/2026
+0.9.1.37 APR/14/2026
   - feat: LLM-extracted memories — GPT-4o (or any OpenAI-compatible endpoint) converts
     raw agent text/logs/transcripts into structured ThoughtInput records for review
     and append; opt-in behind llm-extraction feature (default), uses openai-rust2
