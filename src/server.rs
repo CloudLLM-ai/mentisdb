@@ -43,13 +43,13 @@
 use crate::webhooks::{WebhookManager, WebhookRegistration};
 use crate::{
     deregister_chain, load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus,
-    EntityTypeRecord, ManagedVectorProviderKind, MemoryScope, MentisDb, PublicKeyAlgorithm,
-    RankedSearchGraph, RankedSearchQuery, SkillFormat, SkillQuery, SkillRegistry,
-    SkillRegistryManifest, SkillStatus, SkillSummary, SkillUpload, SkillVersionSummary,
-    StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelation, ThoughtRelationKind,
-    ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor, ThoughtTraversalCursor,
-    ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType, TimeWindowUnit,
-    MENTISDB_CURRENT_VERSION,
+    EntityTypeRecord, LlmExtractionConfig,
+    ManagedVectorProviderKind, MemoryScope, MentisDb, PublicKeyAlgorithm, RankedSearchGraph,
+    RankedSearchQuery, SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus,
+    SkillSummary, SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput,
+    ThoughtQuery, ThoughtRelation, ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow,
+    ThoughtTraversalAnchor, ThoughtTraversalCursor, ThoughtTraversalDirection,
+    ThoughtTraversalRequest, ThoughtType, TimeWindowUnit, TokenUsage, MENTISDB_CURRENT_VERSION,
 };
 use async_trait::async_trait;
 use axum::extract::{Path as AxumPath, Query, State};
@@ -1456,6 +1456,7 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         .route("/v1/webhooks", get(rest_list_webhooks_handler))
         .route("/v1/webhooks", post(rest_register_webhook_handler))
         .route("/v1/webhooks/{id}", delete(rest_delete_webhook_handler))
+        .route("/v1/extract-memories", post(rest_extract_memories_handler))
         .with_state(service)
 }
 
@@ -1691,6 +1692,7 @@ pub fn rest_router(config: MentisDbServiceConfig) -> Router {
         .route("/v1/webhooks", get(rest_list_webhooks_handler))
         .route("/v1/webhooks", post(rest_register_webhook_handler))
         .route("/v1/webhooks/{id}", delete(rest_delete_webhook_handler))
+        .route("/v1/extract-memories", post(rest_extract_memories_handler))
         .with_state(service)
 }
 
@@ -1942,6 +1944,9 @@ impl ToolProtocol for MentisDbMcpProtocol {
             }
             "mentisdb_delete_webhook" => {
                 parse_and_call(parameters, |request| self.service.delete_webhook(request)).await
+            }
+            "mentisdb_extract_memories" => {
+                parse_and_call(parameters, |request| self.service.extract_memories(request)).await
             }
             _ => {
                 return Err(Box::new(ToolError::NotFound(tool_name.to_string())));
@@ -3478,6 +3483,40 @@ impl MentisDbService {
         Ok(DeleteWebhookResponse { deleted })
     }
 
+    async fn extract_memories(
+        &self,
+        request: ExtractMemoriesRequest,
+    ) -> Result<ExtractMemoriesResponse, Box<dyn Error + Send + Sync>> {
+        use crate::llm::extract_memories_from_text;
+
+        let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
+        let config = LlmExtractionConfig::from_env()?;
+        let _chain = self.get_chain(Some(&chain_key), None).await?;
+
+        // Call the LLM extraction
+        let result =
+            extract_memories_from_text(&request.text, &config, request.prompt_template.as_deref())
+                .await?;
+
+        self.log_interaction(InteractionLogEntry {
+            access: "read",
+            operation: "llm_extract_memories",
+            chain_key: chain_key.clone(),
+            metadata: InteractionMetadata::default(),
+            result_count: Some(result.thoughts.len()),
+            note: Some(format!(
+                "llm_model={}, tokens={}",
+                result.model, result.usage.total_tokens
+            )),
+        });
+
+        Ok(ExtractMemoriesResponse {
+            thoughts: result.thoughts,
+            model: result.model,
+            usage: result.usage,
+        })
+    }
+
     async fn head(
         &self,
         request: ChainHeadRequest,
@@ -4341,6 +4380,29 @@ struct DeleteWebhookResponse {
     deleted: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct ExtractMemoriesRequest {
+    /// Free-form text to extract memories from.
+    text: String,
+    /// Optional chain key. Defaults to the server default.
+    chain_key: Option<String>,
+    /// Optional agent ID for the extracted thoughts (reserved for future use).
+    #[allow(dead_code)]
+    agent_id: Option<String>,
+    /// Optional custom prompt template.
+    prompt_template: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExtractMemoriesResponse {
+    /// Extracted thought inputs ready for append.
+    thoughts: Vec<ThoughtInput>,
+    /// Model identifier that produced the extraction.
+    model: String,
+    /// Token usage from the LLM API call.
+    usage: TokenUsage,
+}
+
 #[derive(Debug, Serialize)]
 struct ThoughtResponse {
     chain_key: String,
@@ -5152,6 +5214,13 @@ async fn rest_delete_webhook_handler(
     )
 }
 
+async fn rest_extract_memories_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<ExtractMemoriesRequest>,
+) -> Result<Json<ExtractMemoriesResponse>, (StatusCode, Json<Value>)> {
+    service_call(service.extract_memories(request).await)
+}
+
 async fn rest_head_handler(
     State(service): State<Arc<MentisDbService>>,
     Json(request): Json<ChainHeadRequest>,
@@ -5679,6 +5748,17 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         )
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
         .with_parameter(ToolParameter::new("id", ToolParameterType::String).with_description("Stable UUID of the webhook registration to delete.").required()),
+        ToolMetadata::new(
+            "mentisdb_extract_memories",
+            "Extract structured memories from free-form text using an LLM. \
+             The LLM is called with a prompt that transforms agent text into typed memory records. \
+             The returned ThoughtInput records are NOT automatically appended — \
+             callers should review, validate, and optionally sign them before appending.",
+        )
+        .with_parameter(ToolParameter::new("text", ToolParameterType::String).with_description("Free-form text to extract memories from.").required())
+        .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key. Defaults to the server default."))
+        .with_parameter(ToolParameter::new("agent_id", ToolParameterType::String).with_description("Optional agent ID for the extracted thoughts."))
+        .with_parameter(ToolParameter::new("prompt_template", ToolParameterType::String).with_description("Optional custom prompt template. Use {{text}} for the input and {{types}} for valid ThoughtType names.")),
     ]
 }
 

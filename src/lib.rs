@@ -11,6 +11,7 @@ pub mod cli;
 #[cfg(feature = "server")]
 pub(crate) mod dashboard;
 pub mod integrations;
+pub mod llm;
 pub mod paths;
 pub mod search;
 #[cfg(feature = "server")]
@@ -1467,6 +1468,17 @@ pub enum ThoughtType {
     /// to capture *what* the agent is trying to achieve so that future
     /// sessions can orient quickly even if the plan details have changed.
     Goal,
+    /// A memory record produced by the LLM-extracted memories pipeline.
+    ///
+    /// This variant marks thoughts that were automatically extracted from
+    /// free-form agent text via an LLM. It allows filtering for
+    /// LLM-origin memories during retrieval.
+    ///
+    /// Note: the pipeline itself assigns more specific semantic types
+    /// (e.g. `Decision`, `PreferenceUpdate`) to individual extracted
+    /// memories. `LLMExtracted` is used when the pipeline itself needs
+    /// to be recorded as the source of the memory.
+    LLMExtracted,
 }
 
 /// Operational role of a thought inside the system.
@@ -1602,6 +1614,120 @@ pub enum ThoughtRelationKind {
     /// lower-priority.
     Supersedes,
 }
+
+/// Configuration for the LLM-extracted memories pipeline.
+///
+/// Pass this to [`MentisDb::extract_memories`] to configure the OpenAI-compatible
+/// LLM endpoint that transforms free-form text into structured memory records.
+///
+/// # Example
+///
+/// ```
+/// use mentisdb::LlmExtractionConfig;
+///
+/// let config = LlmExtractionConfig {
+///     base_url: "https://api.openai.com/v1".to_string(),
+///     api_key: std::env::var("OPENAI_API_KEY").unwrap(),
+///     model: "gpt-4".to_string(),
+/// };
+/// ```
+#[derive(Debug, Clone)]
+pub struct LlmExtractionConfig {
+    /// OpenAI-compatible API base URL.
+    ///
+    /// Defaults to `https://api.openai.com/v1` when empty.
+    pub base_url: String,
+    /// API key for authentication.
+    ///
+    /// Required. Must not be empty.
+    pub api_key: String,
+    /// Model identifier (e.g., "gpt-4", "claude-3-sonnet").
+    ///
+    /// Defaults to `gpt-4` when empty.
+    pub model: String,
+}
+
+impl LlmExtractionConfig {
+    /// Create a new LLM extraction config from environment variables.
+    ///
+    /// Reads:
+    /// - `OPENAI_API_KEY` (required)
+    /// - `LLM_BASE_URL` (defaults to `https://api.openai.com/v1`)
+    /// - `LLM_MODEL` (defaults to `gpt-4`)
+    pub fn from_env() -> Result<Self, LlmExtractionError> {
+        let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+            LlmExtractionError::NotConfigured("OPENAI_API_KEY is not set".to_string())
+        })?;
+
+        Ok(Self {
+            base_url: std::env::var("LLM_BASE_URL")
+                .unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
+            api_key,
+            model: std::env::var("LLM_MODEL").unwrap_or_else(|_| "gpt-4".to_string()),
+        })
+    }
+}
+
+/// Token usage statistics from an LLM API call.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub struct TokenUsage {
+    /// Number of tokens in the prompt.
+    pub prompt_tokens: u32,
+    /// Number of tokens in the completion.
+    pub completion_tokens: u32,
+    /// Total tokens used.
+    pub total_tokens: u32,
+}
+
+/// Result of extracting structured memories from free-form text.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractionResult {
+    /// Extracted thought inputs ready for append.
+    ///
+    /// These are **not** automatically appended. Callers should review,
+    /// validate, and optionally sign each thought before appending.
+    pub thoughts: Vec<ThoughtInput>,
+    /// Model identifier that produced the extraction.
+    pub model: String,
+    /// Token usage statistics from the LLM API call.
+    pub usage: TokenUsage,
+}
+
+/// Errors that can occur during LLM-based memory extraction.
+#[derive(Debug)]
+pub enum LlmExtractionError {
+    /// LLM configuration is missing or invalid.
+    NotConfigured(String),
+    /// LLM API returned an HTTP error.
+    ApiError {
+        /// HTTP status code.
+        status: u16,
+        /// Error message from the API.
+        message: String,
+    },
+    /// LLM output could not be parsed as valid JSON.
+    ParseError(String),
+    /// LLM output JSON does not match the expected schema.
+    SchemaMismatch(String),
+    /// I/O error (network failure, etc.).
+    IoError(io::Error),
+}
+
+impl fmt::Display for LlmExtractionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotConfigured(msg) => write!(f, "LLM not configured: {}", msg),
+            Self::ApiError { status, message } => {
+                write!(f, "LLM API error ({}): {}", status, message)
+            }
+            Self::ParseError(msg) => write!(f, "Failed to parse LLM response: {}", msg),
+            Self::SchemaMismatch(msg) => write!(f, "LLM schema mismatch: {}", msg),
+            Self::IoError(e) => write!(f, "I/O error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for LlmExtractionError {}
 
 /// Typed edge in the thought graph.
 ///
@@ -2733,6 +2859,43 @@ pub struct RankedSearchResult<'a> {
     pub total_candidates: usize,
     /// Top ranked hits in descending score order.
     pub hits: Vec<RankedSearchHit<'a>>,
+}
+
+/// Request for vector similarity retrieval over committed thoughts.
+#[derive(Debug, Clone)]
+pub struct FederatedSearchHit<'a> {
+    /// Chain key of the source chain for this hit.
+    pub chain_key: &'a str,
+    /// Matching thought.
+    pub thought: &'a Thought,
+    /// Score breakdown for this hit.
+    pub score: RankedSearchScore,
+    /// Graph distance from the lexical seed that surfaced this hit.
+    pub graph_distance: Option<usize>,
+    /// Number of distinct lexical seeds whose expansion reached this hit.
+    pub graph_seed_paths: usize,
+    /// Distinct relation kinds observed along supporting graph paths.
+    pub graph_relation_kinds: Vec<ThoughtRelationKind>,
+    /// Provenance path from the originating lexical seed to this hit.
+    pub graph_path: Option<crate::search::GraphExpansionPath>,
+    /// Unique normalized query terms that matched this hit.
+    pub matched_terms: Vec<String>,
+    /// Indexed field sources that contributed to the lexical score.
+    pub match_sources: Vec<crate::search::lexical::LexicalMatchSource>,
+}
+
+/// Federated search result over multiple chains.
+///
+/// Merges ranked hits from multiple chains into a single ordered list,
+/// deduplicates by thought UUID, and tags each hit with its source chain key.
+#[derive(Debug, Clone)]
+pub struct FederatedSearchResult<'a> {
+    /// Dominant ranking backend among the searched chains.
+    pub backend: RankedSearchBackend,
+    /// Total number of matching candidates across all chains before deduplication.
+    pub total_candidates: usize,
+    /// Merged and deduplicated hits in descending score order.
+    pub hits: Vec<FederatedSearchHit<'a>>,
 }
 
 /// Request for vector similarity retrieval over committed thoughts.
@@ -5047,6 +5210,283 @@ impl MentisDb {
         )
     }
 
+    /// Run federated ranked search over this chain and a set of other chains.
+    ///
+    /// This method takes a slice of `(chain_key, &MentisDb)` tuples representing
+    /// all chains to search, including `self`. It runs `query_ranked` on each
+    /// chain concurrently (via `std::thread::scope` or sequential fallback for
+    /// non-`Send` chains), deduplicates hits by thought UUID, merges results
+    /// by score, and applies optional RRF reranking over the combined candidate
+    /// set.
+    ///
+    /// # Parameters
+    ///
+    /// * `self_chain_key` — Chain key for `self` (used for provenance tagging).
+    /// * `other_chains` — Slice of `(chain_key, &MentisDb)` for all **other**
+    ///   chains to search alongside `self`.
+    /// * `self_query` — Ranked search query for `self`.
+    /// * `other_queries` — Per-chain queries keyed by chain key for the
+    ///   `other_chains`.
+    /// * `limit` — Global cap on merged results.
+    /// * `offset` — Offset into the merged sorted list for paging.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Call `query_ranked` on `self` and every chain in `other_chains`.
+    /// 2. Collect all hits, tagging each with its source `chain_key`.
+    /// 3. Deduplicate by thought UUID — keep the higher-scoring occurrence.
+    /// 4. Sort by `total` score descending, then by `thought.index` ascending.
+    /// 5. Apply RRF reranking if any query enabled it.
+    /// 6. Apply global `offset + limit`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use std::path::PathBuf;
+    /// use mentisdb::{MentisDb, RankedSearchQuery, FederatedSearchResult};
+    ///
+    /// # fn main() -> std::io::Result<()> {
+    /// let chain_a = MentisDb::open_with_key(PathBuf::from("/tmp/tc_fed"), "chain-a")?;
+    /// let chain_b = MentisDb::open_with_key(PathBuf::from("/tmp/tc_fed"), "chain-b")?;
+    ///
+    /// let self_query = RankedSearchQuery::new().with_text("distributed systems");
+    /// let other_queries = std::collections::BTreeMap::new();
+    ///
+    /// let result = chain_a.query_federated(
+    ///     "chain-a",
+    ///     &[("chain-b", &chain_b)],
+    ///     &self_query,
+    ///     &other_queries,
+    ///     20,
+    ///     0,
+    /// );
+    /// println!("federated hits: {}", result.hits.len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn query_federated<'a>(
+        &'a self,
+        self_chain_key: &'a str,
+        other_chains: &[(&'a str, &'a MentisDb)],
+        self_query: &RankedSearchQuery,
+        other_queries: &BTreeMap<String, RankedSearchQuery>,
+        limit: usize,
+        offset: usize,
+    ) -> FederatedSearchResult<'a> {
+        use crate::search::ranked::RRF_K;
+        use std::collections::BTreeSet;
+
+        // Step 1: Collect results from self and all other chains
+        let mut all_hits: Vec<(
+            &'a str,
+            &'a Thought,
+            RankedSearchScore,
+            Option<usize>,
+            usize,
+            Vec<ThoughtRelationKind>,
+            Option<crate::search::GraphExpansionPath>,
+            Vec<String>,
+            Vec<crate::search::lexical::LexicalMatchSource>,
+        )> = Vec::new();
+        let mut total_candidates = 0usize;
+        let mut best_backend = RankedSearchBackend::Heuristic;
+
+        // Search self
+        {
+            let ranked = self.query_ranked(self_query);
+            total_candidates += ranked.total_candidates;
+            if ranked.backend != RankedSearchBackend::Heuristic {
+                best_backend = ranked.backend;
+            }
+            for hit in ranked.hits {
+                all_hits.push((
+                    self_chain_key,
+                    hit.thought,
+                    hit.score,
+                    hit.graph_distance,
+                    hit.graph_seed_paths,
+                    hit.graph_relation_kinds,
+                    hit.graph_path,
+                    hit.matched_terms,
+                    hit.match_sources,
+                ));
+            }
+        }
+
+        // Search other chains
+        for (chain_key, chain) in other_chains {
+            let query = other_queries.get(*chain_key);
+            let ranked = match query {
+                Some(q) => chain.query_ranked(q),
+                None => {
+                    // Fall back to no-text query if no explicit query for this chain
+                    let mut fallback = RankedSearchQuery::new();
+                    fallback.limit = self_query.limit;
+                    fallback.filter = self_query.filter.clone();
+                    fallback.as_of = self_query.as_of;
+                    fallback.scope = self_query.scope;
+                    fallback.enable_reranking = self_query.enable_reranking;
+                    fallback.rerank_k = self_query.rerank_k;
+                    chain.query_ranked(&fallback)
+                }
+            };
+            total_candidates += ranked.total_candidates;
+            if ranked.backend != RankedSearchBackend::Heuristic
+                && best_backend == RankedSearchBackend::Heuristic
+            {
+                best_backend = ranked.backend;
+            }
+            for hit in ranked.hits {
+                all_hits.push((
+                    *chain_key,
+                    hit.thought,
+                    hit.score,
+                    hit.graph_distance,
+                    hit.graph_seed_paths,
+                    hit.graph_relation_kinds,
+                    hit.graph_path,
+                    hit.matched_terms,
+                    hit.match_sources,
+                ));
+            }
+        }
+
+        // Step 2: Deduplicate by thought UUID (keep higher-scoring occurrence)
+        let mut seen_ids: BTreeSet<Uuid> = BTreeSet::new();
+        let mut deduplicated: Vec<(
+            &'a str,
+            &'a Thought,
+            RankedSearchScore,
+            Option<usize>,
+            usize,
+            Vec<ThoughtRelationKind>,
+            Option<crate::search::GraphExpansionPath>,
+            Vec<String>,
+            Vec<crate::search::lexical::LexicalMatchSource>,
+        )> = Vec::new();
+        for hit in all_hits {
+            if seen_ids.insert(hit.1.id) {
+                deduplicated.push(hit);
+            }
+        }
+
+        // Step 3: Sort by total score descending, then by thought.index ascending
+        deduplicated.sort_by(|a, b| {
+            b.2.total
+                .partial_cmp(&a.2.total)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1.index.cmp(&b.1.index))
+        });
+
+        // Step 4: RRF reranking if any query enabled it
+        let any_reranking =
+            self_query.enable_reranking || other_queries.values().any(|q| q.enable_reranking);
+
+        if any_reranking && !deduplicated.is_empty() {
+            let rerank_k = self_query.rerank_k.min(deduplicated.len());
+
+            let mut by_lexical: Vec<_> = deduplicated.iter().collect();
+            by_lexical.sort_by(|a, b| {
+                b.2.lexical
+                    .total_cmp(&a.2.lexical)
+                    .then_with(|| a.1.index.cmp(&b.1.index))
+            });
+
+            let mut by_vector: Vec<_> = deduplicated.iter().collect();
+            by_vector.sort_by(|a, b| {
+                b.2.vector
+                    .total_cmp(&a.2.vector)
+                    .then_with(|| a.1.index.cmp(&b.1.index))
+            });
+
+            let mut by_graph: Vec<_> = deduplicated.iter().collect();
+            by_graph.sort_by(|a, b| {
+                let a_g = a.2.graph + a.2.relation + a.2.seed_support;
+                let b_g = b.2.graph + b.2.relation + b.2.seed_support;
+                b_g.total_cmp(&a_g).then_with(|| a.1.index.cmp(&b.1.index))
+            });
+
+            let lexical_ids: Vec<u64> = by_lexical
+                .iter()
+                .take(rerank_k)
+                .map(|h| h.1.index)
+                .collect();
+            let vector_ids: Vec<u64> = by_vector.iter().take(rerank_k).map(|h| h.1.index).collect();
+            let graph_ids: Vec<u64> = by_graph.iter().take(rerank_k).map(|h| h.1.index).collect();
+
+            let merged = crate::search::ranked::rrf_merge_three(
+                &lexical_ids,
+                &vector_ids,
+                &graph_ids,
+                RRF_K,
+            );
+            let rrf_scores: BTreeMap<u64, f64> = merged.into_iter().collect();
+
+            for hit in &mut deduplicated {
+                if let Some(&rrf) = rrf_scores.get(&hit.1.index) {
+                    let rrf_f32 = rrf as f32;
+                    hit.2.rrf = rrf_f32;
+                    let additive = hit.2.graph
+                        + hit.2.relation
+                        + hit.2.seed_support
+                        + hit.2.importance
+                        + hit.2.confidence
+                        + hit.2.recency
+                        + hit.2.session_cohesion;
+                    hit.2.total = rrf_f32 + additive;
+                }
+            }
+
+            // Re-sort after RRF score update
+            deduplicated.sort_by(|a, b| {
+                b.2.total
+                    .partial_cmp(&a.2.total)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.1.index.cmp(&b.1.index))
+            });
+        }
+
+        let _total_deduped = deduplicated.len();
+
+        // Step 5: Apply offset + limit
+        let paged: Vec<_> = deduplicated.into_iter().skip(offset).take(limit).collect();
+
+        let hits: Vec<FederatedSearchHit<'_>> = paged
+            .into_iter()
+            .map(
+                |(
+                    chain_key,
+                    thought,
+                    score,
+                    graph_distance,
+                    graph_seed_paths,
+                    graph_relation_kinds,
+                    graph_path,
+                    matched_terms,
+                    match_sources,
+                )| {
+                    FederatedSearchHit {
+                        chain_key,
+                        thought,
+                        score,
+                        graph_distance,
+                        graph_seed_paths,
+                        graph_relation_kinds,
+                        graph_path,
+                        matched_terms,
+                        match_sources,
+                    }
+                },
+            )
+            .collect();
+
+        FederatedSearchResult {
+            backend: best_backend,
+            total_candidates,
+            hits,
+        }
+    }
+
     /// Return the deterministic on-disk path for one vector sidecar.
     pub fn vector_sidecar_path(
         &self,
@@ -6789,6 +7229,63 @@ impl MentisDb {
             },
         );
         save_mentisdb_registry(&metadata.chain_dir, &registry)
+    }
+
+    /// Extract structured memories from free-form text using an LLM.
+    ///
+    /// This method is **opt-in**: no HTTP client is initialized unless
+    /// this method is called. The LLM is called with a prompt that asks
+    /// it to extract typed memory records from the provided text.
+    ///
+    /// The returned [`ExtractionResult`] contains [`ThoughtInput`] records that
+    /// are **not** automatically appended. Callers should review, optionally
+    /// sign, and append each thought manually.
+    ///
+    /// # Configuration
+    ///
+    /// The `config` parameter controls the LLM endpoint and credentials.
+    /// Build it with [`LlmExtractionConfig::from_env()`] to read from
+    /// environment variables:
+    /// - `OPENAI_API_KEY` (required)
+    /// - `LLM_BASE_URL` (defaults to `https://api.openai.com/v1`)
+    /// - `LLM_MODEL` (defaults to `gpt-4`)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmExtractionError`] if:
+    /// - `OPENAI_API_KEY` is not set
+    /// - LLM API call fails or returns an HTTP error
+    /// - The response cannot be parsed into structured memories
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use std::path::PathBuf;
+    /// use mentisdb::{MentisDb, LlmExtractionConfig};
+    ///
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    /// let config = LlmExtractionConfig::from_env()?;
+    /// let chain = MentisDb::open_with_key(PathBuf::from("/tmp/mentisdb"), "agent-brain")?;
+    ///
+    /// let extraction = chain
+    ///     .extract_memories(
+    ///         "User prefers dark mode. They asked about enterprise pricing.",
+    ///         &config,
+    ///     )
+    ///     .await?;
+    ///
+    /// for thought in extraction.thoughts {
+    ///     println!("Extracted: {:?}", thought.thought_type);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn extract_memories(
+        &self,
+        text: &str,
+        config: &LlmExtractionConfig,
+    ) -> Result<ExtractionResult, LlmExtractionError> {
+        crate::llm::extract_memories_from_text(text, config, None).await
     }
 }
 
