@@ -5264,6 +5264,7 @@ impl MentisDb {
     /// # Ok(())
     /// # }
     /// ```
+    #[allow(clippy::type_complexity)]
     pub fn query_federated<'a>(
         &'a self,
         self_chain_key: &'a str,
@@ -5353,6 +5354,7 @@ impl MentisDb {
 
         // Step 2: Deduplicate by thought UUID (keep higher-scoring occurrence)
         let mut seen_ids: BTreeSet<Uuid> = BTreeSet::new();
+        #[allow(clippy::type_complexity)]
         let mut deduplicated: Vec<(
             &'a str,
             &'a Thought,

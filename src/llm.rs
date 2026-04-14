@@ -269,7 +269,6 @@ pub async fn extract_memories_from_text(
 fn validate_and_transform_thoughts(
     raw_thoughts: Vec<RawExtractedThought>,
 ) -> Result<Vec<ThoughtInput>, LlmExtractionError> {
-
     let mut thoughts = Vec::with_capacity(raw_thoughts.len());
 
     for (i, raw) in raw_thoughts.into_iter().enumerate() {
@@ -396,7 +395,6 @@ mod tests {
 
     #[test]
     fn test_validate_and_transform_valid() {
-    
         let raw_thoughts = vec![RawExtractedThought {
             thought_type: "Decision".to_string(),
             content: "User prefers dark mode.".to_string(),

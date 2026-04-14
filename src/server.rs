@@ -20,6 +20,7 @@
 //! - `POST /v1/search`
 //! - `POST /v1/lexical-search`
 //! - `POST /v1/ranked-search`
+//! - `POST /v1/federated-search`
 //! - `POST /v1/context-bundles`
 //! - `POST /v1/recent-context`
 //! - `POST /v1/memory-markdown`
@@ -43,9 +44,9 @@
 use crate::webhooks::{WebhookManager, WebhookRegistration};
 use crate::{
     deregister_chain, load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus,
-    EntityTypeRecord, LlmExtractionConfig,
-    ManagedVectorProviderKind, MemoryScope, MentisDb, PublicKeyAlgorithm, RankedSearchGraph,
-    RankedSearchQuery, SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus,
+    EntityTypeRecord, LlmExtractionConfig, ManagedVectorProviderKind, MemoryScope, MentisDb,
+    PublicKeyAlgorithm, RankedSearchBackend, RankedSearchGraph, RankedSearchQuery,
+    RankedSearchScore, SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus,
     SkillSummary, SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput,
     ThoughtQuery, ThoughtRelation, ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow,
     ThoughtTraversalAnchor, ThoughtTraversalCursor, ThoughtTraversalDirection,
@@ -1418,6 +1419,7 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         .route("/v1/search", post(rest_search_handler))
         .route("/v1/lexical-search", post(rest_lexical_search_handler))
         .route("/v1/ranked-search", post(rest_ranked_search_handler))
+        .route("/v1/federated-search", post(rest_federated_search_handler))
         .route("/v1/context-bundles", post(rest_context_bundles_handler))
         .route("/v1/recent-context", post(rest_recent_context_handler))
         .route("/v1/memory-markdown", post(rest_memory_markdown_handler))
@@ -1656,6 +1658,7 @@ pub fn rest_router(config: MentisDbServiceConfig) -> Router {
         .route("/v1/search", post(rest_search_handler))
         .route("/v1/lexical-search", post(rest_lexical_search_handler))
         .route("/v1/ranked-search", post(rest_ranked_search_handler))
+        .route("/v1/federated-search", post(rest_federated_search_handler))
         .route("/v1/context-bundles", post(rest_context_bundles_handler))
         .route("/v1/recent-context", post(rest_recent_context_handler))
         .route("/v1/memory-markdown", post(rest_memory_markdown_handler))
@@ -1835,6 +1838,9 @@ impl ToolProtocol for MentisDbMcpProtocol {
             }
             "mentisdb_ranked_search" => {
                 parse_and_call(parameters, |request| self.service.ranked_search(request)).await
+            }
+            "mentisdb_federated_search" => {
+                parse_and_call(parameters, |request| self.service.federated_search(request)).await
             }
             "mentisdb_context_bundles" => {
                 parse_and_call(parameters, |request| self.service.context_bundles(request)).await
@@ -2546,6 +2552,320 @@ impl MentisDbService {
 
         Ok(RankedSearchResponse {
             backend: best_backend,
+            total: total_candidates,
+            results,
+        })
+    }
+
+    /// Run federated ranked search over multiple chains simultaneously.
+    ///
+    /// The first chain in `chain_keys` is treated as the primary chain; all
+    /// other chains are searched with equivalent queries. Results are merged,
+    /// deduplicated by thought UUID, and returned in descending score order.
+    async fn federated_search(
+        &self,
+        request: FederatedSearchRequest,
+    ) -> Result<RankedSearchResponse, Box<dyn Error + Send + Sync>> {
+        use crate::search::ranked::RRF_K;
+        use std::collections::BTreeMap;
+
+        if request.chain_keys.is_empty() {
+            return Ok(RankedSearchResponse {
+                backend: String::new(),
+                total: 0,
+                results: Vec::new(),
+            });
+        }
+
+        let offset = request.offset.unwrap_or(0);
+        let page_size = request.limit.unwrap_or(10).max(1);
+        let ranked_limit = offset.saturating_add(page_size).max(1);
+
+        // Build the filter query once and reuse it for all chains
+        let primary_chain_key = request.chain_keys[0].clone();
+        let ranked_req = RankedSearchRequest {
+            chain_key: Some(primary_chain_key.clone()),
+            text: None,
+            limit: None,
+            offset: None,
+            graph: request.graph.clone(),
+            thought_types: request.thought_types.clone(),
+            roles: request.roles.clone(),
+            tags_any: request.tags_any.clone(),
+            concepts_any: request.concepts_any.clone(),
+            agent_ids: request.agent_ids.clone(),
+            agent_names: request.agent_names.clone(),
+            agent_owners: request.agent_owners.clone(),
+            min_importance: request.min_importance,
+            min_confidence: request.min_confidence,
+            since: request.since,
+            until: request.until,
+            as_of: request.as_of,
+            scope: request.scope.clone(),
+            enable_reranking: request.enable_reranking,
+            rerank_k: request.rerank_k,
+            entity_type: request.entity_type.clone(),
+        };
+        let filter = build_ranked_filter_query(&ranked_req, primary_chain_key.clone())?;
+        let mut ranked_query = RankedSearchQuery::new()
+            .with_filter(filter)
+            .with_limit(ranked_limit);
+        if let Some(text) = request
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            ranked_query = ranked_query.with_text(text.to_string());
+        }
+        if let Some(graph) = &request.graph {
+            ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
+        }
+        if let Some(as_of) = request.as_of {
+            ranked_query = ranked_query.with_as_of(as_of);
+        }
+        if let Some(scope_str) = &request.scope {
+            if let Some(scope) = parse_memory_scope(scope_str) {
+                ranked_query = ranked_query.with_scope(scope);
+            }
+        }
+        let query_enable_reranking = request.enable_reranking.unwrap_or(false);
+        let query_rerank_k = request.rerank_k.unwrap_or(50);
+        if query_enable_reranking {
+            ranked_query = ranked_query.with_reranking(query_rerank_k.max(1));
+        }
+
+        // Collect all chain arcs
+        let mut chain_arcs: Vec<(String, Arc<RwLock<MentisDb>>)> = Vec::new();
+        for chain_key in &request.chain_keys {
+            match self.get_chain(Some(chain_key), None).await {
+                Ok(arc) => {
+                    chain_arcs.push((chain_key.clone(), arc));
+                }
+                Err(_) => {
+                    // Silently skip unknown chains per the design spec
+                }
+            }
+        }
+
+        if chain_arcs.is_empty() {
+            return Ok(RankedSearchResponse {
+                backend: String::new(),
+                total: 0,
+                results: Vec::new(),
+            });
+        }
+
+        // Do the searches and collect owned data in spawn_blocking
+        #[allow(clippy::type_complexity)]
+        let (_other_chain_keys_for_task, chain_arcs_for_task): (
+            Vec<String>,
+            Vec<(String, Arc<RwLock<MentisDb>>)>,
+        ) = {
+            let arcs: Vec<(String, Arc<RwLock<MentisDb>>)> = chain_arcs
+                .iter()
+                .map(|(k, arc)| (k.clone(), Arc::clone(arc)))
+                .collect();
+            (Vec::new(), arcs)
+        };
+        let query_for_task = ranked_query.clone();
+
+        // Collect all hits with owned data while holding locks
+        #[allow(clippy::type_complexity)]
+        #[allow(clippy::type_complexity)]
+        let collected = tokio::task::spawn_blocking(move || {
+            let mut all_hits: Vec<(
+                String,
+                Value,
+                RankedSearchScore,
+                Option<usize>,
+                usize,
+                Vec<ThoughtRelationKind>,
+                Option<crate::search::GraphExpansionPath>,
+                Vec<String>,
+                Vec<crate::search::lexical::LexicalMatchSource>,
+                Uuid,
+                u64,
+            )> = Vec::new();
+            let mut total_candidates = 0usize;
+            let mut best_backend = RankedSearchBackend::Heuristic;
+
+            for (chain_key_str, arc) in &chain_arcs_for_task {
+                let chain = arc.blocking_read();
+                let ranked_result = chain.query_ranked(&query_for_task);
+                total_candidates += ranked_result.total_candidates;
+                if ranked_result.backend != RankedSearchBackend::Heuristic
+                    && best_backend == RankedSearchBackend::Heuristic
+                {
+                    best_backend = ranked_result.backend;
+                }
+
+                for hit in ranked_result.hits {
+                    all_hits.push((
+                        chain_key_str.clone(),
+                        thought_to_json(&chain, hit.thought),
+                        hit.score,
+                        hit.graph_distance,
+                        hit.graph_seed_paths,
+                        hit.graph_relation_kinds.clone(),
+                        hit.graph_path.clone(),
+                        hit.matched_terms.clone(),
+                        hit.match_sources.clone(),
+                        hit.thought.id,
+                        hit.thought.index,
+                    ));
+                }
+            }
+
+            (all_hits, total_candidates, best_backend)
+        })
+        .await
+        .map_err(|e| std::io::Error::other(format!("federated search task failed: {e}")))?;
+
+        let (mut all_hits, total_candidates, best_backend) = collected;
+
+        // Deduplicate by UUID
+        let mut seen_ids: BTreeSet<Uuid> = BTreeSet::new();
+        all_hits.retain(
+            |(_chain_key, _thought, _score, _gd, _gsp, _grk, _gp, _mt, _ms, id, _index)| {
+                if !seen_ids.insert(*id) {
+                    return false;
+                }
+                true
+            },
+        );
+
+        // Sort by score descending, then index ascending for tiebreaking
+        all_hits.sort_by(|a, b| {
+            b.2.total
+                .partial_cmp(&a.2.total)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.10.cmp(&b.10))
+        });
+
+        // Apply RRF reranking if enabled
+        if query_enable_reranking && !all_hits.is_empty() {
+            let rerank_k = query_rerank_k.min(all_hits.len());
+
+            let mut by_lexical: Vec<_> = all_hits.iter().enumerate().collect();
+            by_lexical.sort_by(|(_, a), (_, b)| {
+                b.2.lexical
+                    .total_cmp(&a.2.lexical)
+                    .then_with(|| a.10.cmp(&b.10))
+            });
+
+            let mut by_vector: Vec<_> = all_hits.iter().enumerate().collect();
+            by_vector.sort_by(|(_, a), (_, b)| {
+                b.2.vector
+                    .total_cmp(&a.2.vector)
+                    .then_with(|| a.10.cmp(&b.10))
+            });
+
+            let mut by_graph: Vec<_> = all_hits.iter().enumerate().collect();
+            by_graph.sort_by(|(_, a), (_, b)| {
+                let a_g = a.2.graph + a.2.relation + a.2.seed_support;
+                let b_g = b.2.graph + b.2.relation + b.2.seed_support;
+                b_g.total_cmp(&a_g).then_with(|| a.10.cmp(&b.10))
+            });
+
+            let lexical_indices: Vec<u64> = by_lexical
+                .iter()
+                .take(rerank_k)
+                .map(|(_, h)| h.10)
+                .collect();
+            let vector_indices: Vec<u64> =
+                by_vector.iter().take(rerank_k).map(|(_, h)| h.10).collect();
+            let graph_indices: Vec<u64> =
+                by_graph.iter().take(rerank_k).map(|(_, h)| h.10).collect();
+
+            let merged = crate::search::ranked::rrf_merge_three(
+                &lexical_indices,
+                &vector_indices,
+                &graph_indices,
+                RRF_K,
+            );
+            let rrf_scores: BTreeMap<u64, f64> = merged.into_iter().collect();
+
+            for hit in &mut all_hits {
+                if let Some(&rrf) = rrf_scores.get(&hit.10) {
+                    let rrf_f32 = rrf as f32;
+                    hit.2.rrf = rrf_f32;
+                    let additive = hit.2.graph
+                        + hit.2.relation
+                        + hit.2.seed_support
+                        + hit.2.importance
+                        + hit.2.confidence
+                        + hit.2.recency
+                        + hit.2.session_cohesion;
+                    hit.2.total = rrf_f32 + additive;
+                }
+            }
+
+            // Re-sort after RRF
+            all_hits.sort_by(|a, b| {
+                b.2.total
+                    .partial_cmp(&a.2.total)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.10.cmp(&b.10))
+            });
+        }
+
+        // Apply offset and limit
+        let paged: Vec<_> = all_hits.into_iter().skip(offset).take(page_size).collect();
+
+        // Convert to response format
+        let results = paged
+            .into_iter()
+            .map(
+                |(
+                    chain_key,
+                    thought,
+                    score,
+                    graph_distance,
+                    graph_seed_paths,
+                    graph_relation_kinds,
+                    graph_path,
+                    matched_terms,
+                    match_sources,
+                    _,
+                    _,
+                )| {
+                    RankedSearchHitResponse {
+                        chain_key,
+                        thought,
+                        score: RankedSearchScoreResponse {
+                            lexical: score.lexical,
+                            vector: score.vector,
+                            graph: score.graph,
+                            relation: score.relation,
+                            seed_support: score.seed_support,
+                            importance: score.importance,
+                            confidence: score.confidence,
+                            recency: score.recency,
+                            session_cohesion: score.session_cohesion,
+                            rrf: score.rrf,
+                            total: score.total,
+                        },
+                        matched_terms,
+                        match_sources: match_sources
+                            .into_iter()
+                            .map(|s| s.as_str().to_string())
+                            .collect(),
+                        graph_distance,
+                        graph_seed_paths,
+                        graph_relation_kinds: graph_relation_kinds
+                            .into_iter()
+                            .map(relation_kind_label)
+                            .map(str::to_string)
+                            .collect(),
+                        graph_path: graph_path.as_ref().map(transport_graph_path_from_core_path),
+                    }
+                },
+            )
+            .collect();
+
+        Ok(RankedSearchResponse {
+            backend: best_backend.as_str().to_string(),
             total: total_candidates,
             results,
         })
@@ -4107,7 +4427,7 @@ struct RankedSearchRequest {
     entity_type: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct RankedSearchGraphRequest {
     max_depth: Option<usize>,
     max_visited: Option<usize>,
@@ -4174,6 +4494,55 @@ struct RankedSearchResponse {
     backend: String,
     total: usize,
     results: Vec<RankedSearchHitResponse>,
+}
+
+/// Request for cross-chain federated ranked search.
+#[derive(Debug, Deserialize)]
+struct FederatedSearchRequest {
+    /// List of chain keys to search. The first chain is used as the primary
+    /// chain for building the main query; all other chains are searched with
+    /// equivalent queries.
+    chain_keys: Vec<String>,
+    /// Optional lexical query text.
+    text: Option<String>,
+    /// Maximum number of results to return (default 10).
+    limit: Option<usize>,
+    /// Result offset for paging (default 0).
+    offset: Option<usize>,
+    /// Optional graph expansion config.
+    graph: Option<RankedSearchGraphRequest>,
+    /// Optional ThoughtType filter.
+    thought_types: Option<Vec<String>>,
+    /// Optional ThoughtRole filter.
+    roles: Option<Vec<String>>,
+    /// Optional tags filter (match any).
+    tags_any: Option<Vec<String>>,
+    /// Optional concepts filter (match any).
+    concepts_any: Option<Vec<String>>,
+    /// Optional producing agent IDs filter.
+    agent_ids: Option<Vec<String>>,
+    /// Optional producing agent names filter.
+    agent_names: Option<Vec<String>>,
+    /// Optional producing agent owners filter.
+    agent_owners: Option<Vec<String>>,
+    /// Optional minimum importance threshold.
+    min_importance: Option<f32>,
+    /// Optional minimum confidence threshold.
+    min_confidence: Option<f32>,
+    /// Optional RFC 3339 lower timestamp bound.
+    since: Option<DateTime<Utc>>,
+    /// Optional RFC 3339 upper timestamp bound.
+    until: Option<DateTime<Utc>>,
+    /// Optional point-in-time query timestamp.
+    as_of: Option<DateTime<Utc>>,
+    /// Optional memory scope filter (user, session, agent).
+    scope: Option<String>,
+    /// Enable RRF reranking (default false).
+    enable_reranking: Option<bool>,
+    /// RRF candidates window size (default 50).
+    rerank_k: Option<usize>,
+    /// Optional entity type label filter.
+    entity_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -4917,6 +5286,25 @@ fn ranked_search_filter_arrays_exceed_limit(request: &RankedSearchRequest) -> bo
             .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
 }
 
+fn ranked_search_filter_arrays_exceed_limit_federated(request: &FederatedSearchRequest) -> bool {
+    request
+        .thought_types
+        .as_deref()
+        .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
+        || request
+            .tags_any
+            .as_deref()
+            .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
+        || request
+            .concepts_any
+            .as_deref()
+            .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
+        || request
+            .agent_ids
+            .as_deref()
+            .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
+}
+
 async fn rest_lexical_search_handler(
     State(service): State<Arc<MentisDbService>>,
     Json(request): Json<LexicalSearchRequest>,
@@ -4941,6 +5329,19 @@ async fn rest_ranked_search_handler(
         ));
     }
     service_call(service.ranked_search(request).await)
+}
+
+async fn rest_federated_search_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<FederatedSearchRequest>,
+) -> Result<Json<RankedSearchResponse>, (StatusCode, Json<Value>)> {
+    if ranked_search_filter_arrays_exceed_limit_federated(&request) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "filter array exceeds maximum length of 100"})),
+        ));
+    }
+    service_call(service.federated_search(request).await)
 }
 
 async fn rest_context_bundles_handler(
@@ -5437,6 +5838,31 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("min_confidence", ToolParameterType::Number).with_description("Optional minimum confidence threshold."))
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
+        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by.")),
+        ToolMetadata::new(
+            "mentisdb_federated_search",
+            "Run federated ranked retrieval over multiple chains simultaneously and return a single merged, ranked result list. Useful for multi-agent hubs or cross-organizational memory aggregation.",
+        )
+        .with_parameter(ToolParameter::new("chain_keys", ToolParameterType::Array).with_description("List of chain keys to search.").with_items(ToolParameterType::String).required())
+        .with_parameter(ToolParameter::new("text", ToolParameterType::String).with_description("Optional lexical query text."))
+        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of results to return."))
+        .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Result offset for paging."))
+        .with_parameter(ToolParameter::new("graph", ToolParameterType::Object).with_description("Optional graph expansion config object: max_depth, max_visited, include_seeds, mode."))
+        .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("roles", ToolParameterType::Array).with_description("Optional list of ThoughtRole names.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("tags_any", ToolParameterType::Array).with_description("Optional tags to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("concepts_any", ToolParameterType::Array).with_description("Optional concepts to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("agent_ids", ToolParameterType::Array).with_description("Optional producing agent ids to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("agent_names", ToolParameterType::Array).with_description("Optional producing agent names to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("agent_owners", ToolParameterType::Array).with_description("Optional producing agent owners to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("min_importance", ToolParameterType::Number).with_description("Optional minimum importance threshold."))
+        .with_parameter(ToolParameter::new("min_confidence", ToolParameterType::Number).with_description("Optional minimum confidence threshold."))
+        .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
+        .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
+        .with_parameter(ToolParameter::new("as_of", ToolParameterType::String).with_description("Optional point-in-time query timestamp."))
+        .with_parameter(ToolParameter::new("scope", ToolParameterType::String).with_description("Optional memory scope: user, session, or agent."))
+        .with_parameter(ToolParameter::new("enable_reranking", ToolParameterType::Boolean).with_description("Enable RRF reranking."))
+        .with_parameter(ToolParameter::new("rerank_k", ToolParameterType::Integer).with_description("RRF candidates window size."))
         .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by.")),
         ToolMetadata::new(
             "mentisdb_context_bundles",
