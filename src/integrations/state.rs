@@ -120,7 +120,13 @@ impl IntegrationApplyPlan {
 
 fn detect_bridge_command(platform: HostPlatform) -> BridgeCommand {
     let mcp_remote_path = detect_mcp_remote_path(platform);
-    let directly_executable = is_directly_executable(&mcp_remote_path);
+    // A binary found at an absolute path is always treated as directly executable.
+    // The node-wrapper path is only needed for npm-installed mcp-remote scripts
+    // with a `#!/usr/bin/env node` shebang pointing to an old Node version.
+    // Homebrew-installed binaries are compiled wrappers, not text scripts, so
+    // the shebang check is both unreliable and unnecessary for them.
+    let directly_executable = is_absolute_executable(&mcp_remote_path)
+        || is_directly_executable_via_shebang(&mcp_remote_path);
     let node_path = if directly_executable {
         String::new()
     } else {
@@ -131,6 +137,13 @@ fn detect_bridge_command(platform: HostPlatform) -> BridgeCommand {
         node_path,
         mcp_remote_path,
     }
+}
+
+/// Returns true if the path is absolute and points to an existing executable file.
+/// Used for Homebrew-installed binaries that are compiled wrappers, not scripts.
+fn is_absolute_executable(path_str: &str) -> bool {
+    let path = Path::new(path_str);
+    path.is_absolute() && is_executable_file(path)
 }
 
 fn detect_mcp_remote_path(platform: HostPlatform) -> String {
@@ -218,10 +231,10 @@ fn is_executable_file(path: &Path) -> bool {
 
 /// Check whether mcp-remote has a valid shebang pointing to an existing node binary.
 ///
-/// Homebrew-installed mcp-remote has a real shebang (e.g. `#!/opt/homebrew/bin/node`)
-/// and is directly executable without a node wrapper. npm-installed mcp-remote typically
-/// uses `#!/usr/bin/env node` which may resolve to a too-old node, so we need to wrap it.
-fn is_directly_executable(mcp_remote_path: &str) -> bool {
+/// This is a fallback for npm-installed mcp-remote scripts: if the shebang points to
+/// an absolute node path with version >= 20, we can run the script directly.
+/// For all absolute-path executables, [`is_absolute_executable`] is preferred.
+fn is_directly_executable_via_shebang(mcp_remote_path: &str) -> bool {
     let path = Path::new(mcp_remote_path);
     let content = match fs::read_to_string(path) {
         Ok(c) => c,

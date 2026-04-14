@@ -1,3 +1,25 @@
+0.9.2.38 UNRELEASED
+  - fix: Claude Desktop config now writes correct format — command: /path/mcp-remote, args: [url]
+    instead of the broken command: node, args: [/path/mcp-remote, url]; any absolute executable
+    mcp-remote is now used directly without a node wrapper (is_absolute_executable check); the
+    shebang-based is_directly_executable fallback is retained for npm-installed scripts with a
+    good shebang; integration_apply_tests updated to assert the correct behavior
+  - fix: ensure_prerequisites for Claude Desktop now prompts before brew install on macOS
+    (previously silently ran brew install mcp-remote without asking); on macOS brew is tried
+    first, npm is the fallback; dead check_node_version and detect_brew_mcp_remote functions
+    removed; detect_mcp_remote_any() checks Homebrew paths then PATH
+  - feat: terminal-close warning printed at daemon startup — yellow ⚠ notice that closing the
+    terminal stops mentisdbd, followed by OS-specific background-launch tip:
+      macOS: brew services start mentisdb (launchd) or nohup one-liner
+      Linux: systemd user service unit snippet or nohup one-liner
+      Windows: schtasks /create one-liner or Start-Process -WindowStyle Hidden
+  - feat: backup/restore — new mentisdbd backup / mentisdbd restore subcommands create and
+    restore .mbak zip archives of the full MENTISDB_DIR; manifest with SHA-256 checksums for
+    every file; verification before any file is written on restore; --flush, --include-tls,
+    --overwrite flags; 33 integration tests in tests/test_backup.rs covering roundtrip, TLS
+    inclusion, idempotent restore, overwrite, corruption detection, chain count, byte totals,
+    manifest JSON round-trip, required vs optional file tagging, subdirectory creation
+
 0.9.1.37 APR/14/2026
   - feat: LLM-extracted memories — GPT-4o (or any OpenAI-compatible endpoint) converts
     raw agent text/logs/transcripts into structured ThoughtInput records for review

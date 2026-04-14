@@ -52,6 +52,8 @@ rustls = { version = "0.23", features = ["ring"], optional = true }
 ureq = { version = "2", features = ["json"] }
 openai-rust2 = { version = "1.7.2", optional = true }
 anyhow = { version = "1", optional = true }
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+walkdir = "2.5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

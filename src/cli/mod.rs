@@ -8,14 +8,21 @@ mod prompt;
 mod setup;
 mod wizard;
 
+use crate::backup::{
+    create_backup, list_backup_contents, restore_backup, BackupOptions, RestoreOptions,
+};
+use crate::paths::default_mentisdb_dir;
+
 pub use args::{
-    parse_args, AddCommand, AgentsCommand, CliCommand, SearchCommand, SetupCommand, WizardCommand,
+    parse_args, AddCommand, AgentsCommand, BackupCommand, CliCommand, RestoreCommand,
+    SearchCommand, SetupCommand, WizardCommand,
 };
 pub use prompt::{boxed_apply_summary, boxed_skip_notice, boxed_text_prompt, boxed_yn_prompt};
 pub use setup::{parse_node_major, render_setup_plan};
 
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// Run the embedded CLI with caller-provided streams.
@@ -66,6 +73,20 @@ where
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 let _ = writeln!(err, "agents failed: {error}");
+                ExitCode::from(1)
+            }
+        },
+        Ok(CliCommand::Backup(command)) => match run_backup(&command, out, err) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                let _ = writeln!(err, "backup failed: {error}");
+                ExitCode::from(1)
+            }
+        },
+        Ok(CliCommand::Restore(command)) => match run_restore(&command, out, err) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                let _ = writeln!(err, "restore failed: {error}");
                 ExitCode::from(1)
             }
         },
@@ -194,5 +215,107 @@ fn run_agents(
         "{}",
         serde_json::to_string_pretty(&json).unwrap_or_default()
     );
+    Ok(())
+}
+
+fn run_backup(
+    cmd: &BackupCommand,
+    out: &mut dyn Write,
+    _err: &mut dyn Write,
+) -> Result<(), String> {
+    let source_dir = cmd
+        .source_dir
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(default_mentisdb_dir);
+
+    if !source_dir.exists() {
+        return Err(format!(
+            "source directory does not exist: {}",
+            source_dir.display()
+        ));
+    }
+
+    let output_path = cmd.output_path.as_ref().map(PathBuf::from);
+
+    let options = BackupOptions {
+        source_dir,
+        output_path,
+        flush_before_backup: cmd.flush,
+        include_tls: cmd.include_tls,
+    };
+
+    let manifest = create_backup(&options).map_err(|e| format!("create_backup: {e}"))?;
+    let output = options
+        .output_path
+        .unwrap_or_else(|| PathBuf::from(crate::backup::generate_backup_filename()));
+
+    writeln!(out, "Backup created: {}", output.display()).map_err(|e| e.to_string())?;
+    writeln!(
+        out,
+        "  {} files, {} bytes total, {} chains",
+        manifest.files.len(),
+        manifest.total_uncompressed_bytes,
+        manifest.chain_count
+    )
+    .map_err(|e| e.to_string())?;
+    writeln!(out, "  mentisdb version: {}", manifest.mentisdb_version)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn run_restore(
+    cmd: &RestoreCommand,
+    out: &mut dyn Write,
+    _err: &mut dyn Write,
+) -> Result<(), String> {
+    let archive_path = PathBuf::from(&cmd.archive_path);
+    if !archive_path.exists() {
+        return Err(format!(
+            "backup archive not found: {}",
+            archive_path.display()
+        ));
+    }
+
+    let target_dir = cmd
+        .target_dir
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(default_mentisdb_dir);
+
+    let files = list_backup_contents(archive_path.clone())
+        .map_err(|e| format!("list_backup_contents: {e}"))?;
+
+    let required_count = files.iter().filter(|f| f.required).count();
+    let optional_count = files.len() - required_count;
+
+    writeln!(out, "Restore archive: {}", archive_path.display()).map_err(|e| e.to_string())?;
+    writeln!(
+        out,
+        "  {} files ({} required, {} optional)",
+        files.len(),
+        required_count,
+        optional_count
+    )
+    .map_err(|e| e.to_string())?;
+    writeln!(out, "  Target directory: {}", target_dir.display()).map_err(|e| e.to_string())?;
+
+    if cmd.overwrite {
+        writeln!(out, "  Mode: overwrite existing files").map_err(|e| e.to_string())?;
+    } else {
+        writeln!(out, "  Mode: preserve existing files (idempotent)").map_err(|e| e.to_string())?;
+    }
+    writeln!(out).map_err(|e| e.to_string())?;
+
+    restore_backup(
+        archive_path,
+        target_dir.clone(),
+        RestoreOptions {
+            overwrite: cmd.overwrite,
+        },
+    )
+    .map_err(|e| format!("restore_backup: {e}"))?;
+
+    writeln!(out, "Restore complete.").map_err(|e| e.to_string())?;
     Ok(())
 }

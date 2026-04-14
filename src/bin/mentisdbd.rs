@@ -1121,6 +1121,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("  {REVERSE}{BOLD} {primer_paste_line} {RESET}");
     println!();
 
+    // ── Terminal-close warning ────────────────────────────────────────────────
+    print_terminal_warning();
+
     let _ = dashboard_url;
 
     tokio::select! {
@@ -1143,6 +1146,8 @@ Usage:
   mentisdbd add <content> [--type <type>] [--scope <scope>] [--tag <tag>] [--agent <id>] [--chain <key>] [--url <url>]
   mentisdbd search <query> [--limit <n>] [--scope <scope>] [--chain <key>] [--url <url>]
   mentisdbd agents [--chain <key>] [--url <url>]
+  mentisdbd backup [--dir <path>] [--output <path>] [--flush] [--include-tls]
+  mentisdbd restore <archive.mbak> [--dir <path>] [--overwrite]
 
 Role:
   Start the MentisDB MCP server, REST server, and web dashboard.
@@ -1324,7 +1329,7 @@ where
     let first = args[0].to_string_lossy();
     if matches!(
         first.as_ref(),
-        "setup" | "wizard" | "add" | "search" | "agents"
+        "setup" | "wizard" | "add" | "search" | "agents" | "backup" | "restore"
     ) {
         let mut command = vec![OsString::from("mentisdbd")];
         command.extend(args);
@@ -2359,5 +2364,63 @@ fn print_tls_tip(config: &MentisDbServerConfig, handles: &MentisDbServerHandles)
         "  {GREEN}Windows{RESET}: certutil -addstore Root {}",
         config.tls_cert_path.display()
     );
+    println!();
+}
+
+/// Returns an OS-specific one-liner for launching mentisdbd in the background
+/// so it survives terminal close.
+pub(crate) fn background_launch_tip() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "  Run in the background (survives terminal close):\n\
+         \n\
+         \x1b[32m  Option A — launchd (recommended, auto-starts on login):\x1b[0m\n\
+         \n\
+         \x1b[2m    brew services start mentisdb\x1b[0m\n\
+         \n\
+         \x1b[32m  Option B — nohup (current session only):\x1b[0m\n\
+         \n\
+         \x1b[2m    nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &\x1b[0m"
+    } else if cfg!(target_os = "linux") {
+        "  Run in the background (survives terminal close):\n\
+         \n\
+         \x1b[32m  Option A — systemd user service (recommended, auto-starts on login):\x1b[0m\n\
+         \n\
+         \x1b[2m    # Create ~/.config/systemd/user/mentisdbd.service with:\x1b[0m\n\
+         \x1b[2m    # [Unit]\x1b[0m\n\
+         \x1b[2m    # Description=MentisDB daemon\x1b[0m\n\
+         \x1b[2m    # [Service]\x1b[0m\n\
+         \x1b[2m    # ExecStart=/usr/local/bin/mentisdbd\x1b[0m\n\
+         \x1b[2m    # Restart=on-failure\x1b[0m\n\
+         \x1b[2m    # [Install]\x1b[0m\n\
+         \x1b[2m    # WantedBy=default.target\x1b[0m\n\
+         \x1b[2m    systemctl --user enable --now mentisdbd\x1b[0m\n\
+         \n\
+         \x1b[32m  Option B — nohup (current session only):\x1b[0m\n\
+         \n\
+         \x1b[2m    nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &\x1b[0m"
+    } else if cfg!(target_os = "windows") {
+        "  Run in the background (survives terminal close):\n\
+         \n\
+         \x1b[32m  Option A — Task Scheduler (recommended, auto-starts on login):\x1b[0m\n\
+         \n\
+         \x1b[2m    schtasks /create /tn MentisDB /tr mentisdbd.exe /sc ONLOGON /ru %USERNAME% /f\x1b[0m\n\
+         \n\
+         \x1b[32m  Option B — Start-Process (current user session only):\x1b[0m\n\
+         \n\
+         \x1b[2m    Start-Process mentisdbd.exe -WindowStyle Hidden\x1b[0m"
+    } else {
+        "  Run in the background (survives terminal close):\n\
+         \n\
+         \x1b[2m    nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &\x1b[0m"
+    }
+}
+
+/// Prints a warning that closing this terminal will stop the daemon,
+/// followed by an OS-appropriate tip for running it in the background.
+fn print_terminal_warning() {
+    println!("{YELLOW}⚠  Closing this terminal window will stop mentisdbd.{RESET}");
+    println!("{DIM}   Keep this window open, or run the daemon in the background:{RESET}");
+    println!();
+    println!("{}", background_launch_tip());
     println!();
 }

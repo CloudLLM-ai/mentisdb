@@ -183,64 +183,80 @@ pub(super) fn ensure_prerequisites(
         return Ok(PrerequisiteStatus::Ok);
     }
 
-    if command_on_path(&["mcp-remote", "mcp-remote.cmd"]).is_some()
-        || detect_brew_mcp_remote().is_some()
-    {
-        return check_node_version(out);
+    // mcp-remote already present — nothing to install
+    if detect_mcp_remote_any().is_some() {
+        return Ok(PrerequisiteStatus::Ok);
     }
 
-    if let Some(brew_path) = detect_brew() {
-        writeln!(out, "mcp-remote not found. Installing via Homebrew...")?;
-        let status = Command::new(&brew_path)
-            .args(["install", "mcp-remote"])
-            .status()?;
-        if status.success() {
-            return check_node_version(out);
-        }
-        let msg = "brew install mcp-remote failed. Will try npm.".to_string();
-        writeln!(out, "WARNING: {msg}")?;
-    }
+    let platform = HostPlatform::current();
 
-    let Some(npm) = command_on_path(&["npm", "npm.cmd"]) else {
-        if !assume_yes {
-            let answer = boxed_yn_prompt(
-                out,
-                "mcp-remote is not installed and Homebrew is not available. Install it via npm?",
-                false,
-                input,
-            )?;
-            if !answer.eq_ignore_ascii_case("y") && !answer.eq_ignore_ascii_case("yes") {
-                return Ok(PrerequisiteStatus::Skipped);
+    // ── macOS: prefer Homebrew ────────────────────────────────────────────────
+    if matches!(platform, HostPlatform::Macos) {
+        if let Some(brew_path) = detect_brew() {
+            if !assume_yes {
+                let answer = boxed_yn_prompt(
+                    out,
+                    "mcp-remote is not installed. Install it via Homebrew (recommended)?",
+                    true,
+                    input,
+                )?;
+                if answer.eq_ignore_ascii_case("n") || answer.eq_ignore_ascii_case("no") {
+                    // Fall through to npm
+                } else {
+                    writeln!(out, "Installing mcp-remote via Homebrew...")?;
+                    let status = Command::new(&brew_path)
+                        .args(["install", "mcp-remote"])
+                        .status()?;
+                    if status.success() {
+                        writeln!(out, "mcp-remote installed via Homebrew.")?;
+                        return Ok(PrerequisiteStatus::Ok);
+                    }
+                    let msg = "brew install mcp-remote failed. Will try npm.".to_string();
+                    writeln!(out, "WARNING: {msg}")?;
+                }
+            } else {
+                // assume_yes: install via brew silently
+                writeln!(out, "Installing mcp-remote via Homebrew...")?;
+                let status = Command::new(&brew_path)
+                    .args(["install", "mcp-remote"])
+                    .status()?;
+                if status.success() {
+                    writeln!(out, "mcp-remote installed via Homebrew.")?;
+                    return Ok(PrerequisiteStatus::Ok);
+                }
+                let msg = "brew install mcp-remote failed. Will try npm.".to_string();
+                writeln!(out, "WARNING: {msg}")?;
             }
         }
-        let msg = "mcp-remote not found and npm is not installed. Claude Desktop will not connect until mcp-remote is available.".to_string();
+    }
+
+    // ── Fallback: npm ─────────────────────────────────────────────────────────
+    let Some(npm) = command_on_path(&["npm", "npm.cmd"]) else {
+        let msg = "mcp-remote is not installed and neither Homebrew nor npm is available.\nClaude Desktop will not connect until mcp-remote is installed.\nInstall manually: brew install mcp-remote".to_string();
         writeln!(out, "WARNING: {msg}")?;
         return Ok(PrerequisiteStatus::Warning(msg));
     };
 
-    let Some(node) = command_on_path(&["node", "node.exe"]) else {
-        let msg = "mcp-remote not found and Node.js is not on PATH. Claude Desktop will not connect until Node.js and mcp-remote are installed.".to_string();
+    // Check Node version before npm-installing
+    if let Some(node) = command_on_path(&["node", "node.exe"]) {
+        match node_major_version(&node) {
+            Ok(major) if major < MCP_REMOTE_MIN_NODE_MAJOR => {
+                let msg = format!(
+                    "mcp-remote requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR}, but {} is Node {major}.\nThe config will be written but Claude Desktop will not connect until you install Node >= {MCP_REMOTE_MIN_NODE_MAJOR}.",
+                    node.display()
+                );
+                writeln!(out, "WARNING: {msg}")?;
+                return Ok(PrerequisiteStatus::Warning(msg));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                writeln!(out, "WARNING: Could not determine Node.js version: {e}.")?;
+            }
+        }
+    } else {
+        let msg = "Node.js is not on PATH. Claude Desktop will not connect until Node.js >= 20 and mcp-remote are installed.".to_string();
         writeln!(out, "WARNING: {msg}")?;
         return Ok(PrerequisiteStatus::Warning(msg));
-    };
-
-    match node_major_version(&node) {
-        Ok(major) if major < MCP_REMOTE_MIN_NODE_MAJOR => {
-            let msg = format!(
-                "mcp-remote requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR}, but {} is Node {major}.",
-                node.display()
-            );
-            writeln!(out, "WARNING: {msg}")?;
-            return Ok(PrerequisiteStatus::Warning(msg));
-        }
-        Ok(_) => {}
-        Err(e) => {
-            let msg = format!(
-                "Could not determine Node.js version from {}: {e}.",
-                node.display()
-            );
-            writeln!(out, "WARNING: {msg}")?;
-        }
     }
 
     if !assume_yes {
@@ -265,38 +281,23 @@ pub(super) fn ensure_prerequisites(
         return Ok(PrerequisiteStatus::Warning(msg));
     }
 
-    check_node_version(out)
+    writeln!(out, "mcp-remote installed via npm.")?;
+    Ok(PrerequisiteStatus::Ok)
 }
 
-fn check_node_version(out: &mut dyn Write) -> io::Result<PrerequisiteStatus> {
-    if let Some(node) = command_on_path(&["node", "node.exe"]) {
-        match node_major_version(&node) {
-            Ok(major) if major >= MCP_REMOTE_MIN_NODE_MAJOR => {
-                return Ok(PrerequisiteStatus::Ok);
-            }
-            Ok(major) => {
-                let msg = format!(
-                    "Claude Desktop requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR} for mcp-remote, but {} is Node {major}. The config will be written but Claude Desktop will not connect until you install Node >= {MCP_REMOTE_MIN_NODE_MAJOR} (e.g. via nvm/fnm).",
-                    node.display()
-                );
-                writeln!(out, "WARNING: {msg}")?;
-                return Ok(PrerequisiteStatus::Warning(msg));
-            }
-            Err(e) => {
-                let msg = format!(
-                    "Could not determine Node.js version from {}: {e}. The config will be written but Claude Desktop may not work correctly.",
-                    node.display()
-                );
-                writeln!(out, "WARNING: {msg}")?;
-                return Ok(PrerequisiteStatus::Warning(msg));
-            }
+/// Returns the path to mcp-remote if it is available by any means.
+fn detect_mcp_remote_any() -> Option<PathBuf> {
+    // Check known Homebrew locations first (highest priority on macOS)
+    for candidate in [
+        PathBuf::from("/opt/homebrew/bin/mcp-remote"),
+        PathBuf::from("/usr/local/bin/mcp-remote"),
+    ] {
+        if candidate.exists() {
+            return Some(candidate);
         }
     }
-    let msg = format!(
-        "Claude Desktop requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR} for mcp-remote, but `node` was not found on PATH. The config will be written but Claude Desktop will not connect until Node is installed."
-    );
-    writeln!(out, "WARNING: {msg}")?;
-    Ok(PrerequisiteStatus::Warning(msg))
+    // Then PATH (covers npm global installs, nvm, etc.)
+    command_on_path(&["mcp-remote", "mcp-remote.cmd"])
 }
 
 fn detect_brew() -> Option<PathBuf> {
@@ -342,6 +343,8 @@ fn command_on_path(candidates: &[&str]) -> Option<PathBuf> {
     None
 }
 
+// kept for potential future use
+#[allow(dead_code)]
 fn detect_brew_mcp_remote() -> Option<PathBuf> {
     [
         PathBuf::from("/opt/homebrew/bin/mcp-remote"),

@@ -335,17 +335,22 @@ fn apply_claude_desktop_uses_https_and_bridge_from_path() {
         .join("claude_desktop_config.json");
     let parsed: Value =
         serde_json::from_str(&std::fs::read_to_string(config_path).unwrap()).unwrap();
+
+    // An absolute executable mcp-remote is used directly as the command (no node wrapper).
+    // This matches the correct format: { command: "/path/mcp-remote", args: ["<url>"] }
     assert_eq!(
         parsed["mcpServers"]["mentisdb"]["command"],
-        node_bin.display().to_string()
+        mcp_remote.display().to_string(),
+        "command should be the absolute mcp-remote path, not node"
     );
     assert_eq!(
-        parsed["mcpServers"]["mentisdb"]["args"][0],
-        mcp_remote.display().to_string()
+        parsed["mcpServers"]["mentisdb"]["args"][0], "https://my.mentisdb.com:9473",
+        "first arg should be the URL directly (no mcp-remote path prefix)"
     );
-    assert_eq!(
-        parsed["mcpServers"]["mentisdb"]["args"][1],
-        "https://my.mentisdb.com:9473"
+    // args array should have exactly one element (the URL)
+    assert!(
+        parsed["mcpServers"]["mentisdb"]["args"][1].is_null(),
+        "args should have only one element (the URL)"
     );
     assert_eq!(
         parsed["mcpServers"]["mentisdb"]["env"]["NODE_TLS_REJECT_UNAUTHORIZED"],

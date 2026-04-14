@@ -67,6 +67,30 @@ pub struct AgentsCommand {
     pub url: String,
 }
 
+/// Parsed `backup` subcommand arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupCommand {
+    /// Path to the source MENTISDB_DIR (defaults to the platform default).
+    pub source_dir: Option<String>,
+    /// Path where the .mbak archive should be written.
+    pub output_path: Option<String>,
+    /// Flush all storage adapters before backing up.
+    pub flush: bool,
+    /// Include TLS certificates and keys in the backup.
+    pub include_tls: bool,
+}
+
+/// Parsed `restore` subcommand arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreCommand {
+    /// Path to the .mbak archive to restore.
+    pub archive_path: String,
+    /// Path to the target MENTISDB_DIR (defaults to the platform default).
+    pub target_dir: Option<String>,
+    /// Overwrite existing files in the target directory.
+    pub overwrite: bool,
+}
+
 /// Supported top-level commands for `mentisdbd` CLI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
@@ -82,6 +106,10 @@ pub enum CliCommand {
     Search(SearchCommand),
     /// List agents on a running daemon.
     Agents(AgentsCommand),
+    /// Create a backup archive.
+    Backup(BackupCommand),
+    /// Restore from a backup archive.
+    Restore(RestoreCommand),
 }
 
 /// Parse command-line arguments for the embedded `mentisdbd` setup and wizard CLI.
@@ -110,6 +138,8 @@ where
         "add" => parse_add(parts),
         "search" => parse_search(parts),
         "agents" => parse_agents(parts),
+        "backup" => parse_backup(parts),
+        "restore" => parse_restore(parts),
         other => Err(format!("Unknown subcommand '{other}'")),
     }
 }
@@ -126,6 +156,8 @@ Usage:
   mentisdbd add <content> [--type <type>] [--scope <scope>] [--tag <tag>] [--agent <id>] [--chain <key>] [--url <url>]
   mentisdbd search <query> [--limit <n>] [--scope <scope>] [--chain <key>] [--url <url>]
   mentisdbd agents [--chain <key>] [--url <url>]
+  mentisdbd backup [--dir <path>] [--output <path>] [--flush] [--include-tls]
+  mentisdbd restore <archive.mbak> [--dir <path>] [--overwrite]
 
 Supported agents (setup/wizard):
   codex
@@ -219,12 +251,50 @@ Commands:
       --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
       --help           Show this help text
 
+  backup
+    Create a .mbak backup archive of the MENTISDB_DIR.
+
+    The backup includes all chain data files (*.tcbin, *.agents.json,
+    *.entity-types.json, *.vectors.*.json), the global registry, and
+    optionally TLS certificates and keys.
+
+    Examples:
+      mentisdbd backup
+      mentisdbd backup --output /backups/mentisdb-2026-04-14.mbak
+      mentisdbd backup --dir ~/.cloudllm/mentisdb --flush --include-tls
+
+    Options:
+      --dir <path>       Path to MENTISDB_DIR (default: platform default)
+      --output <path>    Path for the .mbak archive (default: ./mentisdb-YYYY-MM-DD-HH-MM-SS.mbak)
+      --flush           Flush all storage adapters before backing up (recommended if daemon is running)
+      --include-tls      Include TLS certificates and keys in the backup
+      --help             Show this help text
+
+  restore
+    Restore a MENTISDB_DIR from a .mbak backup archive.
+
+    Restores all chain data, registry, skills, and optionally TLS files.
+    By default, existing files are preserved (idempotent restore). Use
+    --overwrite to replace all files with their backed-up versions.
+
+    Examples:
+      mentisdbd restore mentisdb-2026-04-14.mbak
+      mentisdbd restore /backups/mentisdb-2026-04-14.mbak --dir ~/.cloudllm/mentisdb
+      mentisdbd restore /backups/mentisdb-2026-04-14.mbak --overwrite
+
+    Options:
+      <archive.mbak>     Path to the .mbak backup archive (required)
+      --dir <path>       Path to MENTISDB_DIR (default: platform default)
+      --overwrite        Overwrite existing files in the target directory
+      --help             Show this help text
+
 Notes:
   - `mentisdbd` with no subcommand starts the daemon.
   - `mentisdbd --help` shows daemon help; subcommand --help shows subcommand help.
   - `setup` writes config files; it is not scaffold-only.
   - `add`, `search`, and `agents` require a running daemon.
-"
+  - `backup` and `restore` operate on the MENTISDB_DIR directly and do not require a running daemon.
+ "
 }
 
 fn parse_setup(args: Vec<String>) -> Result<CliCommand, String> {
@@ -487,4 +557,93 @@ fn parse_agents(args: Vec<String>) -> Result<CliCommand, String> {
         }
     }
     Ok(CliCommand::Agents(AgentsCommand { chain_key, url }))
+}
+
+fn parse_backup(args: Vec<String>) -> Result<CliCommand, String> {
+    if matches!(
+        args.get(1).map(|s| s.as_str()),
+        Some("-h" | "--help" | "help")
+    ) {
+        return Ok(CliCommand::Help);
+    }
+    let mut source_dir = None;
+    let mut output_path = None;
+    let mut flush = false;
+    let mut include_tls = false;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--dir" => {
+                source_dir = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--dir requires a value".to_string())?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--output" => {
+                output_path = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--output requires a value".to_string())?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--flush" => {
+                flush = true;
+                index += 1;
+            }
+            "--include-tls" => {
+                include_tls = true;
+                index += 1;
+            }
+            "-h" | "--help" => return Ok(CliCommand::Help),
+            other => return Err(format!("Unexpected argument '{other}' for backup")),
+        }
+    }
+    Ok(CliCommand::Backup(BackupCommand {
+        source_dir,
+        output_path,
+        flush,
+        include_tls,
+    }))
+}
+
+fn parse_restore(args: Vec<String>) -> Result<CliCommand, String> {
+    if matches!(
+        args.get(1).map(|s| s.as_str()),
+        Some("-h" | "--help" | "help")
+    ) {
+        return Ok(CliCommand::Help);
+    }
+    let archive_path = args
+        .get(1)
+        .ok_or_else(|| "restore requires <archive.mbak>".to_string())?
+        .clone();
+    let mut target_dir = None;
+    let mut overwrite = false;
+    let mut index = 2;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--dir" => {
+                target_dir = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--dir requires a value".to_string())?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--overwrite" => {
+                overwrite = true;
+                index += 1;
+            }
+            "-h" | "--help" => return Ok(CliCommand::Help),
+            other => return Err(format!("Unexpected argument '{other}' for restore")),
+        }
+    }
+    Ok(CliCommand::Restore(RestoreCommand {
+        archive_path,
+        target_dir,
+        overwrite,
+    }))
 }
