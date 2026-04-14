@@ -5,7 +5,6 @@
 - LangChain/LlamaIndex integration (Python bindings via REST)
 
 ## 1.0.0 — Production Stability
-- API stability guarantees (lock public crate API, semver contract)
 - Token tracking (per-agent token budget and usage metrics)
 - Self-improving agent primitives
 - Browser extension
