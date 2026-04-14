@@ -1,0 +1,32 @@
+name: Publish pymentisdb to PyPI
+
+on:
+  push:
+    tags:
+      - "pymentisdb-v*"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: Build and publish to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/pymentisdb/
+
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build pymentisdb distribution
+        run: |
+          cd pymentisdb
+          python3 -m pip install build --quiet
+          python3 -m build .
+
+      - name: Publish to PyPI with trusted publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip_existing: true
