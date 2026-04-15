@@ -27,10 +27,12 @@
 //! - `RUST_LOG`
 
 use env_logger::Env;
+use mcp::ToolProtocol;
 use mentisdb::integrations::detect::{detect_integrations_with_environment, DetectionStatus};
 use mentisdb::paths::{HostPlatform, PathEnvironment};
 use mentisdb::server::{
-    adopt_legacy_default_mentisdb_dir, start_servers, MentisDbServerConfig, MentisDbServerHandles,
+    adopt_legacy_default_mentisdb_dir, start_servers, MentisDbMcpProtocol, MentisDbServerConfig,
+    MentisDbServerHandles, MentisDbService,
 };
 use mentisdb::{
     load_registered_chains, migrate_chain_hash_algorithm, migrate_registered_chains_with_adapter,
@@ -46,6 +48,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 #[cfg(feature = "startup-sound")]
 use std::sync::{Mutex, OnceLock};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// Raise the open-file-descriptor limit to the OS hard cap (up to 65 535).
 ///
@@ -689,6 +692,141 @@ async fn fetch_latest_release(
     })
 }
 
+async fn run_stdio_mode(
+    config: MentisDbServerConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    init_logger();
+    let service = Arc::new(MentisDbService::new(config.service.clone()));
+    let protocol = MentisDbMcpProtocol::new(service);
+
+    let stdin = BufReader::new(tokio::io::stdin());
+    let mut stdout = tokio::io::stdout();
+
+    let mut lines = stdin.lines();
+    while let Some(line) = lines.next_line().await? {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(resp_json) = handle_stdio_jsonrpc(line, &protocol).await {
+            stdout.write_all(resp_json.as_bytes()).await?;
+            stdout.write_all(b"\n").await?;
+            stdout.flush().await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_stdio_jsonrpc(line: &str, protocol: &MentisDbMcpProtocol) -> Option<String> {
+    let request: serde_json::Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+
+    let jsonrpc = request.get("jsonrpc")?.as_str()?;
+    if jsonrpc != "2.0" {
+        return None;
+    }
+
+    let id = request.get("id").cloned()?;
+    let method = request.get("method")?.as_str()?;
+    let params = request
+        .get("params")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    let result: Result<serde_json::Value, String> = match method {
+        "initialize" => Ok(serde_json::json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {
+                "tools": {"listChanged": false},
+                "resources": {"subscribe": false, "listChanged": false}
+            },
+            "serverInfo": {
+                "name": "mentisdb",
+                "version": env!("CARGO_PKG_VERSION")
+            },
+            "instructions": "MentisDB is an append-only semantic memory server. READ THIS FIRST: call `resources/read` for `mentisdb://skill/core` immediately after initialize to load the embedded MentisDB operating skill."
+        })),
+        "ping" => Ok(serde_json::json!({})),
+        "tools/list" => match protocol.list_tools().await {
+            Ok(tools) => Ok(serde_json::json!({
+                "tools": tools.into_iter().map(|t| {
+                    let def = t.to_tool_definition();
+                    serde_json::json!({
+                        "name": def.name,
+                        "description": def.description,
+                        "inputSchema": def.parameters_schema
+                    })
+                }).collect::<Vec<_>>()
+            })),
+            Err(e) => Err(e.to_string()),
+        },
+        "tools/call" => {
+            let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let arguments = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
+            let canonical = canonical_tool_name(name);
+            match protocol.execute(&canonical, arguments).await {
+                Ok(result) => Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": if result.output.is_string() {
+                            result.output.as_str().unwrap_or_default().to_string()
+                        } else {
+                            serde_json::to_string(&result.output).unwrap_or_default()
+                        }
+                    }],
+                    "isError": !result.success
+                })),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        "resources/list" => match protocol.list_resources().await {
+            Ok(resources) => Ok(serde_json::json!({"resources": resources})),
+            Err(e) => Err(e.to_string()),
+        },
+        "resources/read" => {
+            let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+            match protocol.read_resource(uri).await {
+                Ok(content) => Ok(serde_json::json!({"contents": [{"uri": uri, "text": content}]})),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        _ => Err(format!("Method not found: {method}")),
+    };
+
+    Some(match result {
+        Ok(r) => serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": r
+        })
+        .to_string(),
+        Err(e) => serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": -32603,
+                "message": e
+            }
+        })
+        .to_string(),
+    })
+}
+
+fn canonical_tool_name(name: &str) -> String {
+    let name = name.trim();
+    if name.starts_with("mentisdb_") {
+        return name.to_string();
+    }
+    format!("mentisdb_{}", name)
+}
+
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // When the server feature is enabled, axum-server (tls-rustls) and reqwest
     // both pull in rustls.  Depending on the feature combination, both the
@@ -1139,6 +1277,9 @@ mentisdbd daemon
 Usage:
   mentisdbd
   mentisdbd --help
+  mentisdbd --mode stdio
+  mentisdbd --mode http
+  mentisdbd --mode both
   mentisdbd update
   mentisdbd force-update
   mentisdbd setup <agent|all> [--url <url>] [--dry-run]
@@ -1147,33 +1288,55 @@ Usage:
   mentisdbd search <query> [--limit <n>] [--scope <scope>] [--chain <key>] [--url <url>]
   mentisdbd agents [--chain <key>] [--url <url>]
   mentisdbd backup [--dir <path>] [--output <path>] [--flush] [--include-tls]
-  mentisdbd restore <archive.mbak> [--dir <path>] [--overwrite]
+  mentisdbd restore <archive.mbak> [--dir <path>] [--overwrite] [--yes]
 
-Role:
-  Start the MentisDB MCP server, REST server, and web dashboard.
+Backup subcommand:
+  backup
+    Create a .mbak backup archive of the MENTISDB_DIR.
 
-Update subcommands:
-  update
-    Check for a newer mentisdb release and prompt to install it.
-    If a newer version is found, asks y/N before running cargo install.
-    The daemon checks for updates on startup before migrating chains.
+    The backup includes all chain data files (*.tcbin, *.agents.json,
+    *.entity-types.json, *.vectors.*.json), the global registry, and
+    optionally TLS certificates and keys.
 
-  force-update
-    Install the latest mentisdb release unconditionally, even if the
-    current version appears to be the same or newer. Useful for
-    reinstalling a corrupted binary or forcing a fresh install.
+    When run against a running daemon, all chains are flushed via
+    POST /v1/admin/flush before files are read, ensuring a consistent
+    backup even when MENTISDB_AUTO_FLUSH=false. If the daemon is not
+    running, files are captured as-is.
 
-Manual update:
-  cargo install mentisdb --force
+    Examples:
+      mentisdbd backup
+      mentisdbd backup --output /backups/mentisdb-2026-04-14.mbak
+      mentisdbd backup --dir ~/.cloudllm/mentisdb --include-tls
 
-Setup and onboarding subcommands:
-  setup
-    Configure one supported integration or `all`.
-    Run `mentisdbd setup --help` for setup examples and options.
+    Options:
+      --dir <path>       Path to MENTISDB_DIR (default: platform default)
+      --output <path>    Path for the .mbak archive (default: ./mentisdb-YYYY-MM-DD-HH-MM-SS.mbak)
+      --flush            Flush all storage adapters before backing up (recommended if daemon is running)
+      --include-tls      Include TLS certificates and keys in the backup
+      --help             Show this help text
 
-  wizard
-    Detect supported local clients and configure them interactively.
-    Run `mentisdbd wizard --help` for wizard examples and options.
+  restore
+    Restore a MENTISDB_DIR from a .mbak backup archive.
+
+    Restores all chain data, registry, skills, and optionally TLS files.
+    By default, existing files are preserved (idempotent restore). Pass
+    --overwrite to replace all files with their backed-up versions.
+
+    If files already exist in the target directory and --overwrite is not
+    passed, an interactive prompt asks for confirmation before proceeding.
+    Pass --yes to skip all prompts and assume yes.
+
+    Examples:
+      mentisdbd restore mentisdb-2026-04-14.mbak
+      mentisdbd restore /backups/mentisdb-2026-04-14.mbak --dir ~/.cloudllm/mentisdb
+      mentisdbd restore /backups/mentisdb-2026-04-14.mbak --overwrite
+
+    Options:
+      <archive.mbak>     Path to the .mbak backup archive (required)
+      --dir <path>       Path to MENTISDB_DIR (default: platform default)
+      --overwrite        Overwrite existing files (skips interactive prompt)
+      --yes              Assume yes to all prompts (skips interactive confirmation)
+      --help             Show this help text
 
   Valid values for `mentisdbd setup <agent>`:
     codex
@@ -1184,77 +1347,7 @@ Setup and onboarding subcommands:
     qwen
     copilot
     vscode-copilot
-
-  Special setup target:
     all
-
-Memory subcommands (require a running daemon):
-  add
-    Add a thought to a running MentisDB daemon via the REST API.
-
-    This is useful for quick manual entries, scripting, or piping data
-    into MentisDB without writing an MCP client. The daemon must already
-    be running on the target REST port.
-
-    Examples:
-      mentisdbd add \"The sky is blue\"
-      mentisdbd add \"Session fact\" --scope session --tag important
-      mentisdbd add \"Insight\" --type insight --agent my-agent
-      echo \"$(date): deploy succeeded\" | xargs -0 mentisdbd add
-
-    Options:
-      --type <type>    Thought type (default: fact-learned).
-                       Valid types: fact-learned, lesson-learned, insight,
-                       preference, correction, goal, plan, subgoal, question,
-                       hypothesis, observation, surprise, constraint, decision,
-                       reframe, continues-from, caused-by, derived-from, supports,
-                       contradicts, corrects, invalidates, supersedes,
-                       memory-checkpoint, summary, wonder, task-learned,
-                       task-failed, assumption-invalidated, strategy-shift
-      --scope <scope>  Memory scope: user, session, or agent.
-                       Controls who can see this thought during retrieval.
-                       Default: user (visible to all agents on the chain).
-      --tag <tag>      Add a tag. Repeatable: --tag foo --tag bar
-      --agent <id>     Agent ID for the thought.
-      --chain <key>    Chain key. Uses daemon default if omitted.
-      --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
-      --help           Show this help text
-
-  search
-    Search thoughts on a running MentisDB daemon via ranked search.
-
-    Returns the best-matching thoughts ranked by lexical, graph, and
-    (when available) vector scores. Useful for quick lookups from the
-    terminal, debugging retrieval quality, or piping results into other
-    tools with jq.
-
-    Examples:
-      mentisdbd search \"cache invalidation\"
-      mentisdbd search \"performance\" --limit 5 --scope session
-      mentisdbd search \"deploy\" --chain my-project | jq '.hits[].thought.content'
-
-    Options:
-      --limit <n>      Maximum results (default: 10)
-      --scope <scope>  Filter by memory scope: user, session, or agent
-      --chain <key>    Chain key. Uses daemon default if omitted.
-      --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
-      --help           Show this help text
-
-  agents
-    List registered agents on a running MentisDB daemon.
-
-    Shows agent IDs, display names, status, and thought counts for
-    each chain. Useful for auditing which agents have written to
-    your MentisDB instance.
-
-    Examples:
-      mentisdbd agents
-      mentisdbd agents --chain my-project
-
-    Options:
-      --chain <key>    Chain key. Uses daemon default if omitted.
-      --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
-      --help           Show this help text
 
 Important environment variables:
   MENTISDB_DIR
@@ -1306,6 +1399,8 @@ Examples:
 pub(crate) enum DaemonArgMode {
     Help,
     Run,
+    Stdio,
+    Both,
     Update,
     ForceUpdate,
     CliSubcommand(Vec<OsString>),
@@ -1342,6 +1437,36 @@ where
         } else {
             Ok(DaemonArgMode::ForceUpdate)
         };
+    }
+
+    // Handle --mode flag
+    if let Some(mode_idx) = args
+        .iter()
+        .position(|arg| arg.to_string_lossy() == "--mode")
+    {
+        if mode_idx + 1 >= args.len() {
+            return Err("--mode requires a value (stdio, http, or both)".to_string());
+        }
+        let mode = args[mode_idx + 1].to_string_lossy();
+        match mode.as_ref() {
+            "stdio" => return Ok(DaemonArgMode::Stdio),
+            "http" => return Ok(DaemonArgMode::Run),
+            "both" => return Ok(DaemonArgMode::Both),
+            _ => {
+                return Err(format!(
+                    "Invalid --mode value '{}'. Valid values: stdio, http, both",
+                    mode
+                ))
+            }
+        }
+    }
+
+    // Also accept --stdio-mcp as an alias for --mode stdio
+    if args
+        .iter()
+        .any(|arg| arg.to_string_lossy() == "--stdio-mcp")
+    {
+        return Ok(DaemonArgMode::Stdio);
     }
 
     Err(format!(
@@ -1479,6 +1604,38 @@ async fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
+        Ok(DaemonArgMode::Stdio) => {
+            init_logger();
+            let config = MentisDbServerConfig::from_env();
+            match run_stdio_mode(config).await {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("{error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Ok(DaemonArgMode::Both) => {
+            init_logger();
+            let config = MentisDbServerConfig::from_env();
+            let stdio_handle = tokio::spawn(async move { run_stdio_mode(config.clone()).await });
+            let http_handle = tokio::spawn(async move { run().await });
+            let (stdio_result, http_result) = tokio::join!(stdio_handle, http_handle);
+            if let Err(e) = stdio_result {
+                eprintln!("Stdio server error: {e}");
+            }
+            match http_result {
+                Ok(Ok(())) => ExitCode::SUCCESS,
+                Ok(Err(e)) => {
+                    eprintln!("HTTP server error: {e}");
+                    ExitCode::from(1)
+                }
+                Err(e) => {
+                    eprintln!("HTTP server join error: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         Ok(DaemonArgMode::Update) => run_update_standalone(false).await,
         Ok(DaemonArgMode::ForceUpdate) => run_update_standalone(true).await,
         Ok(DaemonArgMode::CliSubcommand(args)) => run_cli_subcommand(args),

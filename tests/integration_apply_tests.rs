@@ -288,21 +288,18 @@ fn apply_setup_writes_copilot_cli_config_under_xdg_root() {
 }
 
 #[test]
-fn apply_claude_desktop_uses_https_and_bridge_from_path() {
+fn apply_claude_desktop_uses_stdio_mode() {
     let _guard = env_lock();
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
-    let mcp_remote = bin_dir.join("mcp-remote");
-    std::fs::write(&mcp_remote, "#!/bin/sh\n").unwrap();
-    let node_bin = bin_dir.join("node");
-    std::fs::write(&node_bin, "#!/bin/sh\n").unwrap();
+    let mentisdbd = bin_dir.join("mentisdbd");
+    std::fs::write(&mentisdbd, "#!/bin/sh\n").unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&mcp_remote, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::fs::set_permissions(&node_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&mentisdbd, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     let previous_path = std::env::var_os("PATH");
@@ -336,30 +333,29 @@ fn apply_claude_desktop_uses_https_and_bridge_from_path() {
     let parsed: Value =
         serde_json::from_str(&std::fs::read_to_string(config_path).unwrap()).unwrap();
 
-    // An absolute executable mcp-remote is used directly as the command (no node wrapper).
-    // This matches the correct format: { command: "/path/mcp-remote", args: ["<url>"] }
+    // mentisdbd is used directly as the command with --mode stdio
     assert_eq!(
         parsed["mcpServers"]["mentisdb"]["command"],
-        mcp_remote.display().to_string(),
-        "command should be the absolute mcp-remote path, not node"
+        mentisdbd.display().to_string(),
+        "command should be the mentisdbd path"
     );
     assert_eq!(
-        parsed["mcpServers"]["mentisdb"]["args"][0], "https://my.mentisdb.com:9473",
-        "first arg should be the URL directly (no mcp-remote path prefix)"
+        parsed["mcpServers"]["mentisdb"]["args"][0], "--mode",
+        "first arg should be --mode"
     );
-    // args array should have exactly one element (the URL)
+    assert_eq!(
+        parsed["mcpServers"]["mentisdb"]["args"][1], "stdio",
+        "second arg should be stdio"
+    );
+    // No URL needed for stdio mode
     assert!(
-        parsed["mcpServers"]["mentisdb"]["args"][1].is_null(),
-        "args should have only one element (the URL)"
-    );
-    assert_eq!(
-        parsed["mcpServers"]["mentisdb"]["env"]["NODE_TLS_REJECT_UNAUTHORIZED"],
-        "0"
+        parsed["mcpServers"]["mentisdb"]["env"].is_null(),
+        "env should be empty for stdio mode"
     );
 }
 
 #[test]
-fn claude_desktop_plan_snippet_mentions_node_requirement() {
+fn claude_desktop_plan_snippet_uses_stdio_mode() {
     let env = PathEnvironment {
         home_dir: Some("/Users/tester".into()),
         ..PathEnvironment::default()
@@ -374,18 +370,23 @@ fn claude_desktop_plan_snippet_mentions_node_requirement() {
 
     let snippet = plan.snippet.as_deref().unwrap();
     assert!(
-        snippet.contains("\"command\": \"mcp-remote\""),
-        "snippet should use mcp-remote as command (directly executable), got: {snippet}"
+        snippet.contains("\"command\": \"mentisdbd\""),
+        "snippet should use mentisdbd as command, got: {snippet}"
     );
     assert!(
-        snippet.contains("\"args\""),
-        "snippet should have args array, got: {snippet}"
+        snippet.contains("\"--mode\"") && snippet.contains("\"stdio\""),
+        "snippet should have --mode stdio args, got: {snippet}"
     );
     assert!(
-        plan.notes
+        !snippet.contains("mcp-remote"),
+        "snippet should not mention mcp-remote, got: {snippet}"
+    );
+    assert!(
+        !plan
+            .notes
             .iter()
-            .any(|n| n.contains("Homebrew") || n.contains("Node.js")),
-        "plan notes should mention Homebrew or Node.js, got: {:?}",
+            .any(|n| n.contains("Node.js") || n.contains("Homebrew")),
+        "plan notes should not mention Node.js or Homebrew anymore, got: {:?}",
         plan.notes
     );
 }

@@ -185,6 +185,11 @@ pub struct BackupOptions {
     /// Flush all open storage adapters before reading files. This ensures the
     /// backup captures a consistent state even if the daemon is running with
     /// `AUTO_FLUSH=false`. Has no effect if the daemon is stopped.
+    ///
+    /// When the CLI backup command is run against a running daemon, it
+    /// automatically calls `POST /v1/admin/flush` before reading files, so
+    /// `flush_before_backup` is only needed for direct library usage without
+    /// a running daemon.
     pub flush_before_backup: bool,
     /// Include the `tls/` subdirectory (certificates and keys) in the backup.
     pub include_tls: bool,

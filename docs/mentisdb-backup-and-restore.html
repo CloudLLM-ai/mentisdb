@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB — Backup and Restore</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2.5rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #1a1a2e; color: #e0e0e0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; color: inherit; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.3rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2.5rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+    .callout { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .callout p:last-child { margin-bottom: 0; }
+    .tag { display: inline-block; background: #eef2ff; color: #4361ee; padding: 0.15em 0.6em; border-radius: 12px; font-size: 0.8em; font-weight: 600; margin-right: 0.3em; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.88rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 14, 2026</div>
+
+<h1>Backup and Restore</h1>
+
+<p>
+  MentisDB 0.9.2 adds backup and restore commands to the <code>mentisdbd</code> CLI.
+  You can now create compressed <code>.mbak</code> archives of your entire
+  <code>MENTISDB_DIR</code> — all chains, agents, skills, and optionally TLS
+  certificates — and restore them on any machine.
+</p>
+
+<hr>
+
+<h2 id="what-it-is">What It Is</h2>
+
+<p>
+  A backup is a single <code>.mbak</code> ZIP archive named
+  <code>mentisdb-YYYY-MM-DD-HH-MM-SS.mbak</code> containing:
+</p>
+
+<ul>
+  <li><code>mentisdb.manifest.json</code> — metadata and SHA-256 checksums for every file</li>
+  <li>All chain data files (<code>*.tcbin</code>, <code>*.agents.json</code>, <code>*.entity-types.json</code>, vector sidecars)</li>
+  <li><code>mentisdb-registry.json</code> — global chain registry</li>
+  <li><code>mentisdb-skills.bin</code> — skill registry (if present)</li>
+  <li><code>mentisdb-webhooks.json</code> — webhook registrations (if present)</li>
+  <li><code>tls/</code> — TLS certificates and keys (opt-in)</li>
+</ul>
+
+<p>
+  The manifest uses SHA-256 so restore can verify every file before writing
+  anything to disk. If any check fails, the restore aborts with an error and
+  the target directory is left untouched.
+</p>
+
+<hr>
+
+<h2 id="how-it-works">How It Works</h2>
+
+<h3 id="backup-consistency">Consistency Model on Backup</h3>
+
+<p>
+  When you run <code>mentisdbd backup</code>, the CLI checks whether the daemon
+  is running at <code>http://127.0.0.1:9472</code>. If it is, it calls
+  <code>POST /v1/admin/flush</code> to durably flush all open chains before reading
+  any files. This ensures the backup captures a consistent on-disk state even if
+  the daemon has <code>AUTO_FLUSH=false</code>.
+</p>
+
+<div class="highlight">
+  <p><strong>Daemon running:</strong> all chains are flushed first → files are read in a consistent state.</p>
+  <p><strong>Daemon stopped:</strong> files are captured as-is. Nothing is writing, so the on-disk state is already consistent.</p>
+</div>
+
+<p>
+  Use <code>--flush</code> to force a flush via the REST API regardless of
+  the automatic detection. Pass <code>--include-tls</code> to include TLS
+  certificates and keys (these are excluded by default since they are
+  sensitive).
+</p>
+
+<h3 id="restore-behavior">Restore Behavior</h3>
+
+<p>
+  Restore is <strong>idempotent by default</strong>: if a file already exists in the
+  target directory, it is skipped. This means you can safely restore a backup
+  into an existing <code>MENTISDB_DIR</code> without overwriting newer data.
+</p>
+
+<p>
+  If any files in the archive already exist in the target directory and
+  <code>--overwrite</code> is not passed, the CLI shows an interactive prompt
+  listing the conflicting files and asks for confirmation before proceeding.
+</p>
+
+<div class="callout">
+  <p><strong>Interactive prompt:</strong> when files exist and <code>--overwrite</code> is not passed, the CLI asks: "overwrite existing files? [y/N]".</p>
+</div>
+
+<p>
+  Pass <code>--overwrite</code> to skip the prompt and replace all files with their
+  backed-up versions unconditionally.
+</p>
+
+<hr>
+
+<h2 id="cli-commands">CLI Commands</h2>
+
+<h3>Create a backup</h3>
+
+<pre><code># Default: platform MENTISDB_DIR → ./mentisdb-YYYY-MM-DD-HH-MM-SS.mbak
+mentisdbd backup
+
+# Custom output path
+mentisdbd backup --output /backups/mentisdb-2026-04-14.mbak
+
+# Include TLS certificates
+mentisdbd backup --include-tls
+
+# Explicit flush (automatic if daemon is running)
+mentisdbd backup --flush
+
+# Full example
+mentisdbd backup --dir ~/.cloudllm/mentisdb --output /backups/mentisdb-2026-04-14.mbak --include-tls</code></pre>
+
+<h3>Restore a backup</h3>
+
+<pre><code># Idempotent restore (preserves existing files)
+mentisdbd restore /backups/mentisdb-2026-04-14.mbak
+
+# Idempotent restore to a specific directory
+mentisdbd restore /backups/mentisdb-2026-04-14.mbak --dir ~/.cloudllm/mentisdb
+
+# Force overwrite of all files
+mentisdbd restore /backups/mentisdb-2026-04-14.mbak --overwrite</code></pre>
+
+<hr>
+
+<h2 id="rest-api">REST API Endpoint</h2>
+
+<p>
+  The flush endpoint is also available as a standalone REST endpoint for
+  programmatic use:
+</p>
+
+<pre><code>POST http://127.0.0.1:9472/v1/admin/flush</code></pre>
+
+<p>
+  Returns <code>{"status": "flushed"}</code> on success. The endpoint iterates
+  over all open chains and calls <code>flush()</code> on each
+  <code>BinaryStorageAdapter</code>, blocking until all writes are durable.
+</p>
+
+<div class="callout">
+  <p><strong>Security note:</strong> the <code>/v1/admin/*</code> endpoints are
+  bound to the loopback address (<code>127.0.0.1</code>) by default. They are
+  not exposed externally. The flush endpoint has no authentication because it
+  is a local-only admin operation.</p>
+</div>
+
+<hr>
+
+<h2 id="format-details">Archive Format</h2>
+
+<table>
+  <thead>
+    <tr><th>File</th><th>Required</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>mentisdb.manifest.json</code></td><td>Yes</td><td>SHA-256 manifest with format version and timestamps</td></tr>
+    <tr><td><code>mentisdb-registry.json</code></td><td>Yes</td><td>Global chain registry</td></tr>
+    <tr><td><code>*.tcbin</code></td><td>Yes</td><td>Binary chain storage files</td></tr>
+    <tr><td><code>*.agents.json</code></td><td>Yes</td><td>Per-chain agent registries</td></tr>
+    <tr><td><code>*.entity-types.json</code></td><td>Yes</td><td>Per-chain entity type definitions</td></tr>
+    <tr><td><code>*.vectors.*.json</code></td><td>Yes</td><td>Vector search sidecar files</td></tr>
+    <tr><td><code>mentisdb-skills.bin</code></td><td>No</td><td>Skill registry (if present)</td></tr>
+    <tr><td><code>mentisdb-webhooks.json</code></td><td>No</td><td>Webhook registrations (if present)</td></tr>
+    <tr><td><code>tls/*</code></td><td>No</td><td>TLS certs and keys (only if <code>--include-tls</code> was used)</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="security">Security Notes</h2>
+
+<ul>
+  <li>
+    <strong>TLS certificates are excluded by default.</strong> Pass <code>--include-tls</code>
+    only when you need to back up certificates. Be careful about where you store
+    the resulting archive.
+  </li>
+  <li>
+    <strong>The REST flush endpoint is loopback-only.</strong> It cannot be reached
+    from external hosts. There is no authentication on it because it is intended
+    as a local admin operation.
+  </li>
+  <li>
+    <strong>Restore verifies before writing.</strong> Every file's SHA-256 is checked
+    against the manifest before any bytes are written to disk. A corrupted archive
+    will never partially overwrite your data.
+  </li>
+</ul>
+
+<hr>
+
+<h2 id="upgrade">Upgrade Instructions</h2>
+
+<pre><code>cargo install mentisdb --force</code></pre>
+
+<p>
+  Or download the binary from
+  <a href="https://github.com/CloudLLM-ai/mentisdb/releases">GitHub Releases</a>.
+</p>
+
+<hr>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>

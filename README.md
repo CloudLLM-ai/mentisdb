@@ -938,6 +938,73 @@ outside localhost.
 
 ---
 
+## Backup and Restore
+
+MentisDB includes built-in backup and restore commands in the `mentisdbd` CLI.
+
+### Create a backup
+
+```bash
+# Default: platform MENTISDB_DIR → ./mentisdb-YYYY-MM-DD-HH-MM-SS.mbak
+mentisdbd backup
+
+# Custom output path
+mentisdbd backup --output /backups/mentisdb-2026-04-14.mbak
+
+# Include TLS certificates
+mentisdbd backup --include-tls
+
+# Full example
+mentisdbd backup --dir ~/.cloudllm/mentisdb --output /backups/mentisdb-2026-04-14.mbak --include-tls
+```
+
+When the daemon is running, `backup` calls `POST /v1/admin/flush` before reading files to ensure a consistent snapshot even with `MENTISDB_AUTO_FLUSH=false`. If the daemon is not running, files are captured as-is.
+
+### Restore a backup
+
+```bash
+# Idempotent restore (preserves existing files)
+mentisdbd restore /backups/mentisdb-2026-04-14.mbak
+
+# Restore to a specific directory
+mentisdbd restore /backups/mentisdb-2026-04-14.mbak --dir ~/.cloudllm/mentisdb
+
+# Force overwrite of all files
+mentisdbd restore /backups/mentisdb-2026-04-14.mbak --overwrite
+
+# Skip interactive confirmation prompts
+mentisdbd restore /backups/mentisdb-2026-04-14.mbak --yes
+```
+
+Restore is **idempotent by default** — existing files are preserved. If files in the archive already exist in the target directory and `--overwrite` is not passed, an interactive prompt asks for confirmation. Pass `--yes` to skip all prompts.
+
+### Archive format
+
+A backup is a `.mbak` ZIP archive containing:
+- `mentisdb.manifest.json` — SHA-256 checksums and metadata
+- `*.tcbin` — binary chain storage
+- `*.agents.json` — per-chain agent registries
+- `*.entity-types.json` — per-chain entity type definitions
+- `*.vectors.*.json` — vector search sidecars
+- `mentisdb-registry.json` — global chain registry
+- `mentisdb-skills.bin` — skill registry (if present)
+- `mentisdb-webhooks.json` — webhook registrations (if present)
+- `tls/` — TLS certificates and keys (opt-in via `--include-tls`)
+
+Every file is verified by SHA-256 before restore writes anything to disk. A corrupted archive aborts with an error and leaves the target directory untouched.
+
+### REST flush endpoint
+
+The flush operation is also available as a standalone REST endpoint:
+
+```bash
+POST http://127.0.0.1:9472/v1/admin/flush
+```
+
+Returns `{"status": "flushed"}` on success. Iterates all open chains and calls `flush()` on each adapter, blocking until all writes are durable.
+
+---
+
 ## MCP Tool Catalog
 
 The daemon currently exposes 37 MCP tools:

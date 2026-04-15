@@ -7038,6 +7038,14 @@ impl MentisDb {
         self.storage.storage_location()
     }
 
+    /// Flush any buffered writes in the underlying storage adapter to disk.
+    ///
+    /// This ensures all acknowledged thoughts are durable before the backup
+    /// reads the files.
+    pub fn flush(&self) -> io::Result<()> {
+        self.storage.flush()
+    }
+
     /// Enable or disable immediate persistence on append.
     ///
     /// This also reconfigures the underlying storage adapter when the backend

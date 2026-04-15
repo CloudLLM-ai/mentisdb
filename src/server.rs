@@ -40,6 +40,7 @@
 //! - `POST /v1/skills/versions`
 //! - `POST /v1/skills/deprecate`
 //! - `POST /v1/skills/revoke`
+//! - `POST /v1/admin/flush`
 
 use crate::webhooks::{WebhookManager, WebhookRegistration};
 use crate::{
@@ -1455,6 +1456,7 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         )
         .route("/v1/vectors/rebuild", post(rest_rebuild_vectors_handler))
         .route("/v1/chains/merge", post(rest_merge_chains_handler))
+        .route("/v1/admin/flush", post(rest_flush_handler))
         .route("/v1/webhooks", get(rest_list_webhooks_handler))
         .route("/v1/webhooks", post(rest_register_webhook_handler))
         .route("/v1/webhooks/{id}", delete(rest_delete_webhook_handler))
@@ -1670,6 +1672,7 @@ pub fn rest_router(config: MentisDbServiceConfig) -> Router {
             post(rest_traverse_thoughts_handler),
         )
         .route("/v1/head", post(rest_head_handler))
+        .route("/v1/admin/flush", post(rest_flush_handler))
         .route("/v1/chains", get(rest_list_chains_handler))
         .route("/v1/chains/branch", post(rest_branch_handler))
         .route("/v1/agents", post(rest_list_agents_handler))
@@ -1709,7 +1712,7 @@ pub fn rest_router(config: MentisDbServiceConfig) -> Router {
 /// infrequent; a future improvement could shard by skill-id prefix if write
 /// contention becomes measurable.
 #[derive(Clone)]
-struct MentisDbService {
+pub struct MentisDbService {
     config: MentisDbServiceConfig,
     /// Concurrent chain map: lock-free lookup, per-chain `RwLock` for writes.
     pub(crate) chains: Arc<DashMap<String, Arc<RwLock<MentisDb>>>>,
@@ -1770,13 +1773,19 @@ impl InteractionLogSink {
     }
 }
 
+/// MCP protocol implementation for MentisDB over streamable HTTP.
+///
+/// This type wraps [`MentisDbService`] and implements the MCP
+/// [`ToolProtocol`][mcp::ToolProtocol] so it can be used with the
+/// `streamable_http_router` from the `mcp` crate.
 #[derive(Clone)]
-struct MentisDbMcpProtocol {
+pub struct MentisDbMcpProtocol {
     service: Arc<MentisDbService>,
 }
 
 impl MentisDbMcpProtocol {
-    fn new(service: Arc<MentisDbService>) -> Self {
+    /// Create a new `MentisDbMcpProtocol` from a shared service arc.
+    pub fn new(service: Arc<MentisDbService>) -> Self {
         Self { service }
     }
 }
@@ -2004,7 +2013,11 @@ impl ToolProtocol for MentisDbMcpProtocol {
 }
 
 impl MentisDbService {
-    fn new(config: MentisDbServiceConfig) -> Self {
+    /// Create a new `MentisDbService` from a service configuration.
+    ///
+    /// The service opens the skill registry and webhook manager immediately;
+    /// chain data is lazily loaded on first access via [`get_chain`](Self::get_chain).
+    pub fn new(config: MentisDbServiceConfig) -> Self {
         let interaction_log = Arc::new(
             InteractionLogSink::open(config.log_file.as_deref()).unwrap_or_else(|error| {
                 let target = config
@@ -3037,6 +3050,21 @@ impl MentisDbService {
             note: None,
         });
         Ok(response)
+    }
+
+    async fn flush_all(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let chains: Vec<_> = self
+            .chains
+            .iter()
+            .map(|e| (e.key().clone(), Arc::clone(e.value())))
+            .collect();
+        for (key, chain) in chains {
+            let guard = chain.read().await;
+            if let Err(e) = guard.flush() {
+                eprintln!("flush failed for chain {key}: {e}");
+            }
+        }
+        Ok(())
     }
 
     async fn list_agents(
@@ -5620,6 +5648,17 @@ async fn rest_extract_memories_handler(
     Json(request): Json<ExtractMemoriesRequest>,
 ) -> Result<Json<ExtractMemoriesResponse>, (StatusCode, Json<Value>)> {
     service_call(service.extract_memories(request).await)
+}
+
+async fn rest_flush_handler(
+    State(service): State<Arc<MentisDbService>>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let result: Result<Value, Box<dyn Error + Send + Sync>> = async move {
+        service.flush_all().await?;
+        Ok(json!({ "status": "flushed" }))
+    }
+    .await;
+    service_call(result)
 }
 
 async fn rest_head_handler(

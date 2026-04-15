@@ -89,6 +89,8 @@ pub struct RestoreCommand {
     pub target_dir: Option<String>,
     /// Overwrite existing files in the target directory.
     pub overwrite: bool,
+    /// Skip interactive prompts and assume yes.
+    pub yes: bool,
 }
 
 /// Supported top-level commands for `mentisdbd` CLI.
@@ -151,13 +153,22 @@ mentisdbd CLI
 Usage:
   mentisdbd --help
   mentisdbd
+  mentisdbd --mode stdio
+  mentisdbd --mode http
+  mentisdbd --mode both
   mentisdbd setup <agent|all> [--url <url>] [--dry-run] [--yes]
   mentisdbd wizard [--url <url>] [--yes]
   mentisdbd add <content> [--type <type>] [--scope <scope>] [--tag <tag>] [--agent <id>] [--chain <key>] [--url <url>]
   mentisdbd search <query> [--limit <n>] [--scope <scope>] [--chain <key>] [--url <url>]
   mentisdbd agents [--chain <key>] [--url <url>]
   mentisdbd backup [--dir <path>] [--output <path>] [--flush] [--include-tls]
-  mentisdbd restore <archive.mbak> [--dir <path>] [--overwrite]
+  mentisdbd restore <archive.mbak> [--dir <path>] [--overwrite] [--yes]
+
+Daemon modes (start HTTP servers by default):
+  --mode stdio     Start MCP server over stdio (for Claude Desktop subprocess)
+  --mode http      HTTP servers only (same as default)
+  --mode both      Run both stdio MCP and HTTP servers
+  --stdio-mcp      Alias for --mode stdio
 
 Supported agents (setup/wizard):
   codex
@@ -258,6 +269,10 @@ Commands:
     *.entity-types.json, *.vectors.*.json), the global registry, and
     optionally TLS certificates and keys.
 
+    If the daemon is running, all chains are flushed before reading files
+    for a consistent backup. If the daemon is not running, files are captured
+    as-is.
+
     Examples:
       mentisdbd backup
       mentisdbd backup --output /backups/mentisdb-2026-04-14.mbak
@@ -274,8 +289,11 @@ Commands:
     Restore a MENTISDB_DIR from a .mbak backup archive.
 
     Restores all chain data, registry, skills, and optionally TLS files.
-    By default, existing files are preserved (idempotent restore). Use
-    --overwrite to replace all files with their backed-up versions.
+    By default, existing files are preserved (idempotent). Pass --overwrite
+    to replace all files with their backed-up versions.
+
+    If files already exist in the target directory and --overwrite is not
+    passed, an interactive prompt asks for confirmation before overwriting.
 
     Examples:
       mentisdbd restore mentisdb-2026-04-14.mbak
@@ -285,7 +303,8 @@ Commands:
     Options:
       <archive.mbak>     Path to the .mbak backup archive (required)
       --dir <path>       Path to MENTISDB_DIR (default: platform default)
-      --overwrite        Overwrite existing files in the target directory
+      --overwrite        Overwrite existing files in the target directory (skips interactive prompt)
+      --yes              Assume yes to all prompts (skips interactive confirmation)
       --help             Show this help text
 
 Notes:
@@ -622,6 +641,7 @@ fn parse_restore(args: Vec<String>) -> Result<CliCommand, String> {
         .clone();
     let mut target_dir = None;
     let mut overwrite = false;
+    let mut yes = false;
     let mut index = 2;
     while index < args.len() {
         match args[index].as_str() {
@@ -637,6 +657,10 @@ fn parse_restore(args: Vec<String>) -> Result<CliCommand, String> {
                 overwrite = true;
                 index += 1;
             }
+            "--yes" | "-y" => {
+                yes = true;
+                index += 1;
+            }
             "-h" | "--help" => return Ok(CliCommand::Help),
             other => return Err(format!("Unexpected argument '{other}' for restore")),
         }
@@ -645,5 +669,6 @@ fn parse_restore(args: Vec<String>) -> Result<CliCommand, String> {
         archive_path,
         target_dir,
         overwrite,
+        yes,
     }))
 }

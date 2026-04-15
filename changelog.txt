@@ -1,5 +1,16 @@
 0.9.2.38 UNRELEASED
-  - fix: Claude Desktop config now writes correct format — command: /path/mcp-remote, args: [url]
+  - feat: POST /v1/admin/flush REST endpoint — iterates all open chains and calls
+    flush() on each BinaryStorageAdapter; documented in server module header
+  - feat: backup CLI auto-detects running daemon — calls POST /v1/admin/flush before
+    reading files; connection refused means daemon not running (files captured as-is);
+    other errors warn but proceed; BackupOptions docs updated to explain flush behavior
+  - feat: restore CLI interactive conflict prompt — when files exist in target dir and
+    --overwrite not passed, lists conflicting files and prompts user with boxed_yn_prompt;
+    user decline exits gracefully with no changes; restore is fully idempotent without prompt
+  - feat: CLI help text updated for backup and restore subcommands — clarifies daemon flush
+    detection, idempotent restore behavior, interactive prompt, and --overwrite skip note
+  - doc: docs/mentisdb-backup-and-restore.html blog post covering backup/restore CLI,
+    consistency model, SHA-256 manifest, .mbak format, REST endpoint, security notes
     instead of the broken command: node, args: [/path/mcp-remote, url]; any absolute executable
     mcp-remote is now used directly without a node wrapper (is_absolute_executable check); the
     shebang-based is_directly_executable fallback is retained for npm-installed scripts with a

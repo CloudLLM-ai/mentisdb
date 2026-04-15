@@ -165,9 +165,9 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
         IntegrationKind::ClaudeCode => Some(format!(
             "{{\n  \"mcpServers\": {{\n    \"mentisdb\": {{\n      \"type\": \"http\",\n      \"url\": \"{url}\"\n    }}\n  }}\n}}"
         )),
-        IntegrationKind::ClaudeDesktop => Some(format!(
-            "{{\n  \"mcpServers\": {{\n    \"mentisdb\": {{\n      \"command\": \"mcp-remote\",\n      \"args\": [\"{url}\"],\n      \"env\": {{ \"NODE_TLS_REJECT_UNAUTHORIZED\": \"0\" }}\n    }}\n  }}\n}}\n// Homebrew mcp-remote is directly executable. npm-installed mcp-remote requires Node >= 20."
-        )),
+        IntegrationKind::ClaudeDesktop => Some(
+            "{\n  \"mcpServers\": {\n    \"mentisdb\": {\n      \"command\": \"mentisdbd\",\n      \"args\": [\"--mode\", \"stdio\"]\n    }\n  }\n}\n// mentisdbd communicates with Claude Desktop over stdio using the MCP protocol.".to_string()
+        ),
         IntegrationKind::GeminiCli => Some(format!(
             "{{\n  \"mcpServers\": {{\n    \"mentisdb\": {{\n      \"type\": \"http\",\n      \"url\": \"{url}\",\n      \"httpUrl\": \"{url}\"\n    }}\n  }}\n}}"
         )),
@@ -186,19 +186,17 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
     match integration {
         IntegrationKind::ClaudeDesktop => {
             notes.push(
-                "Claude Desktop requires an HTTPS MCP endpoint and the mcp-remote bridge."
+                "Claude Desktop spawns mentisdbd as a subprocess and communicates over stdio using MCP JSON-RPC."
                     .to_string(),
             );
             notes.push(
-                "When mcp-remote is installed via Homebrew it is directly executable. npm-installed mcp-remote requires Node.js >= 20."
+                "Data is persisted to MENTISDB_DIR (default ~/.cloudllm/mentisdb) even when the subprocess exits."
                     .to_string(),
             );
-            if url.starts_with("https://") {
-                notes.push(
-                    "Warning: NODE_TLS_REJECT_UNAUTHORIZED=0 is set to allow self-signed certificates. Only use this with trusted private servers."
-                        .to_string(),
-                );
-            }
+            notes.push(
+                "Make sure mentisdbd is on your PATH, or use the full path to the binary."
+                    .to_string(),
+            );
         }
         IntegrationKind::GeminiCli => notes.push(
             "Gemini setup writes both 'url' and 'httpUrl' fields to cover current remote HTTP config variants."

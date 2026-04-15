@@ -83,7 +83,7 @@ where
                 ExitCode::from(1)
             }
         },
-        Ok(CliCommand::Restore(command)) => match run_restore(&command, out, err) {
+        Ok(CliCommand::Restore(command)) => match run_restore(&command, input, out, err) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 let _ = writeln!(err, "restore failed: {error}");
@@ -236,6 +236,30 @@ fn run_backup(
         ));
     }
 
+    // Try to flush the running daemon first. If connection is refused, the
+    // daemon is not running — skip flush and proceed with whatever is on disk.
+    match ureq::post("http://127.0.0.1:9472/v1/admin/flush").call() {
+        Ok(resp) if resp.status() == 200 => {
+            let _ = writeln!(out, "Daemon detected — chains flushed.");
+        }
+        Err(e) if e.kind() == ureq::ErrorKind::ConnectionFailed => {
+            let _ = writeln!(out, "Daemon not running — capturing files as-is.");
+        }
+        Err(e) => {
+            let _ = writeln!(
+                out,
+                "Warning: could not flush daemon: {e} — proceeding anyway."
+            );
+        }
+        Ok(resp) => {
+            let _ = writeln!(
+                out,
+                "Warning: unexpected flush response status {}",
+                resp.status()
+            );
+        }
+    }
+
     let output_path = cmd.output_path.as_ref().map(PathBuf::from);
 
     let options = BackupOptions {
@@ -266,6 +290,7 @@ fn run_backup(
 
 fn run_restore(
     cmd: &RestoreCommand,
+    input: &mut dyn BufRead,
     out: &mut dyn Write,
     _err: &mut dyn Write,
 ) -> Result<(), String> {
@@ -306,6 +331,29 @@ fn run_restore(
         writeln!(out, "  Mode: preserve existing files (idempotent)").map_err(|e| e.to_string())?;
     }
     writeln!(out).map_err(|e| e.to_string())?;
+
+    // Interactive prompt if there are conflicting files and --overwrite not passed
+    if !cmd.overwrite && !cmd.yes {
+        let existing: Vec<&str> = files
+            .iter()
+            .filter(|f| target_dir.join(&f.relative_path).exists())
+            .map(|f| f.relative_path.as_str())
+            .collect();
+
+        if !existing.is_empty() {
+            let conflict_list = existing.join("\n  ");
+            let question = format!(
+                "The following files already exist in the target directory:\n\n  {}\n\nOverwrite existing files?",
+                conflict_list
+            );
+            let answer =
+                boxed_yn_prompt(out, &question, false, input).map_err(|e| e.to_string())?;
+            if answer.is_empty() || answer.to_ascii_lowercase().starts_with('n') {
+                let _ = writeln!(out, "Restore cancelled — no files were modified.");
+                return Ok(());
+            }
+        }
+    }
 
     restore_backup(
         archive_path,
