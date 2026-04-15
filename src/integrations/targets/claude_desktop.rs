@@ -27,6 +27,19 @@ pub(super) fn build(
     ))
 }
 
+#[cfg(unix)]
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &std::path::Path) -> bool {
+    true
+}
+
 fn detect_mentisdbd_path() -> String {
     let binary_name = if cfg!(target_os = "windows") {
         "mentisdbd.exe"
@@ -36,17 +49,8 @@ fn detect_mentisdbd_path() -> String {
 
     for entry in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
         let candidate = entry.join(binary_name);
-        if candidate.is_file() {
-            if cfg!(unix) {
-                use std::os::unix::fs::PermissionsExt;
-                if let Ok(metadata) = std::fs::metadata(&candidate) {
-                    if metadata.permissions().mode() & 0o111 != 0 {
-                        return candidate.display().to_string();
-                    }
-                }
-            } else {
-                return candidate.display().to_string();
-            }
+        if candidate.is_file() && is_executable(&candidate) {
+            return candidate.display().to_string();
         }
     }
 
