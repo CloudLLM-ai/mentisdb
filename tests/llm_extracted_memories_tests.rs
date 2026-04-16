@@ -181,3 +181,15 @@ fn test_llm_extraction_error_display() {
         "LLM schema mismatch: Missing field"
     );
 }
+
+/// Test that malformed custom-prompt output is surfaced clearly.
+#[test]
+fn test_llm_extraction_parse_error_includes_raw_output() {
+    let parse_error = LlmExtractionError::ParseError(
+        "LLM output is not valid JSON: missing field `thought_type`\nRaw output: {\"thoughts\":[{\"type\":\"Question\"}]}".to_string(),
+    );
+
+    let rendered = format!("{}", parse_error);
+    assert!(rendered.contains("missing field `thought_type`"));
+    assert!(rendered.contains("Raw output:"));
+}

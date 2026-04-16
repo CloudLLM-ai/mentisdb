@@ -1533,8 +1533,9 @@ for thought in &result.thoughts {
 ```
 
 The extraction uses `openai-rust2` with connection pooling, 3× retry on 429/5xx,
-60s timeout, and JSON object response format. LLM output is **untrusted** — always
-review and optionally sign extracted thoughts before appending.
+60s timeout, and strict JSON schema validation on the returned payload. LLM output
+is **untrusted** — always review and optionally sign extracted thoughts before
+appending.
 
 See [docs/llm-extracted-memories-design.md](docs/llm-extracted-memories-design.md) for the full design.
 
@@ -1561,7 +1562,7 @@ The retrospective helper:
 
 ## Thought Types And Roles
 
-MentisDB currently defines 30 semantic `ThoughtType` values and 8 operational
+MentisDB currently defines 31 semantic `ThoughtType` values and 8 operational
 `ThoughtRole` values.
 
 Thought types:
@@ -1572,7 +1573,7 @@ Thought types:
 - `Constraint`, `Plan`, `Subgoal`, `Goal`, `Decision`, `StrategyShift`
 - `Wonder`, `Question`, `Idea`, `Experiment`
 - `ActionTaken`, `TaskComplete`
-- `Checkpoint`, `StateSnapshot`, `Handoff`, `Summary`
+- `Checkpoint`, `StateSnapshot`, `Handoff`, `Summary`, `LLMExtracted`
 
 Thought roles:
 

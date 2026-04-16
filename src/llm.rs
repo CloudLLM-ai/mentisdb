@@ -15,7 +15,7 @@ use crate::{
     ExtractionResult, LlmExtractionConfig, LlmExtractionError, ThoughtInput, ThoughtRole,
     ThoughtType,
 };
-use openai_rust2::chat::{ChatArguments, Message, ResponseFormat};
+use openai_rust2::chat::{ChatArguments, Message};
 use openai_rust2::Client;
 use serde::Deserialize;
 
@@ -118,7 +118,6 @@ pub async fn extract_memories_from_text(
             },
         ],
     );
-    args.response_format = Some(ResponseFormat::JsonObject);
     args.temperature = Some(EXTRACTION_TEMPERATURE);
 
     let response =

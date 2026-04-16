@@ -1642,9 +1642,9 @@ pub struct LlmExtractionConfig {
     ///
     /// Required. Must not be empty.
     pub api_key: String,
-    /// Model identifier (e.g., "gpt-4", "claude-3-sonnet").
+    /// Model identifier (e.g., "gpt-4o", "claude-3-sonnet").
     ///
-    /// Defaults to `gpt-4` when empty.
+    /// Defaults to `gpt-4o` when empty.
     pub model: String,
 }
 
@@ -1654,7 +1654,7 @@ impl LlmExtractionConfig {
     /// Reads:
     /// - `OPENAI_API_KEY` (required)
     /// - `LLM_BASE_URL` (defaults to `https://api.openai.com/v1`)
-    /// - `LLM_MODEL` (defaults to `gpt-4`)
+    /// - `LLM_MODEL` (defaults to `gpt-4o`)
     pub fn from_env() -> Result<Self, LlmExtractionError> {
         let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
             LlmExtractionError::NotConfigured("OPENAI_API_KEY is not set".to_string())
@@ -7259,7 +7259,7 @@ impl MentisDb {
     /// environment variables:
     /// - `OPENAI_API_KEY` (required)
     /// - `LLM_BASE_URL` (defaults to `https://api.openai.com/v1`)
-    /// - `LLM_MODEL` (defaults to `gpt-4`)
+    /// - `LLM_MODEL` (defaults to `gpt-4o`)
     ///
     /// # Errors
     ///

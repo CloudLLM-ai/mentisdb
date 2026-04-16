@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-This document describes the design for an **opt-in LLM-extracted memories pipeline** in MentisDB 0.9.0. The pipeline allows agents to pass free-form text to an LLM and store the structured memories (as `ThoughtInput` records) that the LLM produces.
+This document describes the design for an **opt-in LLM-extracted memories pipeline** in MentisDB 0.9.0. The pipeline allows agents to pass free-form text to an LLM and receive structured memories (as `ThoughtInput` records) that can be reviewed before append.
 
 ### 1.1 Goals
 
@@ -99,7 +99,7 @@ pub struct LlmExtractionConfig {
     pub base_url: String,
     /// API key for authentication.
     pub api_key: String,
-    /// Model identifier (e.g., "gpt-4", "claude-3-sonnet").
+    /// Model identifier (e.g., "gpt-4o", "claude-3-sonnet").
     pub model: String,
 }
 
@@ -138,7 +138,7 @@ impl MentisDb {
     /// - `OPENAI_API_KEY` is not set
     /// - LLM API call fails or returns invalid JSON
     /// - The response cannot be parsed into structured memories
-    pub async fn extract_memories_from_text(
+    pub async fn extract_memories(
         &self,
         text: &str,
         config: &LlmExtractionConfig,
@@ -223,13 +223,12 @@ POST /v1/chat/completions
       "content": "<input text>"
     }
   ],
-  "temperature": 0.1,
-  "response_format": { "type": "json_object" }
+  "temperature": 0.1
 }
 ```
 
 - `temperature` is set to `0.1` to reduce creativity and improve consistency
-- `response_format` uses `ResponseFormat::JsonObject` to request structured JSON output
+- The prompt asks for a strict JSON object, and the server validates the schema before returning any extracted thoughts. This avoids portability issues across OpenAI-compatible endpoints that do not all handle `response_format` hints the same way.
 
 ### 4.3 HTTP Client
 
@@ -341,7 +340,7 @@ Before appending an LLM-extracted thought, callers should consider:
 
 ```rust
 // 1. Extract memories
-let extraction = chain.extract_memories_from_text(text, &config).await?;
+let extraction = chain.extract_memories(text, &config).await?;
 
 // 2. Review and sign each thought
 for input in extraction.thoughts {
@@ -390,9 +389,9 @@ use mentisdb::{MentisDb, LlmExtractionConfig};
 
 let config = LlmExtractionConfig::from_env();
 
-let extraction = chain.extract_memories_from_text(
-    "The user prefers dark mode and asked about enterprise pricing.",
-    &config,
+let extraction = chain.extract_memories(
+  "The user prefers dark mode and asked about enterprise pricing.",
+  &config,
 ).await?;
 
 for thought in extraction.thoughts {
