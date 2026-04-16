@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB Content Ingestion — Turn Raw Text into Reviewable Memory</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.95rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2.4rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.12rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #1a1a2e; color: #e0e0e0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; color: inherit; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.35rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2.25rem 0; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+    .callout { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .callout p:last-child { margin-bottom: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.88rem; }
+    th, td { border: 1px solid #ddd; padding: 0.55rem 0.75rem; text-align: left; vertical-align: top; }
+    th { background: #f5f5f5; font-weight: 600; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 16, 2026</div>
+
+<h1>Content Ingestion in MentisDB</h1>
+
+<p>
+  MentisDB now has an opt-in content ingestion workflow for turning free-form text into
+  structured memory candidates. The feature is called the
+  <strong>LLM-extracted memories pipeline</strong>. You give it raw text such as meeting
+  notes, handoff logs, incident writeups, interview transcripts, analyst notes, or agent
+  transcripts, and it returns typed <code>ThoughtInput</code> records that you can review
+  before append.
+</p>
+
+<div class="highlight">
+  <p><strong>This is deliberate reviewable ingestion, not blind auto-ingestion.</strong></p>
+  <p>
+    MentisDB does <strong>not</strong> automatically write extracted memories into your chain.
+    It returns candidate thoughts, and you decide what should become durable memory.
+  </p>
+</div>
+
+<p>
+  That design choice matters. It keeps MentisDB aligned with its core model: durable,
+  attributed, reviewable memory instead of opaque prompt stuffing. For teams that care about
+  traceability, handoffs, and long-lived agent memory, that is usually the right tradeoff.
+</p>
+
+<hr>
+
+<h2 id="what-it-is">What the feature actually does</h2>
+
+<p>
+  The ingestion pipeline accepts free-form text and asks an OpenAI-compatible model to map it
+  into one or more MentisDB thought candidates. Each candidate includes:
+</p>
+
+<ul>
+  <li><code>thought_type</code> such as <code>Decision</code>, <code>Question</code>, or <code>PreferenceUpdate</code></li>
+  <li><code>content</code> — a concise statement of the durable memory</li>
+  <li><code>importance</code> and <code>confidence</code></li>
+  <li><code>tags</code> and <code>concepts</code></li>
+</ul>
+
+<p>
+  The returned thoughts are valid MentisDB <code>ThoughtInput</code> values, but they are not yet
+  signed, attributed to a specific app-level agent append call, or stored durably. You still
+  choose what to append and under which agent identity.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Surface</th><th>Status</th><th>What it does</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Rust API</td><td>Built in</td><td><code>MentisDb::extract_memories(...)</code> returns <code>ExtractionResult</code></td></tr>
+    <tr><td>REST</td><td>Built in</td><td><code>POST /v1/extract-memories</code></td></tr>
+    <tr><td>MCP</td><td>Built in</td><td><code>mentisdb_extract_memories</code> for agentic workflows</td></tr>
+    <tr><td>CLI wrapper</td><td>Not yet</td><td>No dedicated <code>mentisdbd ingest</code> command today</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="tested">We tested it while writing this post</h2>
+
+<p>
+  Rather than just reading the code, we ran the feature against a disposable local chain.
+  We verified two important behaviors:
+</p>
+
+<ol>
+  <li>The extraction call returns structured thought candidates successfully.</li>
+  <li>The chain remains unchanged until you explicitly append something.</li>
+</ol>
+
+<pre><code>cargo build --bin mentisdbd
+
+MENTISDB_DIR=/tmp/mentisdb-ingestion-live-2 \
+MENTISDB_REST_PORT=19722 \
+MENTISDB_MCP_PORT=19721 \
+MENTISDB_HTTPS_MCP_PORT=0 \
+MENTISDB_HTTPS_REST_PORT=0 \
+MENTISDB_DASHBOARD_PORT=0 \
+target/debug/mentisdbd</code></pre>
+
+<p>
+  Then we posted sample text to <code>/v1/extract-memories</code> and checked
+  <code>/v1/head</code> immediately afterwards. The response returned three candidate thoughts,
+  while the chain head still showed <code>thought_count: 0</code>.
+</p>
+
+<div class="callout">
+  <p><strong>Real bug found and fixed:</strong> while testing, we found that some OpenAI-compatible endpoints rejected the request when the client sent a <code>response_format</code> hint. MentisDB now relies on the prompt plus strict JSON validation instead, which is more portable across providers.</p>
+</div>
+
+<p>
+  We also hit a more subtle issue that is not a code bug but a workflow reality: the model can
+  still misclassify a sentence. In one live test, a requirement sentence came back as
+  <code>TaskComplete</code>. That is exactly why this feature is review-first rather than auto-append.
+</p>
+
+<hr>
+
+<h2 id="setup">How to set it up</h2>
+
+<h3>1. Install or build MentisDB</h3>
+
+<pre><code>cargo install mentisdb
+
+# or from the repo
+cargo build --bin mentisdbd</code></pre>
+
+<h3>2. Configure an OpenAI-compatible provider</h3>
+
+<pre><code>export OPENAI_API_KEY="sk-..."
+export LLM_BASE_URL="https://api.openai.com/v1"
+export LLM_MODEL="gpt-4o"</code></pre>
+
+<p>
+  <code>OPENAI_API_KEY</code> is required. <code>LLM_BASE_URL</code> and <code>LLM_MODEL</code> are optional.
+  If you leave them unset, MentisDB defaults to OpenAI's chat-completions URL and a
+  default model value.
+</p>
+
+<h3>3. Start the daemon</h3>
+
+<pre><code>mentisdbd</code></pre>
+
+<p>
+  The REST API defaults to <code>http://127.0.0.1:9472</code>. If you already use MentisDB through
+  Claude Desktop, OpenCode, Codex, or another MCP-capable host, you can also trigger ingestion
+  through the MCP tool instead of talking to REST directly.
+</p>
+
+<hr>
+
+<h2 id="use-rest">Using the REST endpoint</h2>
+
+<p>
+  The simplest direct test is a POST to <code>/v1/extract-memories</code>.
+</p>
+
+<pre><code>curl -sS -X POST "http://127.0.0.1:9472/v1/extract-memories" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "chain_key": "content-ingestion-demo",
+    "text": "User prefers terse release notes. They asked whether the backup command flushes storage before archiving. We decided to document the flush behavior in the handbook."
+  }'</code></pre>
+
+<p>
+  Typical response shape:
+</p>
+
+<pre><code>{
+  "thoughts": [
+    {
+      "thought_type": "PreferenceUpdate",
+      "role": "Memory",
+      "content": "User prefers terse release notes.",
+      "importance": 0.7,
+      "confidence": 1.0,
+      "tags": ["user", "preference", "release notes"],
+      "concepts": ["communication", "documentation"],
+      "refs": [],
+      "relations": []
+    },
+    {
+      "thought_type": "Question",
+      "role": "Memory",
+      "content": "User asked whether the backup command flushes storage before archiving.",
+      "importance": 0.8,
+      "confidence": 1.0,
+      "tags": ["backup", "question"],
+      "concepts": ["storage"]
+    },
+    {
+      "thought_type": "Decision",
+      "role": "Memory",
+      "content": "We decided to document the flush behavior in the handbook.",
+      "importance": 0.9,
+      "confidence": 1.0,
+      "tags": ["decision", "documentation"],
+      "concepts": ["documentation"]
+    }
+  ],
+  "model": "gpt-4-0613",
+  "usage": {
+    "prompt_tokens": 347,
+    "completion_tokens": 241,
+    "total_tokens": 588
+  }
+}</code></pre>
+
+<h3>Important: this does not append</h3>
+
+<pre><code>curl -sS -X POST "http://127.0.0.1:9472/v1/head" \
+  -H "Content-Type: application/json" \
+  -d '{"chain_key":"content-ingestion-demo"}'</code></pre>
+
+<p>
+  If you have only extracted and not appended, the chain can still be empty. That is expected.
+</p>
+
+<hr>
+
+<h2 id="use-mcp">Using it through MCP</h2>
+
+<p>
+  For most agent users, MCP is the better interface than raw REST. Once your coding agent or
+  assistant is connected to MentisDB, it can call <code>mentisdb_extract_memories</code> directly.
+</p>
+
+<p>
+  A good workflow looks like this:
+</p>
+
+<ol>
+  <li>Ask the agent to extract durable memories from a block of notes or transcript text.</li>
+  <li>Ask it to show you the candidate thoughts first.</li>
+  <li>Approve, reject, or edit them.</li>
+  <li>Only then append the good ones using <code>mentisdb_append</code>.</li>
+</ol>
+
+<div class="highlight">
+  <p><strong>This is where MentisDB is strongest.</strong></p>
+  <p>
+    The extraction tool is useful by itself, but it becomes much more powerful when paired with
+    the existing MCP memory workflow: extract, review, append, search, checkpoint, and hand off.
+  </p>
+</div>
+
+<hr>
+
+<h2 id="use-rust">Using the Rust API</h2>
+
+<p>
+  If you are embedding MentisDB in your own app or service, the Rust API is the cleanest path.
+</p>
+
+<pre><code>use mentisdb::{LlmExtractionConfig, MentisDb};
+use std::path::PathBuf;
+
+# async fn run() -> Result&lt;(), Box&lt;dyn std::error::Error + Send + Sync&gt;&gt; {
+let config = LlmExtractionConfig::from_env()?;
+let mut chain = MentisDb::open_with_key(PathBuf::from("/tmp/mentisdb"), "ingestion-demo")?;
+
+let extraction = chain.extract_memories(
+    "Customer asked for SSO pricing and confirmed they want weekly rollout summaries.",
+    &config,
+).await?;
+
+for input in &extraction.thoughts {
+    println!("{:?}: {}", input.thought_type, input.content);
+}
+
+// Review before append.
+for input in extraction.thoughts {
+    if input.thought_type == mentisdb::ThoughtType::PreferenceUpdate {
+        chain.append_thought("assistant", input)?;
+    }
+}
+# Ok(())
+# }</code></pre>
+
+<p>
+  The important part is not the extraction call. It is the review step between extraction and append.
+</p>
+
+<hr>
+
+<h2 id="use-cases">Use cases</h2>
+
+<h3>For normal people</h3>
+
+<ul>
+  <li><strong>Meeting notes:</strong> turn a messy client call transcript into concrete decisions, open questions, and next-step goals.</li>
+  <li><strong>Life admin:</strong> ingest contractor notes, school conversations, or property maintenance logs and keep only the durable follow-ups.</li>
+  <li><strong>Personal project memory:</strong> convert a long chat with an agent into explicit preferences, constraints, and decisions you can reuse next week.</li>
+</ul>
+
+<h3>For enterprise knowledge workers</h3>
+
+<p><strong>Finance:</strong></p>
+<ul>
+  <li>Convert analyst call notes into questions, constraints, and risk-relevant findings.</li>
+  <li>Ingest operating committee notes into decisions, exceptions, and follow-up tasks.</li>
+  <li>Extract durable memory from post-trade reviews, incident summaries, or policy updates.</li>
+</ul>
+
+<p><strong>Defense and security:</strong></p>
+<ul>
+  <li>Turn shift handoffs into state snapshots and questions that survive personnel changes.</li>
+  <li>Convert incident timelines into findings, assumptions invalidated, and lessons learned.</li>
+  <li>Use review-first extraction when auditability matters and blind automatic ingestion would be risky.</li>
+</ul>
+
+<h3>For coders and engineering teams</h3>
+
+<ul>
+  <li><strong>PR and code review notes:</strong> extract decisions, constraints, and follow-up questions.</li>
+  <li><strong>Postmortems:</strong> convert long incident writeups into lessons learned, corrections, and safeguards.</li>
+  <li><strong>Sprint handoffs:</strong> take a large wall of notes and produce checkpoint-ready memory before context compaction.</li>
+  <li><strong>Support escalations:</strong> distill customer complaints into reproducible findings and product decisions.</li>
+</ul>
+
+<hr>
+
+<h2 id="review-workflow">The right review workflow</h2>
+
+<p>
+  If you want good results, do not treat content ingestion as a one-shot automation feature. Treat it
+  as a <strong>memory proposal generator</strong>.
+</p>
+
+<ol>
+  <li>Extract from raw notes, transcript, or tool log.</li>
+  <li>Remove anything non-durable, overly specific, or speculative.</li>
+  <li>Fix any misclassified thought types.</li>
+  <li>Add refs or typed relations if you already know the relevant prior memories.</li>
+  <li>Append only the thoughts you want to carry forward.</li>
+</ol>
+
+<p>
+  That small review step is what keeps MentisDB useful over time instead of turning it into an
+  untrusted dumping ground.
+</p>
+
+<hr>
+
+<h2 id="limitations">Current limitations and caveats</h2>
+
+<ul>
+  <li><strong>No dedicated CLI wrapper yet.</strong> Today this is a Rust API, REST, and MCP feature.</li>
+  <li><strong>Review is mandatory in practice.</strong> The model can return a semantically plausible but wrong type.</li>
+  <li><strong>Custom prompt templates are fragile.</strong> If your template stops returning the exact JSON schema, extraction fails.</li>
+  <li><strong>The returned thoughts are not source-marked automatically.</strong> They stay semantically typed rather than being forced into <code>LLMExtracted</code>.</li>
+  <li><strong><code>agent_id</code> on the request is not the same thing as append attribution.</strong> The durable agent identity is decided when you append, not when you extract.</li>
+</ul>
+
+<hr>
+
+<h2 id="troubleshooting">Troubleshooting</h2>
+
+<table>
+  <thead>
+    <tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>OPENAI_API_KEY is not set</code></td><td>Missing provider credential</td><td>Export <code>OPENAI_API_KEY</code> before starting the daemon or your app</td></tr>
+    <tr><td>API error from provider</td><td>Bad key, wrong base URL, incompatible endpoint, or unavailable model</td><td>Check auth, base URL, and model settings</td></tr>
+    <tr><td>Parse error</td><td>Model returned prose or malformed JSON</td><td>Use the default prompt first; keep custom prompts schema-compatible</td></tr>
+    <tr><td>Schema mismatch</td><td>Output used the wrong field names or invalid thought types</td><td>Require <code>thought_type</code>, <code>content</code>, and top-level <code>{"thoughts": [...]}</code></td></tr>
+    <tr><td>Chain still empty</td><td>You extracted but never appended</td><td>Review the returned thoughts and append the ones you want</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="bottom-line">Bottom line</h2>
+
+<p>
+  MentisDB's content ingestion feature is already useful today, especially for teams using agentic
+  workflows through MCP. But it is best understood as <strong>reviewable semantic extraction</strong>,
+  not blind background ingestion.
+</p>
+
+<p>
+  That may sound less magical than "just throw documents at it," but for durable agent memory it is
+  often the better shape: fewer silent hallucinations, better memory hygiene, and a cleaner line
+  between candidate knowledge and trusted memory.
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>

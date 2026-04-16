@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB vs Cognee</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2.2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.12rem; margin-top: 1.4rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #1a1a2e; color: #e0e0e0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; color: inherit; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.35rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2.25rem 0; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .callout { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child, .callout p:last-child { margin-bottom: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.82rem; }
+    th, td { border: 1px solid #ddd; padding: 0.45rem 0.6rem; text-align: left; vertical-align: top; }
+    th { background: #f5f5f5; font-weight: 600; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 16, 2026</div>
+
+<h1>MentisDB vs Cognee</h1>
+
+<p>
+  MentisDB and Cognee both live inside the broad "AI memory" category, but they are not solving
+  the same problem in exactly the same way. MentisDB is a local-first semantic memory ledger for
+  agents. Cognee is a broader knowledge-engine platform built around ingestion, graph construction,
+  and multi-store retrieval.
+</p>
+
+<div class="highlight">
+  <p><strong>The short version:</strong></p>
+  <p>
+    If you want durable, attributed, tamper-evident agent memory that works well for session
+    continuity, multi-agent coordination, and MCP-driven coding workflows, MentisDB is the more
+    opinionated fit. If you want a richer document-to-graph ingestion platform with more backend
+    choices, more cloud posture, and more retrieval modes over ingested corpora, Cognee is the more
+    mature platform today.
+  </p>
+</div>
+
+<hr>
+
+<h2 id="different-centers">They have different centers of gravity</h2>
+
+<h3>MentisDB</h3>
+
+<p>
+  MentisDB's core unit is the <code>Thought</code>: a typed, attributed memory record stored in an
+  append-only hash chain. The system emphasizes decisions, constraints, checkpoints, handoffs,
+  lessons learned, and shared agent memory. Search is hybrid and explainable, but the architectural
+  center is still durable semantic memory.
+</p>
+
+<h3>Cognee</h3>
+
+<p>
+  Cognee's center is a knowledge-processing pipeline. It ingests source data, chunks and summarizes
+  it, extracts graph structure, embeds it, and exposes multiple retrieval modes across graph,
+  vector, and relational stores. Its mental model is closer to "turn arbitrary information into a
+  knowledge substrate for agents and apps."
+</p>
+
+<p>
+  This difference matters. MentisDB feels like a memory system with search. Cognee feels like a
+  knowledge engine with memory use cases.
+</p>
+
+<hr>
+
+<h2 id="architecture">Architecture</h2>
+
+<h3>MentisDB: one canonical ledger</h3>
+
+<ul>
+  <li>Append-only thought chain</li>
+  <li>Hash-linked records for tamper evidence</li>
+  <li>Optional signatures via agent public keys</li>
+  <li>Vector sidecars are derived, not canonical</li>
+  <li>Agent registry and skill registry are first-class</li>
+  <li>Branching, cross-chain search, and skill versioning are built into the mental model</li>
+</ul>
+
+<h3>Cognee: three complementary stores</h3>
+
+<ul>
+  <li>Relational store for document metadata, chunks, permissions, and provenance</li>
+  <li>Vector store for embeddings</li>
+  <li>Graph store for entities and relationships</li>
+  <li>Task and pipeline system for ingestion and enrichment</li>
+  <li>Broader support for custom tasks, ontologies, and graph-oriented search</li>
+</ul>
+
+<p>
+  MentisDB has the cleaner canonical-truth story. Cognee has the broader processing-platform story.
+</p>
+
+<hr>
+
+<h2 id="ingestion">Ingestion</h2>
+
+<h3>Where Cognee is ahead</h3>
+
+<p>
+  Cognee is clearly ahead on ingestion breadth. Its <code>add</code> and <code>cognify</code>
+  pipeline is designed to ingest source material and turn it into chunks, summaries, embeddings,
+  entities, and relationships. That is a stronger fit for organizations that want to throw a lot of
+  documents, notes, code, or datasets at a system and build a search layer over the result.
+</p>
+
+<h3>Where MentisDB is different</h3>
+
+<p>
+  MentisDB's natural ingestion shape is explicit semantic memory append. It now also has an opt-in
+  LLM-extracted memories feature, but that feature is intentionally review-first. It is not trying
+  to be a full automatic document intelligence platform. That makes it less turnkey for corpora, but
+  more trustworthy for durable operational memory.
+</p>
+
+<div class="callout">
+  <p><strong>Critical distinction:</strong> Cognee is optimized for turning source material into a query substrate. MentisDB is optimized for keeping durable agent memory clean, attributable, and useful over time.</p>
+</div>
+
+<hr>
+
+<h2 id="retrieval">Retrieval</h2>
+
+<p>
+  MentisDB offers deterministic filtering, BM25-style lexical ranking, optional vector sidecars,
+  graph-aware expansion, reciprocal rank fusion, temporal <code>as_of</code> queries, and grouped
+  context bundles. It is an unusually strong retrieval stack for a local-first system.
+</p>
+
+<p>
+  Cognee offers a wider family of retrieval modes such as graph completion, RAG completion, chunk
+  retrieval, summary retrieval, natural-language graph querying, Cypher-oriented retrieval, and
+  coding rules retrieval. For teams building graph-centric applications, that menu is compelling.
+</p>
+
+<p>
+  The tradeoff is interpretability versus breadth. MentisDB's retrieval is easier to reason about as
+  memory retrieval. Cognee's retrieval is broader as an application substrate.
+</p>
+
+<hr>
+
+<h2 id="integrity">Integrity and provenance</h2>
+
+<p>
+  This is where MentisDB has a real architectural edge. It stores memories in a tamper-evident hash
+  chain, supports optional Ed25519 signing, and keeps agent attribution and skill version history as
+  first-class primitives. That is not just metadata. It changes what kinds of workflows the system
+  can support confidently.
+</p>
+
+<p>
+  Cognee clearly tracks document provenance, datasets, tenants, permissions, and processing state.
+  That is valuable, especially in enterprise settings. But it is not the same thing as record-level
+  tamper evidence or append-only agent memory provenance.
+</p>
+
+<hr>
+
+<h2 id="local-vs-cloud">Local-first vs cloud/platform posture</h2>
+
+<h3>MentisDB</h3>
+
+<ul>
+  <li>Single Rust crate and daemon</li>
+  <li>No external database required</li>
+  <li>No LLM required for core memory and search</li>
+  <li>Strong fit for offline or tightly controlled environments</li>
+</ul>
+
+<h3>Cognee</h3>
+
+<ul>
+  <li>Can run locally with lightweight defaults</li>
+  <li>Also has a much stronger cloud and deployment story</li>
+  <li>Supports more backend choices and managed pathways</li>
+  <li>Feels more like a platform that spans local development and hosted production</li>
+</ul>
+
+<p>
+  If you want the smallest local operational footprint, MentisDB wins. If you want a larger
+  platform surface with a path into managed infrastructure, Cognee is ahead.
+</p>
+
+<hr>
+
+<h2 id="agent-workflows">Multi-agent and coding workflows</h2>
+
+<p>
+  MentisDB is unusually well-aligned with coding-agent workflows because its schema already models
+  checkpoints, lessons learned, decisions, constraints, handoffs, branch points, and shared memory
+  across agents. That is exactly the shape of long-running engineering work.
+</p>
+
+<p>
+  Cognee has strong integrations and a better ingestion story, but its core abstraction is less
+  explicitly about agent-to-agent continuity and more about shared knowledge structures. That is a
+  different kind of strength.
+</p>
+
+<p>
+  For general knowledge workers, the answer shifts. Cognee is more naturally suited to document- and
+  dataset-heavy work. MentisDB is better when the real value is preserving what a team or an agent
+  fleet learned while doing the work.
+</p>
+
+<hr>
+
+<h2 id="enterprise">Enterprise view</h2>
+
+<p>
+  If enterprise means tenancy, permissions, deployment options, cloud posture, and a broader managed
+  platform story, Cognee looks more mature right now.
+</p>
+
+<p>
+  If enterprise means local control, durable auditability, memory provenance, and a system that can
+  run without external databases or mandatory cloud dependencies, MentisDB has a sharper position.
+</p>
+
+<p>
+  Those are both real enterprise concerns. They are just not the same concern.
+</p>
+
+<hr>
+
+<h2 id="critique">Critical take on both</h2>
+
+<h3>Where MentisDB is weaker</h3>
+
+<ul>
+  <li>Weaker turnkey ingestion story than Cognee</li>
+  <li>Smaller surrounding platform and integration ecosystem</li>
+  <li>Less obviously ready for document-heavy shared knowledge deployments</li>
+  <li>More API- and agent-centric than analyst-friendly today</li>
+</ul>
+
+<h3>Where Cognee is weaker</h3>
+
+<ul>
+  <li>More moving parts</li>
+  <li>Heavier operational and dependency surface</li>
+  <li>More dependent on LLM-mediated extraction quality</li>
+  <li>No comparable append-only integrity model in the reviewed public materials</li>
+</ul>
+
+<hr>
+
+<h2 id="table">Comprehensive comparison table</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Dimension</th>
+      <th>MentisDB</th>
+      <th>Cognee</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>Core identity</td><td>Durable semantic memory engine and versioned skill registry for agents</td><td>Knowledge engine for ingestion, graph construction, and retrieval</td></tr>
+    <tr><td>Primary abstraction</td><td>Append-only typed <code>Thought</code> records in a hash chain</td><td>Datasets processed into chunks, summaries, embeddings, entities, and graph relations</td></tr>
+    <tr><td>Canonical source of truth</td><td>Yes: the thought chain</td><td>Distributed across relational, vector, and graph stores</td></tr>
+    <tr><td>Default posture</td><td>Local-first, single daemon, embedded storage</td><td>Local-capable but broader platform and cloud posture</td></tr>
+    <tr><td>External DB required</td><td>No</td><td>No for lightweight local defaults, but common in production setups</td></tr>
+    <tr><td>Core ingestion model</td><td>Explicit memory append plus opt-in review-first LLM extraction</td><td><code>add</code> + <code>cognify</code> ingestion pipeline with graph and embedding generation</td></tr>
+    <tr><td>Best ingestion fit</td><td>Agent-authored memory, handoffs, decisions, retrospectives</td><td>Documents, corpora, notes, codebases, datasets</td></tr>
+    <tr><td>LLM required for core operation</td><td>No</td><td>Generally yes for full graph-oriented ingestion workflows</td></tr>
+    <tr><td>Retrieval style</td><td>Filter-first, BM25 lexical, vector sidecars, graph expansion, RRF, context bundles</td><td>Multiple graph/vector/RAG retrieval modes, including graph completion and graph-oriented querying</td></tr>
+    <tr><td>Retrieval explainability</td><td>High; score breakdowns and flat memory hits</td><td>Varies by retriever and mode; broader menu, less centered on memory-event explainability</td></tr>
+    <tr><td>Tamper evidence</td><td>Yes; hash chain</td><td>No comparable public integrity model found in the reviewed docs</td></tr>
+    <tr><td>Signing</td><td>Optional Ed25519 support</td><td>Not documented as a first-class feature in the reviewed materials</td></tr>
+    <tr><td>Agent attribution</td><td>First-class via <code>agent_id</code> and registry</td><td>More dataset and platform oriented than explicit agent-memory identity oriented</td></tr>
+    <tr><td>Multi-agent workflow fit</td><td>Strong: checkpoints, handoffs, shared chains, branchable memory</td><td>Good for shared knowledge bases; less explicit for auditable agent-to-agent continuity</td></tr>
+    <tr><td>Branching / federation</td><td>Yes; branch chains and cross-chain search</td><td>Not a highlighted first-class memory primitive in reviewed public docs</td></tr>
+    <tr><td>Skill or instruction registry</td><td>Yes; immutable versioned skill registry</td><td>No direct equivalent</td></tr>
+    <tr><td>MCP story</td><td>Built in and central</td><td>Strong MCP support, but as one part of a larger platform</td></tr>
+    <tr><td>REST/API story</td><td>REST + MCP + dashboard</td><td>Python API, CLI, REST/API surfaces, MCP, notebooks, cloud-facing endpoints</td></tr>
+    <tr><td>Operational complexity</td><td>Low to moderate</td><td>Moderate to high depending on deployment path</td></tr>
+    <tr><td>Cloud / managed offering</td><td>Primarily self-host/local in current public posture</td><td>Yes; stronger managed/cloud posture</td></tr>
+    <tr><td>Enterprise strengths</td><td>Local control, provenance, auditability, low dependency footprint</td><td>Platform breadth, deployment options, datasets, permissions, cloud pathway</td></tr>
+    <tr><td>Best coder workflow fit</td><td>Durable coding-agent memory and continuity</td><td>Knowledge graph and code-ingestion workflows</td></tr>
+    <tr><td>Best knowledge-worker fit</td><td>Operational memory and decision continuity</td><td>Document-heavy retrieval and shared knowledge platforms</td></tr>
+    <tr><td>Main risk</td><td>Narrower ingestion/platform breadth</td><td>Higher complexity and stronger dependence on ingestion quality</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="bottom-line">Bottom line</h2>
+
+<p>
+  MentisDB and Cognee are both worth taking seriously, but not for the same reason.
+</p>
+
+<p>
+  Choose <strong>MentisDB</strong> when you care most about durable agent memory, provenance,
+  local-first deployment, and multi-agent continuity.
+</p>
+
+<p>
+  Choose <strong>Cognee</strong> when you care most about broad ingestion, graph-rich retrieval,
+  backend flexibility, and a larger platform story around shared knowledge corpora.
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>
