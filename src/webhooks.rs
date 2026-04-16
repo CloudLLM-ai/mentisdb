@@ -545,7 +545,11 @@ mod tests {
                         let read = tokio::io::AsyncReadExt::read(&mut socket, &mut buffer)
                             .await
                             .unwrap();
-                        if read == 0 || buffer[..read].windows(4).any(|window| window == b"\r\n\r\n") {
+                        if read == 0
+                            || buffer[..read]
+                                .windows(4)
+                                .any(|window| window == b"\r\n\r\n")
+                        {
                             break;
                         }
                     }

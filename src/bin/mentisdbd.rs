@@ -1723,11 +1723,19 @@ pub(crate) fn build_endpoint_catalog(
         writeln!(out, "    GET  {scheme}://{addr}/health").unwrap();
         writeln!(out, "      Health check for the REST surface.").unwrap();
         writeln!(out, "    GET  {scheme}://{addr}/v1/chains").unwrap();
-        writeln!(out, "      List chains with version, adapter, counts, and storage location.").unwrap();
+        writeln!(
+            out,
+            "      List chains with version, adapter, counts, and storage location."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/chains/branch").unwrap();
         writeln!(out, "      Create a new branch chain from a prior thought.").unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/chains/merge").unwrap();
-        writeln!(out, "      Merge one chain into another and delete the source chain.").unwrap();
+        writeln!(
+            out,
+            "      Merge one chain into another and delete the source chain."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/agents").unwrap();
         writeln!(out, "      List agent identity summaries for one chain.").unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/agent").unwrap();
@@ -1753,15 +1761,31 @@ pub(crate) fn build_endpoint_catalog(
         writeln!(out, "    GET  {scheme}://{addr}/mentisdb_skill_md").unwrap();
         writeln!(out, "      Return the embedded official MentisDB skill Markdown (compatibility fallback; MCP clients should use `initialize` plus `resources/read` for `mentisdb://skill/core`).").unwrap();
         writeln!(out, "    GET  {scheme}://{addr}/v1/skills").unwrap();
-        writeln!(out, "      List uploaded skill summaries from the registry.").unwrap();
+        writeln!(
+            out,
+            "      List uploaded skill summaries from the registry."
+        )
+        .unwrap();
         writeln!(out, "    GET  {scheme}://{addr}/v1/skills/manifest").unwrap();
-        writeln!(out, "      Describe searchable fields and supported skill formats.").unwrap();
+        writeln!(
+            out,
+            "      Describe searchable fields and supported skill formats."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/skills/upload").unwrap();
         writeln!(out, "      Upload a new immutable skill version.").unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/skills/search").unwrap();
-        writeln!(out, "      Search skills by metadata, uploader identity, and time window.").unwrap();
+        writeln!(
+            out,
+            "      Search skills by metadata, uploader identity, and time window."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/skills/read").unwrap();
-        writeln!(out, "      Read one stored skill as Markdown or JSON with safety warnings.").unwrap();
+        writeln!(
+            out,
+            "      Read one stored skill as Markdown or JSON with safety warnings."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/skills/versions").unwrap();
         writeln!(out, "      List immutable uploaded versions for one skill.").unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/skills/deprecate").unwrap();
@@ -1769,35 +1793,75 @@ pub(crate) fn build_endpoint_catalog(
         writeln!(out, "    POST {scheme}://{addr}/v1/skills/revoke").unwrap();
         writeln!(out, "      Mark one skill as revoked.").unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/bootstrap").unwrap();
-        writeln!(out, "      Bootstrap an empty chain with an initial checkpoint.").unwrap();
+        writeln!(
+            out,
+            "      Bootstrap an empty chain with an initial checkpoint."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/thoughts").unwrap();
         writeln!(out, "      Append a durable thought.").unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/retrospectives").unwrap();
         writeln!(out, "      Append a retrospective thought.").unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/search").unwrap();
-        writeln!(out, "      Search thoughts by semantic and identity filters.").unwrap();
+        writeln!(
+            out,
+            "      Search thoughts by semantic and identity filters."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/lexical-search").unwrap();
-        writeln!(out, "      Ranked lexical search with scores and matched-term diagnostics.").unwrap();
+        writeln!(
+            out,
+            "      Ranked lexical search with scores and matched-term diagnostics."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/ranked-search").unwrap();
-        writeln!(out, "      Flat ranked search with optional graph-aware expansion scoring.").unwrap();
+        writeln!(
+            out,
+            "      Flat ranked search with optional graph-aware expansion scoring."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/federated-search").unwrap();
-        writeln!(out, "      Query multiple chains in one request and merge the results.").unwrap();
+        writeln!(
+            out,
+            "      Query multiple chains in one request and merge the results."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/context-bundles").unwrap();
-        writeln!(out, "      Seed-anchored grouped context bundles for agent reasoning.").unwrap();
+        writeln!(
+            out,
+            "      Seed-anchored grouped context bundles for agent reasoning."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/recent-context").unwrap();
         writeln!(out, "      Render a recent-context prompt snippet.").unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/memory-markdown").unwrap();
         writeln!(out, "      Export a MEMORY.md-style markdown view.").unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/import-markdown").unwrap();
-        writeln!(out, "      Import a MEMORY.md-style markdown document into a chain.").unwrap();
+        writeln!(
+            out,
+            "      Import a MEMORY.md-style markdown document into a chain."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/thought").unwrap();
-        writeln!(out, "      Read one thought by id, hash, or append-order index.").unwrap();
+        writeln!(
+            out,
+            "      Read one thought by id, hash, or append-order index."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/thoughts/genesis").unwrap();
         writeln!(out, "      Return the first thought in append order.").unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/thoughts/traverse").unwrap();
-        writeln!(out, "      Traverse thoughts forward or backward in filtered chunks.").unwrap();
+        writeln!(
+            out,
+            "      Traverse thoughts forward or backward in filtered chunks."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/head").unwrap();
-        writeln!(out, "      Return the latest thought at the chain tip and head metadata.").unwrap();
+        writeln!(
+            out,
+            "      Return the latest thought at the chain tip and head metadata."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/vectors/rebuild").unwrap();
         writeln!(out, "      Rebuild managed vector sidecars for a chain.").unwrap();
         writeln!(out, "    GET  {scheme}://{addr}/v1/webhooks").unwrap();
@@ -1807,7 +1871,11 @@ pub(crate) fn build_endpoint_catalog(
         writeln!(out, "    DELETE {scheme}://{addr}/v1/webhooks/{{id}}").unwrap();
         writeln!(out, "      Delete one registered webhook.").unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/extract-memories").unwrap();
-        writeln!(out, "      Extract structured memories from free-form text.").unwrap();
+        writeln!(
+            out,
+            "      Extract structured memories from free-form text."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/admin/flush").unwrap();
         writeln!(out, "      Flush all chains to durable storage.").unwrap();
     }

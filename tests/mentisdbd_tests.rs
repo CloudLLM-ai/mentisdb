@@ -428,7 +428,10 @@ fn endpoint_catalog_lists_operator_visible_rest_endpoints_that_router_exposes() 
         "/v1/extract-memories",
         "/v1/admin/flush",
     ] {
-        assert!(catalog.contains(endpoint), "missing {endpoint} from endpoint catalog");
+        assert!(
+            catalog.contains(endpoint),
+            "missing {endpoint} from endpoint catalog"
+        );
     }
 
     assert!(catalog.contains("Query multiple chains in one request and merge the results."));
