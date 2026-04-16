@@ -1315,7 +1315,7 @@ impl SkillRegistry {
     /// ```
     pub fn list_skills(&self) -> Vec<SkillSummary> {
         let mut summaries: Vec<_> = self.latest_summaries.values().cloned().collect();
-        summaries.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        summaries.sort_by_key(|right| std::cmp::Reverse(right.updated_at));
         summaries
     }
 
@@ -1395,7 +1395,7 @@ impl SkillRegistry {
                 matches_skill_entry(entry, &summary, query).then_some(summary)
             })
             .collect();
-        summaries.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        summaries.sort_by_key(|right| std::cmp::Reverse(right.updated_at));
         if let Some(limit) = query.limit {
             summaries.truncate(limit);
         }
