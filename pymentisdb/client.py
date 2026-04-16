@@ -16,6 +16,8 @@ from .types import (
     RankedSearchHit,
     RankedSearchResponse,
     ContextBundle,
+    ContextBundleSeed,
+    ContextBundleHit,
     ContextBundlesResponse,
     ListChainsResponse,
     ChainSummary,
@@ -65,6 +67,13 @@ class MentisDbClient:
         response = self._session.get(url, timeout=30)
         response.raise_for_status()
         return response.json()
+
+    def _serialize_scope(self, scope: Optional[MemoryScope | str]) -> Optional[str]:
+        if scope is None:
+            return None
+        if isinstance(scope, MemoryScope):
+            return scope.as_api_value()
+        return scope
 
     def append_thought(
         self,
@@ -128,37 +137,10 @@ class MentisDbClient:
         )
 
         payload = input_data.to_dict()
-        if agent_id:
-            payload["agent_id"] = agent_id
+        if chain_key is not None:
+            payload["chain_key"] = chain_key
 
-        request_data = {
-            "chain_key": chain_key,
-            "thought_type": thought_type.value,
-            "content": content,
-            "role": role.value,
-            "importance": importance,
-            "tags": tags or [],
-            "concepts": concepts or [],
-            "refs": refs or [],
-        }
-        if agent_id:
-            request_data["agent_id"] = agent_id
-        if agent_name:
-            request_data["agent_name"] = agent_name
-        if agent_owner:
-            request_data["agent_owner"] = agent_owner
-        if confidence is not None:
-            request_data["confidence"] = confidence
-        if relations:
-            request_data["relations"] = [r.to_dict() for r in relations]
-        if entity_type:
-            request_data["entity_type"] = entity_type
-        if source_episode:
-            request_data["source_episode"] = source_episode
-        if scope:
-            request_data["scope"] = scope.as_tag()
-
-        result = self._post("/v1/thoughts", request_data)
+        result = self._post("/v1/thoughts", payload)
         return Thought.from_dict(result["thought"])
 
     def ranked_search(
@@ -178,7 +160,7 @@ class MentisDbClient:
         min_confidence: Optional[float] = None,
         since: Optional[datetime] = None,
         until: Optional[datetime] = None,
-        scope: Optional[str] = None,
+        scope: Optional[MemoryScope | str] = None,
         enable_reranking: Optional[bool] = None,
         rerank_k: Optional[int] = None,
         entity_type: Optional[str] = None,
@@ -239,8 +221,9 @@ class MentisDbClient:
             request_data["since"] = since.isoformat()
         if until is not None:
             request_data["until"] = until.isoformat()
-        if scope:
-            request_data["scope"] = scope
+        serialized_scope = self._serialize_scope(scope)
+        if serialized_scope is not None:
+            request_data["scope"] = serialized_scope
         if enable_reranking is not None:
             request_data["enable_reranking"] = enable_reranking
         if rerank_k is not None:
@@ -272,7 +255,7 @@ class MentisDbClient:
         min_confidence: Optional[float] = None,
         since: Optional[datetime] = None,
         until: Optional[datetime] = None,
-        scope: Optional[str] = None,
+        scope: Optional[MemoryScope | str] = None,
         enable_reranking: Optional[bool] = None,
         rerank_k: Optional[int] = None,
         entity_type: Optional[str] = None,
@@ -336,8 +319,9 @@ class MentisDbClient:
             request_data["since"] = since.isoformat()
         if until is not None:
             request_data["until"] = until.isoformat()
-        if scope:
-            request_data["scope"] = scope
+        serialized_scope = self._serialize_scope(scope)
+        if serialized_scope is not None:
+            request_data["scope"] = serialized_scope
         if enable_reranking is not None:
             request_data["enable_reranking"] = enable_reranking
         if rerank_k is not None:
@@ -346,30 +330,16 @@ class MentisDbClient:
             request_data["entity_type"] = entity_type
 
         result = self._post("/v1/context-bundles", request_data)
-        bundles = []
-        for bundle_data in result.get("bundles", []):
-            seed_data = bundle_data["seed"]
-            support_data = bundle_data.get("support", [])
-            seed = {
-                "locator": seed_data.get("locator", {}),
-                "lexical_score": seed_data.get("lexical_score", 0.0),
-                "matched_terms": seed_data.get("matched_terms", []),
-                "thought": seed_data.get("thought"),
-            }
-            support = []
-            for hit_data in support_data:
-                support.append({
-                    "locator": hit_data.get("locator", {}),
-                    "thought": hit_data.get("thought"),
-                    "depth": hit_data.get("depth", 0),
-                    "seed_path_count": hit_data.get("seed_path_count", 0),
-                    "relation_kinds": hit_data.get("relation_kinds", []),
-                    "path": hit_data.get("path"),
-                })
-            bundles.append(ContextBundle(
-                seed=ContextBundle(seed=seed, support=support),
-                support=[],
-            ))
+        bundles = [
+            ContextBundle(
+                seed=ContextBundleSeed.from_dict(bundle_data["seed"]),
+                support=[
+                    ContextBundleHit.from_dict(hit_data)
+                    for hit_data in bundle_data.get("support", [])
+                ],
+            )
+            for bundle_data in result.get("bundles", [])
+        ]
         return ContextBundlesResponse(
             total_bundles=result["total_bundles"],
             consumed_hits=result["consumed_hits"],

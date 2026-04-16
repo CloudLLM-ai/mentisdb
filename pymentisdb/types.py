@@ -64,6 +64,9 @@ class MemoryScope(str, Enum):
     def as_tag(self) -> str:
         return f"scope:{self.value.lower()}"
 
+    def as_api_value(self) -> str:
+        return self.value.lower()
+
 
 class ThoughtRelationKind(str, Enum):
     """Why a thought points to another thought."""
@@ -109,6 +112,7 @@ class ThoughtInput:
     """Builder-like input struct used to append rich thoughts."""
     thought_type: ThoughtType
     content: str
+    agent_id: Optional[str] = None
     session_id: Optional[str] = None
     agent_name: Optional[str] = None
     agent_owner: Optional[str] = None
@@ -135,6 +139,8 @@ class ThoughtInput:
             "concepts": self.concepts,
             "refs": self.refs,
         }
+        if self.agent_id:
+            result["agent_id"] = self.agent_id
         if self.session_id:
             result["session_id"] = self.session_id
         if self.agent_name:
@@ -154,7 +160,7 @@ class ThoughtInput:
         if self.source_episode:
             result["source_episode"] = self.source_episode
         if self.scope:
-            result["scope"] = self.scope.as_tag()
+            result["scope"] = self.scope.as_api_value()
         return result
 
 
