@@ -10,6 +10,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use tokio::sync::{mpsc, Semaphore};
 use uuid::Uuid;
 
 use crate::Thought;
@@ -19,6 +20,8 @@ const MENTISDB_WEBHOOKS_FILENAME: &str = "mentisdb-webhooks.json";
 const WEBHOOK_DELIVERY_TIMEOUT_SECS: u64 = 5;
 const WEBHOOK_MAX_RETRIES: u32 = 3;
 const WEBHOOK_INITIAL_BACKOFF_MS: u64 = 1000;
+const WEBHOOK_DELIVERY_QUEUE_CAPACITY: usize = 256;
+const WEBHOOK_MAX_CONCURRENT_DELIVERIES: usize = 16;
 
 /// A registered webhook endpoint that receives notifications when thoughts are appended.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -112,6 +115,7 @@ pub struct WebhookManager {
     chain_dir: PathBuf,
     webhooks: Arc<Mutex<Vec<WebhookRegistration>>>,
     dirty: Arc<Mutex<bool>>,
+    delivery_queue: Option<mpsc::Sender<DeliveryJob>>,
 }
 
 impl Clone for WebhookManager {
@@ -120,8 +124,16 @@ impl Clone for WebhookManager {
             chain_dir: self.chain_dir.clone(),
             webhooks: Arc::clone(&self.webhooks),
             dirty: Arc::clone(&self.dirty),
+            delivery_queue: self.delivery_queue.clone(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct DeliveryJob {
+    url: String,
+    payload: WebhookPayload,
+    webhook_id: Uuid,
 }
 
 impl WebhookManager {
@@ -133,6 +145,9 @@ impl WebhookManager {
             chain_dir,
             webhooks: Arc::new(Mutex::new(webhooks)),
             dirty: Arc::new(Mutex::new(false)),
+            delivery_queue: tokio::runtime::Handle::try_current()
+                .ok()
+                .map(|_| spawn_delivery_worker()),
         })
     }
 
@@ -165,16 +180,26 @@ impl WebhookManager {
                 fs::create_dir_all(parent)?;
             }
         }
+        let temp_path = path.with_extension("json.tmp");
+        if temp_path.exists() {
+            fs::remove_file(&temp_path)?;
+        }
         let file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
-            .open(&path)?;
+            .open(&temp_path)?;
         let mut writer = BufWriter::new(file);
         serde_json::to_writer_pretty(&mut writer, &registry).map_err(|e| {
             io::Error::other(format!("failed to serialize webhooks registry: {}", e))
         })?;
         writer.flush()?;
+        writer.get_ref().sync_all()?;
+        drop(writer);
+        if let Err(error) = fs::rename(&temp_path, &path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error);
+        }
         let mut dirty = self.dirty.lock().unwrap();
         *dirty = false;
         Ok(())
@@ -271,13 +296,52 @@ impl WebhookManager {
                 thought: WebhookThought::from(thought),
                 timestamp: Utc::now(),
             };
-            let url = registration.url.clone();
-            let webhook_id = registration.id;
-            tokio::spawn(async move {
-                deliver_with_retries(url, payload, webhook_id).await;
-            });
+            let Some(queue) = &self.delivery_queue else {
+                continue;
+            };
+            let job = DeliveryJob {
+                url: registration.url.clone(),
+                payload,
+                webhook_id: registration.id,
+            };
+            if let Err(error) = queue.try_send(job) {
+                log::warn!(
+                    target: "mentisdb::webhooks",
+                    "dropping webhook delivery because the queue is full or unavailable: {}",
+                    error
+                );
+            }
         }
     }
+}
+
+fn spawn_delivery_worker() -> mpsc::Sender<DeliveryJob> {
+    let (tx, mut rx) = mpsc::channel::<DeliveryJob>(WEBHOOK_DELIVERY_QUEUE_CAPACITY);
+    let semaphore = Arc::new(Semaphore::new(WEBHOOK_MAX_CONCURRENT_DELIVERIES));
+    let runtime = tokio::runtime::Handle::try_current()
+        .expect("webhook delivery worker requires a Tokio runtime");
+    runtime.spawn(async move {
+        while let Some(job) = rx.recv().await {
+            let semaphore = Arc::clone(&semaphore);
+            match semaphore.acquire_owned().await {
+                Ok(permit) => {
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        deliver_with_retries(job.url, job.payload, job.webhook_id).await;
+                    });
+                }
+                Err(error) => {
+                    log::error!(
+                        target: "mentisdb::webhooks",
+                        "webhook delivery worker stopped before dispatch: {}",
+                        error
+                    );
+                    break;
+                }
+            }
+        }
+    });
+    tx
 }
 
 async fn deliver_with_retries(url: String, payload: WebhookPayload, webhook_id: Uuid) {
@@ -343,6 +407,7 @@ async fn deliver_once(
 mod tests {
     use super::*;
     use std::collections::HashSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
 
     #[test]
@@ -411,5 +476,124 @@ mod tests {
         let all = manager.list_webhooks();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].thought_type_filter.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn webhook_save_keeps_existing_registry_when_rename_fails() {
+        let dir = tempdir().unwrap();
+        let manager = WebhookManager::new(dir.path().to_path_buf()).unwrap();
+        manager
+            .register_webhook("https://example.com/original".to_string(), None, None)
+            .unwrap();
+
+        let path = WebhookManager::webhooks_path(dir.path());
+        let original = fs::read_to_string(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+
+        {
+            let mut webhooks = manager.webhooks.lock().unwrap();
+            webhooks.push(WebhookRegistration {
+                id: Uuid::new_v4(),
+                url: "https://example.com/new".to_string(),
+                chain_key_filter: None,
+                thought_type_filter: None,
+                created_at: Utc::now(),
+                active: true,
+            });
+        }
+
+        let error = manager.save().unwrap_err();
+        assert!(
+            matches!(
+                error.kind(),
+                io::ErrorKind::AlreadyExists
+                    | io::ErrorKind::IsADirectory
+                    | io::ErrorKind::PermissionDenied
+                    | io::ErrorKind::Other
+            ),
+            "unexpected save error kind: {:?}",
+            error.kind()
+        );
+        let restored_path = path.with_extension("json.restored");
+        fs::write(&restored_path, &original).unwrap();
+        assert_eq!(fs::read_to_string(&restored_path).unwrap(), original);
+        assert!(!path.with_extension("json.tmp").exists());
+        fs::remove_dir(&path).unwrap();
+        fs::rename(&restored_path, &path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn delivery_worker_applies_backpressure_with_bounded_concurrency() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let active_for_server = Arc::clone(&active);
+        let max_seen_for_server = Arc::clone(&max_seen);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let active_for_conn = Arc::clone(&active_for_server);
+                let max_seen_for_conn = Arc::clone(&max_seen_for_server);
+                tokio::spawn(async move {
+                    let current = active_for_conn.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_seen_for_conn.fetch_max(current, Ordering::SeqCst);
+                    let mut buffer = [0_u8; 4096];
+                    loop {
+                        let read = tokio::io::AsyncReadExt::read(&mut socket, &mut buffer)
+                            .await
+                            .unwrap();
+                        if read == 0 || buffer[..read].windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+                    tokio::io::AsyncWriteExt::write_all(
+                        &mut socket,
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                    active_for_conn.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+
+        let receiver = spawn_delivery_worker();
+        let payload = WebhookPayload {
+            event: "thought.appended".to_string(),
+            chain_key: "test-chain".to_string(),
+            thought: WebhookThought {
+                id: Uuid::new_v4(),
+                thought_type: ThoughtType::Finding,
+                content: "payload".to_string(),
+                importance: 0.5,
+                confidence: Some(0.9),
+                tags: Vec::new(),
+                concepts: Vec::new(),
+                agent_id: "agent".to_string(),
+                index: 1,
+                timestamp: Utc::now(),
+            },
+            timestamp: Utc::now(),
+        };
+
+        for i in 0..(WEBHOOK_MAX_CONCURRENT_DELIVERIES * 3) {
+            receiver
+                .send(DeliveryJob {
+                    url: format!("http://{address}/webhook/{i}"),
+                    payload: payload.clone(),
+                    webhook_id: Uuid::new_v4(),
+                })
+                .await
+                .unwrap();
+        }
+        drop(receiver);
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(450)).await;
+        assert!(max_seen.load(Ordering::SeqCst) <= WEBHOOK_MAX_CONCURRENT_DELIVERIES);
+        server.abort();
     }
 }
