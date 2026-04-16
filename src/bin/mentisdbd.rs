@@ -1719,6 +1719,99 @@ pub(crate) fn build_endpoint_catalog(
     let mut out = String::new();
     use std::fmt::Write as _;
 
+    fn write_rest_catalog(out: &mut String, scheme: &str, addr: std::net::SocketAddr) {
+        writeln!(out, "    GET  {scheme}://{addr}/health").unwrap();
+        writeln!(out, "      Health check for the REST surface.").unwrap();
+        writeln!(out, "    GET  {scheme}://{addr}/v1/chains").unwrap();
+        writeln!(out, "      List chains with version, adapter, counts, and storage location.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/chains/branch").unwrap();
+        writeln!(out, "      Create a new branch chain from a prior thought.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/chains/merge").unwrap();
+        writeln!(out, "      Merge one chain into another and delete the source chain.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/agents").unwrap();
+        writeln!(out, "      List agent identity summaries for one chain.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/agent").unwrap();
+        writeln!(out, "      Return one full agent registry record.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/agent-registry").unwrap();
+        writeln!(out, "      Return the full agent registry for one chain.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/agents/upsert").unwrap();
+        writeln!(out, "      Create or update an agent registry record.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/agents/description").unwrap();
+        writeln!(out, "      Set or clear one agent description.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/agents/aliases").unwrap();
+        writeln!(out, "      Add one alias to a registered agent.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/agents/keys").unwrap();
+        writeln!(out, "      Add or replace one agent public key.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/agents/keys/revoke").unwrap();
+        writeln!(out, "      Revoke one agent public key.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/agents/disable").unwrap();
+        writeln!(out, "      Disable one registered agent.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/entity-types").unwrap();
+        writeln!(out, "      List registered semantic entity types.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/entity-types/upsert").unwrap();
+        writeln!(out, "      Create or update one entity-type definition.").unwrap();
+        writeln!(out, "    GET  {scheme}://{addr}/mentisdb_skill_md").unwrap();
+        writeln!(out, "      Return the embedded official MentisDB skill Markdown (compatibility fallback; MCP clients should use `initialize` plus `resources/read` for `mentisdb://skill/core`).").unwrap();
+        writeln!(out, "    GET  {scheme}://{addr}/v1/skills").unwrap();
+        writeln!(out, "      List uploaded skill summaries from the registry.").unwrap();
+        writeln!(out, "    GET  {scheme}://{addr}/v1/skills/manifest").unwrap();
+        writeln!(out, "      Describe searchable fields and supported skill formats.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/skills/upload").unwrap();
+        writeln!(out, "      Upload a new immutable skill version.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/skills/search").unwrap();
+        writeln!(out, "      Search skills by metadata, uploader identity, and time window.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/skills/read").unwrap();
+        writeln!(out, "      Read one stored skill as Markdown or JSON with safety warnings.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/skills/versions").unwrap();
+        writeln!(out, "      List immutable uploaded versions for one skill.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/skills/deprecate").unwrap();
+        writeln!(out, "      Mark one skill as deprecated.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/skills/revoke").unwrap();
+        writeln!(out, "      Mark one skill as revoked.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/bootstrap").unwrap();
+        writeln!(out, "      Bootstrap an empty chain with an initial checkpoint.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/thoughts").unwrap();
+        writeln!(out, "      Append a durable thought.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/retrospectives").unwrap();
+        writeln!(out, "      Append a retrospective thought.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/search").unwrap();
+        writeln!(out, "      Search thoughts by semantic and identity filters.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/lexical-search").unwrap();
+        writeln!(out, "      Ranked lexical search with scores and matched-term diagnostics.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/ranked-search").unwrap();
+        writeln!(out, "      Flat ranked search with optional graph-aware expansion scoring.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/federated-search").unwrap();
+        writeln!(out, "      Query multiple chains in one request and merge the results.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/context-bundles").unwrap();
+        writeln!(out, "      Seed-anchored grouped context bundles for agent reasoning.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/recent-context").unwrap();
+        writeln!(out, "      Render a recent-context prompt snippet.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/memory-markdown").unwrap();
+        writeln!(out, "      Export a MEMORY.md-style markdown view.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/import-markdown").unwrap();
+        writeln!(out, "      Import a MEMORY.md-style markdown document into a chain.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/thought").unwrap();
+        writeln!(out, "      Read one thought by id, hash, or append-order index.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/thoughts/genesis").unwrap();
+        writeln!(out, "      Return the first thought in append order.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/thoughts/traverse").unwrap();
+        writeln!(out, "      Traverse thoughts forward or backward in filtered chunks.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/head").unwrap();
+        writeln!(out, "      Return the latest thought at the chain tip and head metadata.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/vectors/rebuild").unwrap();
+        writeln!(out, "      Rebuild managed vector sidecars for a chain.").unwrap();
+        writeln!(out, "    GET  {scheme}://{addr}/v1/webhooks").unwrap();
+        writeln!(out, "      List registered webhook deliveries.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/webhooks").unwrap();
+        writeln!(out, "      Register a webhook callback.").unwrap();
+        writeln!(out, "    DELETE {scheme}://{addr}/v1/webhooks/{{id}}").unwrap();
+        writeln!(out, "      Delete one registered webhook.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/extract-memories").unwrap();
+        writeln!(out, "      Extract structured memories from free-form text.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/admin/flush").unwrap();
+        writeln!(out, "      Flush all chains to durable storage.").unwrap();
+    }
+
     writeln!(&mut out).unwrap();
     writeln!(&mut out, "Endpoints:").unwrap();
     writeln!(&mut out, "  MCP").unwrap();
@@ -1748,148 +1841,7 @@ pub(crate) fn build_endpoint_catalog(
     )
     .unwrap();
     writeln!(&mut out, "  REST").unwrap();
-    writeln!(&mut out, "    GET  http://{rest_addr}/health").unwrap();
-    writeln!(&mut out, "      Health check for the REST surface.").unwrap();
-    writeln!(&mut out, "    GET  http://{rest_addr}/v1/chains").unwrap();
-    writeln!(
-        &mut out,
-        "      List chains with version, adapter, counts, and storage location."
-    )
-    .unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/agents").unwrap();
-    writeln!(
-        &mut out,
-        "      List agent identity summaries for one chain."
-    )
-    .unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/agent").unwrap();
-    writeln!(&mut out, "      Return one full agent registry record.").unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/agent-registry").unwrap();
-    writeln!(
-        &mut out,
-        "      Return the full agent registry for one chain."
-    )
-    .unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/agents/upsert").unwrap();
-    writeln!(&mut out, "      Create or update an agent registry record.").unwrap();
-    writeln!(
-        &mut out,
-        "    POST http://{rest_addr}/v1/agents/description"
-    )
-    .unwrap();
-    writeln!(&mut out, "      Set or clear one agent description.").unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/agents/aliases").unwrap();
-    writeln!(&mut out, "      Add one alias to a registered agent.").unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/agents/keys").unwrap();
-    writeln!(&mut out, "      Add or replace one agent public key.").unwrap();
-    writeln!(
-        &mut out,
-        "    POST http://{rest_addr}/v1/agents/keys/revoke"
-    )
-    .unwrap();
-    writeln!(&mut out, "      Revoke one agent public key.").unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/agents/disable").unwrap();
-    writeln!(&mut out, "      Disable one registered agent.").unwrap();
-    writeln!(&mut out, "    GET  http://{rest_addr}/mentisdb_skill_md").unwrap();
-    writeln!(
-        &mut out,
-        "      Return the embedded official MentisDB skill Markdown (compatibility fallback; MCP clients should use `initialize` plus `resources/read` for `mentisdb://skill/core`)."
-    )
-    .unwrap();
-    writeln!(&mut out, "    GET  http://{rest_addr}/v1/skills").unwrap();
-    writeln!(
-        &mut out,
-        "      List uploaded skill summaries from the registry."
-    )
-    .unwrap();
-    writeln!(&mut out, "    GET  http://{rest_addr}/v1/skills/manifest").unwrap();
-    writeln!(
-        &mut out,
-        "      Describe searchable fields and supported skill formats."
-    )
-    .unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/skills/upload").unwrap();
-    writeln!(&mut out, "      Upload a new immutable skill version.").unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/skills/search").unwrap();
-    writeln!(
-        &mut out,
-        "      Search skills by metadata, uploader identity, and time window."
-    )
-    .unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/skills/read").unwrap();
-    writeln!(
-        &mut out,
-        "      Read one stored skill as Markdown or JSON with safety warnings."
-    )
-    .unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/skills/versions").unwrap();
-    writeln!(
-        &mut out,
-        "      List immutable uploaded versions for one skill."
-    )
-    .unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/skills/deprecate").unwrap();
-    writeln!(&mut out, "      Mark one skill as deprecated.").unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/skills/revoke").unwrap();
-    writeln!(&mut out, "      Mark one skill as revoked.").unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/bootstrap").unwrap();
-    writeln!(
-        &mut out,
-        "      Bootstrap an empty chain with an initial checkpoint."
-    )
-    .unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/thoughts").unwrap();
-    writeln!(&mut out, "      Append a durable thought.").unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/retrospectives").unwrap();
-    writeln!(&mut out, "      Append a retrospective thought.").unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/search").unwrap();
-    writeln!(
-        &mut out,
-        "      Search thoughts by semantic and identity filters."
-    )
-    .unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/lexical-search").unwrap();
-    writeln!(
-        &mut out,
-        "      Ranked lexical search with scores and matched-term diagnostics."
-    )
-    .unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/ranked-search").unwrap();
-    writeln!(
-        &mut out,
-        "      Flat ranked search with optional graph-aware expansion scoring."
-    )
-    .unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/context-bundles").unwrap();
-    writeln!(
-        &mut out,
-        "      Seed-anchored grouped context bundles for agent reasoning."
-    )
-    .unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/recent-context").unwrap();
-    writeln!(&mut out, "      Render a recent-context prompt snippet.").unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/memory-markdown").unwrap();
-    writeln!(&mut out, "      Export a MEMORY.md-style markdown view.").unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/thought").unwrap();
-    writeln!(
-        &mut out,
-        "      Read one thought by id, hash, or append-order index."
-    )
-    .unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/thoughts/genesis").unwrap();
-    writeln!(&mut out, "      Return the first thought in append order.").unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/thoughts/traverse").unwrap();
-    writeln!(
-        &mut out,
-        "      Traverse thoughts forward or backward in filtered chunks."
-    )
-    .unwrap();
-    writeln!(&mut out, "    POST http://{rest_addr}/v1/head").unwrap();
-    writeln!(
-        &mut out,
-        "      Return the latest thought at the chain tip and head metadata."
-    )
-    .unwrap();
+    write_rest_catalog(&mut out, "http", rest_addr);
     writeln!(&mut out).unwrap();
 
     if let Some(https_mcp_addr) = https_mcp_addr {
@@ -1918,232 +1870,7 @@ pub(crate) fn build_endpoint_catalog(
     }
     if let Some(https_rest_addr) = https_rest_addr {
         writeln!(&mut out, "  HTTPS REST").unwrap();
-        writeln!(&mut out, "    GET  https://{https_rest_addr}/health").unwrap();
-        writeln!(&mut out, "      Health check for the HTTPS REST surface.").unwrap();
-        writeln!(&mut out, "    GET  https://{https_rest_addr}/v1/chains").unwrap();
-        writeln!(
-            &mut out,
-            "      List chains with version, adapter, counts, and storage location."
-        )
-        .unwrap();
-        writeln!(&mut out, "    POST https://{https_rest_addr}/v1/agents").unwrap();
-        writeln!(
-            &mut out,
-            "      List agent identity summaries for one chain."
-        )
-        .unwrap();
-        writeln!(&mut out, "    POST https://{https_rest_addr}/v1/agent").unwrap();
-        writeln!(&mut out, "      Return one full agent registry record.").unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/agent-registry"
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "      Return the full agent registry for one chain."
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/agents/upsert"
-        )
-        .unwrap();
-        writeln!(&mut out, "      Create or update an agent registry record.").unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/agents/description"
-        )
-        .unwrap();
-        writeln!(&mut out, "      Set or clear one agent description.").unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/agents/aliases"
-        )
-        .unwrap();
-        writeln!(&mut out, "      Add one alias to a registered agent.").unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/agents/keys"
-        )
-        .unwrap();
-        writeln!(&mut out, "      Add or replace one agent public key.").unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/agents/keys/revoke"
-        )
-        .unwrap();
-        writeln!(&mut out, "      Revoke one agent public key.").unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/agents/disable"
-        )
-        .unwrap();
-        writeln!(&mut out, "      Disable one registered agent.").unwrap();
-        writeln!(
-            &mut out,
-            "    GET  https://{https_rest_addr}/mentisdb_skill_md"
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "      Return the embedded official MentisDB skill Markdown (compatibility fallback; MCP clients should use `initialize` plus `resources/read` for `mentisdb://skill/core`)."
-        )
-        .unwrap();
-        writeln!(&mut out, "    GET  https://{https_rest_addr}/v1/skills").unwrap();
-        writeln!(
-            &mut out,
-            "      List uploaded skill summaries from the registry."
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "    GET  https://{https_rest_addr}/v1/skills/manifest"
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "      Describe searchable fields and supported skill formats."
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/skills/upload"
-        )
-        .unwrap();
-        writeln!(&mut out, "      Upload a new immutable skill version.").unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/skills/search"
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "      Search skills by metadata, uploader identity, and time window."
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/skills/read"
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "      Read one stored skill as Markdown or JSON with safety warnings."
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/skills/versions"
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "      List immutable uploaded versions for one skill."
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/skills/deprecate"
-        )
-        .unwrap();
-        writeln!(&mut out, "      Mark one skill as deprecated.").unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/skills/revoke"
-        )
-        .unwrap();
-        writeln!(&mut out, "      Mark one skill as revoked.").unwrap();
-        writeln!(&mut out, "    POST https://{https_rest_addr}/v1/bootstrap").unwrap();
-        writeln!(
-            &mut out,
-            "      Bootstrap an empty chain with an initial checkpoint."
-        )
-        .unwrap();
-        writeln!(&mut out, "    POST https://{https_rest_addr}/v1/thoughts").unwrap();
-        writeln!(&mut out, "      Append a durable thought.").unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/retrospectives"
-        )
-        .unwrap();
-        writeln!(&mut out, "      Append a retrospective thought.").unwrap();
-        writeln!(&mut out, "    POST https://{https_rest_addr}/v1/search").unwrap();
-        writeln!(
-            &mut out,
-            "      Search thoughts by semantic and identity filters."
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/lexical-search"
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "      Ranked lexical search with scores and matched-term diagnostics."
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/ranked-search"
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "      Flat ranked search with optional graph-aware expansion scoring."
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/context-bundles"
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "      Seed-anchored grouped context bundles for agent reasoning."
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/recent-context"
-        )
-        .unwrap();
-        writeln!(&mut out, "      Render a recent-context prompt snippet.").unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/memory-markdown"
-        )
-        .unwrap();
-        writeln!(&mut out, "      Export a MEMORY.md-style markdown view.").unwrap();
-        writeln!(&mut out, "    POST https://{https_rest_addr}/v1/thought").unwrap();
-        writeln!(
-            &mut out,
-            "      Read one thought by id, hash, or append-order index."
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/thoughts/genesis"
-        )
-        .unwrap();
-        writeln!(&mut out, "      Return the first thought in append order.").unwrap();
-        writeln!(
-            &mut out,
-            "    POST https://{https_rest_addr}/v1/thoughts/traverse"
-        )
-        .unwrap();
-        writeln!(
-            &mut out,
-            "      Traverse thoughts forward or backward in filtered chunks."
-        )
-        .unwrap();
-        writeln!(&mut out, "    POST https://{https_rest_addr}/v1/head").unwrap();
-        writeln!(
-            &mut out,
-            "      Return the latest thought at the chain tip and head metadata."
-        )
-        .unwrap();
+        write_rest_catalog(&mut out, "https", https_rest_addr);
         writeln!(&mut out).unwrap();
     }
 

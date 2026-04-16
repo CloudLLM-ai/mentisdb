@@ -408,6 +408,34 @@ fn endpoint_catalog_mentions_mcp_resources_and_ranked_search_surfaces() {
     assert!(catalog.contains("compatibility fallback"));
 }
 
+#[test]
+fn endpoint_catalog_lists_operator_visible_rest_endpoints_that_router_exposes() {
+    let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9471));
+    let rest = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9472));
+
+    let catalog = mentisdbd_impl::build_endpoint_catalog(addr, rest, None, None);
+
+    for endpoint in [
+        "/v1/federated-search",
+        "/v1/import-markdown",
+        "/v1/chains/branch",
+        "/v1/chains/merge",
+        "/v1/entity-types",
+        "/v1/entity-types/upsert",
+        "/v1/vectors/rebuild",
+        "/v1/webhooks",
+        "/v1/webhooks/{id}",
+        "/v1/extract-memories",
+        "/v1/admin/flush",
+    ] {
+        assert!(catalog.contains(endpoint), "missing {endpoint} from endpoint catalog");
+    }
+
+    assert!(catalog.contains("Query multiple chains in one request and merge the results."));
+    assert!(catalog.contains("Import a MEMORY.md-style markdown document into a chain."));
+    assert!(catalog.contains("Extract structured memories from free-form text."));
+}
+
 #[cfg(feature = "startup-sound")]
 #[test]
 fn scheduler_spaces_bursts_without_overlap() {

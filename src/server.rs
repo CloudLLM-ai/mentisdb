@@ -24,13 +24,26 @@
 //! - `POST /v1/context-bundles`
 //! - `POST /v1/recent-context`
 //! - `POST /v1/memory-markdown`
+//! - `POST /v1/import-markdown`
 //! - `POST /v1/thought`
 //! - `POST /v1/thoughts/genesis`
 //! - `POST /v1/thoughts/traverse`
 //! - `POST /v1/head`
 //! - `GET /v1/chains`
 //! - `POST /v1/chains/branch`
+//! - `POST /v1/chains/merge`
 //! - `POST /v1/agents`
+//! - `POST /v1/agent`
+//! - `POST /v1/agent-registry`
+//! - `POST /v1/agents/upsert`
+//! - `POST /v1/agents/description`
+//! - `POST /v1/agents/aliases`
+//! - `POST /v1/agents/keys`
+//! - `POST /v1/agents/keys/revoke`
+//! - `POST /v1/agents/disable`
+//! - `POST /v1/entity-types`
+//! - `POST /v1/entity-types/upsert`
+//! - `POST /v1/vectors/rebuild`
 //! - `GET /mentisdb_skill_md`
 //! - `GET /v1/skills`
 //! - `GET /v1/skills/manifest`
@@ -40,6 +53,10 @@
 //! - `POST /v1/skills/versions`
 //! - `POST /v1/skills/deprecate`
 //! - `POST /v1/skills/revoke`
+//! - `GET /v1/webhooks`
+//! - `POST /v1/webhooks`
+//! - `DELETE /v1/webhooks/{id}`
+//! - `POST /v1/extract-memories`
 //! - `POST /v1/admin/flush`
 
 use crate::webhooks::{WebhookManager, WebhookRegistration};
@@ -1595,15 +1612,21 @@ pub fn standard_mcp_router(config: MentisDbServiceConfig) -> Router {
 /// - `GET /v1/skills` · `GET /v1/skills/manifest`
 /// - `POST /v1/bootstrap`
 /// - `POST /v1/thoughts` · `POST /v1/retrospectives`
-/// - `POST /v1/search` · `POST /v1/lexical-search` · `POST /v1/ranked-search` · `POST /v1/context-bundles`
-/// - `POST /v1/recent-context` · `POST /v1/memory-markdown`
+/// - `POST /v1/search` · `POST /v1/lexical-search` · `POST /v1/ranked-search` · `POST /v1/federated-search`
+/// - `POST /v1/context-bundles` · `POST /v1/recent-context`
+/// - `POST /v1/memory-markdown` · `POST /v1/import-markdown`
 /// - `POST /v1/thought` · `POST /v1/thoughts/genesis` · `POST /v1/thoughts/traverse`
 /// - `POST /v1/head`
 /// - `POST /v1/agents` · `POST /v1/agent` · `POST /v1/agent-registry`
 /// - `POST /v1/agents/upsert` · `POST /v1/agents/description` · `POST /v1/agents/aliases`
 /// - `POST /v1/agents/keys` · `POST /v1/agents/keys/revoke` · `POST /v1/agents/disable`
+/// - `POST /v1/entity-types` · `POST /v1/entity-types/upsert`
+/// - `POST /v1/vectors/rebuild`
+/// - `POST /v1/chains/branch` · `POST /v1/chains/merge`
 /// - `POST /v1/skills/upload` · `POST /v1/skills/search` · `POST /v1/skills/read`
 /// - `POST /v1/skills/versions` · `POST /v1/skills/deprecate` · `POST /v1/skills/revoke`
+/// - `GET /v1/webhooks` · `POST /v1/webhooks` · `DELETE /v1/webhooks/{id}`
+/// - `POST /v1/extract-memories`
 ///
 /// ## When to use this
 ///
