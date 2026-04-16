@@ -57,7 +57,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
@@ -239,6 +239,31 @@ fn walkdir_sorted(path: &Path) -> Vec<PathBuf> {
 
 fn relative_path(root: &Path, file: &Path) -> Option<PathBuf> {
     file.strip_prefix(root).ok().map(|p| p.to_path_buf())
+}
+
+fn validate_restore_relative_path(relative_path: &str) -> io::Result<()> {
+    let path = Path::new(relative_path);
+    if path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("backup contains absolute path: {relative_path}"),
+        ));
+    }
+
+    for component in path.components() {
+        match component {
+            Component::Normal(_) => {}
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("backup contains unsafe path: {relative_path}"),
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn sha256_file(path: &Path) -> io::Result<(String, u64)> {
@@ -526,6 +551,10 @@ pub fn restore_backup(
         )
     })?;
 
+    for entry in &manifest.files {
+        validate_restore_relative_path(&entry.relative_path)?;
+    }
+
     // ── Extract files ─────────────────────────────────────────────────────────────
     for entry in &manifest.files {
         let dest = target_dir.join(&entry.relative_path);
@@ -734,5 +763,55 @@ mod tests {
         assert!(name.ends_with(&expected_suffix));
         // Should be timestamp-like: mentisdb-YYYY-MM-DD-HH-MM-SS.mbak
         assert!(name.len() >= 30);
+    }
+
+    #[test]
+    fn test_restore_rejects_path_traversal_entries() {
+        let tmp = TempDir::new().unwrap();
+        let backup_path = tmp.path().join("unsafe.mbak");
+
+        let payload = b"malicious";
+        let sha256 = format!("{:x}", Sha256::digest(payload));
+
+        let file = File::create(&backup_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+
+        zip.start_file(MANIFEST_FILENAME, options).unwrap();
+        let manifest_json = serde_json::to_string(&BackupManifest {
+            format_version: BACKUP_FORMAT_VERSION,
+            mentisdb_version: env!("CARGO_PKG_VERSION").to_string(),
+            created_at: chrono::Utc::now(),
+            host_platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+            files: vec![BackupFileEntry {
+                relative_path: "../escape.txt".into(),
+                sha256,
+                uncompressed_bytes: payload.len() as u64,
+                required: true,
+            }],
+            total_uncompressed_bytes: payload.len() as u64,
+            chain_count: 0,
+        })
+        .unwrap();
+        zip.write_all(manifest_json.as_bytes()).unwrap();
+
+        zip.start_file("../escape.txt", options).unwrap();
+        zip.write_all(payload).unwrap();
+        zip.finish().unwrap();
+
+        let target_dir = tmp.path().join("restore-target");
+        fs::create_dir(&target_dir).unwrap();
+
+        let error = restore_backup(
+            backup_path,
+            target_dir.clone(),
+            RestoreOptions { overwrite: false },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!tmp.path().join("escape.txt").exists());
+        assert!(fs::read_dir(&target_dir).unwrap().next().is_none());
     }
 }

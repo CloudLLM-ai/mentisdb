@@ -332,8 +332,10 @@ fn run_restore(
     }
     writeln!(out).map_err(|e| e.to_string())?;
 
-    // Interactive prompt if there are conflicting files and --overwrite not passed
-    if !cmd.overwrite && !cmd.yes {
+    // Interactive prompt if there are conflicting files and --overwrite not passed.
+    // A confirmed answer switches the restore into overwrite mode for the conflicting files.
+    let mut overwrite = cmd.overwrite;
+    if !overwrite && !cmd.yes {
         let existing: Vec<&str> = files
             .iter()
             .filter(|f| target_dir.join(&f.relative_path).exists())
@@ -352,15 +354,14 @@ fn run_restore(
                 let _ = writeln!(out, "Restore cancelled — no files were modified.");
                 return Ok(());
             }
+            overwrite = true;
         }
     }
 
     restore_backup(
         archive_path,
         target_dir.clone(),
-        RestoreOptions {
-            overwrite: cmd.overwrite,
-        },
+        RestoreOptions { overwrite },
     )
     .map_err(|e| format!("restore_backup: {e}"))?;
 

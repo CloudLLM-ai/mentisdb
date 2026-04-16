@@ -1,4 +1,14 @@
 0.9.2.38 UNRELEASED
+  - fix: restore now rejects path-traversal entries inside `.mbak` archives before any
+    file extraction; crafted manifest paths like `../escape.txt` or absolute paths now fail
+    restore with `InvalidData`, preventing writes outside the target directory
+  - fix: interactive restore confirmation now actually enables overwrite mode when the user
+    answers yes; previously the prompt implied overwrite but still passed `overwrite=false`
+    unless `--overwrite` was supplied explicitly
+  - fix: branch ancestor discovery is now transitive — branch-aware search can walk from child
+    to parent to grandparent chains instead of stopping at the direct parent only
+  - doc: `mentisdbd --help` now documents `MENTISDB_DASHBOARD_PIN`, matching the daemon's
+    supported environment variables and startup output
   - fix: LLM-extracted memories no longer send an OpenAI `response_format` hint — some
     OpenAI-compatible endpoints rejected the request with a schema/type error; MentisDB now
     relies on the prompt plus strict JSON validation of the returned payload, preserving
