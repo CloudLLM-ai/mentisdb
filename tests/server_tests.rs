@@ -2407,7 +2407,8 @@ async fn live_mcp_server_supports_standard_initialize_and_tools_list() {
 /// 2. Generate a real Ed25519 keypair from a fixed seed and register the public key.
 /// 3. Upload a skill with a valid signature → expect HTTP 200.
 /// 4. Upload again without any signature fields → expect HTTP 4xx (signature required).
-/// 5. Upload again with a tampered signature (one byte flipped) → expect HTTP 4xx.
+/// 5. Upload again with an unknown signing key id → expect HTTP 4xx.
+/// 6. Upload again with a tampered signature (one byte flipped) → expect HTTP 4xx.
 #[tokio::test]
 async fn rest_upload_skill_with_signature_verification() {
     use ed25519_dalek::{Signer, SigningKey};
@@ -2559,8 +2560,62 @@ Always verify signatures before trusting skill content.
         "upload without signature must be rejected with a 4xx status; got: {}",
         upload_no_sig.status()
     );
+    let no_sig_body = axum::body::to_bytes(upload_no_sig.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let no_sig_json: serde_json::Value = serde_json::from_slice(&no_sig_body).unwrap();
+    assert!(
+        no_sig_json["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("`signing_key_id` is required"),
+        "missing-signature rejection should explain why; body: {}",
+        String::from_utf8_lossy(&no_sig_body)
+    );
 
-    // --- Step 5: Upload with a tampered signature (flip first byte) → expect 4xx ---
+    // --- Step 5: Upload with an unknown signing key id -> expect 4xx ---
+    let upload_unknown_key = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/skills/upload")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": "sig-test-chain",
+                        "agent_id": "signing-agent",
+                        "content": skill_content,
+                        "signing_key_id": "missing-key",
+                        "skill_signature": valid_sig
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let unknown_key_status = upload_unknown_key.status();
+    let unknown_key_body = axum::body::to_bytes(upload_unknown_key.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(
+        unknown_key_status.is_client_error(),
+        "upload with unknown signing key must be rejected with a 4xx status; got: {} body: {}",
+        unknown_key_status,
+        String::from_utf8_lossy(&unknown_key_body)
+    );
+    let unknown_key_json: serde_json::Value = serde_json::from_slice(&unknown_key_body).unwrap();
+    assert!(
+        unknown_key_json["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("signing key 'missing-key' not found"),
+        "unknown-key rejection should explain why; body: {}",
+        String::from_utf8_lossy(&unknown_key_body)
+    );
+
+    // --- Step 6: Upload with a tampered signature (flip first byte) → expect 4xx ---
     let mut tampered_sig = valid_sig.clone();
     tampered_sig[0] ^= 0xFF; // Flip all bits in first byte.
 
@@ -2585,10 +2640,20 @@ Always verify signatures before trusting skill content.
         )
         .await
         .unwrap();
+    let bad_sig_status = upload_bad_sig.status();
+    let bad_sig_body = axum::body::to_bytes(upload_bad_sig.into_body(), usize::MAX)
+        .await
+        .unwrap();
     assert!(
-        upload_bad_sig.status().is_client_error(),
-        "upload with tampered signature must be rejected with a 4xx status; got: {}",
-        upload_bad_sig.status()
+        bad_sig_status.is_client_error(),
+        "upload with tampered signature must be rejected with a 4xx status; got: {} body: {}",
+        bad_sig_status,
+        String::from_utf8_lossy(&bad_sig_body)
+    );
+    let bad_sig_json: serde_json::Value = serde_json::from_slice(&bad_sig_body).unwrap();
+    assert_eq!(
+        bad_sig_json["error"],
+        json!("Ed25519 signature verification failed")
     );
 
     let _ = std::fs::remove_dir_all(&dir);
