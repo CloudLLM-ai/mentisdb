@@ -29,22 +29,28 @@ triggers:
 
 Write **immediately** when any becomes true:
 
-| Trigger | Type | Role | entity_type (optional) |
-|---------|------|------|------------------------|
-| Non-obvious bug cause | LessonLearned | Retrospective | bug_report |
-| Architectural decision | Decision | Memory | architecture_decision |
-| Security boundary found | Constraint | Memory | security |
-| Stable convention established | Decision | Memory | convention |
-| Dangerous assumption corrected | Correction | Memory | bug_report |
-| Restart point reached | Summary | Checkpoint | checkpoint |
-| Framework/ecosystem trap | LessonLearned | Retrospective | lesson_learned |
-| Expensive operation ahead | Summary | Checkpoint | checkpoint |
-| Tool call surprise | LessonLearned | Retrospective | lesson_learned |
-| Task finished durably | TaskComplete | Memory | task_complete |
-| Uncertain about direction | Wonder | Memory | question |
-| Tentative explanation | Hypothesis | Memory | hypothesis |
+| Trigger | Preferred type | Role | Link requirement |
+|---------|----------------|------|------------------|
+| Non-obvious bug cause | LessonLearned | Retrospective | `refs` the Mistake, failure, or prior Checkpoint that exposed it |
+| Architectural decision | Decision | Memory | `refs` or `relations: DerivedFrom` the evidence, alternatives, or Plan it came from |
+| Security boundary found | Constraint | Memory | `refs` the code path, audit note, or incident that established it |
+| Stable convention established | Decision | Memory | `refs` the motivating examples or related Checkpoint |
+| Dangerous assumption corrected | Correction or AssumptionInvalidated | Memory | `relations: Corrects` or `Invalidates` the prior thought |
+| Restart point reached | Summary | Checkpoint | `relations: ContinuesFrom` the prior Checkpoint when resuming a thread |
+| Framework/ecosystem trap | LessonLearned | Retrospective | `refs` the exact failed attempt or tool output |
+| Expensive operation ahead | Plan or Summary | Checkpoint | `refs` the current state so the next agent can resume cleanly |
+| Tool call surprise | Surprise or LessonLearned | Retrospective | `refs` the triggering action or prior expectation |
+| Task finished durably | TaskComplete | Memory | `refs` the Plan/Subgoal/Decision it completed |
+| Uncertain about direction | Question or Wonder | Memory | `refs` the blocking context |
+| Tentative explanation | Hypothesis | Memory | `refs` the observations it is trying to explain |
 
-**One strong memory > many weak ones.** Link to prior thoughts with `refs` or `relations`.
+**One strong memory > many weak ones.** In practice, many chains overuse standalone notes and generic `References` edges. Do not stop at a standalone note when your new thought depends on earlier chain state.
+
+**Minimum graph rule:** if a thought is not a pure standalone observation, add at least one backlink.
+
+- Use `refs` for lightweight lineage inside one chain.
+- Use `relations` when the edge meaning matters later during retrieval, replay, correction, or handoff.
+- Prefer one precise link to the exact prior thought over many vague links.
 
 When dedup is enabled (`MENTISDB_DEDUP_THRESHOLD`), near-duplicate content automatically generates a Supersedes relation — you don't need to link duplicates manually.
 
@@ -82,6 +88,16 @@ When dedup is enabled (`MENTISDB_DEDUP_THRESHOLD`), near-duplicate content autom
 | Surprise | Unexpected outcome or mismatch observed | Memory |
 | Reframe | Prior thought was accurate but unhelpfully framed (Supersedes without invalidating) | Memory |
 | Goal | High-level objective or desired outcome (what, not how — broader than Plan/Subgoal) | Memory |
+| LLMExtracted | Memory auto-extracted from free-form text by an LLM pipeline | Memory |
+
+### High-value but commonly skipped types
+
+- `AssumptionInvalidated`: use when a trusted premise stopped being true, even if no single earlier thought was exactly "wrong".
+- `Question`: use for durable open issues that should survive session boundaries; do not hide unresolved blockers inside `Summary`.
+- `Checkpoint`: use as the type only for explicit resume markers. Most resumable notes should be `Summary` with `role: Checkpoint`.
+- `StateSnapshot`: use for broader "here is the state of the world" captures, especially before risky refactors or branch work.
+- `Mistake`: record the bad move itself when it is useful to preserve what failed; pair it with `LessonLearned` or `Correction`.
+- `Plan` and `Subgoal`: use these when you are describing future work shape, not a decision that has already been made.
 
 ## 🔗 BACK-REFERENCING & THOUGHT GRAPH
 
@@ -92,17 +108,27 @@ Every thought can link to prior thoughts via two mechanisms. **Always link when 
 
 | kind | Use when |
 |------|----------|
-| CausedBy | This thought was caused by the target |
-| Corrects | This thought corrects the target's fact |
-| Supersedes | This thought replaces the target's framing (Reframe) |
-| DerivedFrom | This insight was derived from the target |
-| Summarizes | This thought summarizes the target |
-| References | General reference to the target |
-| Supports | This thought supports the target's claim |
-| Contradicts | This thought contradicts the target |
-| ContinuesFrom | This continues work from the target |
+| CausedBy | This thought happened because of the target |
+| Corrects | This thought fixes an earlier mistaken fact or claim |
+| Invalidates | A prior assumption, premise, or result is no longer valid |
+| Supersedes | This thought replaces the target without claiming it was an outright error |
+| DerivedFrom | This insight, decision, or plan came from the target |
+| Summarizes | This thought compresses one or more earlier thoughts |
+| References | General backlink when no stronger semantic edge fits |
+| Supports | This thought adds evidence for the target |
+| Contradicts | This thought conflicts with the target |
+| ContinuesFrom | This resumes work from a prior checkpoint, handoff, or branch point |
 | BranchesFrom | This thought is the genesis of a branch diverging from the target (cross-chain) |
 | RelatedTo | Loose semantic connection |
+
+### Relation selection heuristics
+
+- Default to `References` only when you cannot name a stronger relationship.
+- Use `DerivedFrom` for "I concluded X from Y". This is usually better than `References` for insights, decisions, and plans.
+- Use `ContinuesFrom` for resumptions, handoffs, and follow-up checkpoints.
+- Use `Corrects` when the old thought was actually wrong; use `Supersedes` when it was reasonable then but replaced now.
+- Use `Invalidates` when reality changed or an assumption collapsed.
+- Use `Summarizes` when a checkpoint or summary condenses earlier work.
 
 Relations support optional `valid_at` and `invalid_at` timestamps for time-bounded facts. When you know a fact's validity window, set these on the relation. `append_thought` auto-sets `valid_at` to the current time if you don't provide one.
 
@@ -110,7 +136,15 @@ When `dedup_threshold` is set, very similar content auto-generates a Supersedes 
 
 Set `chain_key` on a relation to create a **cross-chain reference**.
 
-**Prefer 1–3 high-signal refs over many weak links.** Always reference the exact prior Decision, Mistake, or Checkpoint that gave rise to your new thought.
+**Prefer 1–3 high-signal refs over many weak links.** Always reference the exact prior Decision, Mistake, Question, Plan, or Checkpoint that gave rise to your new thought.
+
+### Concrete patterns
+
+- New `LessonLearned` after debugging: add `refs` to the failed `Mistake` or `Question`; add `relations: DerivedFrom` if the lesson came from a specific `Finding`.
+- New `Correction`: add `relations: Corrects` to the mistaken prior thought, not just a generic `References` edge.
+- New `AssumptionInvalidated`: add `relations: Invalidates` to the assumption, plan, or hypothesis that no longer holds.
+- New `Summary` with `role: Checkpoint`: add `relations: Summarizes` to the major thoughts it compresses and `ContinuesFrom` to the prior checkpoint when resuming.
+- New `TaskComplete`: add `refs` to the `Plan`, `Subgoal`, or `Decision` it closed out.
 
 ## 🤖 SUB-AGENT ORCHESTRATION
 

@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>What Our Own MentisDB Memory Chain Revealed</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.95rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2.2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.12rem; margin-top: 1.4rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #1a1a2e; color: #e0e0e0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; color: inherit; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.35rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2.25rem 0; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .callout { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child, .callout p:last-child { margin-bottom: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.84rem; }
+    th, td { border: 1px solid #ddd; padding: 0.45rem 0.6rem; text-align: left; vertical-align: top; }
+    th { background: #f5f5f5; font-weight: 600; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 16, 2026</div>
+
+<h1>What Our Own MentisDB Memory Chain Revealed</h1>
+
+<p>
+  We audited our own live MentisDB project chain to answer a simple question: are agents using the
+  memory model the way we designed it, or are they collapsing into a much smaller subset of the
+  system?
+</p>
+
+<p>
+  The answer was both encouraging and uncomfortable. Agents are definitely using MentisDB. The chain
+  is active, valuable, and full of durable lessons. But they are also using a much narrower slice of
+  the semantic model than the code supports.
+</p>
+
+<div class="highlight">
+  <p><strong>Short version:</strong></p>
+  <p>
+    Agents were writing plenty of memory, but most of the graph semantics were being left on the
+    table. The chain strongly over-indexed on <code>Summary</code>, <code>LessonLearned</code>, and
+    generic <code>References</code> links. We updated <code>MENTISDB_SKILL.md</code> to correct that.
+  </p>
+</div>
+
+<hr>
+
+<h2 id="what-we-audited">What we audited</h2>
+
+<p>
+  We analyzed the real local MentisDB project chain under <code>~/.cloudllm/mentisdb</code>, not a
+  synthetic fixture. The main project chain was <code>mentisdb</code>.
+</p>
+
+<p>
+  We counted:
+</p>
+
+<ul>
+  <li>Thought types</li>
+  <li>Thought roles</li>
+  <li>Relation kinds</li>
+  <li>How often <code>refs</code> were used at all</li>
+</ul>
+
+<p>
+  Then we compared real usage with the full set of enums supported by the codebase.
+</p>
+
+<hr>
+
+<h2 id="headline-numbers">Headline numbers</h2>
+
+<table>
+  <thead>
+    <tr><th>Metric</th><th>Value</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Total thoughts in main project chain</td><td>373</td></tr>
+    <tr><td>Thoughts using <code>refs</code></td><td>116</td></tr>
+    <tr><td>Total <code>refs</code></td><td>361</td></tr>
+    <tr><td>Thoughts using typed relations</td><td>117</td></tr>
+    <tr><td>Total typed relations</td><td>362</td></tr>
+    <tr><td>Cross-chain relations</td><td>0</td></tr>
+    <tr><td>Time-bounded relations</td><td>0</td></tr>
+  </tbody>
+</table>
+
+<p>
+  The immediate red flag was backlinks. Only about 31% of thoughts used <code>refs</code> at all.
+  That means a lot of memories were still being written as isolated notes instead of part of a
+  reusable thought graph.
+</p>
+
+<hr>
+
+<h2 id="thought-types">Thought type usage</h2>
+
+<table>
+  <thead>
+    <tr><th>ThoughtType</th><th>Count</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>Summary</code></td><td>128</td></tr>
+    <tr><td><code>LessonLearned</code></td><td>125</td></tr>
+    <tr><td><code>Insight</code></td><td>31</td></tr>
+    <tr><td><code>Decision</code></td><td>27</td></tr>
+    <tr><td><code>PreferenceUpdate</code></td><td>22</td></tr>
+    <tr><td><code>Plan</code></td><td>11</td></tr>
+    <tr><td><code>Constraint</code></td><td>7</td></tr>
+    <tr><td><code>Checkpoint</code></td><td>6</td></tr>
+    <tr><td><code>Correction</code></td><td>3</td></tr>
+    <tr><td><code>Mistake</code></td><td>3</td></tr>
+    <tr><td><code>TaskComplete</code></td><td>3</td></tr>
+    <tr><td><code>Surprise</code></td><td>2</td></tr>
+    <tr><td><code>Wonder</code></td><td>2</td></tr>
+    <tr><td><code>Finding</code></td><td>1</td></tr>
+    <tr><td><code>Idea</code></td><td>1</td></tr>
+    <tr><td><code>Question</code></td><td>1</td></tr>
+  </tbody>
+</table>
+
+<p>
+  Used: <strong>16 / 31</strong> supported thought types.
+</p>
+
+<p>
+  The healthy part is obvious: agents are writing lots of durable memory. The concern is the shape.
+  The chain was dominated by just a few categories, especially summaries and retrospectives.
+</p>
+
+<div class="callout">
+  <p><strong>What was underused:</strong> <code>Hypothesis</code>, <code>AssumptionInvalidated</code>, <code>Subgoal</code>, <code>StrategyShift</code>, <code>StateSnapshot</code>, <code>Handoff</code>, <code>Reframe</code>, <code>Goal</code>, and the new <code>LLMExtracted</code> marker were absent from the main project chain.</p>
+</div>
+
+<hr>
+
+<h2 id="roles">Thought role usage</h2>
+
+<table>
+  <thead>
+    <tr><th>ThoughtRole</th><th>Count</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>Memory</code></td><td>148</td></tr>
+    <tr><td><code>Checkpoint</code></td><td>116</td></tr>
+    <tr><td><code>Retrospective</code></td><td>100</td></tr>
+    <tr><td><code>Summary</code></td><td>7</td></tr>
+    <tr><td><code>Handoff</code></td><td>2</td></tr>
+  </tbody>
+</table>
+
+<p>
+  Used: <strong>5 / 8</strong> roles.
+</p>
+
+<p>
+  Unused roles like <code>WorkingMemory</code>, <code>Compression</code>, and <code>Audit</code> are not
+  necessarily a problem. They are naturally more niche. The more important signal was that the chain
+  had settled into a durable pattern around checkpoints and retrospectives, which is useful but not
+  the full system.
+</p>
+
+<hr>
+
+<h2 id="relations">Relation usage was the real issue</h2>
+
+<table>
+  <thead>
+    <tr><th>ThoughtRelationKind</th><th>Count</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>References</code></td><td>361</td></tr>
+    <tr><td><code>ContinuesFrom</code></td><td>1</td></tr>
+  </tbody>
+</table>
+
+<p>
+  Used: <strong>2 / 12</strong> relation kinds.
+</p>
+
+<p>
+  This was the most important finding in the entire audit.
+</p>
+
+<p>
+  MentisDB supports much richer graph semantics than this: <code>Corrects</code>,
+  <code>Invalidates</code>, <code>DerivedFrom</code>, <code>Summarizes</code>,
+  <code>Supersedes</code>, <code>BranchesFrom</code>, <code>Supports</code>,
+  <code>Contradicts</code>, and more. In practice, agents were mostly collapsing all of that into
+  generic <code>References</code> edges.
+</p>
+
+<p>
+  That means the memory graph was valid, but semantically flatter than it should be.
+</p>
+
+<hr>
+
+<h2 id="what-went-wrong">What went wrong</h2>
+
+<p>
+  The good news is that this was mostly not a core model failure. The thought and relation system is
+  fine. The problem was guidance.
+</p>
+
+<p>
+  Our own <code>MENTISDB_SKILL.md</code> strongly encouraged a few high-value workflows:
+</p>
+
+<ul>
+  <li><code>Summary</code> checkpoints</li>
+  <li><code>LessonLearned</code> retrospectives</li>
+  <li><code>Decision</code> and <code>Constraint</code> capture</li>
+</ul>
+
+<p>
+  All of that was good, and agents followed it. But the skill was not nearly forceful enough about:
+</p>
+
+<ul>
+  <li>adding backlinks whenever a thought depended on prior context</li>
+  <li>choosing a stronger typed relation instead of defaulting to <code>References</code></li>
+  <li>distinguishing <code>Correction</code> vs <code>AssumptionInvalidated</code> vs <code>Reframe</code></li>
+  <li>using <code>Question</code>, <code>Subgoal</code>, and <code>StateSnapshot</code> where they were actually the better fit</li>
+</ul>
+
+<p>
+  There were also two documentation gaps:
+</p>
+
+<ul>
+  <li><code>Invalidates</code> existed in code but was missing from the skill relation table</li>
+  <li><code>LLMExtracted</code> existed in code but was missing from the skill's thought-type list</li>
+</ul>
+
+<hr>
+
+<h2 id="what-we-fixed">What we fixed</h2>
+
+<p>
+  We revised <code>MENTISDB_SKILL.md</code> to drive better real-world usage in the next version.
+</p>
+
+<p>
+  The changes were concrete, not cosmetic:
+</p>
+
+<ul>
+  <li>Added a stronger backlink expectation for non-standalone thoughts</li>
+  <li>Added a minimum graph rule</li>
+  <li>Expanded relation-selection guidance so <code>DerivedFrom</code>, <code>Corrects</code>, <code>Invalidates</code>, <code>Summarizes</code>, and <code>ContinuesFrom</code> are easier to choose correctly</li>
+  <li>Added concrete linking patterns for lessons, corrections, invalidations, summaries, and task completions</li>
+  <li>Added <code>LLMExtracted</code> to the thought-type list</li>
+  <li>Added <code>Invalidates</code> to the relation table</li>
+  <li>Added a section calling out high-value but commonly skipped types</li>
+</ul>
+
+<div class="highlight">
+  <p><strong>The point of the skill change</strong> was not to force every enum to be used. It was to make sure agents actually exploit the graph and semantic distinctions that are already valuable.</p>
+</div>
+
+<hr>
+
+<h2 id="what-this-means">What this means for the next version</h2>
+
+<p>
+  The next version should not just ship more features. It should make the existing model easier to
+  use correctly in practice.
+</p>
+
+<p>
+  The audit suggests three priorities:
+</p>
+
+<ol>
+  <li><strong>Better prompting and operator guidance</strong> so agents choose richer relations and more precise types.</li>
+  <li><strong>More graph-aware workflows</strong> so summaries, checkpoints, and lessons do not live as isolated blobs.</li>
+  <li><strong>Smarter evaluation of real usage</strong> so we keep checking how the memory model is being used, not just whether it exists in the code.</li>
+</ol>
+
+<p>
+  In other words: MentisDB's model was already more expressive than our actual usage. That is a
+  better problem than the reverse, but it is still a problem worth fixing.
+</p>
+
+<hr>
+
+<h2 id="bottom-line">Bottom line</h2>
+
+<p>
+  The audit was a good sign for MentisDB overall. Agents are using it for exactly the kinds of
+  durable memory we care about most: summaries, lessons, decisions, and checkpoints.
+</p>
+
+<p>
+  But it also showed that the richest parts of the model were being underused. We designed a
+  thought graph. In practice, we were often still writing linked notes.
+</p>
+
+<p>
+  That is fixable, and the fix is already underway.
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>
