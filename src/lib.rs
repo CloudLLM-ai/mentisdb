@@ -3956,19 +3956,36 @@ impl MentisDb {
     /// and merges the results.
     pub fn ancestor_chain_keys(&self) -> Vec<String> {
         let mut ancestors = Vec::new();
-        if self.thoughts.is_empty() {
-            return ancestors;
-        }
-        let genesis = &self.thoughts[0];
-        for relation in &genesis.relations {
-            if relation.kind == ThoughtRelationKind::BranchesFrom {
-                if let Some(ref parent_key) = relation.chain_key {
-                    if !parent_key.is_empty() && !ancestors.contains(parent_key) {
-                        ancestors.push(parent_key.clone());
-                    }
-                }
+        let mut current_parent = self.thoughts.first().and_then(|genesis| {
+            genesis.relations.iter().find_map(|relation| {
+                (relation.kind == ThoughtRelationKind::BranchesFrom)
+                    .then_some(relation.chain_key.as_deref())
+                    .flatten()
+                    .filter(|parent_key| !parent_key.is_empty())
+                    .map(str::to_owned)
+            })
+        });
+
+        while let Some(parent_key) = current_parent {
+            if ancestors.contains(&parent_key) {
+                break;
             }
+            ancestors.push(parent_key.clone());
+            current_parent = Self::open_with_key(self.chain_dir(), &parent_key)
+                .ok()
+                .and_then(|parent| {
+                    parent.thoughts.first().and_then(|genesis| {
+                        genesis.relations.iter().find_map(|relation| {
+                            (relation.kind == ThoughtRelationKind::BranchesFrom)
+                                .then_some(relation.chain_key.as_deref())
+                                .flatten()
+                                .filter(|ancestor_key| !ancestor_key.is_empty())
+                                .map(str::to_owned)
+                        })
+                    })
+                });
         }
+
         ancestors
     }
 

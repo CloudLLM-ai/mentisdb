@@ -1377,6 +1377,9 @@ Important environment variables:
   MENTISDB_DASHBOARD_PORT
     HTTPS dashboard port. Set 0 to disable
 
+  MENTISDB_DASHBOARD_PIN
+    Optional PIN required to open the HTTPS dashboard
+
   MENTISDB_TLS_CERT
   MENTISDB_TLS_KEY
     TLS certificate and private-key paths

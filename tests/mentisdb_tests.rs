@@ -3547,7 +3547,7 @@ fn test_ancestor_chain_keys_grandparent() {
 
     let child = MentisDb::branch_from(&dir, "parent-chain", p_thought.id, "child-chain").unwrap();
     let ancestors = child.ancestor_chain_keys();
-    assert_eq!(ancestors, vec!["parent-chain"]);
+    assert_eq!(ancestors, vec!["parent-chain", "grandparent-chain"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
