@@ -5293,7 +5293,6 @@ impl MentisDb {
         offset: usize,
     ) -> FederatedSearchResult<'a> {
         use crate::search::ranked::RRF_K;
-        use std::collections::BTreeSet;
 
         // Step 1: Collect results from self and all other chains
         let mut all_hits: Vec<(
@@ -5371,7 +5370,6 @@ impl MentisDb {
         }
 
         // Step 2: Deduplicate by thought UUID (keep higher-scoring occurrence)
-        let mut seen_ids: BTreeSet<Uuid> = BTreeSet::new();
         #[allow(clippy::type_complexity)]
         let mut deduplicated: Vec<(
             &'a str,
@@ -5384,8 +5382,22 @@ impl MentisDb {
             Vec<String>,
             Vec<crate::search::lexical::LexicalMatchSource>,
         )> = Vec::new();
+        let mut seen_positions: BTreeMap<Uuid, usize> = BTreeMap::new();
         for hit in all_hits {
-            if seen_ids.insert(hit.1.id) {
+            if let Some(existing_index) = seen_positions.get(&hit.1.id).copied() {
+                let replace = {
+                    let existing = &deduplicated[existing_index];
+                    hit.2
+                        .total
+                        .partial_cmp(&existing.2.total)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .is_gt()
+                };
+                if replace {
+                    deduplicated[existing_index] = hit;
+                }
+            } else {
+                seen_positions.insert(hit.1.id, deduplicated.len());
                 deduplicated.push(hit);
             }
         }
@@ -8877,7 +8889,15 @@ fn validate_refs(thoughts: &[Thought], refs: &[u64]) -> io::Result<()> {
 
 fn dedupe_relations(relations: &mut Vec<ThoughtRelation>) {
     let mut seen = HashSet::new();
-    relations.retain(|relation| seen.insert((relation.kind, relation.target_id)));
+    relations.retain(|relation| {
+        seen.insert((
+            relation.kind,
+            relation.target_id,
+            relation.chain_key.clone(),
+            relation.valid_at,
+            relation.invalid_at,
+        ))
+    });
 }
 
 fn persist_jsonl_thought(file_path: &Path, thought: &Thought) -> io::Result<()> {

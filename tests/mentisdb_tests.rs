@@ -2745,6 +2745,139 @@ fn dedup_scan_window_limits_comparison_range() {
     );
 }
 
+#[test]
+fn relation_dedup_keeps_distinct_cross_chain_and_temporal_relations() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open(&dir, "agent", "Agent", None, None).unwrap();
+
+    chain
+        .append("agent", ThoughtType::FactLearned, "Base thought")
+        .unwrap();
+    let target_id = chain.thoughts()[0].id;
+
+    let valid_at = chrono::Utc::now();
+    let invalid_at = valid_at + chrono::Duration::minutes(5);
+    chain
+        .append_thought(
+            "agent",
+            ThoughtInput::new(ThoughtType::Insight, "Relation dedup regression coverage")
+                .with_relations(vec![
+                    ThoughtRelation {
+                        kind: ThoughtRelationKind::Supports,
+                        target_id,
+                        chain_key: None,
+                        valid_at: Some(valid_at),
+                        invalid_at: None,
+                    },
+                    ThoughtRelation {
+                        kind: ThoughtRelationKind::Supports,
+                        target_id,
+                        chain_key: Some("other-chain".to_string()),
+                        valid_at: Some(valid_at),
+                        invalid_at: None,
+                    },
+                    ThoughtRelation {
+                        kind: ThoughtRelationKind::Supports,
+                        target_id,
+                        chain_key: None,
+                        valid_at: Some(valid_at),
+                        invalid_at: Some(invalid_at),
+                    },
+                    ThoughtRelation {
+                        kind: ThoughtRelationKind::Supports,
+                        target_id,
+                        chain_key: None,
+                        valid_at: Some(valid_at),
+                        invalid_at: None,
+                    },
+                ]),
+        )
+        .unwrap();
+
+    let relations = &chain.thoughts()[1].relations;
+    assert_eq!(relations.len(), 3);
+    assert!(relations
+        .iter()
+        .any(|relation| relation.chain_key.is_some()));
+    assert!(relations
+        .iter()
+        .any(|relation| relation.invalid_at.is_some()));
+    assert_eq!(
+        relations
+            .iter()
+            .filter(|relation| relation.chain_key.is_none() && relation.invalid_at.is_none())
+            .count(),
+        1,
+        "only the exact duplicate should be collapsed"
+    );
+}
+
+#[test]
+fn federated_search_dedup_keeps_higher_scoring_duplicate_hit() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "federated-self").unwrap();
+
+    chain
+        .append(
+            "agent",
+            ThoughtType::FactLearned,
+            "common distributed systems cache invalidation",
+        )
+        .unwrap();
+    chain
+        .append(
+            "agent",
+            ThoughtType::FactLearned,
+            "common distributed systems",
+        )
+        .unwrap();
+
+    let duplicate_id = chain.thoughts()[0].id;
+    let duplicate_index = chain.thoughts()[0].index;
+    let query = RankedSearchQuery::new()
+        .with_text("common distributed systems cache invalidation")
+        .with_limit(10);
+
+    let result = chain.query_federated(
+        "self-chain",
+        &[("dup-chain", &chain)],
+        &query,
+        &std::collections::BTreeMap::new(),
+        10,
+        0,
+    );
+
+    let duplicate_hit = result
+        .hits
+        .iter()
+        .find(|hit| hit.thought.id == duplicate_id)
+        .expect("duplicate thought should still appear once after dedup");
+    assert_eq!(duplicate_hit.chain_key, "self-chain");
+    assert_eq!(duplicate_hit.thought.index, duplicate_index);
+
+    let direct_score = chain
+        .query_ranked(&query)
+        .hits
+        .into_iter()
+        .find(|hit| hit.thought.id == duplicate_id)
+        .expect("self-chain ranked search should contain duplicate thought")
+        .score
+        .total;
+    let fallback_score = chain
+        .query_ranked(&RankedSearchQuery::new().with_limit(10))
+        .hits
+        .into_iter()
+        .find(|hit| hit.thought.id == duplicate_id)
+        .expect("fallback ranked search should contain duplicate thought")
+        .score
+        .total;
+
+    assert!(
+        direct_score > fallback_score,
+        "test setup must produce a strictly higher-scoring duplicate occurrence"
+    );
+}
+
 // ── v0.8.2 tests: Multi-level memory scopes ─────────────────────────────────
 
 #[test]
