@@ -1,4 +1,25 @@
 0.9.2.38 UNRELEASED
+  - fix(pymentisdb): `context_bundles()` now decodes proper typed `ContextBundleSeed`
+    and `ContextBundleHit` objects instead of incorrectly nesting `ContextBundle` inside
+    `ContextBundle.seed`; `append_thought()` now uses one canonical `ThoughtInput`
+    payload builder instead of duplicated request assembly; `ranked_search()` and
+    `context_bundles()` now accept `MemoryScope` enums directly and serialize them to
+    the API's lowercase request form; added focused Python client tests
+  - fix(webhooks): webhook registry persistence now uses temp-file-plus-rename instead of
+    truncating the live registry in place; delivery fan-out is now bounded by a queue and
+    concurrency semaphore so bursty append workloads do not spawn an unbounded number of
+    webhook tasks immediately; added tests for rename-failure preservation and bounded delivery
+  - fix(search): federated search dedup now keeps the higher-scoring duplicate occurrence,
+    matching the documented contract, instead of whichever chain surfaced the UUID first
+  - fix(relations): relation dedup no longer collapses distinct edges that differ by
+    `chain_key`, `valid_at`, or `invalid_at`; only exact duplicate relations are removed
+  - docs: daemon endpoint catalog and REST rustdocs updated to include the live router
+    surface (`/v1/federated-search`, `/v1/import-markdown`, entity types, chain merge,
+    webhooks, extract-memories, admin flush, and related endpoints); startup catalog
+    generation now uses a shared helper to keep HTTP/HTTPS REST listings aligned
+  - test(skill-signing): strengthened server-side signature-verification coverage for skill
+    uploads — now explicitly checks missing signature fields, unknown signing-key ids, and
+    tampered signatures with clearer failure assertions
   - fix: restore now rejects path-traversal entries inside `.mbak` archives before any
     file extraction; crafted manifest paths like `../escape.txt` or absolute paths now fail
     restore with `InvalidData`, preventing writes outside the target directory
