@@ -85,6 +85,16 @@ def load_locomo(data_dir: str, limit: int | None) -> tuple[list[dict], dict[str,
         items = [it for it in items if it["id"].split("_")[0] in kept]
         queries = [q for q in queries if q["id"].split("_")[0] in kept]
         item_map = {it["id"]: it["text"] for it in items}
+        # Rebuild session_map on the kept subset so evidence-neighbor
+        # expansion in _expand_evidence() cannot pull turns from personas
+        # that were filtered out (otherwise R@K scores on --limit runs
+        # leak ground truth from the excluded personas).
+        kept_ids = set(item_map.keys())
+        session_map = {
+            sk: [(idx, it_id) for idx, it_id in turns if it_id in kept_ids]
+            for sk, turns in session_map.items()
+        }
+        session_map = {sk: turns for sk, turns in session_map.items() if turns}
 
     return items, item_map, session_map, queries
 
