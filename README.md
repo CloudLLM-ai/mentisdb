@@ -1180,13 +1180,14 @@ Upload flow for signing agents:
 
 ### Claude Desktop
 
-1. Run `mentisdbd setup claude-desktop` or install prerequisites manually:
-   - Node.js >= 20
-   - `npm install -g mcp-remote`
-2. Edit `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`)
-3. Add the `mentisdb` MCP server entry using `node` as command with `mcp-remote` script path as args
-4. Set `NODE_TLS_REJECT_UNAUTHORIZED=0` for self-signed certificate support
-5. Restart Claude for Desktop
+1. **Recommended (stdio mode)** — just run `mentisdbd setup claude-desktop` and
+   it will write the stdio config. No daemon needed, no Node.js, no mcp-remote.
+   The stdio process auto-detects and proxies to a running daemon, or launches
+   one in the background if none is found.
+2. **Alternative (HTTP via mcp-remote)** — requires Node.js >= 20 and
+   `npm install -g mcp-remote`. Run `mentisdbd` as a daemon first, then
+   configure Claude Desktop to use `mcp-remote` as a bridge to the HTTPS
+   endpoint.
 
 ### Claude Code
 
@@ -1271,10 +1272,36 @@ qwen mcp add --scope user --transport http mentisdb http://127.0.0.1:9471
 
 ### Claude for Desktop
 
-Claude for Desktop connects to MCP servers through `claude_desktop_config.json`.
-It requires [Node.js >= 20](https://nodejs.org/) and the
-[`mcp-remote`](https://www.npmjs.com/package/mcp-remote) npm package as a
-bridge between the desktop app and the MentisDB HTTPS endpoint.
+Claude for Desktop supports two connection modes: **stdio** (recommended) and
+**HTTP via mcp-remote**.
+
+#### Option 1: Stdio mode (recommended)
+
+Claude Desktop spawns `mentisdbd --mode stdio` as a subprocess. The stdio
+process automatically detects if a daemon is already running — if so, it acts
+as a lightweight proxy to the live daemon; if not, it launches one in the
+background. This means all Claude Desktop sessions share the same live chain
+cache with zero configuration.
+
+```json
+{
+  "mcpServers": {
+    "mentisdb": {
+      "command": "mentisdbd",
+      "args": ["--mode", "stdio"]
+    }
+  }
+}
+```
+
+This is the simplest setup — no Node.js, no mcp-remote, no TLS config. Just
+point Claude Desktop at the `mentisdbd` binary.
+
+#### Option 2: HTTP via mcp-remote
+
+If you prefer the HTTP transport (e.g. for a remote daemon), use the
+`mcp-remote` bridge. This requires [Node.js >= 20](https://nodejs.org/) and the
+[`mcp-remote`](https://www.npmjs.com/package/mcp-remote) npm package.
 
 The recommended setup path is automatic:
 
@@ -1385,6 +1412,33 @@ machine. **Both must point to the same Node.js installation (>= 20).**
 > bypasses the shebang entirely and guarantees the correct Node version is used.
 
 Restart Claude for Desktop after saving the config file.
+
+### Stdio Mode — How It Works
+
+`mentisdbd --mode stdio` reads JSON-RPC 2.0 from stdin and writes responses to
+stdout. It is designed for MCP clients that spawn subprocesses (Claude Desktop,
+Cursor, etc.).
+
+**Smart daemon detection**: When the stdio process starts, it checks if a
+daemon is already running on the configured MCP port (`127.0.0.1:9471` by
+default) via the health endpoint.
+
+- **Daemon running** → the stdio process acts as a lightweight proxy, forwarding
+  `tools/list` and `tools/call` requests to the daemon's HTTP MCP endpoints.
+  `initialize`, `ping`, and `resources/read` are handled locally. All clients
+  share the same live in-memory chain cache.
+- **No daemon** → the stdio process launches the daemon in the background
+  (`nohup` on Unix, `start /B` on Windows), waits for it to become responsive,
+  then proxies. The daemon outlives the stdio process.
+- **Daemon launch fails** → falls back to local mode, creating its own
+  `MentisDbService` instance (state shared only via disk files).
+
+This means you never need to manually start the daemon — Claude Desktop, Cursor,
+or any MCP client can just spawn `mentisdbd --mode stdio` and everything works.
+
+The daemon address is configurable via `MENTISDB_BIND_HOST` and
+`MENTISDB_MCP_PORT` environment variables, so the stdio process will detect and
+proxy to a daemon on a non-standard port.
 
 ### Claude Code
 
