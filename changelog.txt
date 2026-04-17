@@ -1,4 +1,10 @@
 0.9.2.38 UNRELEASED
+  - feat(stdio): smart daemon detection in stdio MCP mode — the stdio process now
+    checks if a daemon is running via the health endpoint, proxies to it if found,
+    or launches one in the background (nohup on Unix, start /B on Windows); all
+    MCP clients that spawn stdio subprocesses (Claude Desktop, Cursor, etc.) now
+    share the same live chain cache with zero configuration; falls back to local
+    mode if daemon launch fails
   - fix(pymentisdb): `context_bundles()` now decodes proper typed `ContextBundleSeed`
     and `ContextBundleHit` objects instead of incorrectly nesting `ContextBundle` inside
     `ContextBundle.seed`; `append_thought()` now uses one canonical `ThoughtInput`
