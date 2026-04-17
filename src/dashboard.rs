@@ -339,7 +339,7 @@ async fn handle_login(
                 (
                     header::SET_COOKIE,
                     format!(
-                        "mentisdb_pin={}; Path=/; HttpOnly; SameSite=Strict",
+                        "mentisdb_pin={}; Path=/; HttpOnly; Secure; SameSite=Strict",
                         form.pin
                     ),
                 ),
