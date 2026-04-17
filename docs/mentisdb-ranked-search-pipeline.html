@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB — Inside Ranked Search: One Call, One Pipeline</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2.5rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #1a1a2e; color: #e0e0e0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; font-size: 0.85rem; }
+    pre code { background: none; padding: 0; color: inherit; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.3rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2.5rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+    .callout { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .callout p:last-child { margin-bottom: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.88rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 17, 2026</div>
+
+<h1>Inside MentisDB Ranked Search — One Call, One Pipeline</h1>
+
+<p>
+  A common question from agent authors integrating MentisDB is: <em>when I search
+  for a thought type with some keywords, do I have to refine in a loop?</em>
+  The short answer is no. One call to <code>mentisdb_ranked_search</code> runs
+  the entire hybrid retrieval pipeline &mdash; filter, BM25, vector similarity,
+  graph expansion, session cohesion, Reciprocal Rank Fusion &mdash; and returns a
+  single ordered list with a fully decomposed score breakdown for every hit.
+</p>
+
+<p>
+  This post walks through the code path top to bottom so you can reason about
+  what each knob in <code>RankedSearchQuery</code> actually changes. Every
+  reference points at the real file and line number in the current source tree.
+</p>
+
+<div class="highlight">
+  <p><strong>TL;DR.</strong> A single <code>mentisdb_ranked_search</code> call
+  returns hits scored by lexical BM25 + optional dense vector + optional graph
+  expansion, blended through smooth exponential fusion, optionally reranked
+  with RRF, and sorted deterministically. Every hit carries its matched terms,
+  match sources, and a per-signal score vector so the agent can see <em>why</em>
+  it ranked where it did &mdash; no follow-up queries needed.</p>
+</div>
+
+<hr>
+
+<h2 id="big-picture">The Big Picture</h2>
+
+<pre><code>                ┌──── 1. filter-first (indexed) ────┐
+   request ───► │  thought_type / role / agent_id / │ ───► candidate set
+                │  tags / concepts / since / until  │       (Vec&lt;&amp;Thought&gt;)
+                └───────────────────────────────────┘
+                                 │
+                    2. as_of temporal filter (optional)
+                                 │
+         ┌──────────────────── 3. three parallel scorers ────────────────────┐
+         ▼                      ▼                                             ▼
+ rank_candidates_      rank_candidates_                        expand_ranked_candidates
+   lexically(text)        semantically(text)                     (if graph + lexical hits)
+      │                      │                                          │
+      │ BM25 per-field        │ embed query, cosine vs                  │ top-20 lexical seeds,
+      │ (content / tags /     │ sidecar, max across                     │ BFS on adjacency index,
+      │  concepts /           │ providers, freshness                    │ bounded by depth,
+      │  agent_id /           │ weight (0.5 fresh, 0.3 stale)           │ visits, direction
+      │  agent_registry)      │                                          │ + typed-edge boosts
+      │ + Porter + lemma      │                                          │ (ContinuesFrom=0.60,
+      │ + per-field DF gate   │                                          │  Corrects=0.50, …)
+      ▼                      ▼                                           ▼
+  HashMap&lt;pos,LexicalHit&gt;  HashMap&lt;pos,f32&gt;               HashMap&lt;pos,RankedGraphHit&gt;
+                                 │
+                    4. rank_search_hit per candidate
+                       (combine signals &mdash; formula below)
+                                 │
+                    5. session cohesion boost (mutates in place)
+                                 │
+                    6. RRF rerank (opt-in, top rerank_k)
+                                 │
+                    7. stable deterministic sort + truncate(limit)
+                                 ▼
+                         RankedSearchResult</code></pre>
+
+<p>
+  Everything below is one function: <code>MentisDb::query_ranked</code> at
+  <code>src/lib.rs:4962</code>. The agent hands in a <code>RankedSearchQuery</code>
+  and receives a <code>RankedSearchResult</code>. No intermediate steps, no
+  follow-up refinement, no tool ping-pong.
+</p>
+
+<hr>
+
+<h2 id="phase-1">Phase 1 &mdash; Filter First</h2>
+
+<p>
+  The pipeline starts at <code>src/lib.rs:4913</code> with
+  <code>MentisDb::query(&amp;request.filter)</code>. The <code>filter</code> is
+  an embedded <code>ThoughtQuery</code> with exactly the same semantics as the
+  plain <code>mentisdb_search</code> tool: <code>thought_type</code>, <code>role</code>,
+  <code>agent_id</code>, <code>tags</code>, <code>concepts</code>, and the
+  <code>since</code>/<code>until</code> position bounds narrow the candidate
+  set using per-index lookups before any ranking happens.
+</p>
+
+<p>
+  This matters: <strong>BM25 never scores a thought that was eliminated by the
+  type filter.</strong> That keeps the scoring corpus small and the results
+  deterministic across repeat calls.
+</p>
+
+<hr>
+
+<h2 id="phase-2">Phase 2 &mdash; Temporal (As-Of) Filter</h2>
+
+<p>
+  If the request carries <code>as_of</code>, <code>src/lib.rs:4968</code>
+  removes two groups of thoughts from the candidate set:
+</p>
+
+<ul>
+  <li>any thought with <code>timestamp &gt; as_of</code> &mdash; the agent asked
+      &ldquo;what did we know at time T?&rdquo;, so later writes are invisible;</li>
+  <li>any thought in the precomputed <code>invalidated_thought_ids</code> set
+      whose <code>Supersedes</code> / <code>Corrects</code> / <code>Invalidates</code>
+      edge was authored at or before <code>as_of</code>.</li>
+</ul>
+
+<p>
+  Without <code>as_of</code>, this phase is a no-op. With it, you get
+  point-in-time retrieval semantics for free.
+</p>
+
+<hr>
+
+<h2 id="phase-3">Phase 3 &mdash; Three Parallel Scorers</h2>
+
+<p>
+  The surviving candidates are handed to three independent scoring functions.
+  Each produces a map keyed by the thought's append-order index.
+</p>
+
+<h3>3a. Lexical BM25</h3>
+
+<p>
+  <code>rank_candidates_lexically</code> (<code>src/lib.rs:6345</code>) builds
+  a <code>LexicalIndex</code> over the full chain (with agent-registry tokens
+  included so agent-name hits can surface) and runs
+  <code>search_in_positions</code> restricted to the candidate positions. The
+  index is a classic inverted-file BM25 implementation
+  (<code>src/search/lexical.rs</code>) with two refinements:
+</p>
+
+<ul>
+  <li><strong>Porter stemming + irregular-verb lemma expansion.</strong>
+      <em>prefers</em>, <em>preferred</em>, <em>preferences</em> all collapse to
+      <em>prefer</em>. Queries carrying <em>went</em> also match documents
+      containing <em>go</em>, and so on across ~170 irregular forms.</li>
+  <li><strong>Per-field document-frequency gate.</strong> Terms with DF ratio
+      above 30% are suppressed in <code>content</code>, <code>tags</code>, and
+      <code>concepts</code>, but can still fire in <code>agent_registry</code>
+      (60%) or <code>agent_id</code> (70%), where repetition is inherent.</li>
+</ul>
+
+<h3>3b. Dense vector similarity</h3>
+
+<p>
+  <code>rank_candidates_semantically</code> (<code>src/lib.rs:6365</code>) runs
+  only when a managed vector sidecar is configured &mdash; by default, local
+  ONNX inference via <code>fastembed-minilm</code>. The query text is embedded
+  once, cosine-compared against every candidate's stored vector, filtered by a
+  minimum cosine of 0.04, and the scores across providers are combined by
+  <code>max</code> weighted by sidecar freshness (0.5 if fresh, 0.3 if stale).
+</p>
+
+<p>
+  If no sidecar is active, this phase returns an empty map and the final score
+  falls back to pure lexical.
+</p>
+
+<h3>3c. Graph expansion</h3>
+
+<p>
+  If <code>request.graph</code> is set and there are lexical hits,
+  <code>expand_ranked_candidates</code> (<code>src/lib.rs:6475</code>) picks
+  the top 20 lexical seeds, builds a <code>ThoughtAdjacencyIndex</code> from
+  the chain's <code>refs</code> and typed <code>relations</code>, and runs
+  bounded BFS from each seed.
+</p>
+
+<p>
+  Expansion is controlled by <code>max_depth</code>, <code>max_visited</code>,
+  and the traversal <code>mode</code> (<code>Outgoing</code> / <code>Incoming</code>
+  / <code>Bidirectional</code>). Each reached thought records its depth, the
+  number of seed paths that reached it, and the relation kinds traversed.
+  Relation kinds carry different boosts &mdash; <code>ContinuesFrom</code> 0.60,
+  <code>Corrects</code>/<code>Invalidates</code> 0.50, <code>Supersedes</code>
+  0.45, down to <code>References</code> 0.06. Graph proximity contributes
+  <code>1 / depth</code>.
+</p>
+
+<hr>
+
+<h2 id="phase-4">Phase 4 &mdash; Per-Hit Fusion</h2>
+
+<p>
+  For each surviving candidate, <code>rank_search_hit</code>
+  (<code>src/lib.rs:6213</code>) assembles one <code>RankedSearchScore</code>:
+</p>
+
+<pre><code>vector_contribution = vector * (1 + 35 * exp(-lexical / 3))     // smooth fusion
+importance_boost    = lexical * (importance - 0.5) * 0.3        // if lex &gt; 0
+                      (importance - 0.5) * 0.1                   // otherwise
+confidence          = thought.confidence * 0.1
+recency             = recency_score(thought)
+
+total = lexical + vector_contribution + graph + relation + seed_support
+        + importance_boost + confidence + recency</code></pre>
+
+<p>
+  The vector fusion term is worth a second look. When lexical is zero
+  (pure-semantic match), vector is amplified by roughly 36&times;. By
+  <code>lexical = 3</code> the boost has decayed to ~12&times;. By
+  <code>lexical = 6</code> it is effectively additive. A smooth exponential
+  avoids the nasty rank discontinuities that tiered boost step-functions
+  introduce at bin boundaries.
+</p>
+
+<p>
+  The importance term is differential rather than flat: a higher-importance
+  thought gets a boost <em>proportional</em> to its lexical score, so it tips
+  close BM25 races without overriding strong lexical signal.
+</p>
+
+<hr>
+
+<h2 id="phase-5">Phase 5 &mdash; Session Cohesion</h2>
+
+<p>
+  Lines <code>5047&ndash;5076</code> walk the hits and promote thoughts that
+  <em>sit near</em> a strong lexical seed, even if they themselves share no
+  query terms. The rule (current v0.8.9 values):
+</p>
+
+<ul>
+  <li>seeds are hits with <code>lexical &ge; 3.0</code>;</li>
+  <li>candidates with <code>lexical &lt; 5.0</code> within <strong>12
+      positions</strong> of any seed receive a boost of
+      <code>1.2 &middot; (1 &minus; nearest / 12)</code>;</li>
+  <li>candidates with <code>lexical &ge; 5.0</code> are skipped &mdash; they
+      stand on their own.</li>
+</ul>
+
+<p>
+  This is the trick that surfaces evidence turns <em>adjacent</em> to the
+  matching turn in LoCoMo-style benchmarks, and it's one of the three changes
+  that moved LoCoMo-10P from 72.8% to 74.6% in v0.8.5.
+</p>
+
+<hr>
+
+<h2 id="phase-6">Phase 6 &mdash; Reciprocal Rank Fusion (Opt-In)</h2>
+
+<p>
+  If the query sets <code>enable_reranking</code> and <code>rerank_k</code>
+  (default 50), lines <code>5084&ndash;5147</code> do a second, rank-based
+  pass:
+</p>
+
+<ol>
+  <li>sort hits by lexical-only score &mdash; list <em>L</em>;</li>
+  <li>sort hits by vector-only score &mdash; list <em>V</em>;</li>
+  <li>sort hits by <code>graph + relation + seed_support</code> &mdash;
+      list <em>G</em>;</li>
+  <li>take the top <code>rerank_k</code> of each;</li>
+  <li>fuse with RRF: <code>sum(1 / (60 + rank_i(d)))</code> across the three
+      lists (<code>src/search/ranked.rs:28</code>);</li>
+  <li>replace <code>total</code> with
+      <code>rrf + graph + relation + seed_support + importance + confidence
+      + recency + session_cohesion</code>.</li>
+</ol>
+
+<p>
+  RRF is robust when the absolute magnitudes of lexical and vector scores are
+  not comparable: a document that places in the top-10 of both lists dominates
+  a document that tops one list and is absent from the other. It is pure
+  arithmetic &mdash; no LLM, no external call.
+</p>
+
+<hr>
+
+<h2 id="phase-7">Phase 7 &mdash; Deterministic Sort</h2>
+
+<p>
+  Finally, lines <code>5151&ndash;5174</code> sort by
+  <code>total</code> descending, with a long tiebreaker cascade over the
+  individual score components, <code>importance</code>, <code>confidence</code>,
+  and finally <code>thought.index</code>. The result is then truncated to
+  <code>limit</code>.
+</p>
+
+<p>
+  That determinism means two identical queries on the same chain snapshot
+  return identical results in the same order. No hidden randomness, no
+  &ldquo;try again and hope.&rdquo;
+</p>
+
+<hr>
+
+<h2 id="score-vector">The Score Vector</h2>
+
+<p>
+  Every returned hit carries a full <code>RankedSearchScore</code> plus the
+  matched query terms and the indexed fields that fired:
+</p>
+
+<pre><code>{
+  "score": {
+    "lexical":          2.91,
+    "vector":           0.27,
+    "graph":            0.18,
+    "relation":         0.05,
+    "seed_support":     0.00,
+    "importance":       0.00,
+    "confidence":       0.00,
+    "recency":          0.00,
+    "session_cohesion": 0.40,
+    "rrf":              0.00,
+    "total":            3.14
+  },
+  "matched_terms":  ["latency", "ranking"],
+  "match_sources":  ["content", "tags", "agent_registry"],
+  "graph_distance": 1,
+  "graph_path":     [ ...locators and relation kinds... ]
+}</code></pre>
+
+<p>
+  This is the auditability story. If a result surprises you, the breakdown
+  tells you exactly which signal fired &mdash; strong BM25? a graph-expanded
+  neighbor? a cohesion boost from an adjacent turn? &mdash; with no guesswork.
+</p>
+
+<hr>
+
+<h2 id="landmarks">Code Landmarks</h2>
+
+<table>
+  <thead>
+    <tr><th>Phase</th><th>Function</th><th>Location</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1. Filter-first</td><td><code>MentisDb::query</code></td><td><code>src/lib.rs:4913</code></td></tr>
+    <tr><td>2. As-of filter</td><td>inline in <code>query_ranked</code></td><td><code>src/lib.rs:4968</code></td></tr>
+    <tr><td>3a. Lexical BM25</td><td><code>rank_candidates_lexically</code></td><td><code>src/lib.rs:6345</code></td></tr>
+    <tr><td>3a. Lexical index</td><td><code>LexicalIndex::search_in_positions</code></td><td><code>src/search/lexical.rs:500</code></td></tr>
+    <tr><td>3b. Vector</td><td><code>rank_candidates_semantically</code></td><td><code>src/lib.rs:6365</code></td></tr>
+    <tr><td>3c. Graph expand</td><td><code>expand_ranked_candidates</code></td><td><code>src/lib.rs:6475</code></td></tr>
+    <tr><td>3c. BFS</td><td><code>GraphExpansionResult::expand</code></td><td><code>src/search/expansion.rs:117</code></td></tr>
+    <tr><td>4. Per-hit fusion</td><td><code>rank_search_hit</code></td><td><code>src/lib.rs:6213</code></td></tr>
+    <tr><td>5. Session cohesion</td><td>inline</td><td><code>src/lib.rs:5042&ndash;5076</code></td></tr>
+    <tr><td>6. RRF rerank</td><td>inline + <code>rrf_merge_three</code></td><td><code>src/lib.rs:5084</code>, <code>src/search/ranked.rs:28</code></td></tr>
+    <tr><td>7. Final sort</td><td>inline</td><td><code>src/lib.rs:5151&ndash;5174</code></td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="contract">The Agent's Contract</h2>
+
+<div class="callout">
+  <p><strong>You do not need a refinement loop.</strong> One call returns a
+  fully-scored, ordered list. For <em>grouped</em> context (seed plus its
+  graph neighbors clustered beneath it), call
+  <code>mentisdb_context_bundles</code> instead &mdash; also single-pass.</p>
+</div>
+
+<p>The knobs that shape the pipeline without changing its shape:</p>
+
+<ul>
+  <li><code>graph</code> &mdash; turns on phase 3c and adds a graph list to RRF;</li>
+  <li><code>enable_reranking</code> / <code>rerank_k</code> &mdash; turns on phase 6;</li>
+  <li><code>as_of</code> &mdash; enables phase 2 point-in-time semantics;</li>
+  <li><code>min_confidence</code> / <code>min_importance</code> / <code>since</code> /
+      <code>until</code> &mdash; pre-filter during phase 1;</li>
+  <li><code>thought_types</code>, <code>roles</code>, <code>agent_ids</code>,
+      <code>tags_any</code>, <code>concepts_any</code>, <code>entity_type</code>
+      &mdash; the embedded <code>ThoughtQuery</code> used by phase 1.</li>
+</ul>
+
+<p>
+  Everything composes inside one function call. The agent reads the score
+  breakdown, decides what to do with it, and moves on. That simplicity is the
+  whole point.
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>
