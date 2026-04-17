@@ -445,18 +445,20 @@ REST endpoints:
 
 ```json
 {
-  "chain_key":    "my-chain",
-  "agent_id":     "my-agent",
-  "agent_name":   "My Agent",
-  "thought_type": "LessonLearned",
-  "role":         "Execution",
-  "content":      "...",
-  "scope":        "session",
-  "tags":         ["tag1"],
-  "concepts":     ["concept1"],
-  "importance":   0.9,
-  "confidence":   0.8,
-  "refs":         [14, 22],
+  "chain_key":      "my-chain",
+  "agent_id":       "my-agent",
+  "agent_name":     "My Agent",
+  "thought_type":   "LessonLearned",
+  "role":           "Execution",
+  "content":        "...",
+  "scope":          "session",
+  "tags":           ["tag1"],
+  "concepts":       ["concept1"],
+  "entity_type":    "incident",
+  "source_episode": "triage-2026-04-17",
+  "importance":     0.9,
+  "confidence":     0.8,
+  "refs":           [14, 22],
   "relations": [
     { "kind": "CausedBy",      "target_id": "<uuid>" },
     { "kind": "ContinuesFrom", "target_id": "<uuid>", "chain_key": "other-chain" },
@@ -465,10 +467,12 @@ REST endpoints:
 }
 ```
 
-`chain_key`, `role`, `scope`, `tags`, `concepts`, `importance`, `confidence`, `refs`, and `relations` are optional.  
-`relations[].kind` accepts: `References`, `Summarizes`, `Corrects`, `Invalidates`, `CausedBy`, `Supports`, `Contradicts`, `DerivedFrom`, `ContinuesFrom`, `RelatedTo`, `Supersedes`.  
+`chain_key`, `role`, `scope`, `tags`, `concepts`, `entity_type`, `source_episode`, `importance`, `confidence`, `refs`, and `relations` are optional.  
+`relations[].kind` accepts: `References`, `Summarizes`, `Corrects`, `Invalidates`, `CausedBy`, `Supports`, `Contradicts`, `DerivedFrom`, `ContinuesFrom`, `BranchesFrom`, `RelatedTo`, `Supersedes`.  
 `relations[].chain_key` is optional — omit for intra-chain edges, set for cross-chain references.  
-`relations[].valid_at` and `relations[].invalid_at` are optional RFC 3339 timestamps that define when a relation edge is temporally valid, enabling point-in-time queries with `as_of`.
+`relations[].valid_at` and `relations[].invalid_at` are optional RFC 3339 timestamps that define when a relation edge is temporally valid, enabling point-in-time queries with `as_of`.  
+`entity_type` is an optional per-chain ontology label (e.g. `"incident"`, `"customer"`, `"deploy"`) used by the dashboard explorer and by ranked-search filtering.  
+`source_episode` is an optional free-form provenance string (e.g. a conversation id or batch name) that groups thoughts by the episode they were derived from; it is also filterable in ranked search.
 
 ---
 
@@ -1007,7 +1011,7 @@ Returns `{"status": "flushed"}` on success. Iterates all open chains and calls `
 
 ## MCP Tool Catalog
 
-The daemon currently exposes 37 MCP tools:
+The daemon currently exposes 42 MCP tools:
 
 - `mentisdb_bootstrap`
   Create a chain if needed and write one bootstrap checkpoint when it is empty.
@@ -1085,6 +1089,14 @@ The daemon currently exposes 37 MCP tools:
   List all registered webhooks.
 - `mentisdb_delete_webhook`
   Remove a webhook registration by its UUID.
+- `mentisdb_federated_search`
+  Run one ranked-search query across multiple chains simultaneously and return one merged, deduplicated, re-scored result list. Each hit carries the `chain_key` it came from, so multi-agent hubs and cross-organizational memory aggregations can share a single query surface. Per-chain queries may override limits, filters, and RRF settings.
+- `mentisdb_extract_memories`
+  Run the opt-in LLM-extraction pipeline: ingest raw text (paste, transcript, document), call an OpenAI-compatible model, validate the strict JSON schema of candidate thoughts, and return them for human review before append. Nothing is written to the chain until the caller confirms.
+- `mentisdb_list_entity_types`
+  List the per-chain entity-type registry (labels like `incident`, `customer`, `deploy`) including descriptions and usage counts.
+- `mentisdb_upsert_entity_type`
+  Create or update one entity type (label + optional description) in the per-chain registry. Entity-type labels can be attached to any thought via the `entity_type` field and used as a filter on ranked search.
 
 The detailed request and response shapes for the MCP surface live in
 [`MENTISDB_MCP.md`](../MENTISDB_MCP.md). The REST equivalents live in

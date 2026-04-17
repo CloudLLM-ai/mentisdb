@@ -2302,10 +2302,10 @@ impl MentisDbService {
         for rel in request.relations.unwrap_or_default() {
             let kind = parse_thought_relation_kind(&rel.kind)?;
             let target_id = rel.target_id.parse::<Uuid>().map_err(|e| {
-                Box::new(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("invalid relation target_id '{}': {}", rel.target_id, e),
-                )) as Box<dyn Error + Send + Sync>
+                invalid_input_error(format!(
+                    "invalid relation target_id '{}': {}",
+                    rel.target_id, e
+                ))
             })?;
             parsed_relations.push(ThoughtRelation {
                 kind,
@@ -4065,9 +4065,8 @@ impl MentisDbService {
             #[cfg(feature = "local-embeddings")]
             "fastembed-minilm" => ManagedVectorProviderKind::FastEmbedMiniLM,
             other => {
-                return Err(Box::new(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("unknown vector provider '{other}'"),
+                return Err(invalid_input_error(format!(
+                    "unknown vector provider '{other}'"
                 )))
             }
         };
@@ -4154,20 +4153,15 @@ impl MentisDbService {
         let target_key = &request.target_chain_key;
 
         if source_key == target_key {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "source and target chain must differ",
-            )));
+            return Err(invalid_input_error("source and target chain must differ"));
         }
 
         // The target chain must already be registered.  `get_chain` will return
-        // an error for an unknown key, which we surface as a Bad Request.
-        let target_arc = self.get_chain(Some(target_key), None).await.map_err(|_| {
-            Box::new(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("target chain '{target_key}' does not exist"),
-            )) as Box<dyn Error + Send + Sync>
-        })?;
+        // an error for an unknown key, which we surface as a 404.
+        let target_arc = self
+            .get_chain(Some(target_key), None)
+            .await
+            .map_err(|_| not_found_error(format!("target chain '{target_key}' does not exist")))?;
 
         let source_arc = self.get_chain(Some(source_key), None).await?;
 
@@ -5744,6 +5738,23 @@ where
 {
     let request = serde_json::from_value::<T>(parameters)?;
     Ok(serde_json::to_value(f(request).await?)?)
+}
+
+/// Build a boxed `io::Error` for an invalid client-supplied input.
+///
+/// The `service_call` error mapper surfaces `io::ErrorKind::InvalidInput` as
+/// HTTP 400 Bad Request, so this is the canonical way to reject malformed
+/// requests inside MCP/REST handlers.
+fn invalid_input_error(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
+    Box::new(io::Error::new(io::ErrorKind::InvalidInput, message.into()))
+}
+
+/// Build a boxed `io::Error` for a resource the server could not locate.
+///
+/// The `service_call` error mapper surfaces `io::ErrorKind::NotFound` as HTTP
+/// 404 so callers get a distinct status from generic validation failures.
+fn not_found_error(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
+    Box::new(io::Error::new(io::ErrorKind::NotFound, message.into()))
 }
 
 fn service_call<T: Serialize>(
