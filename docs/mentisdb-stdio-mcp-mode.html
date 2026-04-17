@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB — Stdio MCP Mode with Smart Daemon Detection</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2.5rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #1a1a2e; color: #e0e0e0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; color: inherit; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.3rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2.5rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+    .callout { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .callout p:last-child { margin-bottom: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.88rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 17, 2026</div>
+
+<h1>Stdio MCP Mode with Smart Daemon Detection</h1>
+
+<p>
+  MentisDB 0.9.2 introduces a smarter stdio MCP mode that makes connecting
+  Claude Desktop, Cursor, and other MCP-spawning clients effortless. The stdio
+  process now auto-detects a running daemon, proxies to it if found, or launches
+  one in the background if not. Zero configuration, shared live state.
+</p>
+
+<hr>
+
+<h2 id="the-problem">The Problem</h2>
+
+<p>
+  Previously, <code>mentisdbd --mode stdio</code> created its own independent
+  <code>MentisDbService</code> instance every time it started. This worked fine
+  as a standalone process, but meant:
+</p>
+
+<ul>
+  <li>Each Claude Desktop session got its own in-memory chain cache</li>
+  <li>Changes made by one session weren't visible to another until disk reload</li>
+  <li>If you had a daemon running on port 9471, the stdio process ignored it entirely</li>
+  <li>Claude Desktop users needed Node.js + mcp-remote just to connect to a local daemon</li>
+</ul>
+
+<p>
+  The mcp-remote bridge works, but it's an extra dependency chain: Node.js ≥ 20,
+  npm install, TLS self-signed cert handling, <code>NODE_TLS_REJECT_UNAUTHORIZED</code>.
+  For a tool that runs on localhost, that's a lot of friction.
+</p>
+
+<hr>
+
+<h2 id="how-it-works">How Stdio Mode Works Now</h2>
+
+<p>
+  When <code>mentisdbd --mode stdio</code> starts, it follows a three-step flow:
+</p>
+
+<h3>Step 1: Detect</h3>
+
+<p>
+  The stdio process hits <code>http://127.0.0.1:9471/health</code> with a 500ms
+  timeout. If it gets a 200 response, a daemon is already running.
+</p>
+
+<h3>Step 2: Launch (if needed)</h3>
+
+<p>
+  If no daemon responds, the stdio process launches one in the background:
+</p>
+
+<ul>
+  <li><strong>Unix:</strong> <code>nohup mentisdbd &amp;</code> — the daemon outlives the stdio process</li>
+  <li><strong>Windows:</strong> <code>start /B mentisdbd</code> — detached background process</li>
+</ul>
+
+<p>
+  It then polls the health endpoint for up to 10 seconds, waiting for the daemon
+  to become responsive.
+</p>
+
+<h3>Step 3: Proxy</h3>
+
+<p>
+  Once a daemon is confirmed, the stdio process acts as a lightweight JSON-RPC
+  proxy:
+</p>
+
+<table>
+  <tr><th>Stdio Method</th><th>Proxy Behavior</th></tr>
+  <tr><td><code>initialize</code></td><td>Handled locally — returns protocol version and capabilities</td></tr>
+  <tr><td><code>ping</code></td><td>Handled locally — returns empty result</td></tr>
+  <tr><td><code>tools/list</code></td><td>Forwarded to daemon's <code>POST /tools/list</code></td></tr>
+  <tr><td><code>tools/call</code></td><td>Forwarded to daemon's <code>POST /tools/execute</code></td></tr>
+  <tr><td><code>resources/list</code></td><td>Handled locally — returns <code>mentisdb://skill/core</code></td></tr>
+  <tr><td><code>resources/read</code></td><td>Handled locally — returns embedded skill markdown</td></tr>
+</table>
+
+<p>
+  Static methods (initialize, ping, resources) are served from the stdio process
+  itself. Dynamic methods (tools/list, tools/call) are forwarded to the daemon's
+  HTTP MCP endpoints. This minimizes latency for handshake operations while
+  ensuring all tool execution hits the live daemon state.
+</p>
+
+<h3>Fallback</h3>
+
+<p>
+  If daemon launch fails (e.g., binary not found, permission denied), the stdio
+  process falls back to the original local mode — creating its own
+  <code>MentisDbService</code> with state shared only via disk files. This
+  ensures Claude Desktop still works even when the daemon can't start.
+</p>
+
+<hr>
+
+<h2 id="claude-desktop">Claude Desktop Configuration</h2>
+
+<p>
+  The entire Claude Desktop config is now three lines:
+</p>
+
+<pre><code>{
+  "mcpServers": {
+    "mentisdb": {
+      "command": "mentisdbd",
+      "args": ["--mode", "stdio"]
+    }
+  }
+}</code></pre>
+
+<p>
+  That's it. No Node.js. No mcp-remote. No TLS config. No daemon pre-start.
+  Just point Claude Desktop at the <code>mentisdbd</code> binary and go.
+</p>
+
+<p>
+  You can also run the setup wizard to write this automatically:
+</p>
+
+<pre><code>mentisdbd setup claude-desktop</code></pre>
+
+<hr>
+
+<h2 id="other-clients">Other MCP Clients</h2>
+
+<p>
+  Any MCP client that spawns stdio subprocesses benefits from this:
+</p>
+
+<ul>
+  <li><strong>Cursor</strong> — add <code>mentisdbd --mode stdio</code> as an MCP command</li>
+  <li><strong>VS Code Copilot</strong> — configure stdio transport in MCP settings</li>
+  <li><strong>Any MCP host</strong> — if it can spawn a process and pipe JSON-RPC over stdin/stdout, it works</li>
+</ul>
+
+<p>
+  HTTP-based clients (Claude Code, Codex, Qwen Code) continue to use the
+  streamable HTTP MCP endpoint at <code>http://127.0.0.1:9471</code> as before.
+  The stdio mode is specifically for clients that spawn subprocesses.
+</p>
+
+<hr>
+
+<h2 id="why-proxy">Why Proxy Instead of Local?</h2>
+
+<p>
+  The proxy approach solves several problems at once:
+</p>
+
+<ul>
+  <li><strong>Shared state</strong> — all stdio sessions see the same live chain cache, not stale disk reads</li>
+  <li><strong>Single daemon</strong> — one process handles all writes, avoiding concurrent file access</li>
+  <li><strong>Webhook delivery</strong> — the daemon's webhook manager runs once, not per-session</li>
+  <li><strong>Vector sidecars</strong> — managed sidecars stay synchronized across all clients</li>
+  <li><strong>Lower memory</strong> — stdio proxy processes are tiny compared to full MentisDbService instances</li>
+</ul>
+
+<hr>
+
+<h2 id="upgrade">Upgrade</h2>
+
+<pre><code>cargo install mentisdb --force</code></pre>
+
+<p>
+  Then update your Claude Desktop config to use stdio mode. If you were
+  previously using mcp-remote, you can remove the Node.js and mcp-remote
+  dependencies entirely.
+</p>
+
+<hr>
+
+<h2 id="env-vars">Environment Variables</h2>
+
+<p>
+  The stdio proxy respects the same environment variables as the daemon:
+</p>
+
+<ul>
+  <li><code>MENTISDB_BIND_HOST</code> — the host to check for a running daemon (default: <code>127.0.0.1</code>)</li>
+  <li><code>MENTISDB_MCP_PORT</code> — the port to check (default: <code>9471</code>)</li>
+  <li><code>MENTISDB_DIR</code> — used when falling back to local mode</li>
+</ul>
+
+<p>
+  If you run the daemon on a non-standard port, the stdio process will detect
+  and proxy to it automatically.
+</p>
+
+<footer>
+  <p><a href="https://github.com/CloudLLM-ai/mentisdb">mentisdb on GitHub</a></p>
+</footer>
+</body>
+</html>
