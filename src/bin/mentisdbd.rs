@@ -43,8 +43,8 @@ use serde::Deserialize;
 use std::ffi::OsString;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::process::ExitCode;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 #[cfg(feature = "startup-sound")]
 use std::sync::{Mutex, OnceLock};
@@ -703,7 +703,9 @@ async fn fetch_latest_release(
 /// Check if a daemon is already responding on the given MCP address.
 fn is_daemon_running(mcp_addr: &str) -> bool {
     let url = format!("http://{mcp_addr}/health");
-    ureq::get(&url).timeout(std::time::Duration::from_millis(500)).call()
+    ureq::get(&url)
+        .timeout(std::time::Duration::from_millis(500))
+        .call()
         .map(|r| r.status() == 200)
         .unwrap_or(false)
 }
@@ -713,7 +715,7 @@ fn is_daemon_running(mcp_addr: &str) -> bool {
 fn launch_daemon() -> Result<(), String> {
     let exe = std::env::current_exe()
         .map_err(|e| format!("could not resolve own executable path: {e}"))?;
-    
+
     #[cfg(unix)]
     {
         // On Unix, use nohup + double-fork pattern via setsid
@@ -727,7 +729,7 @@ fn launch_daemon() -> Result<(), String> {
         // Detach: the child will outlive us due to nohup
         drop(status);
     }
-    
+
     #[cfg(windows)]
     {
         // On Windows, use START /B to run detached
@@ -741,7 +743,7 @@ fn launch_daemon() -> Result<(), String> {
             .map_err(|e| format!("failed to spawn daemon: {e}"))?;
         drop(status);
     }
-    
+
     Ok(())
 }
 
@@ -762,7 +764,10 @@ async fn proxy_jsonrpc_to_daemon(mcp_addr: &str, request: &str) -> Option<String
     let parsed: serde_json::Value = serde_json::from_str(request).ok()?;
     let id = parsed.get("id")?.clone();
     let method = parsed.get("method")?.as_str()?;
-    let params = parsed.get("params").cloned().unwrap_or(serde_json::Value::Null);
+    let params = parsed
+        .get("params")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
 
     // Map stdio MCP methods to HTTP MCP endpoints
     let (endpoint, body) = match method {
@@ -786,97 +791,113 @@ async fn proxy_jsonrpc_to_daemon(mcp_addr: &str, request: &str) -> Option<String
             }).to_string());
         }
         "ping" => {
-            return Some(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {}
-            }).to_string());
+            return Some(
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {}
+                })
+                .to_string(),
+            );
         }
         "tools/list" => ("http://{mcp_addr}/tools/list", serde_json::json!({})),
         "tools/call" => {
             let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let arguments = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+            let arguments = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
             let canonical = canonical_tool_name(name);
             (
                 "http://{mcp_addr}/tools/execute",
                 serde_json::json!({
                     "name": canonical,
                     "arguments": arguments
-                })
+                }),
             )
         }
         "resources/list" => {
             // Resources are static — return the same as local mode
-            return Some(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "resources": [{
-                        "uri": "mentisdb://skill/core",
-                        "name": "MentisDB Core Skill",
-                        "description": "Embedded MentisDB operating instructions"
-                    }]
-                }
-            }).to_string());
+            return Some(
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "resources": [{
+                            "uri": "mentisdb://skill/core",
+                            "name": "MentisDB Core Skill",
+                            "description": "Embedded MentisDB operating instructions"
+                        }]
+                    }
+                })
+                .to_string(),
+            );
         }
         "resources/read" => {
             // Resources are static — return embedded skill markdown
             let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
-            return Some(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "contents": [{
-                        "uri": uri,
-                        "text": MENTISDB_SKILL_MD,
-                        "mimeType": "text/markdown"
-                    }]
-                }
-            }).to_string());
+            return Some(
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "contents": [{
+                            "uri": uri,
+                            "text": MENTISDB_SKILL_MD,
+                            "mimeType": "text/markdown"
+                        }]
+                    }
+                })
+                .to_string(),
+            );
         }
         _ => {
-            return Some(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "error": {
-                    "code": -32601,
-                    "message": format!("Method not found: {method}")
-                }
-            }).to_string());
+            return Some(
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {
+                        "code": -32601,
+                        "message": format!("Method not found: {method}")
+                    }
+                })
+                .to_string(),
+            );
         }
     };
 
     let endpoint = endpoint.replace("{mcp_addr}", mcp_addr);
-    
+
     // Use tokio::task::spawn_blocking for the blocking HTTP call
     #[allow(clippy::result_large_err)]
-    let resp = tokio::task::spawn_blocking(move || {
-        ureq::post(&endpoint)
-            .send_json(&body)
-    }).await.ok()?;
+    let resp = tokio::task::spawn_blocking(move || ureq::post(&endpoint).send_json(&body))
+        .await
+        .ok()?;
 
     let resp = resp.ok()?;
     let resp_body: String = resp.into_string().ok()?;
-    
-    // The HTTP MCP endpoint returns the tool result directly, wrap it in JSON-RPC
-    let result: serde_json::Value = serde_json::from_str(&resp_body).unwrap_or(
-        serde_json::json!({"text": resp_body})
-    );
 
-    Some(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "result": result
-    }).to_string())
+    // The HTTP MCP endpoint returns the tool result directly, wrap it in JSON-RPC
+    let result: serde_json::Value =
+        serde_json::from_str(&resp_body).unwrap_or(serde_json::json!({"text": resp_body}));
+
+    Some(
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result
+        })
+        .to_string(),
+    )
 }
 
 /// Run stdio mode with smart daemon detection.
-/// 
+///
 /// If a daemon is already running on the configured MCP port, this process acts
 /// as a lightweight stdio-to-HTTP proxy, forwarding JSON-RPC requests to the
 /// daemon's HTTP MCP endpoint. This avoids duplicate in-memory state and ensures
 /// all clients share the same live chain cache.
-/// 
+///
 /// If no daemon is running, one is launched in the background before proxying.
 async fn run_stdio_mode(
     config: MentisDbServerConfig,
@@ -891,7 +912,7 @@ async fn run_stdio_mode(
         // Step 2: Launch daemon in background
         eprintln!("[mentisdbd stdio] No daemon running, launching background daemon...");
         launch_daemon().map_err(|e| format!("failed to launch daemon: {e}"))?;
-        
+
         // Step 3: Wait for daemon to become responsive
         if wait_for_daemon(&mcp_addr, 50) {
             eprintln!("[mentisdbd stdio] Daemon started at {mcp_addr}, proxying.");
