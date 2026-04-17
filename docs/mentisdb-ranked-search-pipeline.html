@@ -117,6 +117,133 @@
 
 <hr>
 
+<h2 id="three-signals">Three Signals, Three Failure Modes</h2>
+
+<p>
+  Before walking the phases in order, it is worth asking the more fundamental
+  question: <em>why does the pipeline carry three different scorers at all?</em>
+  The answer is that each of them is strong exactly where the other two are
+  blind. They don't duplicate each other &mdash; they <strong>cover each other's
+  failure modes</strong>.
+</p>
+
+<h3>Lexical &mdash; vocabulary match</h3>
+
+<p>
+  BM25 matches <em>literal words</em> after normalization. The tokenizer
+  lowercases, strips punctuation, Porter-stems (<code>prefers</code>,
+  <code>preferred</code>, <code>preferences</code> all collapse to
+  <code>prefer</code>), and expands irregular-verb lemmas (<code>went</code>
+  also matches <code>go</code>-stemmed documents). A term either appears in
+  the document or it doesn't. BM25 then scores by
+  <em>term frequency &times; inverse document frequency &times; length
+  normalization</em>.
+</p>
+
+<p>
+  It is precise and explainable &mdash; you can see exactly which tokens
+  matched and which indexed field they came from. But it has a fundamental
+  blind spot: <strong>paraphrase</strong>. A query for
+  <code>"cache latency"</code> will not match a document that says
+  <code>"memory lookups are slow"</code>, because the two share zero tokens.
+  The best BM25 implementation in the world still cannot score words it never
+  sees.
+</p>
+
+<h3>Semantic &mdash; meaning match</h3>
+
+<p>
+  Dense vector similarity sidesteps that. <code>fastembed-minilm</code>
+  (local ONNX inference, no cloud) maps every thought's text into a
+  384-dimensional vector such that meanings near each other in conceptual
+  space sit near each other in vector space. The query is embedded the same
+  way. Candidates are scored by <strong>cosine similarity</strong> &mdash; the
+  angle between vectors.
+</p>
+
+<p>
+  <code>happy</code> and <code>joyful</code> score high.
+  <code>"cache latency"</code> and <code>"memory lookups are slow"</code>
+  score high. The trade-off is that the score is less explainable and noisier
+  on exact-match queries: a thought about databases can look close to a
+  thought about warehouses because the embedding model learned they cluster.
+  That is why MentisDB fuses vector and lexical rather than replacing one
+  with the other &mdash; when the lexical score is strong, trust lexical;
+  when it is weak, let the vector carry the hit. That is what the
+  <code>vector * (1 + 35 * exp(-lexical / 3))</code> term does.
+</p>
+
+<h3>Graph &mdash; relationship match</h3>
+
+<p>
+  BM25 and the vector model both score a single document <em>in isolation</em>.
+  Neither of them knows that a great hit is sitting two hops away, hidden
+  behind the wrong vocabulary.
+</p>
+
+<p>
+  Thoughts in MentisDB form a graph. Two kinds of edges connect them:
+</p>
+
+<ul>
+  <li><strong><code>refs</code></strong>: positional back-references
+      (raw append-order indices);</li>
+  <li><strong><code>relations</code></strong>: typed edges
+      &mdash; <code>ContinuesFrom</code>, <code>Corrects</code>,
+      <code>Invalidates</code>, <code>Supersedes</code>,
+      <code>DerivedFrom</code>, <code>Summarizes</code>,
+      <code>CausedBy</code>, <code>Supports</code>,
+      <code>Contradicts</code>, <code>BranchesFrom</code>,
+      <code>RelatedTo</code>, <code>References</code>.</li>
+</ul>
+
+<p>
+  These edges encode <em>why one memory relates to another</em>. A
+  <code>Decision</code> thought that says &ldquo;we picked LRU eviction&rdquo;
+  can carry a <code>DerivedFrom</code> edge pointing at the
+  <code>Finding</code> that measured the cache-miss rate &mdash; even though
+  the Finding uses entirely different vocabulary.
+</p>
+
+<p>
+  That is exactly the failure mode lexical and vector can't fix alone: the
+  right answer exists, but it is a hop or two away. So after lexical scoring
+  finds the top-20 seed hits, BFS walks the adjacency graph outward from each
+  seed. Every reached thought inherits a graph-proximity score of
+  <code>1 / depth</code>, plus a per-relation-kind boost
+  (<code>ContinuesFrom</code> is worth more than <code>RelatedTo</code>,
+  which is worth more than <code>References</code>). The expanded neighbors
+  re-enter the ranking pool alongside the original lexical and vector hits.
+</p>
+
+<h3>Why BFS specifically, not DFS</h3>
+
+<p>
+  Once you have decided to traverse the graph, choice of traversal matters:
+</p>
+
+<ul>
+  <li><strong>Shortest paths.</strong> BFS guarantees that the first time a
+      node is reached, it is by its shortest path from the seed &mdash; which
+      is what makes <code>graph_proximity = 1 / depth</code> a well-defined
+      signal. DFS has no such guarantee.</li>
+  <li><strong>Bounded blast radius.</strong> A <code>max_visited</code> cap on
+      BFS is a clean, monotonic budget. DFS can wander deep into one branch
+      and never explore a closer branch sitting right next to the seed.</li>
+  <li><strong>Determinism.</strong> Combined with a canonical edge ordering,
+      BFS gives identical traversals on identical inputs &mdash; which is
+      what RRF needs to produce a stable rank list across calls.</li>
+</ul>
+
+<div class="highlight">
+  <p><strong>In one line:</strong> lexical = vocabulary match,
+  semantic = meaning match, BFS = relationship match. The three cover
+  different failure modes of each other, and MentisDB fuses all three into
+  one score.</p>
+</div>
+
+<hr>
+
 <h2 id="phase-1">Phase 1 &mdash; Filter First</h2>
 
 <p>
