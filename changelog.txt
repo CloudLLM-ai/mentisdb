@@ -1,4 +1,15 @@
 0.9.2.38 UNRELEASED
+  - fix(server): `start_servers` now shares ONE `MentisDbService` across the HTTP
+    MCP, HTTP REST, HTTPS MCP, HTTPS REST, and dashboard surfaces. Previously each
+    surface received its own `MentisDbService::new(...)` and therefore its own
+    `DashMap<chain_key, Arc<RwLock<MentisDb>>>`, causing a cross-surface split
+    brain: an append via REST was invisible to MCP (and vice versa) until the
+    daemon restarted and both services reloaded the chain from disk. Public
+    single-surface entry points (`start_mcp_server`, `start_rest_server`,
+    `start_https_*_server`) are unchanged. Adds regression test
+    `start_servers_shares_state_across_mcp_and_rest` that pre-warms the MCP
+    service, appends via REST, and asserts MCP immediately sees the new
+    `head_hash` / `thought_count` / `latest_thought.index`.
   - feat(stdio): smart daemon detection in stdio MCP mode — the stdio process now
     checks if a daemon is running via the health endpoint, proxies to it if found,
     or launches one in the background (nohup on Unix, start /B on Windows); all
