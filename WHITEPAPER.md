@@ -11,7 +11,7 @@ Contemporary agent frameworks treat long-term memory as an afterthought, relying
 
 Formally, a chain is a sequence $\chi = (t_0, t_1, \ldots, t_{n-1})$ of typed records satisfying a cryptographic integrity invariant $t_k.h = H(\sigma(t_k \setminus \{h\}))$ and $t_k.h_{\mathrm{prev}} = t_{k-1}.h$, where $H$ is SHA-256 and $\sigma$ is canonical bincode serialization. On top of $\chi$ we define a retrieval function $R: (\chi, Q) \to \mathcal{P}(\chi)$ that composes BM25 lexical scoring with per-field document-frequency gating, smooth exponential vector-lexical fusion, bidirectional graph expansion over typed relation edges, temporal edge validity predicates, session cohesion, and rank-based fusion via Reciprocal Rank Fusion (RRF). Deduplication is implemented as a Jaccard-similarity test over normalized token sets, emitting $\mathsf{Supersedes}$ edges that are consulted in constant time via a precomputed invalidation set.
 
-On canonical long-term memory benchmarks, MentisDB attains $R@10 = 88.7\%$ on LoCoMo-2P, $R@10 = 72.0\%$ on LoCoMo-10P, and $R@5 = 66.8\%$ / $R@10 = 74.1\%$ on LongMemEval (v0.8.9). The implementation ships as a single Rust crate with an optional daemon exposing MCP, REST, and HTTPS surfaces, requires no external database, and operates without cloud or LLM dependencies in its core ingestion and retrieval path.
+On canonical long-term memory benchmarks, MentisDB attains $R@10 = 88.7\%$ on LoCoMo-2P, $R@10 = 71.9\%$ on LoCoMo-10P, and $R@5 = 66.8\%$ / $R@10 = 72.2\%$ / $R@20 = 78.0\%$ on LongMemEval (v0.8.9, fresh chain, default retrieval settings). Results are deterministic and reproducible across independent runs. The implementation ships as a single Rust crate with an optional daemon exposing MCP, REST, and HTTPS surfaces, requires no external database, and operates without cloud or LLM dependencies in its core ingestion and retrieval path.
 
 **Keywords:** agent memory, hash-chained ledger, BM25, reciprocal rank fusion, graph expansion, temporal knowledge graphs, retrieval-augmented generation.
 
@@ -407,11 +407,15 @@ We evaluate MentisDB on two standard long-term memory benchmarks.
 |---|---|---|---|---|
 | LoCoMo-2P | $R@10$ | **88.7%** | — | — |
 | LoCoMo-2P single-hop | $R@10$ | 90.7% | — | — |
-| LoCoMo-10P (1977 queries) | $R@10$ | 74.2% | **74.6%** | 72.0% |
-| LoCoMo-10P single-hop | $R@10$ | — | 79.0% | — |
-| LoCoMo-10P multi-hop | $R@10$ | — | 58.4% | — |
+| LoCoMo-10P (1977 queries) | $R@10$ | 74.2% | **74.6%** | **71.9%** |
+| LoCoMo-10P single-hop | $R@10$ | — | 79.0% | 75.8% |
+| LoCoMo-10P multi-hop | $R@10$ | — | 58.4% | 57.4% |
+| LoCoMo-10P | $R@20$ | — | — | 79.1% |
 | LongMemEval (fresh chain) | $R@5$ | 67.6% | — | **66.8%** |
-| LongMemEval (fresh chain) | $R@10$ | 73.2% | — | **74.1%** |
+| LongMemEval (fresh chain) | $R@10$ | 73.2% | — | **72.2%** |
+| LongMemEval (fresh chain) | $R@20$ | — | — | 78.0% |
+
+All v0.8.9 numbers were reproduced deterministically across independent full-scale benchmark runs on 2026-04-14 and 2026-04-17 against fresh chains with the default retrieval configuration (`fastembed-minilm` vector sidecar, graph expansion enabled, RRF reranking disabled).
 
 The v0.8.5 LoCoMo-10P improvement derives from three changes:
 
@@ -428,7 +432,7 @@ The v0.8.5 LoCoMo-10P improvement derives from three changes:
 | 0.8.0 + tiered fusion + importance | vector/lexical balance | 65.0% | — |
 | 0.8.1 + cohesion + smooth fusion + DF cutoff | retrieval quality | 67.6% | 74.2% |
 | 0.8.5 + cohesion tuning + $b_\mathrm{rel}\times 2$ + fastembed | session/graph boost | — | 74.6% |
-| 0.8.9 + irregular lemmas + webhooks | lemma expansion + events | 66.8% | — |
+| 0.8.9 + irregular lemmas + webhooks | lemma expansion + events | 66.8% | 71.9% |
 
 ### 9.3 Near-Miss Analysis (LoCoMo-10P, v0.8.5)
 
