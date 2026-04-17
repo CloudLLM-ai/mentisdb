@@ -3395,3 +3395,152 @@ async fn rest_ranked_search_annotates_chain_key_and_searches_ancestor_branches()
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Regression test for the MCP↔REST split-brain bug.
+///
+/// Before the fix, `start_servers` gave the MCP server and REST server
+/// independent `MentisDbService` instances. Each service held its own
+/// `DashMap<chain_key, Arc<RwLock<MentisDb>>>`, so an append via REST was
+/// invisible to a read via MCP until the daemon restarted and both services
+/// reloaded from disk.
+///
+/// This test brings up `start_servers` on ephemeral ports, appends a thought
+/// via REST, and immediately reads the chain head through MCP. If the two
+/// surfaces still carried separate services, MCP would report `thought_count=0`
+/// and fail the assertion.
+#[tokio::test]
+async fn start_servers_shares_state_across_mcp_and_rest() {
+    use std::net::SocketAddr;
+
+    use mentisdb::server::start_servers;
+
+    let dir = unique_chain_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let tls_dir = dir.join("tls");
+
+    let service =
+        MentisDbServiceConfig::new(dir.clone(), "coherency-probe", StorageAdapterKind::Binary);
+
+    let config = MentisDbServerConfig {
+        service,
+        mcp_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        rest_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        https_mcp_addr: None,
+        https_rest_addr: None,
+        tls_cert_path: tls_dir.join("cert.pem"),
+        tls_key_path: tls_dir.join("key.pem"),
+        dashboard_addr: None,
+        dashboard_pin: None,
+    };
+
+    let handles = start_servers(config).await.expect("start_servers");
+    let mcp_url = format!("http://{}", handles.mcp.local_addr());
+    let rest_url = format!("http://{}", handles.rest.local_addr());
+
+    // Helper: call mentisdb_head over MCP and parse the head payload.
+    let head_via_mcp = |url: String| async move {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "mentisdb_head",
+                "arguments": {"chain_key": "coherency-probe"}
+            }
+        });
+        let raw = tokio::task::spawn_blocking(move || {
+            ureq::post(&url)
+                .set("content-type", "application/json")
+                .set("accept", "application/json, text/event-stream")
+                .send_string(&body.to_string())
+                .expect("MCP head call")
+                .into_string()
+                .expect("MCP head response body")
+        })
+        .await
+        .unwrap();
+        let json_str = raw
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .map(|s| s.to_string())
+            .unwrap_or(raw);
+        let response: serde_json::Value =
+            serde_json::from_str(&json_str).expect("MCP response JSON");
+        let text = response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("MCP tool result text")
+            .to_string();
+        serde_json::from_str::<serde_json::Value>(&text).expect("head tool output JSON")
+    };
+
+    // 0. Pre-warm the MCP service: issue a head call *before* the REST append.
+    //    This forces the MCP service to open the chain into its own in-memory
+    //    DashMap while the chain is empty. If MCP and REST do not share a
+    //    service, REST will write the append to its own in-memory snapshot only,
+    //    and the subsequent MCP head call will still see the empty pre-warmed
+    //    snapshot — exposing the split-brain.
+    let head_before = head_via_mcp(mcp_url.clone()).await;
+    assert_eq!(
+        head_before["thought_count"].as_u64().unwrap_or_default(),
+        0,
+        "pre-warm MCP head must show empty chain"
+    );
+
+    // 1. Append via REST.
+    let append_body = json!({
+        "chain_key": "coherency-probe",
+        "agent_id": "probe",
+        "thought_type": "FactLearned",
+        "content": "coherency sentinel content"
+    });
+    let append_rest_url = format!("{rest_url}/v1/thoughts");
+    let appended: serde_json::Value = tokio::task::spawn_blocking(move || {
+        ureq::post(&append_rest_url)
+            .set("content-type", "application/json")
+            .send_string(&append_body.to_string())
+            .expect("REST append")
+            .into_json::<serde_json::Value>()
+            .expect("REST append body")
+    })
+    .await
+    .unwrap();
+    let appended_index = appended["thought"]["index"]
+        .as_u64()
+        .expect("index in REST append response");
+    let appended_head = appended["head_hash"]
+        .as_str()
+        .expect("head_hash in REST append response")
+        .to_string();
+
+    // 2. Read head via MCP (same surface as step 0, now after the REST append).
+    let head_after = head_via_mcp(mcp_url.clone()).await;
+    let mcp_thought_count = head_after["thought_count"]
+        .as_u64()
+        .expect("thought_count in MCP head");
+    let mcp_head_hash = head_after["head_hash"]
+        .as_str()
+        .expect("head_hash in MCP head")
+        .to_string();
+    let mcp_latest_index = head_after["latest_thought"]["index"]
+        .as_u64()
+        .expect("latest_thought.index in MCP head");
+
+    assert_eq!(
+        mcp_thought_count,
+        appended_index + 1,
+        "MCP must see the REST append: expected thought_count={} got {}",
+        appended_index + 1,
+        mcp_thought_count
+    );
+    assert_eq!(
+        mcp_latest_index, appended_index,
+        "MCP latest index must match REST-appended index"
+    );
+    assert_eq!(
+        mcp_head_hash, appended_head,
+        "MCP head_hash must match REST head_hash"
+    );
+
+    drop(handles);
+    let _ = std::fs::remove_dir_all(&dir);
+}

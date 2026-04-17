@@ -1285,8 +1285,10 @@ pub async fn start_https_rest_server(
 /// endpoint (`POST /`) and the legacy CloudLLM-compatible endpoints
 /// (`POST /tools/list`, `POST /tools/execute`).
 ///
-/// The REST service is shared between the plain-HTTP REST server and the
-/// dashboard so that they operate on the same in-memory chain map.
+/// One shared [`MentisDbService`] backs every surface (HTTP and HTTPS MCP,
+/// HTTP and HTTPS REST, dashboard) so they all see the same in-memory chain
+/// map. An append via one surface is visible to every other surface on the
+/// next read.
 ///
 /// # Errors
 ///
@@ -1324,21 +1326,21 @@ pub async fn start_servers(
         ensure_tls_cert(&config.tls_cert_path, &config.tls_key_path)?;
     }
 
-    // Create one shared REST service so the dashboard can reuse its Arc fields.
-    let rest_service = Arc::new(MentisDbService::new(config.service.clone()));
+    // One shared MentisDbService backs every HTTP surface (MCP, REST, HTTPS
+    // variants, dashboard) so they see the same in-memory chain map. Giving
+    // each server its own service would create a split-brain: appends via one
+    // surface would not be visible on another until a disk reload, because
+    // each service holds its own DashMap<chain_key, Arc<RwLock<MentisDb>>>.
+    let service = Arc::new(MentisDbService::new(config.service.clone()));
 
-    let mcp = start_mcp_server(config.mcp_addr, config.service.clone()).await?;
-    let rest = start_router(
-        config.rest_addr,
-        rest_router_with_service(rest_service.clone()),
-    )
-    .await?;
+    let mcp = start_mcp_server_with_service(config.mcp_addr, service.clone()).await?;
+    let rest = start_router(config.rest_addr, rest_router_with_service(service.clone())).await?;
 
     let https_mcp = if let Some(addr) = config.https_mcp_addr {
         Some(
-            start_https_mcp_server(
+            start_https_mcp_server_with_service(
                 addr,
-                config.service.clone(),
+                service.clone(),
                 config.tls_cert_path.clone(),
                 config.tls_key_path.clone(),
             )
@@ -1350,9 +1352,9 @@ pub async fn start_servers(
 
     let https_rest = if let Some(addr) = config.https_rest_addr {
         Some(
-            start_https_rest_server(
+            start_https_rest_server_with_service(
                 addr,
-                config.service.clone(),
+                service.clone(),
                 config.tls_cert_path.clone(),
                 config.tls_key_path.clone(),
             )
@@ -1364,8 +1366,8 @@ pub async fn start_servers(
 
     let dashboard = if let Some(addr) = config.dashboard_addr {
         let dashboard_state = DashboardState {
-            chains: rest_service.chains.clone(),
-            skills: rest_service.skills.clone(),
+            chains: service.chains.clone(),
+            skills: service.skills.clone(),
             mentisdb_dir: config.service.chain_dir.clone(),
             default_chain_key: config.service.default_chain_key.clone(),
             dashboard_pin: config.dashboard_pin.clone(),
@@ -1392,6 +1394,45 @@ pub async fn start_servers(
         https_rest,
         dashboard,
     })
+}
+
+/// Start the HTTP MCP server using an existing shared [`MentisDbService`] arc.
+///
+/// Private companion to [`start_mcp_server`] used by [`start_servers`] so that
+/// every HTTP surface (MCP, REST, HTTPS variants, dashboard) operates on the
+/// same in-memory chain map. Using per-surface services creates split-brain
+/// reads.
+async fn start_mcp_server_with_service(
+    addr: SocketAddr,
+    service: Arc<MentisDbService>,
+) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
+    start_router(addr, standard_and_legacy_mcp_router(service, addr)).await
+}
+
+/// Start the HTTPS MCP server using an existing shared [`MentisDbService`] arc.
+async fn start_https_mcp_server_with_service(
+    addr: SocketAddr,
+    service: Arc<MentisDbService>,
+    cert_path: PathBuf,
+    key_path: PathBuf,
+) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
+    start_tls_router(
+        addr,
+        standard_and_legacy_mcp_router(service, addr),
+        cert_path,
+        key_path,
+    )
+    .await
+}
+
+/// Start the HTTPS REST server using an existing shared [`MentisDbService`] arc.
+async fn start_https_rest_server_with_service(
+    addr: SocketAddr,
+    service: Arc<MentisDbService>,
+    cert_path: PathBuf,
+    key_path: PathBuf,
+) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
+    start_tls_router(addr, rest_router_with_service(service), cert_path, key_path).await
 }
 
 /// Bind a TCP socket and serve the dashboard router over HTTPS/TLS.
