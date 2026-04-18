@@ -1025,7 +1025,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "server")]
     let _ = rustls::crypto::ring::default_provider().install_default();
     raise_fd_limit();
-    init_logger();
+    let log_rx = tui::init_tui_logger();
     let storage_root_migration = if std::env::var_os("MENTISDB_DIR").is_none() {
         adopt_legacy_default_mentisdb_dir()?
     } else {
@@ -1423,7 +1423,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
 
     // Run the TUI on the main thread (blocks until quit)
-    let tui_result = tui::run_tui(tui_state, running);
+    let tui_result = tui::run_tui(tui_state, running, log_rx);
 
     ctrlc_handle.abort();
 

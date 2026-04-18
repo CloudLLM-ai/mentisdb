@@ -10,6 +10,7 @@ use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
     MouseEventKind,
 };
+use log::{Level, Record};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Position, Rect},
@@ -24,7 +25,54 @@ use ratatui::{
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::Duration;
+
+/// A custom logger that routes log records into the TUI's log buffer via a channel,
+/// preventing raw stderr output from corrupting the ratatui alternate screen.
+pub struct TuiLogger {
+    tx: mpsc::Sender<String>,
+}
+
+impl TuiLogger {
+    pub fn new(tx: mpsc::Sender<String>) -> Self {
+        Self { tx }
+    }
+}
+
+impl log::Log for TuiLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &Record) {
+        if self.enabled(record.metadata()) {
+            let level_color = match record.level() {
+                Level::Error => "ERR",
+                Level::Warn => "WRN",
+                Level::Info => "INF",
+                Level::Debug => "DBG",
+                Level::Trace => "TRC",
+            };
+            let target = record.target();
+            let msg = record.args().to_string();
+            let line = format!("[{level_color}] {target}: {msg}");
+            let _ = self.tx.send(line);
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+/// Initialize the TUI-aware logger. Returns the receiver end of the channel
+/// that the TUI event loop should drain to populate the log panel.
+pub fn init_tui_logger() -> mpsc::Receiver<String> {
+    let (tx, rx) = mpsc::channel();
+    let logger = TuiLogger::new(tx);
+    let _ = log::set_boxed_logger(Box::new(logger));
+    log::set_max_level(log::LevelFilter::Info);
+    rx
+}
 
 /// Standard 8-color palette — adapts to the terminal's own color theme.
 /// On dark backgrounds these render as bright/saturated; on light backgrounds
@@ -789,7 +837,11 @@ impl Drop for TerminalCleanup {
     }
 }
 
-pub fn run_tui(state: Arc<std::sync::Mutex<TuiState>>, running: Arc<AtomicBool>) -> io::Result<()> {
+pub fn run_tui(
+    state: Arc<std::sync::Mutex<TuiState>>,
+    running: Arc<AtomicBool>,
+    log_rx: mpsc::Receiver<String>,
+) -> io::Result<()> {
     let mut stdout = io::stdout();
     crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
     crossterm::execute!(stdout, EnableMouseCapture)?;
@@ -804,6 +856,12 @@ pub fn run_tui(state: Arc<std::sync::Mutex<TuiState>>, running: Arc<AtomicBool>)
         if !running.load(Ordering::SeqCst) {
             let mut s = state.lock().unwrap();
             s.should_quit = true;
+        }
+
+        // Drain pending log messages from the custom logger channel.
+        while let Ok(line) = log_rx.try_recv() {
+            let mut s = state.lock().unwrap();
+            s.add_log(line);
         }
 
         terminal.draw(|frame| {
