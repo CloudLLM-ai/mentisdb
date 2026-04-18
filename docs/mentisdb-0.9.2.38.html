@@ -166,7 +166,7 @@
 </p>
 
 <ul>
-  <li><strong>macOS:</strong> <code>brew services start mentisdb</code> (launchd) or a <code>nohup</code> one-liner.</li>
+  <li><strong>macOS:</strong> <code>nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &amp;</code></li>
   <li><strong>Linux:</strong> systemd user service unit snippet or a <code>nohup</code> one-liner.</li>
   <li><strong>Windows:</strong> <code>schtasks /create</code> one-liner or <code>Start-Process -WindowStyle Hidden</code>.</li>
 </ul>

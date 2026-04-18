@@ -85,7 +85,7 @@ before snapshotting the data directory with an external tool.
 `mentisdbd` prints a yellow warning at startup that closing the terminal stops the
 process, followed by OS-specific background-launch guidance:
 
-- **macOS:** `brew services start mentisdb` (launchd) or a `nohup` one-liner.
+- **macOS:** `nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &`
 - **Linux:** systemd user service unit snippet or a `nohup` one-liner.
 - **Windows:** `schtasks /create` one-liner or `Start-Process -WindowStyle Hidden`.
 

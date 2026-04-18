@@ -2587,14 +2587,8 @@ fn print_tls_tip(config: &MentisDbServerConfig, handles: &MentisDbServerHandles)
 pub(crate) fn background_launch_tip() -> &'static str {
     if cfg!(target_os = "macos") {
         "  Run in the background (survives terminal close):\n\
-         \n\
-         \x1b[32m  Option A — launchd (recommended, auto-starts on login):\x1b[0m\n\
-         \n\
-         \x1b[2m    brew services start mentisdb\x1b[0m\n\
-         \n\
-         \x1b[32m  Option B — nohup (current session only):\x1b[0m\n\
-         \n\
-         \x1b[2m    nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &\x1b[0m"
+          \n\
+          \x1b[2m    nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &\x1b[0m"
     } else if cfg!(target_os = "linux") {
         "  Run in the background (survives terminal close):\n\
          \n\

@@ -32,7 +32,7 @@
     user decline exits gracefully with no changes; restore is fully idempotent without prompt
   - feat: terminal-close warning printed at daemon startup — yellow ⚠ notice that closing the
     terminal stops mentisdbd, followed by OS-specific background-launch tip:
-      macOS: brew services start mentisdb (launchd) or nohup one-liner
+      macOS: nohup one-liner
       Linux: systemd user service unit snippet or nohup one-liner
       Windows: schtasks /create one-liner or Start-Process -WindowStyle Hidden
   - feat: CLI help text updated for backup and restore subcommands — clarifies daemon flush
