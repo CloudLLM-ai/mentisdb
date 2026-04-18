@@ -1234,6 +1234,8 @@ pub fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let mut clipboard = arboard::Clipboard::new().ok();
+    // Local drag tracker — no mutex needed to read/write between Down and Up.
+    let mut drag_start: Option<Position> = None;
 
     loop {
         if !running.load(Ordering::SeqCst) {
@@ -1263,12 +1265,9 @@ pub fn run_tui(
         })?;
 
         if event::poll(Duration::from_millis(100))? {
-            // text_to_copy is extracted while holding the lock; the actual
-            // clipboard write and toast update happen outside the lock.
-            let text_to_copy: Option<String> = match event::read()? {
+            match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     let mut s = state.lock().unwrap();
-                    // When update dialog is shown, only y/n/Esc/Enter matter.
                     if s.update_dialog.is_some() {
                         match key.code {
                             KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -1288,205 +1287,177 @@ pub fn run_tui(
                             }
                             _ => {}
                         }
-                        None
                     } else {
                         match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => {
-                                s.should_quit = true;
-                                None
-                            }
-                            // 'c' copies the focused item to clipboard.
+                            KeyCode::Char('q') | KeyCode::Esc => s.should_quit = true,
                             KeyCode::Char('c') | KeyCode::Char('C') => {
-                                s.selected_item_text()
-                            }
-                            // Tab cycles pane focus; Shift+Tab reverses.
-                            KeyCode::Tab => {
-                                s.focused_pane = s.focused_pane.next();
-                                None
-                            }
-                            KeyCode::BackTab => {
-                                s.focused_pane = s.focused_pane.prev();
-                                None
-                            }
-                            // Arrow keys route based on focused pane.
-                            KeyCode::Up => {
-                                match s.focused_pane {
-                                    FocusedPane::TopLeft => s.scroll_left_up(),
-                                    FocusedPane::TopRight => s.scroll_right_up(),
-                                    FocusedPane::Logs => s.scroll_logs_up(),
-                                    FocusedPane::Prime => {}
-                                    FocusedPane::Tables => match s.tab_index {
-                                        0 => s.select_chain_prev(),
-                                        1 => s.select_agent_prev(),
-                                        2 => s.select_skill_prev(),
-                                        _ => {}
-                                    },
+                                if let Some(text) = s.selected_item_text() {
+                                    drop(s);
+                                    if let Some(ref mut cb) = clipboard {
+                                        let _ = cb.set_text(&text);
+                                    }
+                                    write_osc52(&text);
+                                    state.lock().unwrap().toast = Some((
+                                        "Text copied to clipboard!".to_string(),
+                                        Instant::now(),
+                                    ));
                                 }
-                                None
                             }
-                            KeyCode::Down => {
-                                match s.focused_pane {
-                                    FocusedPane::TopLeft => s.scroll_left_down(),
-                                    FocusedPane::TopRight => s.scroll_right_down(),
-                                    FocusedPane::Logs => s.scroll_logs_down(),
-                                    FocusedPane::Prime => {}
-                                    FocusedPane::Tables => match s.tab_index {
-                                        0 => s.select_chain_next(),
-                                        1 => s.select_agent_next(),
-                                        2 => s.select_skill_next(),
-                                        _ => {}
-                                    },
-                                }
-                                None
-                            }
-                            // Left/Right switch table tabs when Tables focused.
+                            KeyCode::Tab => s.focused_pane = s.focused_pane.next(),
+                            KeyCode::BackTab => s.focused_pane = s.focused_pane.prev(),
+                            KeyCode::Up => match s.focused_pane {
+                                FocusedPane::TopLeft => s.scroll_left_up(),
+                                FocusedPane::TopRight => s.scroll_right_up(),
+                                FocusedPane::Logs => s.scroll_logs_up(),
+                                FocusedPane::Prime => {}
+                                FocusedPane::Tables => match s.tab_index {
+                                    0 => s.select_chain_prev(),
+                                    1 => s.select_agent_prev(),
+                                    2 => s.select_skill_prev(),
+                                    _ => {}
+                                },
+                            },
+                            KeyCode::Down => match s.focused_pane {
+                                FocusedPane::TopLeft => s.scroll_left_down(),
+                                FocusedPane::TopRight => s.scroll_right_down(),
+                                FocusedPane::Logs => s.scroll_logs_down(),
+                                FocusedPane::Prime => {}
+                                FocusedPane::Tables => match s.tab_index {
+                                    0 => s.select_chain_next(),
+                                    1 => s.select_agent_next(),
+                                    2 => s.select_skill_next(),
+                                    _ => {}
+                                },
+                            },
                             KeyCode::Left if s.focused_pane == FocusedPane::Tables => {
                                 let len = s.tab_titles.len();
-                                s.tab_index = if s.tab_index == 0 {
-                                    len - 1
-                                } else {
-                                    s.tab_index - 1
-                                };
-                                None
+                                s.tab_index =
+                                    if s.tab_index == 0 { len - 1 } else { s.tab_index - 1 };
                             }
                             KeyCode::Right if s.focused_pane == FocusedPane::Tables => {
                                 s.tab_index = (s.tab_index + 1) % s.tab_titles.len();
-                                None
                             }
-                            KeyCode::PageUp => {
-                                s.scroll_right_up();
-                                None
-                            }
-                            KeyCode::PageDown => {
-                                s.scroll_right_down();
-                                None
-                            }
-                            _ => None,
+                            KeyCode::PageUp => s.scroll_right_up(),
+                            KeyCode::PageDown => s.scroll_right_down(),
+                            _ => {}
                         }
                     }
                 }
-                Event::Mouse(mouse) => {
-                    let pos = Position {
-                        x: mouse.column,
-                        y: mouse.row,
-                    };
-                    // MouseUp: extract text from the last rendered buffer.
-                    // Must happen OUTSIDE the state lock so we can borrow
-                    // `terminal` at the same time.
-                    if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) {
-                        let maybe_start = {
-                            let mut s = state.lock().unwrap();
-                            let start = s.drag_start.take();
-                            s.drag_current = None;
-                            start
-                        };
-                        if let Some(start) = maybe_start {
-                            // Any movement counts; even a single character drag.
-                            let moved = start.y != pos.y || start.x != pos.x;
-                            if moved {
-                                extract_from_buffer(terminal.current_buffer_mut(), start, pos)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        let mut s = state.lock().unwrap();
-                        match mouse.kind {
-                            MouseEventKind::Down(MouseButton::Left) => {
-                                s.drag_start = Some(pos);
-                                s.drag_current = Some(pos);
-                                if s.last_top_left_area.contains(pos) {
-                                    s.focused_pane = FocusedPane::TopLeft;
-                                } else if s.last_top_right_area.contains(pos) {
-                                    s.focused_pane = FocusedPane::TopRight;
-                                } else if s.last_prime_area.contains(pos) {
-                                    s.focused_pane = FocusedPane::Prime;
-                                } else if s.last_logs_area.contains(pos) {
-                                    s.focused_pane = FocusedPane::Logs;
-                                } else if s.last_tables_area.contains(pos)
-                                    || s.last_tabs_area.contains(pos)
-                                {
-                                    s.focused_pane = FocusedPane::Tables;
-                                    if s.last_tabs_area.contains(pos) {
-                                        if let Some(idx) = tab_index_from_click(
-                                            &s.tab_titles,
-                                            s.last_tabs_area,
-                                            pos.x,
-                                        ) {
-                                            s.tab_index = idx;
-                                        }
-                                    }
-                                }
-                                None
-                            }
-                            MouseEventKind::Drag(MouseButton::Left) => {
-                                s.drag_current = Some(pos);
-                                None
-                            }
-                            MouseEventKind::ScrollUp => {
-                                if s.last_tables_area.contains(pos) {
-                                    match s.tab_index {
-                                        0 => s.select_chain_prev(),
-                                        1 => s.select_agent_prev(),
-                                        2 => s.select_skill_prev(),
-                                        _ => {}
-                                    }
-                                } else if s.last_logs_area.contains(pos) {
-                                    s.scroll_logs_up();
-                                } else if s.last_top_right_area.contains(pos) {
-                                    s.scroll_right_up();
-                                } else if s.last_top_left_area.contains(pos) {
-                                    s.scroll_left_up();
-                                }
-                                None
-                            }
-                            MouseEventKind::ScrollDown => {
-                                if s.last_tables_area.contains(pos) {
-                                    match s.tab_index {
-                                        0 => s.select_chain_next(),
-                                        1 => s.select_agent_next(),
-                                        2 => s.select_skill_next(),
-                                        _ => {}
-                                    }
-                                } else if s.last_logs_area.contains(pos) {
-                                    s.scroll_logs_down();
-                                } else if s.last_top_right_area.contains(pos) {
-                                    s.scroll_right_down();
-                                } else if s.last_top_left_area.contains(pos) {
-                                    s.scroll_left_down();
-                                }
-                                None
-                            }
-                            _ => None,
-                        }
-                    }
-                }
-                _ => None,
-            };
 
-            // Clipboard write and toast happen outside the state lock.
-            if let Some(ref text) = text_to_copy {
-                // Write via arboard (programmatic clipboard).
-                if let Some(ref mut cb) = clipboard {
-                    let _ = cb.set_text(text.as_str());
+                Event::Mouse(mouse) => {
+                    let pos = Position { x: mouse.column, y: mouse.row };
+                    match mouse.kind {
+                        // ── Mouse button down: start drag, update focus ──────────
+                        MouseEventKind::Down(_) => {
+                            drag_start = Some(pos);
+                            let mut s = state.lock().unwrap();
+                            s.drag_start = Some(pos);
+                            s.drag_current = Some(pos);
+                            if s.last_top_left_area.contains(pos) {
+                                s.focused_pane = FocusedPane::TopLeft;
+                            } else if s.last_top_right_area.contains(pos) {
+                                s.focused_pane = FocusedPane::TopRight;
+                            } else if s.last_prime_area.contains(pos) {
+                                s.focused_pane = FocusedPane::Prime;
+                            } else if s.last_logs_area.contains(pos) {
+                                s.focused_pane = FocusedPane::Logs;
+                            } else if s.last_tables_area.contains(pos)
+                                || s.last_tabs_area.contains(pos)
+                            {
+                                s.focused_pane = FocusedPane::Tables;
+                                if s.last_tabs_area.contains(pos) {
+                                    if let Some(idx) = tab_index_from_click(
+                                        &s.tab_titles,
+                                        s.last_tabs_area,
+                                        pos.x,
+                                    ) {
+                                        s.tab_index = idx;
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── Drag: update selection rectangle for highlight ────────
+                        MouseEventKind::Drag(_) => {
+                            let mut s = state.lock().unwrap();
+                            s.drag_current = Some(pos);
+                        }
+
+                        // ── Mouse up: copy selected text ─────────────────────────
+                        MouseEventKind::Up(_) => {
+                            // Clear visual selection immediately.
+                            {
+                                let mut s = state.lock().unwrap();
+                                s.drag_start = None;
+                                s.drag_current = None;
+                            }
+                            // Extract text from the buffer rendered in the
+                            // last terminal.draw() call.
+                            if let Some(start) = drag_start.take() {
+                                if start.y != pos.y || start.x != pos.x {
+                                    if let Some(text) = extract_from_buffer(
+                                        terminal.current_buffer_mut(),
+                                        start,
+                                        pos,
+                                    ) {
+                                        if let Some(ref mut cb) = clipboard {
+                                            let _ = cb.set_text(&text);
+                                        }
+                                        write_osc52(&text);
+                                        state.lock().unwrap().toast = Some((
+                                            "Text copied to clipboard!".to_string(),
+                                            Instant::now(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── Scroll ───────────────────────────────────────────────
+                        MouseEventKind::ScrollUp => {
+                            let mut s = state.lock().unwrap();
+                            if s.last_tables_area.contains(pos) {
+                                match s.tab_index {
+                                    0 => s.select_chain_prev(),
+                                    1 => s.select_agent_prev(),
+                                    2 => s.select_skill_prev(),
+                                    _ => {}
+                                }
+                            } else if s.last_logs_area.contains(pos) {
+                                s.scroll_logs_up();
+                            } else if s.last_top_right_area.contains(pos) {
+                                s.scroll_right_up();
+                            } else if s.last_top_left_area.contains(pos) {
+                                s.scroll_left_up();
+                            }
+                        }
+                        MouseEventKind::ScrollDown => {
+                            let mut s = state.lock().unwrap();
+                            if s.last_tables_area.contains(pos) {
+                                match s.tab_index {
+                                    0 => s.select_chain_next(),
+                                    1 => s.select_agent_next(),
+                                    2 => s.select_skill_next(),
+                                    _ => {}
+                                }
+                            } else if s.last_logs_area.contains(pos) {
+                                s.scroll_logs_down();
+                            } else if s.last_top_right_area.contains(pos) {
+                                s.scroll_right_down();
+                            } else if s.last_top_left_area.contains(pos) {
+                                s.scroll_left_down();
+                            }
+                        }
+                        _ => {}
+                    }
                 }
-                // Write via OSC 52: terminal emulator pastes this directly into
-                // the system clipboard — enables Cmd+C to work on macOS and
-                // supports iTerm2, Terminal.app, kitty, and other OSC-52-aware
-                // terminals even while mouse capture is active.
-                write_osc52(text);
-                let mut s = state.lock().unwrap();
-                s.toast = Some(("Text copied to clipboard!".to_string(), Instant::now()));
+
+                _ => {}
             }
         }
 
-        {
-            let s = state.lock().unwrap();
-            if s.should_quit {
-                break;
-            }
+        if state.lock().unwrap().should_quit {
+            break;
         }
     }
 
