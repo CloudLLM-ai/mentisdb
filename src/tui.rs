@@ -7,8 +7,7 @@
 #![allow(missing_docs)]
 
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
-    MouseEventKind,
+    self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind,
 };
 use log::{Level, Record};
 use ratatui::{
@@ -1180,7 +1179,6 @@ impl Drop for TerminalCleanup {
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(
             io::stdout(),
-            DisableMouseCapture,
             crossterm::terminal::LeaveAlternateScreen,
             crossterm::cursor::Show
         );
@@ -1194,7 +1192,6 @@ pub fn run_tui(
 ) -> io::Result<()> {
     let mut stdout = io::stdout();
     crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
-    crossterm::execute!(stdout, EnableMouseCapture)?;
     crossterm::terminal::enable_raw_mode()?;
 
     let _cleanup = TerminalCleanup;
