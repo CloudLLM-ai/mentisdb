@@ -238,7 +238,9 @@ impl TuiState {
             self.log_lines.drain(0..keep);
         }
         if self.log_auto_scroll {
-            self.log_scroll = self.log_lines.len().saturating_sub(1);
+            // Panel renders newest-first; position 0 = newest. Auto-scroll
+            // keeps the viewport pinned to the top (latest entries).
+            self.log_scroll = 0;
         }
     }
 
@@ -265,19 +267,19 @@ impl TuiState {
     }
 
     pub fn scroll_logs_up(&mut self) {
-        self.log_auto_scroll = false;
+        // Newest-first display: ↑ moves toward newer entries (smaller offset).
         self.log_scroll = self.log_scroll.saturating_sub(1);
+        if self.log_scroll == 0 {
+            self.log_auto_scroll = true;
+        }
     }
 
     pub fn scroll_logs_down(&mut self) {
+        // Newest-first display: ↓ moves toward older entries (larger offset).
+        self.log_auto_scroll = false;
         let visible = self.last_logs_area.height.saturating_sub(2) as usize;
         let max = self.log_lines.len().saturating_sub(visible);
-        if self.log_scroll < max {
-            self.log_scroll += 1;
-        }
-        if self.log_scroll >= max {
-            self.log_auto_scroll = true;
-        }
+        self.log_scroll = (self.log_scroll + 1).min(max);
     }
 
     /// Number of content lines in the top-left panel (banner + version + config + migrations).
