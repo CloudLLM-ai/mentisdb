@@ -1,4 +1,10 @@
-0.9.2.38 UNRELEASED
+0.9.2.38 APR/17/2026
+  - feat(stdio): smart daemon detection in stdio MCP mode — the stdio process now
+    checks if a daemon is running via the health endpoint, proxies to it if found,
+    or launches one in the background (nohup on Unix, start /B on Windows); all
+    MCP clients that spawn stdio subprocesses (Claude Desktop, Cursor, etc.) now
+    share the same live chain cache with zero configuration; falls back to local
+    mode if daemon launch fails
   - fix(server): `start_servers` now shares ONE `MentisDbService` across the HTTP
     MCP, HTTP REST, HTTPS MCP, HTTPS REST, and dashboard surfaces. Previously each
     surface received its own `MentisDbService::new(...)` and therefore its own
@@ -10,92 +16,121 @@
     `start_servers_shares_state_across_mcp_and_rest` that pre-warms the MCP
     service, appends via REST, and asserts MCP immediately sees the new
     `head_hash` / `thought_count` / `latest_thought.index`.
-  - feat(stdio): smart daemon detection in stdio MCP mode — the stdio process now
-    checks if a daemon is running via the health endpoint, proxies to it if found,
-    or launches one in the background (nohup on Unix, start /B on Windows); all
-    MCP clients that spawn stdio subprocesses (Claude Desktop, Cursor, etc.) now
-    share the same live chain cache with zero configuration; falls back to local
-    mode if daemon launch fails
-  - fix(pymentisdb): `context_bundles()` now decodes proper typed `ContextBundleSeed`
-    and `ContextBundleHit` objects instead of incorrectly nesting `ContextBundle` inside
-    `ContextBundle.seed`; `append_thought()` now uses one canonical `ThoughtInput`
-    payload builder instead of duplicated request assembly; `ranked_search()` and
-    `context_bundles()` now accept `MemoryScope` enums directly and serialize them to
-    the API's lowercase request form; added focused Python client tests
-  - fix(webhooks): webhook registry persistence now uses temp-file-plus-rename instead of
-    truncating the live registry in place; delivery fan-out is now bounded by a queue and
-    concurrency semaphore so bursty append workloads do not spawn an unbounded number of
-    webhook tasks immediately; added tests for rename-failure preservation and bounded delivery
-  - fix(search): federated search dedup now keeps the higher-scoring duplicate occurrence,
-    matching the documented contract, instead of whichever chain surfaced the UUID first
-  - fix(relations): relation dedup no longer collapses distinct edges that differ by
-    `chain_key`, `valid_at`, or `invalid_at`; only exact duplicate relations are removed
-  - docs: daemon endpoint catalog and REST rustdocs updated to include the live router
-    surface (`/v1/federated-search`, `/v1/import-markdown`, entity types, chain merge,
-    webhooks, extract-memories, admin flush, and related endpoints); startup catalog
-    generation now uses a shared helper to keep HTTP/HTTPS REST listings aligned
-  - test(skill-signing): strengthened server-side signature-verification coverage for skill
-    uploads — now explicitly checks missing signature fields, unknown signing-key ids, and
-    tampered signatures with clearer failure assertions
-  - fix: restore now rejects path-traversal entries inside `.mbak` archives before any
-    file extraction; crafted manifest paths like `../escape.txt` or absolute paths now fail
-    restore with `InvalidData`, preventing writes outside the target directory
-  - fix: interactive restore confirmation now actually enables overwrite mode when the user
-    answers yes; previously the prompt implied overwrite but still passed `overwrite=false`
-    unless `--overwrite` was supplied explicitly
-  - fix: branch ancestor discovery is now transitive — branch-aware search can walk from child
-    to parent to grandparent chains instead of stopping at the direct parent only
-  - doc: `mentisdbd --help` now documents `MENTISDB_DASHBOARD_PIN`, matching the daemon's
-    supported environment variables and startup output
-  - fix: LLM-extracted memories no longer send an OpenAI `response_format` hint — some
-    OpenAI-compatible endpoints rejected the request with a schema/type error; MentisDB now
-    relies on the prompt plus strict JSON validation of the returned payload, preserving
-    portability across providers; added a regression-style test covering raw parse error output
-  - doc: new content-ingestion tutorial blog post (`docs/mentisdb-content-ingestion.html`)
-    covering setup, REST/MCP/Rust usage, live-tested behavior, review-before-append workflow,
-    troubleshooting, and use cases for normal users, enterprise knowledge workers, and coders
-  - doc: new MentisDB vs Cognee comparison post (`docs/mentisdb-vs-cognee.html`) with a
-    fair architectural comparison and comprehensive side-by-side table; blog index updated to
-    surface the new posts first
-  - doc(skill): audited the live MentisDB project chain and found heavy concentration in
-    `Summary` / `LessonLearned` plus near-total collapse of typed edges to `References`;
-    revised `MENTISDB_SKILL.md` to push minimum backlinking, richer relation selection,
-    `Invalidates`, `LLMExtracted`, and higher-value underused types; added a new blog post
-    (`docs/mentisdb-memory-usage-audit.html`) documenting the findings and the fix
-  - doc: refreshed README, Rust docs, and `docs/llm-extracted-memories-design.md` to match
-    the shipped ingestion behavior: 31 thought types total, `gpt-4o` defaults, no auto-append,
-    no `response_format` requirement, and explicit JSON schema validation instead
   - feat: POST /v1/admin/flush REST endpoint — iterates all open chains and calls
     flush() on each BinaryStorageAdapter; documented in server module header
-  - feat: backup CLI auto-detects running daemon — calls POST /v1/admin/flush before
-    reading files; connection refused means daemon not running (files captured as-is);
-    other errors warn but proceed; BackupOptions docs updated to explain flush behavior
-  - feat: restore CLI interactive conflict prompt — when files exist in target dir and
-    --overwrite not passed, lists conflicting files and prompts user with boxed_yn_prompt;
-    user decline exits gracefully with no changes; restore is fully idempotent without prompt
-  - feat: CLI help text updated for backup and restore subcommands — clarifies daemon flush
-    detection, idempotent restore behavior, interactive prompt, and --overwrite skip note
-  - doc: docs/mentisdb-backup-and-restore.html blog post covering backup/restore CLI,
-    consistency model, SHA-256 manifest, .mbak format, REST endpoint, security notes
-    instead of the broken command: node, args: [/path/mcp-remote, url]; any absolute executable
-    mcp-remote is now used directly without a node wrapper (is_absolute_executable check); the
-    shebang-based is_directly_executable fallback is retained for npm-installed scripts with a
-    good shebang; integration_apply_tests updated to assert the correct behavior
-  - fix: ensure_prerequisites for Claude Desktop now prompts before brew install on macOS
-    (previously silently ran brew install mcp-remote without asking); on macOS brew is tried
-    first, npm is the fallback; dead check_node_version and detect_brew_mcp_remote functions
-    removed; detect_mcp_remote_any() checks Homebrew paths then PATH
-  - feat: terminal-close warning printed at daemon startup — yellow ⚠ notice that closing the
-    terminal stops mentisdbd, followed by OS-specific background-launch tip:
-      macOS: brew services start mentisdb (launchd) or nohup one-liner
-      Linux: systemd user service unit snippet or nohup one-liner
-      Windows: schtasks /create one-liner or Start-Process -WindowStyle Hidden
   - feat: backup/restore — new mentisdbd backup / mentisdbd restore subcommands create and
     restore .mbak zip archives of the full MENTISDB_DIR; manifest with SHA-256 checksums for
     every file; verification before any file is written on restore; --flush, --include-tls,
     --overwrite flags; 33 integration tests in tests/test_backup.rs covering roundtrip, TLS
     inclusion, idempotent restore, overwrite, corruption detection, chain count, byte totals,
     manifest JSON round-trip, required vs optional file tagging, subdirectory creation
+  - feat: backup CLI auto-detects running daemon — calls POST /v1/admin/flush before
+    reading files; connection refused means daemon not running (files captured as-is);
+    other errors warn but proceed; BackupOptions docs updated to explain flush behavior
+  - feat: restore CLI interactive conflict prompt — when files exist in target dir and
+    --overwrite not passed, lists conflicting files and prompts user with boxed_yn_prompt;
+    user decline exits gracefully with no changes; restore is fully idempotent without prompt
+  - feat: terminal-close warning printed at daemon startup — yellow ⚠ notice that closing the
+    terminal stops mentisdbd, followed by OS-specific background-launch tip:
+      macOS: brew services start mentisdb (launchd) or nohup one-liner
+      Linux: systemd user service unit snippet or nohup one-liner
+      Windows: schtasks /create one-liner or Start-Process -WindowStyle Hidden
+  - feat: CLI help text updated for backup and restore subcommands — clarifies daemon flush
+    detection, idempotent restore behavior, interactive prompt, and --overwrite skip note
+  - fix(search): federated search dedup now keeps the higher-scoring duplicate occurrence,
+    matching the documented contract, instead of whichever chain surfaced the UUID first
+  - fix(relations): relation dedup no longer collapses distinct edges that differ by
+    `chain_key`, `valid_at`, or `invalid_at`; only exact duplicate relations are removed
+  - fix(webhooks): webhook registry persistence now uses temp-file-plus-rename instead of
+    truncating the live registry in place; delivery fan-out is now bounded by a queue and
+    concurrency semaphore so bursty append workloads do not spawn an unbounded number of
+    webhook tasks immediately; added tests for rename-failure preservation and bounded delivery
+  - fix: branch ancestor discovery is now transitive — branch-aware search can walk from child
+    to parent to grandparent chains instead of stopping at the direct parent only
+  - fix: restore now rejects path-traversal entries inside `.mbak` archives before any
+    file extraction; crafted manifest paths like `../escape.txt` or absolute paths now fail
+    restore with `InvalidData`, preventing writes outside the target directory
+  - fix: interactive restore confirmation now actually enables overwrite mode when the user
+    answers yes; previously the prompt implied overwrite but still passed `overwrite=false`
+    unless `--overwrite` was supplied explicitly
+  - fix: LLM-extracted memories no longer send an OpenAI `response_format` hint — some
+    OpenAI-compatible endpoints rejected the request with a schema/type error; MentisDB now
+    relies on the prompt plus strict JSON validation of the returned payload, preserving
+    portability across providers; added a regression-style test covering raw parse error output
+  - fix(pymentisdb): `context_bundles()` now decodes proper typed `ContextBundleSeed`
+    and `ContextBundleHit` objects instead of incorrectly nesting `ContextBundle` inside
+    `ContextBundle.seed`; `append_thought()` now uses one canonical `ThoughtInput`
+    payload builder instead of duplicated request assembly; `ranked_search()` and
+    `context_bundles()` now accept `MemoryScope` enums directly and serialize them to
+    the API's lowercase request form; added focused Python client tests
+  - fix: wizard — ensure_prerequisites for Claude Desktop now prompts before brew install on
+    macOS (previously silently ran brew install mcp-remote without asking); on macOS brew is
+    tried first, npm is the fallback; dead check_node_version and detect_brew_mcp_remote
+    functions removed; detect_mcp_remote_any() checks Homebrew paths then PATH
+  - fix: wizard — mcp-remote is now used directly without a node wrapper when installed as an
+    absolute executable (is_absolute_executable check); the shebang-based
+    is_directly_executable fallback is retained for npm-installed scripts with a good shebang;
+    integration_apply_tests updated to assert the correct behavior
+  - fix(bench): rebuild session_map after --limit filter in LoCoMo — on dev runs, ground-truth
+    evidence from filtered-out personas was leaking back into R@K scoring via
+    _expand_evidence() neighbor lookups; the fix rebuilds session_map on the kept item set
+    immediately after filtering; full-scale runs were unaffected
+  - chore(server): extract `invalid_input_error()` and `not_found_error()` helpers next to
+    `service_call`; replace four `Box::new(io::Error::new(...))` callsites with them for
+    tighter request-rejection plumbing (net: -8 lines of boilerplate, identical behavior)
+  - test(skill-signing): strengthened server-side signature-verification coverage for skill
+    uploads — now explicitly checks missing signature fields, unknown signing-key ids, and
+    tampered signatures with clearer failure assertions
+  - docs(whitepaper): rewrote WHITEPAPER.md in academic register with formal definitions
+    (Thought, Chain, BM25, RRF, Jaccard dedup, temporal validity), a tamper-evidence proof
+    sketch, and a References section; added WHITEPAPER.tex LaTeX port using
+    amsmath/amsthm/booktabs/\newtheorem; added build-whitepaper.sh with macOS and Ubuntu
+    install instructions, --open/--clean flags, and path_helper sourcing so it finds
+    pdflatex after a fresh BasicTeX install; added author affiliation (Universidad Católica
+    Andrés Bello, Venezuela)
+  - docs(whitepaper): corrected v0.8.9 benchmark numbers to match reproducible results —
+    LongMemEval R@10 changed 74.1% → 72.2%, added R@20 = 78.0%; filled in previously empty
+    LoCoMo-10P v0.8.9 single-hop (75.8%), multi-hop (57.4%), and R@20 (79.1%) cells; three
+    independent full-scale runs (2026-04-14, 2026-04-17 × 2) produced bit-identical scores;
+    added a reproducibility caption under the results table
+  - docs(blog): new ranked-search pipeline walkthrough (docs/mentisdb-ranked-search-pipeline.html)
+    covering filter-first selection, as-of temporal filter, three parallel scorers
+    (BM25, dense vector, graph BFS), smooth exponential fusion, session cohesion, RRF,
+    and deterministic sort — with file:line citations for every phase; prefaced with a
+    "Three Signals, Three Failure Modes" explainer (vocabulary match vs meaning match vs
+    relationship match) and a subsection on why BFS vs DFS for graph expansion
+  - docs(server,readme): introduce `invalid_input_error()` / `not_found_error()` helpers;
+    fill README coverage gaps for `source_episode`, `entity_type`, `BranchesFrom`,
+    `mentisdb_federated_search`, `mentisdb_extract_memories`, `mentisdb_list_entity_types`,
+    `mentisdb_upsert_entity_type` (MCP catalog count 37 → 42)
+  - docs(docs.mentisdb.com): add Advanced Retrieval section (RRF, context bundles, dense
+    vector sidecars, branching chains, federated search), Entity Types & Provenance
+    section (per-chain entity_type registry, source_episode), Webhook Callbacks, LLM-Extracted
+    Memories, and pymentisdb Python Client sections to user_docs.rs; add LLM-based reranking,
+    Operations & Admin (POST /v1/admin/flush, .mbak backup/restore, MENTISDB_DASHBOARD_PIN)
+    to developer_docs.rs
+  - docs: daemon endpoint catalog and REST rustdocs updated to include the live router
+    surface (`/v1/federated-search`, `/v1/import-markdown`, entity types, chain merge,
+    webhooks, extract-memories, admin flush, and related endpoints); startup catalog
+    generation now uses a shared helper to keep HTTP/HTTPS REST listings aligned
+  - docs: `mentisdbd --help` now documents `MENTISDB_DASHBOARD_PIN`, matching the daemon's
+    supported environment variables and startup output
+  - docs: new content-ingestion tutorial blog post (`docs/mentisdb-content-ingestion.html`)
+    covering setup, REST/MCP/Rust usage, live-tested behavior, review-before-append workflow,
+    troubleshooting, and use cases for normal users, enterprise knowledge workers, and coders
+  - docs: new MentisDB vs Cognee comparison post (`docs/mentisdb-vs-cognee.html`) with a
+    fair architectural comparison and comprehensive side-by-side table; blog index updated to
+    surface the new posts first
+  - docs(skill): audited the live MentisDB project chain and found heavy concentration in
+    `Summary` / `LessonLearned` plus near-total collapse of typed edges to `References`;
+    revised `MENTISDB_SKILL.md` to push minimum backlinking, richer relation selection,
+    `Invalidates`, `LLMExtracted`, and higher-value underused types; added a new blog post
+    (`docs/mentisdb-memory-usage-audit.html`) documenting the findings and the fix
+  - docs: refreshed README, Rust docs, and `docs/llm-extracted-memories-design.md` to match
+    the shipped ingestion behavior: 31 thought types total, `gpt-4o` defaults, no auto-append,
+    no `response_format` requirement, and explicit JSON schema validation instead
+  - docs: `docs/mentisdb-backup-and-restore.html` blog post covering backup/restore CLI,
+    consistency model, SHA-256 manifest, .mbak format, REST endpoint, security notes
 
 0.9.1.37 APR/14/2026
   - feat: LLM-extracted memories — GPT-4o (or any OpenAI-compatible endpoint) converts
