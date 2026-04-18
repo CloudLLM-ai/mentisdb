@@ -13,6 +13,7 @@ use crossterm::event::{
 use log::{Level, Record};
 use ratatui::{
     backend::CrosstermBackend,
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -180,6 +181,9 @@ pub struct TuiState {
     pub update_response_tx: Option<mpsc::Sender<bool>>,
     /// Temporary toast shown after a clipboard copy. Cleared after 2 s.
     pub toast: Option<(String, Instant)>,
+    /// Active drag-select gesture: start and current screen positions.
+    pub drag_start: Option<Position>,
+    pub drag_current: Option<Position>,
     /// Layout areas cached during the last render pass for mouse hit-testing.
     last_top_left_area: Rect,
     last_top_right_area: Rect,
@@ -220,6 +224,8 @@ impl TuiState {
             update_dialog: None,
             update_response_tx: None,
             toast: None,
+            drag_start: None,
+            drag_current: None,
             last_top_left_area: Rect::default(),
             last_top_right_area: Rect::default(),
             last_prime_area: Rect::default(),
@@ -474,6 +480,23 @@ fn ui(frame: &mut Frame, state: &mut TuiState) {
         render_update_dialog_overlay(frame, state, full_area);
     } else if !state.started {
         render_startup_overlay(frame, state, full_area);
+    }
+
+    // Selection highlight: invert the style of every cell in the drag rect.
+    if let (Some(start), Some(end)) = (state.drag_start, state.drag_current) {
+        let y1 = start.y.min(end.y);
+        let y2 = start.y.max(end.y);
+        let x1 = start.x.min(end.x);
+        let x2 = start.x.max(end.x);
+        if x2 >= x1 && y2 >= y1 {
+            let sel = Rect {
+                x: x1,
+                y: y1,
+                width: x2 - x1 + 1,
+                height: y2 - y1 + 1,
+            };
+            frame.buffer_mut().set_style(sel, Style::default().add_modifier(Modifier::REVERSED));
+        }
     }
 
     if let Some((ref msg, _)) = state.toast {
@@ -1211,7 +1234,6 @@ pub fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let mut clipboard = arboard::Clipboard::new().ok();
-    let mut drag_start: Option<Position> = None;
 
     loop {
         if !running.load(Ordering::SeqCst) {
@@ -1344,86 +1366,101 @@ pub fn run_tui(
                     }
                 }
                 Event::Mouse(mouse) => {
-                    let mut s = state.lock().unwrap();
                     let pos = Position {
                         x: mouse.column,
                         y: mouse.row,
                     };
-                    match mouse.kind {
-                        MouseEventKind::Down(MouseButton::Left) => {
-                            drag_start = Some(pos);
-                            if s.last_top_left_area.contains(pos) {
-                                s.focused_pane = FocusedPane::TopLeft;
-                            } else if s.last_top_right_area.contains(pos) {
-                                s.focused_pane = FocusedPane::TopRight;
-                            } else if s.last_prime_area.contains(pos) {
-                                s.focused_pane = FocusedPane::Prime;
-                            } else if s.last_logs_area.contains(pos) {
-                                s.focused_pane = FocusedPane::Logs;
-                            } else if s.last_tables_area.contains(pos)
-                                || s.last_tabs_area.contains(pos)
-                            {
-                                s.focused_pane = FocusedPane::Tables;
-                                if s.last_tabs_area.contains(pos) {
-                                    if let Some(idx) =
-                                        tab_index_from_click(&s.tab_titles, s.last_tabs_area, pos.x)
-                                    {
-                                        s.tab_index = idx;
-                                    }
-                                }
-                            }
-                            None
-                        }
-                        MouseEventKind::Up(MouseButton::Left) => {
-                            if let Some(start) = drag_start.take() {
-                                // Treat as a selection if the mouse moved at
-                                // least a few cells (not a plain click).
-                                let moved = start.y != pos.y
-                                    || pos.x.abs_diff(start.x) > 3;
-                                if moved {
-                                    extract_drag_selection(&s, start, pos)
-                                } else {
-                                    None
-                                }
+                    // MouseUp: extract text from the last rendered buffer.
+                    // Must happen OUTSIDE the state lock so we can borrow
+                    // `terminal` at the same time.
+                    if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) {
+                        let maybe_start = {
+                            let mut s = state.lock().unwrap();
+                            let start = s.drag_start.take();
+                            s.drag_current = None;
+                            start
+                        };
+                        if let Some(start) = maybe_start {
+                            let moved =
+                                start.y != pos.y || pos.x.abs_diff(start.x) > 3;
+                            if moved {
+                                extract_from_buffer(terminal.current_buffer_mut(), start, pos)
                             } else {
                                 None
                             }
-                        }
-                        MouseEventKind::ScrollUp => {
-                            if s.last_tables_area.contains(pos) {
-                                match s.tab_index {
-                                    0 => s.select_chain_prev(),
-                                    1 => s.select_agent_prev(),
-                                    2 => s.select_skill_prev(),
-                                    _ => {}
-                                }
-                            } else if s.last_logs_area.contains(pos) {
-                                s.scroll_logs_up();
-                            } else if s.last_top_right_area.contains(pos) {
-                                s.scroll_right_up();
-                            } else if s.last_top_left_area.contains(pos) {
-                                s.scroll_left_up();
-                            }
+                        } else {
                             None
                         }
-                        MouseEventKind::ScrollDown => {
-                            if s.last_tables_area.contains(pos) {
-                                match s.tab_index {
-                                    0 => s.select_chain_next(),
-                                    1 => s.select_agent_next(),
-                                    2 => s.select_skill_next(),
-                                    _ => {}
+                    } else {
+                        let mut s = state.lock().unwrap();
+                        match mouse.kind {
+                            MouseEventKind::Down(MouseButton::Left) => {
+                                s.drag_start = Some(pos);
+                                s.drag_current = Some(pos);
+                                if s.last_top_left_area.contains(pos) {
+                                    s.focused_pane = FocusedPane::TopLeft;
+                                } else if s.last_top_right_area.contains(pos) {
+                                    s.focused_pane = FocusedPane::TopRight;
+                                } else if s.last_prime_area.contains(pos) {
+                                    s.focused_pane = FocusedPane::Prime;
+                                } else if s.last_logs_area.contains(pos) {
+                                    s.focused_pane = FocusedPane::Logs;
+                                } else if s.last_tables_area.contains(pos)
+                                    || s.last_tabs_area.contains(pos)
+                                {
+                                    s.focused_pane = FocusedPane::Tables;
+                                    if s.last_tabs_area.contains(pos) {
+                                        if let Some(idx) = tab_index_from_click(
+                                            &s.tab_titles,
+                                            s.last_tabs_area,
+                                            pos.x,
+                                        ) {
+                                            s.tab_index = idx;
+                                        }
+                                    }
                                 }
-                            } else if s.last_logs_area.contains(pos) {
-                                s.scroll_logs_down();
-                            } else if s.last_top_right_area.contains(pos) {
-                                s.scroll_right_down();
-                            } else if s.last_top_left_area.contains(pos) {
-                                s.scroll_left_down();
+                                None
                             }
-                            None
+                            MouseEventKind::Drag(MouseButton::Left) => {
+                                s.drag_current = Some(pos);
+                                None
+                            }
+                            MouseEventKind::ScrollUp => {
+                                if s.last_tables_area.contains(pos) {
+                                    match s.tab_index {
+                                        0 => s.select_chain_prev(),
+                                        1 => s.select_agent_prev(),
+                                        2 => s.select_skill_prev(),
+                                        _ => {}
+                                    }
+                                } else if s.last_logs_area.contains(pos) {
+                                    s.scroll_logs_up();
+                                } else if s.last_top_right_area.contains(pos) {
+                                    s.scroll_right_up();
+                                } else if s.last_top_left_area.contains(pos) {
+                                    s.scroll_left_up();
+                                }
+                                None
+                            }
+                            MouseEventKind::ScrollDown => {
+                                if s.last_tables_area.contains(pos) {
+                                    match s.tab_index {
+                                        0 => s.select_chain_next(),
+                                        1 => s.select_agent_next(),
+                                        2 => s.select_skill_next(),
+                                        _ => {}
+                                    }
+                                } else if s.last_logs_area.contains(pos) {
+                                    s.scroll_logs_down();
+                                } else if s.last_top_right_area.contains(pos) {
+                                    s.scroll_right_down();
+                                } else if s.last_top_left_area.contains(pos) {
+                                    s.scroll_left_down();
+                                }
+                                None
+                            }
+                            _ => None,
                         }
-                        _ => None,
                     }
                 }
                 _ => None,
@@ -1453,42 +1490,34 @@ pub fn run_tui(
     Ok(())
 }
 
-/// Extracts copyable text from the pane covered by a mouse drag gesture.
-/// `start` and `end` are screen positions at drag-start and mouse-up.
-fn extract_drag_selection(state: &TuiState, start: Position, end: Position) -> Option<String> {
-    let y_min = start.y.min(end.y);
-    let y_max = start.y.max(end.y);
+/// Reads the rendered text in the drag rectangle directly from ratatui's
+/// buffer. This works for any content on screen — logs, tables, config,
+/// primer text — without needing per-pane extraction logic.
+fn extract_from_buffer(buffer: &Buffer, start: Position, end: Position) -> Option<String> {
+    let y1 = start.y.min(end.y);
+    let y2 = start.y.max(end.y);
+    let x1 = start.x.min(end.x);
+    let x2 = start.x.max(end.x);
 
-    let logs = state.last_logs_area;
-    if logs.contains(start) || logs.contains(end) {
-        // Inner content starts one row below the top border.
-        let top = logs.y + 1;
-        let bottom = logs.y + logs.height.saturating_sub(2);
-        let r0 = y_min.max(top).saturating_sub(top) as usize;
-        let r1 = y_max.min(bottom).saturating_sub(top) as usize;
-        let total = state.log_lines.len();
-        let lines: Vec<&str> = (r0..=r1)
-            .filter_map(|r| {
-                let idx = total.checked_sub(1 + state.log_scroll + r)?;
-                state.log_lines.get(idx).map(String::as_str)
-            })
-            .collect();
-        return if lines.is_empty() { None } else { Some(lines.join("\n")) };
+    let mut lines: Vec<String> = Vec::new();
+    for y in y1..=y2 {
+        let mut line = String::new();
+        for x in x1..=x2 {
+            if let Some(cell) = buffer.cell(Position { x, y }) {
+                line.push_str(cell.symbol());
+            }
+        }
+        lines.push(line.trim_end().to_string());
     }
-
-    if state.last_prime_area.contains(start) || state.last_prime_area.contains(end) {
-        return if state.primer_text.is_empty() {
-            None
-        } else {
-            Some(state.primer_text.clone())
-        };
+    // Drop trailing blank lines.
+    while lines.last().map(|l: &String| l.is_empty()).unwrap_or(false) {
+        lines.pop();
     }
-
-    if state.last_tables_area.contains(start) || state.last_tables_area.contains(end) {
-        return state.selected_item_text();
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
     }
-
-    None
 }
 
 /// Determines which tab index was clicked based on x position within the tab bar.
