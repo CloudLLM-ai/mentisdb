@@ -17,7 +17,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, BorderType, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+        Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation,
         ScrollbarState, Table, TableState, Tabs, Wrap,
     },
     Frame, Terminal,
@@ -148,6 +148,9 @@ pub struct TuiState {
     pub version: String,
     pub started: bool,
     pub startup_status: String,
+    /// If startup failed, this holds the error shown in a full-screen red
+    /// overlay. The TUI stays running so the user can read the error and logs.
+    pub startup_error: Option<String>,
     pub config_lines: Vec<String>,
     pub migration_lines: Vec<String>,
     pub endpoint_lines: Vec<String>,
@@ -191,6 +194,7 @@ impl TuiState {
             version: version.to_string(),
             started: false,
             startup_status: "Starting…".to_string(),
+            startup_error: None,
             config_lines: Vec::new(),
             migration_lines: Vec::new(),
             endpoint_lines: Vec::new(),
@@ -401,12 +405,13 @@ fn ui(frame: &mut Frame, state: &mut TuiState) {
     render_logs(frame, state, logs_area);
     render_hint_bar(frame, state, hint_area);
 
-    if !state.started {
-        render_startup_overlay(frame, state, full_area);
-    }
-
-    if state.update_dialog.is_some() {
+    // Overlays: at most one modal is shown at a time.
+    if let Some(ref err) = state.startup_error {
+        render_crash_overlay(frame, err, full_area);
+    } else if state.update_dialog.is_some() {
         render_update_dialog_overlay(frame, state, full_area);
+    } else if !state.started {
+        render_startup_overlay(frame, state, full_area);
     }
 }
 
@@ -983,6 +988,7 @@ fn render_update_dialog_overlay(frame: &mut Frame, state: &TuiState, full_area: 
     };
 
     let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
 
     let inner_layout = Layout::default()
@@ -994,6 +1000,53 @@ fn render_update_dialog_overlay(frame: &mut Frame, state: &TuiState, full_area: 
         .alignment(ratatui::layout::Alignment::Center)
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner_layout[0]);
+}
+
+fn render_crash_overlay(frame: &mut Frame, err: &str, full_area: Rect) {
+    let lines = vec![
+        Line::from(Span::styled(
+            "mentisdbd startup failed",
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(err, Style::default().fg(Color::Red))),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Check the Logs pane for details.  Press q to quit.",
+            Style::default().add_modifier(Modifier::DIM),
+        )),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(Color::Red))
+        .title(Span::styled(
+            " Startup Error ",
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    let box_width = 72u16.min(full_area.width);
+    let box_height = (lines.len() as u16 + 4).min(full_area.height);
+    let popup = Rect {
+        x: full_area.width.saturating_sub(box_width) / 2,
+        y: full_area.height.saturating_sub(box_height) / 2,
+        width: box_width,
+        height: box_height,
+    };
+
+    let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+
+    let paragraph = Paragraph::new(lines)
+        .alignment(ratatui::layout::Alignment::Center)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
 }
 
 ///

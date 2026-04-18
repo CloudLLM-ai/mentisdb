@@ -1060,17 +1060,20 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // into the TUI via the log channel and startup_status field.
     let startup_result: Result<StartupData, _> = run_startup_sequence(&tui_state).await;
 
-    // Signal the TUI to quit so we can report any TUI thread error.
-    {
-        let mut s = tui_state.lock().unwrap();
-        s.should_quit = true;
+    if let Err(e) = startup_result {
+        // Show crash overlay in TUI so the user can read the error + logs.
+        {
+            let mut s = tui_state.lock().unwrap();
+            s.startup_error = Some(e.to_string());
+        }
+        if let Err(te) = tui_handle.join().unwrap() {
+            eprintln!("TUI error: {te}");
+        }
+        ctrlc_handle.abort();
+        return Err(e);
     }
-    if let Err(e) = tui_handle.join().unwrap() {
-        eprintln!("TUI error: {e}");
-    }
-    ctrlc_handle.abort();
+    let startup_result = startup_result.unwrap();
 
-    // If startup failed, propagate the error.
     let (
         config,
         update_config,
@@ -1081,7 +1084,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         migration_reports,
         skill_registry_msg,
         storage_root_migration,
-    ): StartupData = startup_result?;
+    ) = startup_result;
 
     // ── Update TUI state with completed startup data ────────────────────────
     {
