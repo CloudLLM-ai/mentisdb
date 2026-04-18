@@ -6,3 +6,12 @@ results/
 .fastembed_cache/
 data/
 locomo-benches/__pycache__/
+
+# Python build artefacts produced by pymentisdb
+pymentisdb/__pycache__/
+pymentisdb/tests/__pycache__/
+pymentisdb/dist/
+pymentisdb/pymentisdb.egg-info/
+
+# Backup archives produced by `mentisdbd backup`
+*.mbak
