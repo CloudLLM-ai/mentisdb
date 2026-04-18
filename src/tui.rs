@@ -7,7 +7,8 @@
 #![allow(missing_docs)]
 
 use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
+    MouseEventKind,
 };
 use log::{Level, Record};
 use ratatui::{
@@ -832,8 +833,17 @@ fn render_skill_table(frame: &mut Frame, state: &mut TuiState, area: Rect) {
         })
         .collect();
 
+    let name_col_width = state
+        .skills
+        .iter()
+        .map(|s| s.name.len())
+        .max()
+        .unwrap_or(4)
+        .max(4) as u16
+        + 1;
+
     let widths = [
-        Constraint::Percentage(25),
+        Constraint::Length(name_col_width),
         Constraint::Length(10),
         Constraint::Length(10),
         Constraint::Percentage(40),
@@ -1179,6 +1189,7 @@ impl Drop for TerminalCleanup {
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(
             io::stdout(),
+            DisableMouseCapture,
             crossterm::terminal::LeaveAlternateScreen,
             crossterm::cursor::Show
         );
@@ -1192,6 +1203,7 @@ pub fn run_tui(
 ) -> io::Result<()> {
     let mut stdout = io::stdout();
     crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
+    crossterm::execute!(stdout, EnableMouseCapture)?;
     crossterm::terminal::enable_raw_mode()?;
 
     let _cleanup = TerminalCleanup;
@@ -1199,6 +1211,7 @@ pub fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let mut clipboard = arboard::Clipboard::new().ok();
+    let mut drag_start: Option<Position> = None;
 
     loop {
         if !running.load(Ordering::SeqCst) {
@@ -1338,6 +1351,7 @@ pub fn run_tui(
                     };
                     match mouse.kind {
                         MouseEventKind::Down(MouseButton::Left) => {
+                            drag_start = Some(pos);
                             if s.last_top_left_area.contains(pos) {
                                 s.focused_pane = FocusedPane::TopLeft;
                             } else if s.last_top_right_area.contains(pos) {
@@ -1359,6 +1373,21 @@ pub fn run_tui(
                                 }
                             }
                             None
+                        }
+                        MouseEventKind::Up(MouseButton::Left) => {
+                            if let Some(start) = drag_start.take() {
+                                // Treat as a selection if the mouse moved at
+                                // least a few cells (not a plain click).
+                                let moved = start.y != pos.y
+                                    || pos.x.abs_diff(start.x) > 3;
+                                if moved {
+                                    extract_drag_selection(&s, start, pos)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
                         }
                         MouseEventKind::ScrollUp => {
                             if s.last_tables_area.contains(pos) {
@@ -1422,6 +1451,44 @@ pub fn run_tui(
     }
 
     Ok(())
+}
+
+/// Extracts copyable text from the pane covered by a mouse drag gesture.
+/// `start` and `end` are screen positions at drag-start and mouse-up.
+fn extract_drag_selection(state: &TuiState, start: Position, end: Position) -> Option<String> {
+    let y_min = start.y.min(end.y);
+    let y_max = start.y.max(end.y);
+
+    let logs = state.last_logs_area;
+    if logs.contains(start) || logs.contains(end) {
+        // Inner content starts one row below the top border.
+        let top = logs.y + 1;
+        let bottom = logs.y + logs.height.saturating_sub(2);
+        let r0 = y_min.max(top).saturating_sub(top) as usize;
+        let r1 = y_max.min(bottom).saturating_sub(top) as usize;
+        let total = state.log_lines.len();
+        let lines: Vec<&str> = (r0..=r1)
+            .filter_map(|r| {
+                let idx = total.checked_sub(1 + state.log_scroll + r)?;
+                state.log_lines.get(idx).map(String::as_str)
+            })
+            .collect();
+        return if lines.is_empty() { None } else { Some(lines.join("\n")) };
+    }
+
+    if state.last_prime_area.contains(start) || state.last_prime_area.contains(end) {
+        return if state.primer_text.is_empty() {
+            None
+        } else {
+            Some(state.primer_text.clone())
+        };
+    }
+
+    if state.last_tables_area.contains(start) || state.last_tables_area.contains(end) {
+        return state.selected_item_text();
+    }
+
+    None
 }
 
 /// Determines which tab index was clicked based on x position within the tab bar.
