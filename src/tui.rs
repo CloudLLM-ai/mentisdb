@@ -1236,6 +1236,12 @@ pub fn run_tui(
     let mut clipboard = arboard::Clipboard::new().ok();
     // Local drag tracker — no mutex needed to read/write between Down and Up.
     let mut drag_start: Option<Position> = None;
+    // Set by MouseUp; consumed inside the next terminal.draw() closure where
+    // frame.buffer_mut() is the live rendered buffer (before ratatui's internal
+    // buffer swap — current_buffer_mut() AFTER draw() points to the cleared buffer).
+    let mut pending_extract: Option<(Position, Position)> = None;
+    // Written inside the draw closure, read immediately after.
+    let mut extracted_text: Option<String> = None;
 
     loop {
         if !running.load(Ordering::SeqCst) {
@@ -1259,10 +1265,28 @@ pub fn run_tui(
             }
         }
 
+        // Capture pending extract before the closure so we can move it in.
+        let extract_req = pending_extract.take();
+        let text_out = &mut extracted_text;
         terminal.draw(|frame| {
             let mut s = state.lock().unwrap();
             ui(frame, &mut s);
+            drop(s);
+            // Extract text while we still own the live buffer.
+            if let Some((start, end)) = extract_req {
+                *text_out = extract_from_buffer(frame.buffer_mut(), start, end);
+            }
         })?;
+
+        // If we extracted text this frame, copy it to clipboard and show toast.
+        if let Some(text) = extracted_text.take() {
+            if let Some(ref mut cb) = clipboard {
+                let _ = cb.set_text(&text);
+            }
+            write_osc52(&text);
+            state.lock().unwrap().toast =
+                Some(("Text copied to clipboard!".to_string(), Instant::now()));
+        }
 
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
@@ -1353,7 +1377,6 @@ pub fn run_tui(
                             let mut s = state.lock().unwrap();
                             s.drag_start = Some(pos);
                             s.drag_current = Some(pos);
-                            s.add_log(format!("[mouse] Down ({},{})", pos.x, pos.y));
                             if s.last_top_left_area.contains(pos) {
                                 s.focused_pane = FocusedPane::TopLeft;
                             } else if s.last_top_right_area.contains(pos) {
@@ -1384,51 +1407,17 @@ pub fn run_tui(
                             s.drag_current = Some(pos);
                         }
 
-                        // ── Mouse up: copy selected text ─────────────────────────
+                        // ── Mouse up: schedule text extraction ──────────────────
                         MouseEventKind::Up(_) => {
-                            let start_snapshot = drag_start;
-                            // Clear visual selection immediately.
-                            {
-                                let mut s = state.lock().unwrap();
-                                s.drag_start = None;
-                                s.drag_current = None;
-                                s.add_log(format!(
-                                    "[mouse] Up ({},{})  drag_start={:?}",
-                                    pos.x, pos.y, start_snapshot
-                                ));
-                            }
+                            let mut s = state.lock().unwrap();
+                            s.drag_start = None;
+                            s.drag_current = None;
+                            drop(s);
                             if let Some(start) = drag_start.take() {
-                                let moved = start.y != pos.y || start.x != pos.x;
-                                {
-                                    let mut s = state.lock().unwrap();
-                                    s.add_log(format!(
-                                        "[mouse] moved={moved}  extract ({},{})-({},{})",
-                                        start.x, start.y, pos.x, pos.y
-                                    ));
-                                }
-                                if moved {
-                                    let text = extract_from_buffer(
-                                        terminal.current_buffer_mut(),
-                                        start,
-                                        pos,
-                                    );
-                                    {
-                                        let mut s = state.lock().unwrap();
-                                        s.add_log(format!(
-                                            "[mouse] extracted={:?}",
-                                            text.as_deref().map(|t| &t[..t.len().min(60)])
-                                        ));
-                                    }
-                                    if let Some(text) = text {
-                                        if let Some(ref mut cb) = clipboard {
-                                            let _ = cb.set_text(&text);
-                                        }
-                                        write_osc52(&text);
-                                        state.lock().unwrap().toast = Some((
-                                            "Text copied to clipboard!".to_string(),
-                                            Instant::now(),
-                                        ));
-                                    }
+                                if start.y != pos.y || start.x != pos.x {
+                                    // Queue extraction for the next draw() closure,
+                                    // where frame.buffer_mut() is the live buffer.
+                                    pending_extract = Some((start, pos));
                                 }
                             }
                         }
