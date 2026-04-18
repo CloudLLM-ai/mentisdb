@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.9.3.39 — Full TUI with Drag-to-Copy, Seamless Startup, and Live Log Streaming</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 18, 2026</div>
+
+<h1>MentisDB 0.9.3.39 — Full TUI with Drag-to-Copy, Seamless Startup, and Live Log Streaming</h1>
+
+<p>
+  0.9.3.39 ships the ratatui terminal UI that was always planned for <code>mentisdbd</code>:
+  a live three-pane dashboard with real-time log streaming, a tabbed registry for all your
+  chains, agents, and skills, and a one-click agent primer. Along the way, we fixed a
+  collection of bugs that made the TUI unreliable — a silent startup crash, a flash on startup,
+  logs frozen at the oldest entry, and clipboard copy that silently did nothing. Every one of
+  those is gone.
+</p>
+
+<div class="highlight">
+  <p>
+    <strong>Select any text, get it in your clipboard.</strong> Drag the mouse across any
+    content in the TUI — log lines, storage paths, chain keys, endpoint URLs, config values,
+    the primer paste line — and release. The selected rectangle is read directly from
+    ratatui's render buffer, written to the clipboard via arboard and OSC 52, and confirmed
+    with a green toast. No pane restrictions, no key chords required.
+  </p>
+</div>
+
+<h2>The TUI at a Glance</h2>
+
+<p>
+  Run <code>mentisdbd</code> in an interactive terminal and you get a full alternate-screen
+  dashboard:
+</p>
+
+<ul>
+  <li><strong>Top-left</strong> — ASCII banner (MENTIS in green, DB in cyan), version,
+    daemon status, and configuration summary.</li>
+  <li><strong>Top-right</strong> — live MCP, REST, HTTPS, and dashboard endpoint addresses
+    with TLS status.</li>
+  <li><strong>Prime panel</strong> — the single paste line agents need to bootstrap themselves.
+    Press <code>c</code> to copy it instantly.</li>
+  <li><strong>Tables</strong> — tabbed view of Chains, Agents, and Skills; keyboard arrows
+    navigate rows, left/right arrows switch tabs, <code>c</code> copies the selected row's
+    key.</li>
+  <li><strong>Logs</strong> — live event log, newest entries at the top, with keyboard
+    scroll and <code>c</code> to copy visible lines.</li>
+  <li><strong>Hint bar</strong> — contextual keyboard shortcuts for whichever pane is
+    focused.</li>
+</ul>
+
+<p>
+  All panes have scrollbars and respond to Tab/Shift-Tab for keyboard focus cycling.
+  Run in background (<code>nohup mentisdbd &amp;</code>) and you get the same daemon with
+  no TUI overhead.
+</p>
+
+<h2>Drag-to-Select Copy — How It Works</h2>
+
+<p>
+  Getting this right required solving a non-obvious ratatui timing problem.
+  The naive approach — read <code>terminal.current_buffer_mut()</code> after
+  <code>terminal.draw()</code> returns — silently fails every time. After
+  <code>draw()</code>, ratatui swaps its internal buffer indices: the "current" buffer
+  now points to the cleared, reset buffer prepared for the <em>next</em> frame.
+  The just-rendered content lives in what was the previous buffer, and there is no
+  direct public accessor for it.
+</p>
+
+<p>
+  The fix: queue the extraction as <code>pending_extract = Some((start, end))</code>
+  on <code>MouseUp</code>. On the next iteration, inside the <code>terminal.draw()</code>
+  closure, <code>frame.buffer_mut()</code> <em>is</em> the live pre-swap buffer — full
+  of the just-rendered characters. The extraction happens there, the result is stored,
+  and immediately after <code>draw()</code> returns the clipboard write and toast fire.
+</p>
+
+<p>
+  Clipboard delivery uses two paths simultaneously:
+</p>
+
+<ul>
+  <li><strong>arboard</strong> — programmatic clipboard via the OS API (NSPasteboard on macOS,
+    X11/Wayland on Linux, Win32 on Windows).</li>
+  <li><strong>OSC 52</strong> — the terminal escape sequence <code>\x1b]52;c;&lt;base64&gt;\x07</code>
+    written directly to stdout. This instructs the terminal emulator to set the system
+    clipboard, enabling Cmd+C in iTerm2, Terminal.app (macOS 14+), kitty, and WezTerm
+    even while mouse capture is active.</li>
+</ul>
+
+<h2>Seamless Single-TUI Lifecycle</h2>
+
+<p>
+  Previously the daemon ran two TUI instances: one for startup progress, one for the
+  running state. Between them the alternate screen was exited and re-entered, causing
+  a visible flash that looked like a crash. The daemon now runs exactly one
+  <code>run_tui()</code> call for its entire lifetime. Startup transitions seamlessly
+  from the progress overlay to the fully-populated running view without the terminal
+  flickering.
+</p>
+
+<h2>Startup Crash Overlay</h2>
+
+<p>
+  When startup fails — a port conflict, a bad config, a migration error — the previous
+  daemon exited silently, leaving the user nothing to debug. Now a red full-screen
+  overlay shows the error message and keeps the TUI alive with a scrollable log panel.
+  The user reads the error, scrolls to find the relevant log line, and presses
+  <code>q</code> to quit. No silent death.
+</p>
+
+<h2>Log Auto-Scroll Fix</h2>
+
+<p>
+  The log panel renders entries newest-first. Auto-scroll was setting
+  <code>log_scroll = len - 1</code> — the bottom of the reversed list, which is the
+  <em>oldest</em> entry. New log messages appeared at position 0 (top) but the viewport
+  was pinned to the bottom, making the panel appear frozen even while agents were
+  actively writing to memory. Fixed: auto-scroll now keeps <code>log_scroll = 0</code>,
+  pinned to the newest entry at the top.
+</p>
+
+<h2>Other Improvements</h2>
+
+<ul>
+  <li><strong>Column auto-sizing</strong> — chain key and skill name columns are sized
+    to the longest entry plus one, so no name is ever truncated.</li>
+  <li><strong>Accurate startup status</strong> — "Checking chains for migrations…"
+    instead of "Running migrations…" when there is nothing to migrate.</li>
+  <li><strong>Clear widget in overlays</strong> — the startup progress modal, update
+    dialog, and crash overlay all call <code>frame.render_widget(Clear, popup_area)</code>
+    before drawing their block. Background content no longer bleeds through popup
+    borders.</li>
+  <li><strong>First-run wizard</strong> — the interactive setup wizard cannot run while
+    the TUI owns the terminal in raw/alternate-screen mode. A note in the TUI now
+    directs first-time users to run <code>mentisdbd wizard</code> in a separate
+    terminal instead.</li>
+  <li><strong>Render performance</strong> — <code>render_logs</code> no longer allocates
+    an intermediate <code>Vec&lt;&amp;str&gt;</code> on every frame tick; a single
+    <code>.iter().rev()</code> pass is used instead.</li>
+</ul>
+
+<h2>Upgrade</h2>
+
+<pre><code>cargo install mentisdb --force</code></pre>
+
+<p>
+  The daemon binary is <code>mentisdbd</code>. Run it directly in a terminal for the TUI,
+  or with <code>nohup mentisdbd &amp;</code> for background operation.
+</p>
+
+<hr>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>
