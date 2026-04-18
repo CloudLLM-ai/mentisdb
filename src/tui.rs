@@ -24,8 +24,8 @@ use ratatui::{
 };
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// A custom logger that routes log records into the TUI's log buffer via a channel,
@@ -117,6 +117,7 @@ pub struct SkillInfo {
 pub enum FocusedPane {
     TopLeft,
     TopRight,
+    Prime,
     Tables,
     Logs,
 }
@@ -125,7 +126,8 @@ impl FocusedPane {
     fn next(self) -> Self {
         match self {
             Self::TopLeft => Self::TopRight,
-            Self::TopRight => Self::Tables,
+            Self::TopRight => Self::Prime,
+            Self::Prime => Self::Tables,
             Self::Tables => Self::Logs,
             Self::Logs => Self::TopLeft,
         }
@@ -135,7 +137,8 @@ impl FocusedPane {
         match self {
             Self::TopLeft => Self::Logs,
             Self::TopRight => Self::TopLeft,
-            Self::Tables => Self::TopRight,
+            Self::Prime => Self::TopRight,
+            Self::Tables => Self::Prime,
             Self::Logs => Self::Tables,
         }
     }
@@ -169,9 +172,9 @@ pub struct TuiState {
     /// Layout areas cached during the last render pass for mouse hit-testing.
     last_top_left_area: Rect,
     last_top_right_area: Rect,
+    last_prime_area: Rect,
     last_tables_area: Rect,
     last_tabs_area: Rect,
-    last_bottom_area: Rect,
     last_logs_area: Rect,
 }
 
@@ -204,9 +207,9 @@ impl TuiState {
             should_quit: false,
             last_top_left_area: Rect::default(),
             last_top_right_area: Rect::default(),
+            last_prime_area: Rect::default(),
             last_tables_area: Rect::default(),
             last_tabs_area: Rect::default(),
-            last_bottom_area: Rect::default(),
             last_logs_area: Rect::default(),
         }
     }
@@ -300,7 +303,11 @@ fn cycle_table_selection(table_state: &mut TableState, len: usize, forward: bool
     let i = match table_state.selected() {
         Some(i) => {
             if forward {
-                if i >= len - 1 { 0 } else { i + 1 }
+                if i >= len - 1 {
+                    0
+                } else {
+                    i + 1
+                }
             } else if i == 0 {
                 len - 1
             } else {
@@ -326,26 +333,23 @@ fn ui(frame: &mut Frame, state: &mut TuiState) {
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(22),
-            Constraint::Max(17),
-            Constraint::Length(7),
-            Constraint::Min(6),
+            Constraint::Length(17),
+            Constraint::Length(5),
+            Constraint::Max(14),
+            Constraint::Min(14),
             Constraint::Length(1),
         ])
         .split(full_area);
 
     let top_area = main_layout[0];
-    let tables_area = main_layout[1];
-    let bottom_area = main_layout[2];
+    let prime_area = main_layout[1];
+    let tables_area = main_layout[2];
     let logs_area = main_layout[3];
     let hint_area = main_layout[4];
 
     let top_split = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min(85),
-            Constraint::Percentage(100),
-        ])
+        .constraints([Constraint::Min(85), Constraint::Percentage(100)])
         .split(top_area);
 
     let top_left = top_split[0];
@@ -355,13 +359,13 @@ fn ui(frame: &mut Frame, state: &mut TuiState) {
     state.last_top_left_area = top_left;
     state.last_top_right_area = top_right;
     state.last_tables_area = tables_area;
-    state.last_bottom_area = bottom_area;
+    state.last_prime_area = prime_area;
     state.last_logs_area = logs_area;
 
     render_top_left(frame, state, top_left);
     render_top_right(frame, state, top_right);
+    render_prime(frame, state, prime_area);
     render_tables(frame, state, tables_area);
-    render_bottom(frame, state, bottom_area);
     render_logs(frame, state, logs_area);
     render_hint_bar(frame, state, hint_area);
 }
@@ -369,7 +373,9 @@ fn ui(frame: &mut Frame, state: &mut TuiState) {
 /// Returns the border style for a pane — highlighted when focused.
 fn border_style_for(state: &TuiState, pane: FocusedPane) -> Style {
     if state.focused_pane == pane {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     }
@@ -393,12 +399,16 @@ fn render_top_left(frame: &mut Frame, state: &TuiState, area: Rect) {
     if state.started {
         lines.push(Line::from(Span::styled(
             "mentisdbd running",
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
         )));
     } else {
         lines.push(Line::from(Span::styled(
             "mentisdbd started",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )));
     }
 
@@ -427,6 +437,15 @@ fn render_top_left(frame: &mut Frame, state: &TuiState, area: Rect) {
         .block(block)
         .scroll((state.left_scroll as u16, 0));
     frame.render_widget(paragraph, area);
+
+    let total = state.left_content_len();
+    if total + 2 > area.height as usize {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        let mut scrollbar_state = ScrollbarState::new(total).position(state.left_scroll);
+        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    }
 }
 
 fn render_top_right(frame: &mut Frame, state: &TuiState, area: Rect) {
@@ -467,19 +486,35 @@ fn render_top_right(frame: &mut Frame, state: &TuiState, area: Rect) {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("↑"))
             .end_symbol(Some("↓"));
-        let mut scrollbar_state =
-            ScrollbarState::new(total_content).position(state.right_scroll);
+        let mut scrollbar_state = ScrollbarState::new(total_content).position(state.right_scroll);
         frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
+}
+
+fn render_prime(frame: &mut Frame, state: &TuiState, area: Rect) {
+    let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(Line::from(Span::styled(
+        "Prime your agent — paste into your AI chat:",
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+
+    let primer_span = Span::styled(format!(" {} ", state.primer_text), HIGHLIGHT_STYLE);
+    lines.push(Line::from(primer_span));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(border_style_for(state, FocusedPane::Prime));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
 }
 
 fn render_tables(frame: &mut Frame, state: &mut TuiState, area: Rect) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(4),
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(4)])
         .split(area);
 
     let tabs_area = layout[0];
@@ -496,7 +531,11 @@ fn render_tables(frame: &mut Frame, state: &mut TuiState, area: Rect) {
                 .border_type(BorderType::Rounded)
                 .border_style(border_style_for(state, FocusedPane::Tables)),
         )
-        .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
         .divider("|");
 
     frame.render_widget(tabs, tabs_area);
@@ -518,7 +557,11 @@ fn render_chain_table(frame: &mut Frame, state: &mut TuiState, area: Rect) {
         "Agents",
         "Storage Location",
     ])
-    .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    .style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let rows: Vec<Row> = state
         .chains
@@ -556,17 +599,23 @@ fn render_chain_table(frame: &mut Frame, state: &mut TuiState, area: Rect) {
         .row_highlight_style(HIGHLIGHT_STYLE);
 
     frame.render_stateful_widget(table, area, &mut state.chain_table_state);
+
+    if !state.chains.is_empty() {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        let mut scrollbar_state = ScrollbarState::new(state.chains.len())
+            .position(state.chain_table_state.selected().unwrap_or(0));
+        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    }
 }
 
 fn render_agent_table(frame: &mut Frame, state: &mut TuiState, area: Rect) {
-    let header = Row::new(vec![
-        "Name",
-        "ID",
-        "Status",
-        "Memories",
-        "Description",
-    ])
-    .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    let header = Row::new(vec!["Name", "ID", "Status", "Memories", "Description"]).style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let mut rows: Vec<Row> = Vec::new();
     let mut current_chain = String::new();
@@ -578,7 +627,9 @@ fn render_agent_table(frame: &mut Frame, state: &mut TuiState, area: Rect) {
                 Row::new(vec![
                     Cell::from(Span::styled(
                         format!(" {}", current_chain),
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
                     )),
                     Cell::from(""),
                     Cell::from(""),
@@ -623,17 +674,23 @@ fn render_agent_table(frame: &mut Frame, state: &mut TuiState, area: Rect) {
         .row_highlight_style(HIGHLIGHT_STYLE);
 
     frame.render_stateful_widget(table, area, &mut state.agent_table_state);
+
+    if !state.agents.is_empty() {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        let mut scrollbar_state = ScrollbarState::new(state.agents.len())
+            .position(state.agent_table_state.selected().unwrap_or(0));
+        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    }
 }
 
 fn render_skill_table(frame: &mut Frame, state: &mut TuiState, area: Rect) {
-    let header = Row::new(vec![
-        "Name",
-        "Status",
-        "Versions",
-        "Tags",
-        "Uploaded By",
-    ])
-    .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    let header = Row::new(vec!["Name", "Status", "Versions", "Tags", "Uploaded By"]).style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let rows: Vec<Row> = state
         .skills
@@ -674,47 +731,15 @@ fn render_skill_table(frame: &mut Frame, state: &mut TuiState, area: Rect) {
         .row_highlight_style(HIGHLIGHT_STYLE);
 
     frame.render_stateful_widget(table, area, &mut state.skill_table_state);
-}
 
-fn render_bottom(frame: &mut Frame, state: &TuiState, area: Rect) {
-    let mut lines: Vec<Line> = Vec::new();
-
-    lines.push(Line::from(Span::styled(
-        "▶  Prime your agent — paste into your AI chat:",
-        Style::default().add_modifier(Modifier::BOLD),
-    )));
-
-    let primer_span = Span::styled(
-        format!(" {} ", state.primer_text),
-        HIGHLIGHT_STYLE,
-    );
-    lines.push(Line::from(primer_span));
-    lines.push(Line::from(""));
-
-    lines.push(Line::from(Span::styled(
-        "⚠  Closing this terminal window will stop mentisdbd.",
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-    )));
-
-    let dim_style = Style::default().add_modifier(Modifier::DIM);
-    let green_style = Style::default().fg(Color::Green);
-    for tip_line in state.background_tip.lines() {
-        let trimmed = tip_line.trim_start();
-        let style = if trimmed.starts_with("Option ") || trimmed.starts_with("Run in the") {
-            green_style
-        } else {
-            dim_style
-        };
-        lines.push(Line::from(Span::styled(tip_line.to_string(), style)));
+    if !state.skills.is_empty() {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        let mut scrollbar_state = ScrollbarState::new(state.skills.len())
+            .position(state.skill_table_state.selected().unwrap_or(0));
+        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Yellow));
-
-    let paragraph = Paragraph::new(lines).block(block);
-    frame.render_widget(paragraph, area);
 }
 
 fn render_logs(frame: &mut Frame, state: &TuiState, area: Rect) {
@@ -757,7 +782,9 @@ fn render_logs(frame: &mut Frame, state: &TuiState, area: Rect) {
 
 /// Renders a contextual hint bar showing keyboard shortcuts for the focused pane.
 fn render_hint_bar(frame: &mut Frame, state: &TuiState, area: Rect) {
-    let key_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let key_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
     let sep_style = Style::default().fg(Color::DarkGray);
     let desc_style = Style::default().add_modifier(Modifier::DIM);
 
@@ -766,6 +793,7 @@ fn render_hint_bar(frame: &mut Frame, state: &TuiState, area: Rect) {
     let pane_label = match state.focused_pane {
         FocusedPane::TopLeft => "Server Info",
         FocusedPane::TopRight => "Endpoints & TLS",
+        FocusedPane::Prime => "Agent Primer",
         FocusedPane::Tables => match state.tab_index {
             0 => "Chains",
             1 => "Agents",
@@ -776,7 +804,12 @@ fn render_hint_bar(frame: &mut Frame, state: &TuiState, area: Rect) {
     };
 
     let mut spans = vec![
-        Span::styled(format!(" {pane_label} "), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" {pane_label} "),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
         sep.clone(),
     ];
 
@@ -786,6 +819,12 @@ fn render_hint_bar(frame: &mut Frame, state: &TuiState, area: Rect) {
             spans.extend_from_slice(&[
                 Span::styled("↑↓", key_style),
                 Span::styled(" scroll  ", desc_style),
+            ]);
+        }
+        FocusedPane::Prime => {
+            spans.extend_from_slice(&[
+                Span::styled("Triple-click", key_style),
+                Span::styled(" select primer text  ", desc_style),
             ]);
         }
         FocusedPane::Tables => {
@@ -816,8 +855,8 @@ fn render_hint_bar(frame: &mut Frame, state: &TuiState, area: Rect) {
     ]);
 
     let hint_line = Line::from(spans);
-    let paragraph = Paragraph::new(hint_line)
-        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    let paragraph =
+        Paragraph::new(hint_line).style(Style::default().bg(Color::DarkGray).fg(Color::White));
     frame.render_widget(paragraph, area);
 }
 ///
@@ -889,6 +928,7 @@ pub fn run_tui(
                             FocusedPane::TopLeft => s.scroll_left_up(),
                             FocusedPane::TopRight => s.scroll_right_up(),
                             FocusedPane::Logs => s.scroll_logs_up(),
+                            FocusedPane::Prime => {}
                             FocusedPane::Tables => match s.tab_index {
                                 0 => s.select_chain_prev(),
                                 1 => s.select_agent_prev(),
@@ -900,6 +940,7 @@ pub fn run_tui(
                             FocusedPane::TopLeft => s.scroll_left_down(),
                             FocusedPane::TopRight => s.scroll_right_down(),
                             FocusedPane::Logs => s.scroll_logs_down(),
+                            FocusedPane::Prime => {}
                             FocusedPane::Tables => match s.tab_index {
                                 0 => s.select_chain_next(),
                                 1 => s.select_agent_next(),
@@ -910,7 +951,11 @@ pub fn run_tui(
                         // Left/Right switch table tabs when Tables focused.
                         KeyCode::Left if s.focused_pane == FocusedPane::Tables => {
                             let len = s.tab_titles.len();
-                            s.tab_index = if s.tab_index == 0 { len - 1 } else { s.tab_index - 1 };
+                            s.tab_index = if s.tab_index == 0 {
+                                len - 1
+                            } else {
+                                s.tab_index - 1
+                            };
                         }
                         KeyCode::Right if s.focused_pane == FocusedPane::Tables => {
                             s.tab_index = (s.tab_index + 1) % s.tab_titles.len();
@@ -922,13 +967,18 @@ pub fn run_tui(
                 }
                 Event::Mouse(mouse) => {
                     let mut s = state.lock().unwrap();
-                    let pos = Position { x: mouse.column, y: mouse.row };
+                    let pos = Position {
+                        x: mouse.column,
+                        y: mouse.row,
+                    };
                     match mouse.kind {
                         MouseEventKind::Down(MouseButton::Left) => {
                             if s.last_top_left_area.contains(pos) {
                                 s.focused_pane = FocusedPane::TopLeft;
                             } else if s.last_top_right_area.contains(pos) {
                                 s.focused_pane = FocusedPane::TopRight;
+                            } else if s.last_prime_area.contains(pos) {
+                                s.focused_pane = FocusedPane::Prime;
                             } else if s.last_logs_area.contains(pos) {
                                 s.focused_pane = FocusedPane::Logs;
                             } else if s.last_tables_area.contains(pos)
@@ -1088,10 +1138,7 @@ pub fn show_update_dialog(
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
                         break true;
                     }
-                    KeyCode::Char('n')
-                    | KeyCode::Char('N')
-                    | KeyCode::Enter
-                    | KeyCode::Esc => {
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter | KeyCode::Esc => {
                         break false;
                     }
                     _ => {}

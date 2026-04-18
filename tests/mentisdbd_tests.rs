@@ -457,33 +457,27 @@ fn scheduler_spaces_bursts_without_overlap() {
     );
 }
 
-/// No chains: paste line includes bootstrap and skill/core.
+/// Primer is a single simplified paste line.
 #[test]
 fn agent_primer_no_chains_shows_bootstrap() {
     let paste_line = mentisdbd_impl::build_agent_primer_paste_line("https://127.0.0.1:9473", false);
     assert!(paste_line.contains("prime yourself for optimal mentisdb usage"));
-    assert!(paste_line.contains("127.0.0.1:9473"));
-    assert!(paste_line.contains("mentisdb://skill/core"));
-    assert!(paste_line.contains("mentisdb_bootstrap"));
+    assert!(paste_line.contains("mentisdb_skill_md"));
 }
 
-/// Chains exist: paste line includes bootstrap and skill/core.
+/// Primer is the same regardless of chain state.
 #[test]
 fn agent_primer_with_chains_shows_resume() {
     let paste_line = mentisdbd_impl::build_agent_primer_paste_line("https://127.0.0.1:9473", true);
     assert!(paste_line.contains("prime yourself for optimal mentisdb usage"));
-    assert!(paste_line.contains("127.0.0.1:9473"));
-    assert!(paste_line.contains("mentisdb_bootstrap"));
-    assert!(paste_line.contains("mentisdb://skill/core"));
-    assert!(paste_line.contains("<chain-key>"));
+    assert!(paste_line.contains("mentisdb_skill_md"));
 }
 
-/// No-chains paste line uses project-name placeholder, not chain-key.
+/// Primer is consistent regardless of dashboard state.
 #[test]
 fn agent_primer_no_dashboard() {
     let paste_line = mentisdbd_impl::build_agent_primer_paste_line("https://127.0.0.1:9473", false);
-    assert!(paste_line.contains("mentisdb://skill/core"));
-    assert!(paste_line.contains("<project-name>"));
+    assert!(paste_line.contains("mentisdb_skill_md"));
 }
 
 #[test]

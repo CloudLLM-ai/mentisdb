@@ -450,16 +450,8 @@ pub(crate) fn build_first_run_setup_lines() -> Vec<String> {
 /// Builds the single ready-to-paste primer line shown at daemon startup.
 ///
 /// The line is printed outside any box so it can be triple-click selected cleanly.
-pub(crate) fn build_agent_primer_paste_line(mcp_addr: &str, has_chains: bool) -> String {
-    let chain_hint = if has_chains {
-        "Call mentisdb_list_chains, pick a chain, \
-         call mentisdb_bootstrap('<chain-key>'), \
-         then read mentisdb://skill/core."
-    } else {
-        "No chains yet — call mentisdb_bootstrap('<project-name>'), \
-         then read mentisdb://skill/core."
-    };
-    format!("prime yourself for optimal mentisdb usage — connect to MentisDB at {mcp_addr}. {chain_hint}")
+pub(crate) fn build_agent_primer_paste_line(_mcp_addr: &str, _has_chains: bool) -> String {
+    "prime yourself for optimal mentisdb usage, call mentisdb_skill_md and update your local mentisdb skill".to_string()
 }
 
 fn detect_first_run_setup_status(chain_dir: &Path) -> FirstRunSetupStatus {
@@ -1074,9 +1066,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
                     }
                 } else {
-                    eprintln!(
-                        "mentisdbd update available: {current_version} -> {latest_display}",
-                    );
+                    eprintln!("mentisdbd update available: {current_version} -> {latest_display}",);
                     eprintln!(
                         "Non-interactive terminal. Update manually:\n\
                          cargo install --git https://github.com/{} --tag {} --locked --force --bin {UPDATE_BINARY_NAME} {UPDATE_CRATE_NAME}",
@@ -1255,7 +1245,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Migration lines (shown in top-left pane)
     if migration_reports.is_empty() {
-        tui_state.migration_lines.push("No chain migrations required.".to_string());
+        tui_state
+            .migration_lines
+            .push("No chain migrations required.".to_string());
     } else {
         for report in &migration_reports {
             tui_state.migration_lines.push(format!(
@@ -1283,7 +1275,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ));
         }
         if report.renamed_registry_file {
-            tui_state.migration_lines
+            tui_state
+                .migration_lines
                 .push("Renamed thoughtchain-registry.json -> mentisdb-registry.json".to_string());
         }
     }
@@ -1291,7 +1284,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // First-run setup notice
     if is_first_run {
         tui_state.migration_lines.push(String::new());
-        tui_state.migration_lines
+        tui_state
+            .migration_lines
             .push("First-run setup:".to_string());
         for line in build_first_run_setup_lines() {
             tui_state.migration_lines.push(format!("  {line}"));
@@ -2112,21 +2106,13 @@ pub(crate) fn background_launch_tip() -> &'static str {
     }
 }
 
-
 /// Build configuration display lines for the TUI top-left pane.
 fn build_config_lines(config: &MentisDbServerConfig, update_config: &UpdateConfig) -> Vec<String> {
     let mut lines = Vec::new();
 
-    let mut add_var = |name: &str, raw: Option<String>, effective: String| {
-        if let Some(raw_value) = raw {
-            lines.push(format!(
-                "  {name}={raw_value} (effective: {effective})"
-            ));
-        } else {
-            lines.push(format!(
-                "  {name}=<unset> (effective default: {effective})"
-            ));
-        }
+    let mut add_var = |name: &str, raw: Option<String>, default: String| {
+        let current = raw.unwrap_or_else(|| "<unset>".to_string());
+        lines.push(format!("  {name}={current} (default: {default})"));
     };
 
     add_var(
@@ -2268,7 +2254,10 @@ fn build_tls_info_lines(
     let mcp_port = handles.https_mcp.as_ref().map(|h| h.local_addr().port());
     let rest_port = handles.https_rest.as_ref().map(|h| h.local_addr().port());
 
-    lines.push(format!("TLS Certificate: {}", config.tls_cert_path.display()));
+    lines.push(format!(
+        "TLS Certificate: {}",
+        config.tls_cert_path.display()
+    ));
     lines.push(String::new());
     lines.push("  my.mentisdb.com is a public DNS A-record → 127.0.0.1".to_string());
     lines.push("  You can use it as a friendly hostname for this local daemon.".to_string());
@@ -2314,12 +2303,8 @@ fn build_endpoint_lines(
     let mcp_friendly = format!("http://my.mentisdb.com:{mcp_port}");
     let rest_friendly = format!("http://my.mentisdb.com:{rest_port}");
 
-    lines.push(format!(
-        "  MCP  (HTTP)  {mcp_local:<32}  {mcp_friendly}"
-    ));
-    lines.push(format!(
-        "  REST (HTTP)  {rest_local:<32}  {rest_friendly}"
-    ));
+    lines.push(format!("  MCP  (HTTP)  {mcp_local:<32}  {mcp_friendly}"));
+    lines.push(format!("  REST (HTTP)  {rest_local:<32}  {rest_friendly}"));
 
     if let Some(ref h) = handles.https_mcp {
         let local = format!("https://{}", h.local_addr());
