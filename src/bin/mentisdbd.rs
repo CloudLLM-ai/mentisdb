@@ -518,6 +518,7 @@ pub(crate) fn maybe_run_first_run_setup_with_io(
     Ok(true)
 }
 
+#[allow(dead_code)]
 fn maybe_run_first_run_setup(status: &FirstRunSetupStatus) -> io::Result<bool> {
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -1079,7 +1080,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         update_config,
         handles,
         is_first_run,
-        first_run_setup_status,
+        _first_run_setup_status,
         primer_paste_line,
         migration_reports,
         skill_registry_msg,
@@ -1128,14 +1129,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 s.migration_lines.push(
                     "Renamed thoughtchain-registry.json -> mentisdb-registry.json".to_string(),
                 );
-            }
-        }
-
-        if is_first_run {
-            s.migration_lines.push(String::new());
-            s.migration_lines.push("First-run setup:".to_string());
-            for line in build_first_run_setup_lines() {
-                s.migration_lines.push(format!("  {line}"));
             }
         }
 
@@ -1246,29 +1239,25 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    // ── First-run setup wizard ──────────────────────────────────────────────
-    if let Err(error) = maybe_run_first_run_setup(&first_run_setup_status) {
-        eprintln!("Startup setup wizard failed: {error}");
+    // TUI stays running — no restart, no terminal flash.
+    // If it is the user's first run, show setup instructions in the TUI
+    // rather than an interactive wizard (which cannot run while the TUI is
+    // active since the terminal is in raw/alternate-screen mode).
+    if is_first_run {
+        let mut s = tui_state.lock().unwrap();
+        s.migration_lines.push(String::new());
+        s.migration_lines
+            .push("First-run setup: run `mentisdbd wizard` in a separate terminal.".to_string());
+        for line in build_first_run_setup_lines() {
+            s.migration_lines.push(format!("  {line}"));
+        }
     }
 
-    // ── Restart the TUI for the fully-initialized state ─────────────────────
-    let running = Arc::new(AtomicBool::new(true));
-    let running_clone = Arc::clone(&running);
-    let ctrlc_handle = tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        running_clone.store(false, Ordering::SeqCst);
-    });
-
-    // We need a fresh log receiver. The old one was consumed by the first TUI.
-    let (new_tx, new_rx) = std::sync::mpsc::channel();
-    let new_logger = tui::TuiLogger::new(new_tx);
-    let _ = log::set_boxed_logger(Box::new(new_logger));
-
-    let tui_result = tui::run_tui(tui_state, running, new_rx);
+    // Wait for the TUI thread (the user presses q to exit).
+    if let Err(te) = tui_handle.join().unwrap() {
+        eprintln!("TUI error: {te}");
+    }
     ctrlc_handle.abort();
-    if let Err(e) = tui_result {
-        eprintln!("TUI error: {e}");
-    }
 
     Ok(())
 }
@@ -1354,7 +1343,7 @@ async fn run_startup_sequence(
     // Migrations
     {
         let mut s = tui_state.lock().unwrap();
-        s.startup_status = "Running migrations…".to_string();
+        s.startup_status = "Checking chains for migrations…".to_string();
     }
 
     let migration_reports = migrate_registered_chains_with_adapter(
@@ -1593,26 +1582,30 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
     // After the update dialog, continue with normal startup.
     let startup_result: Result<StartupData, _> = run_startup_sequence(&tui_state).await;
 
-    {
-        let mut s = tui_state.lock().unwrap();
-        s.should_quit = true;
+    if let Err(e) = startup_result {
+        {
+            let mut s = tui_state.lock().unwrap();
+            s.startup_error = Some(e.to_string());
+        }
+        if let Err(te) = tui_handle.join().unwrap() {
+            eprintln!("TUI error: {te}");
+        }
+        ctrlc_handle.abort();
+        return Err(e);
     }
-    if let Err(e) = tui_handle.join().unwrap() {
-        eprintln!("TUI error: {e}");
-    }
-    ctrlc_handle.abort();
+    let startup_result = startup_result.unwrap();
 
     let (
         config,
         update_config,
         handles,
         is_first_run,
-        first_run_setup_status,
+        _first_run_setup_status,
         primer_paste_line,
         migration_reports,
         skill_registry_msg,
         storage_root_migration,
-    ) = startup_result?;
+    ) = startup_result;
 
     {
         let mut s = tui_state.lock().unwrap();
@@ -1655,14 +1648,6 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
                 s.migration_lines.push(
                     "Renamed thoughtchain-registry.json -> mentisdb-registry.json".to_string(),
                 );
-            }
-        }
-
-        if is_first_run {
-            s.migration_lines.push(String::new());
-            s.migration_lines.push("First-run setup:".to_string());
-            for line in build_first_run_setup_lines() {
-                s.migration_lines.push(format!("  {line}"));
             }
         }
 
@@ -1773,26 +1758,21 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
         }
     }
 
-    if let Err(error) = maybe_run_first_run_setup(&first_run_setup_status) {
-        eprintln!("Startup setup wizard failed: {error}");
+    if is_first_run {
+        let mut s = tui_state.lock().unwrap();
+        s.migration_lines.push(String::new());
+        s.migration_lines
+            .push("First-run setup: run `mentisdbd wizard` in a separate terminal.".to_string());
+        for line in build_first_run_setup_lines() {
+            s.migration_lines.push(format!("  {line}"));
+        }
     }
 
-    let running = Arc::new(AtomicBool::new(true));
-    let running_clone = Arc::clone(&running);
-    let ctrlc_handle = tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        running_clone.store(false, Ordering::SeqCst);
-    });
-
-    let (new_tx, new_rx) = std::sync::mpsc::channel();
-    let new_logger = tui::TuiLogger::new(new_tx);
-    let _ = log::set_boxed_logger(Box::new(new_logger));
-
-    let tui_result = tui::run_tui(tui_state, running, new_rx);
+    // TUI stays running — no restart, no terminal flash.
+    if let Err(te) = tui_handle.join().unwrap() {
+        eprintln!("TUI error: {te}");
+    }
     ctrlc_handle.abort();
-    if let Err(e) = tui_result {
-        eprintln!("TUI error: {e}");
-    }
 
     Ok(())
 }
