@@ -1,3 +1,9 @@
+0.9.3.39 UNRELEASED
+  - fix(daemon): remove broken `brew services start mentisdb` from macOS background
+    launch tip — the formula does not ship a launchd plist, so the command always
+    failed; startup messaging now shows only the working nohup one-liner
+
+
 0.9.2.38 APR/17/2026
   - feat(stdio): smart daemon detection in stdio MCP mode — the stdio process now
     checks if a daemon is running via the health endpoint, proxies to it if found,
