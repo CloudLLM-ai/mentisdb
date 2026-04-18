@@ -15,6 +15,9 @@
 
 set -euo pipefail
 
+# Silence per-thought audio during benchmarks (startup jingle stays on).
+export MENTISDB_THOUGHT_SOUNDS=false
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DATA_FILE="$REPO_ROOT/data/longmemeval_oracle.json"

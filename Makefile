@@ -39,7 +39,7 @@ test: ## Run all tests using cargo test
 
 # Run benchmarks
 bench: ## Run Criterion benchmarks (thought_chain, skill_registry, http_concurrency)
-	${CARGO_CMD} bench 2>&1 | tee /tmp/mentisdb_bench_results.txt
+	MENTISDB_THOUGHT_SOUNDS=false ${CARGO_CMD} bench 2>&1 | tee /tmp/mentisdb_bench_results.txt
 
 # Generate documentation
 doc: ## Generate project documentation using cargo doc
