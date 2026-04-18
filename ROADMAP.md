@@ -1,6 +1,12 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 → 0.9.1)
+## Shipped (0.8.2 → 0.9.2.38)
+
+### 0.9.2.38 — Smart Stdio Mode
+- stdio smart daemon detection — `mentisdbd --mode stdio` auto-detects a running daemon and proxies to it, or launches one in the background when none is found; falls back to local mode only if launch fails
+- smart stdio mode — Claude Desktop / Cursor users no longer need to pre-start `mentisdbd &` before launching the MCP client; the stdio subprocess handles daemon lifecycle transparently
+- MCP-REST split brain fix — stdio proxy forwards `tools/list` and `tools/call` to the daemon's HTTP MCP endpoints so all clients share the same live in-memory chain cache
+- `start_servers` shared service — single `MentisDbService` instance is shared across REST, HTTP-MCP, and stdio surfaces instead of each transport instantiating its own
 
 ### 0.9.1 — The Full-Feature Release
 - Federated cross-chain search — `BranchesFrom` walks ancestor chains; ranked search transparently queries branch + ancestors

@@ -40,6 +40,19 @@
   </header>
 
   <article>
+    <h2><a href="mentisdb-0.9.2.38.html">MentisDB 0.9.2.38 — Smart Stdio MCP, Shared Service State, and Reproducible Benchmarks</a></h2>
+    <div class="meta">April 17, 2026</div>
+    <p>
+      Stdio MCP now auto-detects or launches the daemon so Claude Desktop works with zero
+      pre-flight. <code>start_servers</code> shares one <code>MentisDbService</code> across
+      every surface, ending cross-surface split brain between HTTP, HTTPS, MCP, REST, and
+      dashboard. Benchmarks are reproducible bit-identical: LoCoMo-10P R@10 71.9%,
+      LongMemEval R@5/R@10/R@20 66.8% / 72.2% / 78.0%. Plus backup/restore, admin flush,
+      and search correctness fixes.
+    </p>
+  </article>
+
+  <article>
     <h2><a href="mentisdb-ranked-search-pipeline.html">Inside MentisDB Ranked Search — One Call, One Pipeline</a></h2>
     <div class="meta">April 17, 2026</div>
     <p>

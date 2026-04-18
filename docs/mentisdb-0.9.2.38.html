@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.9.2.38 — Smart Stdio MCP, Shared Service State, and Reproducible Benchmarks</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 17, 2026</div>
+
+<h1>MentisDB 0.9.2.38 — Smart Stdio MCP, Shared Service State, and Reproducible Benchmarks</h1>
+
+<p>
+  0.9.2.38 is a release about correctness. Two fixes in particular close long-standing
+  integration gaps that were easy to miss and expensive to debug: stdio MCP clients no
+  longer need a pre-launched daemon, and the multi-surface server no longer splits brain
+  across HTTP, HTTPS, MCP, REST, and the dashboard. Benchmarks are now reproducible
+  bit-identical across full-scale runs.
+</p>
+
+<div class="highlight">
+  <p>
+    <strong>Headline:</strong> plug MentisDB into Claude Desktop with zero pre-flight steps.
+    No <code>mentisdbd &amp;</code>, no mcp-remote, no shell init. The stdio process
+    finds or launches the daemon itself and proxies cleanly to it so every surface
+    shares the same live chain cache.
+  </p>
+</div>
+
+<h2 id="smart-stdio">Smart Stdio MCP Mode</h2>
+
+<p>
+  When an MCP client (Claude Desktop, Cursor, or anything that spawns an
+  stdio subprocess) starts <code>mentisdbd</code> in stdio mode, the process now:
+</p>
+
+<ol>
+  <li>Probes the local daemon's health endpoint.</li>
+  <li>If a daemon is already running, it <strong>proxies stdio requests to the HTTP MCP surface</strong>
+      so every client sees the same live chain cache.</li>
+  <li>If not, it <strong>launches a background daemon</strong> (<code>nohup</code> on Unix,
+      <code>start /B</code> on Windows), waits for health, and proxies to it.</li>
+  <li>If launch fails, it falls back to in-process stdio mode so the client still works.</li>
+</ol>
+
+<p>
+  The result is that Claude Desktop users stop fighting MCP bootstrap. One entry in
+  <code>claude_desktop_config.json</code> pointing at <code>mentisdbd</code> is the whole
+  setup. Multiple stdio clients running side-by-side observe each other's appends in real
+  time because they all talk to the same daemon process.
+</p>
+
+<p>
+  Background and details: see the
+  <a href="mentisdb-stdio-mcp-mode.html">Stdio MCP Mode with Smart Daemon Detection</a> post.
+</p>
+
+<h2 id="start-servers">Cross-Surface State Coherency in <code>start_servers</code></h2>
+
+<p>
+  Before 0.9.2.38, <code>start_servers</code> constructed each surface — HTTP MCP,
+  HTTP REST, HTTPS MCP, HTTPS REST, and the dashboard — with its own
+  <code>MentisDbService::new(...)</code>. Each service owned a private
+  <code>DashMap&lt;chain_key, Arc&lt;RwLock&lt;MentisDb&gt;&gt;&gt;</code>, so an append that
+  went in through REST was invisible to MCP (and vice versa) until the daemon restarted and
+  both services happened to reload the chain from disk.
+</p>
+
+<p>
+  The fix is small and surgical: <code>start_servers</code> now constructs
+  <strong>one</strong> <code>MentisDbService</code> and shares it across every surface it
+  boots. Single-surface entry points (<code>start_mcp_server</code>,
+  <code>start_rest_server</code>, <code>start_https_*_server</code>) are unchanged.
+</p>
+
+<p>
+  A regression test (<code>start_servers_shares_state_across_mcp_and_rest</code>) pre-warms
+  the MCP service, appends a thought via REST, and asserts the MCP side immediately sees
+  the new <code>head_hash</code>, <code>thought_count</code>, and
+  <code>latest_thought.index</code> — no restart, no reload.
+</p>
+
+<h2 id="backup-restore">Backup and Restore</h2>
+
+<p>
+  Two new subcommands, <code>mentisdbd backup</code> and <code>mentisdbd restore</code>,
+  create and restore <code>.mbak</code> archives of the full <code>MENTISDB_DIR</code>.
+</p>
+
+<ul>
+  <li>SHA-256 manifest for every file; verification before any file is written on restore.</li>
+  <li><code>--flush</code>, <code>--include-tls</code>, <code>--overwrite</code> flags.</li>
+  <li>CLI auto-detects a running daemon and calls <code>POST /v1/admin/flush</code> before reading files.</li>
+  <li>Interactive conflict prompt lists conflicting files when <code>--overwrite</code> is not supplied; declining exits cleanly with no changes.</li>
+  <li>Restore rejects path-traversal entries (<code>../escape.txt</code>, absolute paths) with <code>InvalidData</code> before extraction.</li>
+  <li>33 integration tests covering roundtrip, TLS inclusion, idempotent restore, overwrite, corruption detection, manifest round-trip, and subdirectory creation.</li>
+</ul>
+
+<h2 id="admin-flush">POST /v1/admin/flush</h2>
+
+<p>
+  A new REST endpoint iterates every open chain and calls <code>flush()</code> on its
+  <code>BinaryStorageAdapter</code>. Backup uses it automatically; operators can call it
+  directly before snapshotting the data directory with an external tool.
+</p>
+
+<h2 id="search-fixes">Search and Relation Correctness</h2>
+
+<ul>
+  <li><strong>Federated search dedup</strong> now keeps the higher-scoring duplicate occurrence instead of whichever chain surfaced the UUID first — matching the documented contract.</li>
+  <li><strong>Relation dedup</strong> no longer collapses distinct edges that differ by <code>chain_key</code>, <code>valid_at</code>, or <code>invalid_at</code>; only exact duplicates are removed.</li>
+  <li><strong>Branch ancestor discovery is transitive</strong> — branch-aware search walks child to parent to grandparent instead of stopping at the direct parent.</li>
+  <li><strong>Webhook registry persistence</strong> now uses temp-file-plus-rename instead of truncating the live registry in place; delivery fan-out is bounded by a queue and semaphore so bursty append workloads no longer spawn unbounded tasks.</li>
+</ul>
+
+<h2 id="wizard">Wizard and Client Fixes</h2>
+
+<ul>
+  <li>Wizard prompts before <code>brew install mcp-remote</code> on macOS (previously silent); brew is tried first, npm is the fallback; dead <code>check_node_version</code> and <code>detect_brew_mcp_remote</code> helpers removed.</li>
+  <li>When <code>mcp-remote</code> is installed as an absolute executable, the wizard uses it directly without a node wrapper; the shebang-based fallback is retained for npm-installed scripts.</li>
+  <li>Restore's interactive confirmation actually enables overwrite mode when the user answers yes (previously it silently kept <code>overwrite=false</code> unless <code>--overwrite</code> was passed).</li>
+  <li><code>pymentisdb.context_bundles()</code> now decodes typed <code>ContextBundleSeed</code> and <code>ContextBundleHit</code> objects instead of nesting <code>ContextBundle</code> inside itself; <code>append_thought()</code> uses one canonical <code>ThoughtInput</code> builder; <code>ranked_search()</code> and <code>context_bundles()</code> accept <code>MemoryScope</code> enums directly.</li>
+  <li>LLM memory extraction no longer sends an OpenAI <code>response_format</code> hint — some OpenAI-compatible endpoints rejected the schema; MentisDB now relies on the prompt plus strict JSON validation of the returned payload, preserving provider portability.</li>
+</ul>
+
+<h2 id="startup-hint">Startup: Terminal-Close Warning</h2>
+
+<p>
+  <code>mentisdbd</code> now prints a yellow warning at daemon startup that closing the
+  terminal stops the process, followed by an OS-specific background-launch tip:
+</p>
+
+<ul>
+  <li><strong>macOS:</strong> <code>brew services start mentisdb</code> (launchd) or a <code>nohup</code> one-liner.</li>
+  <li><strong>Linux:</strong> systemd user service unit snippet or a <code>nohup</code> one-liner.</li>
+  <li><strong>Windows:</strong> <code>schtasks /create</code> one-liner or <code>Start-Process -WindowStyle Hidden</code>.</li>
+</ul>
+
+<h2 id="benchmarks">Benchmarks</h2>
+
+<p>
+  Benchmarks on 0.9.2.38 are <strong>deterministic</strong>: three independent full-scale
+  runs (2026-04-14 and two on 2026-04-17) produced bit-identical scores.
+</p>
+
+<table>
+  <tr><th>Benchmark</th><th>Metric</th><th>Result</th></tr>
+  <tr><td>LoCoMo 10-persona</td><td>R@10</td><td><strong>71.9%</strong></td></tr>
+  <tr><td>LongMemEval</td><td>R@5</td><td><strong>66.8%</strong></td></tr>
+  <tr><td>LongMemEval</td><td>R@10</td><td><strong>72.2%</strong></td></tr>
+  <tr><td>LongMemEval</td><td>R@20</td><td><strong>78.0%</strong></td></tr>
+</table>
+
+<p>
+  The <a href="https://github.com/CloudLLM-ai/mentisdb/blob/master/WHITEPAPER.md">WHITEPAPER</a>
+  now documents the reproducibility caption under the results table and fills in previously
+  empty LoCoMo cells (single-hop 75.8%, multi-hop 57.4%, R@20 79.1%).
+</p>
+
+<p>
+  The retrieval pipeline that produces these numbers is described end-to-end in
+  <a href="mentisdb-ranked-search-pipeline.html">Inside MentisDB Ranked Search — One Call, One Pipeline</a>.
+</p>
+
+<h2 id="whitepaper">WHITEPAPER Refresh</h2>
+
+<p>
+  <code>WHITEPAPER.md</code> was rewritten in academic register with formal definitions
+  (Thought, Chain, BM25, RRF, Jaccard dedup, temporal validity), a tamper-evidence proof
+  sketch, and a References section. A LaTeX port (<code>WHITEPAPER.tex</code>) uses
+  <code>amsmath</code>/<code>amsthm</code>/<code>booktabs</code>, and
+  <code>build-whitepaper.sh</code> includes macOS and Ubuntu install instructions with
+  <code>--open</code>/<code>--clean</code> flags.
+</p>
+
+<h2 id="upgrade">Upgrade</h2>
+
+<pre><code>cargo install mentisdb --locked --force</code></pre>
+
+<p>
+  <strong>Claude Desktop users:</strong> you no longer need to pre-launch
+  <code>mentisdbd</code>. Point your MCP config at the <code>mentisdbd</code> binary in
+  stdio mode and the process will find or start the daemon itself. See the
+  <a href="mentisdb-stdio-mcp-mode.html">stdio MCP walkthrough</a> for the exact config.
+</p>
+
+<p>
+  No schema migration. Webhook registrations, backups, and existing chains from
+  0.9.1.x carry forward unchanged.
+</p>
+
+<h2 id="links">Links</h2>
+
+<ul>
+  <li><a href="mentisdb-ranked-search-pipeline.html">Inside MentisDB Ranked Search — One Call, One Pipeline</a></li>
+  <li><a href="mentisdb-stdio-mcp-mode.html">Stdio MCP Mode with Smart Daemon Detection</a></li>
+  <li><a href="https://github.com/CloudLLM-ai/mentisdb/blob/master/WHITEPAPER.md">WHITEPAPER.md</a></li>
+  <li><a href="https://github.com/CloudLLM-ai/mentisdb/releases">GitHub Releases</a></li>
+</ul>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>
