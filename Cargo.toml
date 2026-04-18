@@ -51,6 +51,7 @@ fastembed = { version = "5.13.1", optional = true }
 # and ring are compiled in, rustls refuses to auto-select a default provider.
 rustls = { version = "0.23", features = ["ring"], optional = true }
 ureq = { version = "2", features = ["json"] }
+arboard = { version = "3", default-features = false }
 openai-rust2 = { version = "1.7.2", optional = true }
 anyhow = { version = "1", optional = true }
 zip = { version = "2.2", default-features = false, features = ["deflate"] }

@@ -26,7 +26,7 @@ use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A custom logger that routes log records into the TUI's log buffer via a channel,
 /// preventing raw stderr output from corrupting the ratatui alternate screen.
@@ -179,6 +179,8 @@ pub struct TuiState {
     /// Sender to reply to the update dialog. The background startup
     /// thread waits on the paired receiver for the user's choice.
     pub update_response_tx: Option<mpsc::Sender<bool>>,
+    /// Temporary toast shown after a clipboard copy. Cleared after 2 s.
+    pub toast: Option<(String, Instant)>,
     /// Layout areas cached during the last render pass for mouse hit-testing.
     last_top_left_area: Rect,
     last_top_right_area: Rect,
@@ -219,6 +221,7 @@ impl TuiState {
             should_quit: false,
             update_dialog: None,
             update_response_tx: None,
+            toast: None,
             last_top_left_area: Rect::default(),
             last_top_right_area: Rect::default(),
             last_prime_area: Rect::default(),
@@ -306,6 +309,65 @@ impl TuiState {
 
     pub fn select_skill_next(&mut self) {
         cycle_table_selection(&mut self.skill_table_state, self.skills.len(), true);
+    }
+
+    /// Text of the currently focused/selected item — used for clipboard copy.
+    pub fn selected_item_text(&self) -> Option<String> {
+        match self.focused_pane {
+            FocusedPane::Prime => {
+                if self.primer_text.is_empty() {
+                    None
+                } else {
+                    Some(self.primer_text.clone())
+                }
+            }
+            FocusedPane::Tables => match self.tab_index {
+                0 => self
+                    .chain_table_state
+                    .selected()
+                    .and_then(|i| self.chains.get(i))
+                    .map(|c| c.key.clone()),
+                1 => self
+                    .agent_table_state
+                    .selected()
+                    .and_then(|i| self.agents.get(i))
+                    .map(|a| a.id.clone()),
+                2 => self
+                    .skill_table_state
+                    .selected()
+                    .and_then(|i| self.skills.get(i))
+                    .map(|s| s.name.clone()),
+                _ => None,
+            },
+            FocusedPane::Logs => {
+                // Copy the visible log lines (newest-first, as rendered).
+                if self.log_lines.is_empty() {
+                    None
+                } else {
+                    let visible: Vec<&str> = self
+                        .log_lines
+                        .iter()
+                        .rev()
+                        .skip(self.log_scroll)
+                        .take(50)
+                        .map(|s| s.as_str())
+                        .collect();
+                    Some(visible.join("\n"))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Rect of the pane that anchors the copy toast.
+    pub fn toast_anchor(&self) -> Rect {
+        match self.focused_pane {
+            FocusedPane::Prime => self.last_prime_area,
+            FocusedPane::Tables => self.last_tables_area,
+            FocusedPane::Logs => self.last_logs_area,
+            FocusedPane::TopLeft => self.last_top_left_area,
+            FocusedPane::TopRight => self.last_top_right_area,
+        }
     }
 
     /// Request an in-TUI update dialog. Blocks until the user responds
@@ -412,6 +474,11 @@ fn ui(frame: &mut Frame, state: &mut TuiState) {
         render_update_dialog_overlay(frame, state, full_area);
     } else if !state.started {
         render_startup_overlay(frame, state, full_area);
+    }
+
+    if let Some((ref msg, _)) = state.toast {
+        let anchor = state.toast_anchor();
+        render_toast(frame, msg, anchor);
     }
 }
 
@@ -623,8 +690,18 @@ fn render_chain_table(frame: &mut Frame, state: &mut TuiState, area: Rect) {
         })
         .collect();
 
+    // Size the Chain Key column to fit the longest key (min 10, header "Chain Key" = 9).
+    let key_col_width = state
+        .chains
+        .iter()
+        .map(|c| c.key.len())
+        .max()
+        .unwrap_or(9)
+        .max(9) as u16
+        + 1;
+
     let widths = [
-        Constraint::Percentage(20),
+        Constraint::Length(key_col_width),
         Constraint::Length(5),
         Constraint::Length(10),
         Constraint::Length(10),
@@ -860,16 +937,25 @@ fn render_hint_bar(frame: &mut Frame, state: &TuiState, area: Rect) {
 
     // Context-specific hints.
     match state.focused_pane {
-        FocusedPane::TopLeft | FocusedPane::TopRight | FocusedPane::Logs => {
+        FocusedPane::TopLeft | FocusedPane::TopRight => {
             spans.extend_from_slice(&[
                 Span::styled("↑↓", key_style),
                 Span::styled(" scroll  ", desc_style),
             ]);
         }
+        FocusedPane::Logs => {
+            spans.extend_from_slice(&[
+                Span::styled("↑↓", key_style),
+                Span::styled(" scroll  ", desc_style),
+                sep.clone(),
+                Span::styled("c", key_style),
+                Span::styled(" copy visible logs  ", desc_style),
+            ]);
+        }
         FocusedPane::Prime => {
             spans.extend_from_slice(&[
-                Span::styled("Triple-click", key_style),
-                Span::styled(" select primer text  ", desc_style),
+                Span::styled("c", key_style),
+                Span::styled(" copy primer text  ", desc_style),
             ]);
         }
         FocusedPane::Tables => {
@@ -879,6 +965,9 @@ fn render_hint_bar(frame: &mut Frame, state: &TuiState, area: Rect) {
                 sep.clone(),
                 Span::styled("←→", key_style),
                 Span::styled(" switch tab  ", desc_style),
+                sep.clone(),
+                Span::styled("c", key_style),
+                Span::styled(" copy key  ", desc_style),
             ]);
         }
     }
@@ -1003,6 +1092,35 @@ fn render_update_dialog_overlay(frame: &mut Frame, state: &TuiState, full_area: 
     frame.render_widget(paragraph, inner_layout[0]);
 }
 
+fn render_toast(frame: &mut Frame, msg: &str, anchor: Rect) {
+    let width = (msg.len() as u16 + 4).min(anchor.width.max(24)).max(24);
+    let height = 3u16;
+    let x = anchor.x + anchor.width.saturating_sub(width) / 2;
+    let y = anchor.y + 1;
+    let full = frame.area();
+    let area = Rect {
+        x: x.min(full.width.saturating_sub(width)),
+        y: y.min(full.height.saturating_sub(height)),
+        width,
+        height,
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Green));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    let paragraph = Paragraph::new(Span::styled(
+        msg,
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+    ))
+    .alignment(ratatui::layout::Alignment::Center);
+    frame.render_widget(paragraph, inner);
+}
+
 fn render_crash_overlay(frame: &mut Frame, err: &str, full_area: Rect) {
     let lines = vec![
         Line::from(Span::styled(
@@ -1081,6 +1199,7 @@ pub fn run_tui(
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    let mut clipboard = arboard::Clipboard::new().ok();
 
     loop {
         if !running.load(Ordering::SeqCst) {
@@ -1094,13 +1213,25 @@ pub fn run_tui(
             s.add_log(line);
         }
 
+        // Expire the toast after 2 seconds.
+        {
+            let mut s = state.lock().unwrap();
+            if let Some((_, instant)) = s.toast {
+                if instant.elapsed() > Duration::from_secs(2) {
+                    s.toast = None;
+                }
+            }
+        }
+
         terminal.draw(|frame| {
             let mut s = state.lock().unwrap();
             ui(frame, &mut s);
         })?;
 
         if event::poll(Duration::from_millis(100))? {
-            match event::read()? {
+            // text_to_copy is extracted while holding the lock; the actual
+            // clipboard write and toast update happen outside the lock.
+            let text_to_copy: Option<String> = match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     let mut s = state.lock().unwrap();
                     // When update dialog is shown, only y/n/Esc/Enter matter.
@@ -1123,59 +1254,81 @@ pub fn run_tui(
                             }
                             _ => {}
                         }
-                        continue;
-                    }
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            s.should_quit = true;
+                        None
+                    } else {
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => {
+                                s.should_quit = true;
+                                None
+                            }
+                            // 'c' copies the focused item to clipboard.
+                            KeyCode::Char('c') | KeyCode::Char('C') => {
+                                s.selected_item_text()
+                            }
+                            // Tab cycles pane focus; Shift+Tab reverses.
+                            KeyCode::Tab => {
+                                s.focused_pane = s.focused_pane.next();
+                                None
+                            }
+                            KeyCode::BackTab => {
+                                s.focused_pane = s.focused_pane.prev();
+                                None
+                            }
+                            // Arrow keys route based on focused pane.
+                            KeyCode::Up => {
+                                match s.focused_pane {
+                                    FocusedPane::TopLeft => s.scroll_left_up(),
+                                    FocusedPane::TopRight => s.scroll_right_up(),
+                                    FocusedPane::Logs => s.scroll_logs_up(),
+                                    FocusedPane::Prime => {}
+                                    FocusedPane::Tables => match s.tab_index {
+                                        0 => s.select_chain_prev(),
+                                        1 => s.select_agent_prev(),
+                                        2 => s.select_skill_prev(),
+                                        _ => {}
+                                    },
+                                }
+                                None
+                            }
+                            KeyCode::Down => {
+                                match s.focused_pane {
+                                    FocusedPane::TopLeft => s.scroll_left_down(),
+                                    FocusedPane::TopRight => s.scroll_right_down(),
+                                    FocusedPane::Logs => s.scroll_logs_down(),
+                                    FocusedPane::Prime => {}
+                                    FocusedPane::Tables => match s.tab_index {
+                                        0 => s.select_chain_next(),
+                                        1 => s.select_agent_next(),
+                                        2 => s.select_skill_next(),
+                                        _ => {}
+                                    },
+                                }
+                                None
+                            }
+                            // Left/Right switch table tabs when Tables focused.
+                            KeyCode::Left if s.focused_pane == FocusedPane::Tables => {
+                                let len = s.tab_titles.len();
+                                s.tab_index = if s.tab_index == 0 {
+                                    len - 1
+                                } else {
+                                    s.tab_index - 1
+                                };
+                                None
+                            }
+                            KeyCode::Right if s.focused_pane == FocusedPane::Tables => {
+                                s.tab_index = (s.tab_index + 1) % s.tab_titles.len();
+                                None
+                            }
+                            KeyCode::PageUp => {
+                                s.scroll_right_up();
+                                None
+                            }
+                            KeyCode::PageDown => {
+                                s.scroll_right_down();
+                                None
+                            }
+                            _ => None,
                         }
-                        // Tab cycles pane focus; Shift+Tab reverses.
-                        KeyCode::Tab => {
-                            s.focused_pane = s.focused_pane.next();
-                        }
-                        KeyCode::BackTab => {
-                            s.focused_pane = s.focused_pane.prev();
-                        }
-                        // Arrow keys route based on focused pane.
-                        KeyCode::Up => match s.focused_pane {
-                            FocusedPane::TopLeft => s.scroll_left_up(),
-                            FocusedPane::TopRight => s.scroll_right_up(),
-                            FocusedPane::Logs => s.scroll_logs_up(),
-                            FocusedPane::Prime => {}
-                            FocusedPane::Tables => match s.tab_index {
-                                0 => s.select_chain_prev(),
-                                1 => s.select_agent_prev(),
-                                2 => s.select_skill_prev(),
-                                _ => {}
-                            },
-                        },
-                        KeyCode::Down => match s.focused_pane {
-                            FocusedPane::TopLeft => s.scroll_left_down(),
-                            FocusedPane::TopRight => s.scroll_right_down(),
-                            FocusedPane::Logs => s.scroll_logs_down(),
-                            FocusedPane::Prime => {}
-                            FocusedPane::Tables => match s.tab_index {
-                                0 => s.select_chain_next(),
-                                1 => s.select_agent_next(),
-                                2 => s.select_skill_next(),
-                                _ => {}
-                            },
-                        },
-                        // Left/Right switch table tabs when Tables focused.
-                        KeyCode::Left if s.focused_pane == FocusedPane::Tables => {
-                            let len = s.tab_titles.len();
-                            s.tab_index = if s.tab_index == 0 {
-                                len - 1
-                            } else {
-                                s.tab_index - 1
-                            };
-                        }
-                        KeyCode::Right if s.focused_pane == FocusedPane::Tables => {
-                            s.tab_index = (s.tab_index + 1) % s.tab_titles.len();
-                        }
-                        KeyCode::PageUp => s.scroll_right_up(),
-                        KeyCode::PageDown => s.scroll_right_down(),
-                        _ => {}
                     }
                 }
                 Event::Mouse(mouse) => {
@@ -1206,6 +1359,7 @@ pub fn run_tui(
                                     }
                                 }
                             }
+                            None
                         }
                         MouseEventKind::ScrollUp => {
                             if s.last_tables_area.contains(pos) {
@@ -1222,6 +1376,7 @@ pub fn run_tui(
                             } else if s.last_top_left_area.contains(pos) {
                                 s.scroll_left_up();
                             }
+                            None
                         }
                         MouseEventKind::ScrollDown => {
                             if s.last_tables_area.contains(pos) {
@@ -1238,11 +1393,24 @@ pub fn run_tui(
                             } else if s.last_top_left_area.contains(pos) {
                                 s.scroll_left_down();
                             }
+                            None
                         }
-                        _ => {}
+                        _ => None,
                     }
                 }
-                _ => {}
+                _ => None,
+            };
+
+            // Clipboard write and toast happen outside the state lock.
+            if let Some(ref text) = text_to_copy {
+                let copied = clipboard
+                    .as_mut()
+                    .map(|cb| cb.set_text(text.as_str()).is_ok())
+                    .unwrap_or(false);
+                if copied {
+                    let mut s = state.lock().unwrap();
+                    s.toast = Some(("Text copied to clipboard!".to_string(), Instant::now()));
+                }
             }
         }
 
