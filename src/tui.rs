@@ -1353,6 +1353,7 @@ pub fn run_tui(
                             let mut s = state.lock().unwrap();
                             s.drag_start = Some(pos);
                             s.drag_current = Some(pos);
+                            s.add_log(format!("[mouse] Down ({},{})", pos.x, pos.y));
                             if s.last_top_left_area.contains(pos) {
                                 s.focused_pane = FocusedPane::TopLeft;
                             } else if s.last_top_right_area.contains(pos) {
@@ -1385,21 +1386,40 @@ pub fn run_tui(
 
                         // ── Mouse up: copy selected text ─────────────────────────
                         MouseEventKind::Up(_) => {
+                            let start_snapshot = drag_start;
                             // Clear visual selection immediately.
                             {
                                 let mut s = state.lock().unwrap();
                                 s.drag_start = None;
                                 s.drag_current = None;
+                                s.add_log(format!(
+                                    "[mouse] Up ({},{})  drag_start={:?}",
+                                    pos.x, pos.y, start_snapshot
+                                ));
                             }
-                            // Extract text from the buffer rendered in the
-                            // last terminal.draw() call.
                             if let Some(start) = drag_start.take() {
-                                if start.y != pos.y || start.x != pos.x {
-                                    if let Some(text) = extract_from_buffer(
+                                let moved = start.y != pos.y || start.x != pos.x;
+                                {
+                                    let mut s = state.lock().unwrap();
+                                    s.add_log(format!(
+                                        "[mouse] moved={moved}  extract ({},{})-({},{})",
+                                        start.x, start.y, pos.x, pos.y
+                                    ));
+                                }
+                                if moved {
+                                    let text = extract_from_buffer(
                                         terminal.current_buffer_mut(),
                                         start,
                                         pos,
-                                    ) {
+                                    );
+                                    {
+                                        let mut s = state.lock().unwrap();
+                                        s.add_log(format!(
+                                            "[mouse] extracted={:?}",
+                                            text.as_deref().map(|t| &t[..t.len().min(60)])
+                                        ));
+                                    }
+                                    if let Some(text) = text {
                                         if let Some(ref mut cb) = clipboard {
                                             let _ = cb.set_text(&text);
                                         }
