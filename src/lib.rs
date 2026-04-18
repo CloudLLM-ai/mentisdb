@@ -17,7 +17,6 @@ pub mod paths;
 pub mod search;
 #[cfg(feature = "server")]
 pub mod server;
-#[cfg(feature = "server")]
 pub mod tui;
 mod skills;
 #[cfg(feature = "server")]
