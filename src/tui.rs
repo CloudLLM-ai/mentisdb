@@ -936,6 +936,7 @@ fn render_startup_overlay(frame: &mut Frame, state: &TuiState, full_area: Rect) 
     };
 
     let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
 
     let inner_layout = Layout::default()
