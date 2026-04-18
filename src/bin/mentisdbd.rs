@@ -34,6 +34,7 @@ use mentisdb::server::{
     adopt_legacy_default_mentisdb_dir, start_servers, MentisDbMcpProtocol, MentisDbServerConfig,
     MentisDbServerHandles, MentisDbService,
 };
+use mentisdb::tui::{self, AgentInfo, ChainInfo, SkillInfo, TuiState};
 use mentisdb::{
     load_registered_chains, migrate_chain_hash_algorithm, migrate_registered_chains_with_adapter,
     migrate_skill_registry, refresh_registered_chain_counts, MentisDb, MentisDbMigrationEvent,
@@ -45,6 +46,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 #[cfg(feature = "startup-sound")]
 use std::sync::{Mutex, OnceLock};
@@ -84,30 +86,7 @@ fn raise_fd_limit() {
 #[cfg(not(unix))]
 fn raise_fd_limit() {}
 
-const MENTIS_BANNER: &str = r#"███╗   ███╗███████╗███╗   ██╗████████╗██╗███████╗
-████╗ ████║██╔════╝████╗  ██║╚══██╔══╝██║██╔════╝
-██╔████╔██║█████╗  ██╔██╗ ██║   ██║   ██║███████╗
-██║╚██╔╝██║██╔══╝  ██║╚██╗██║   ██║   ██║╚════██║
-██║ ╚═╝ ██║███████╗██║ ╚████║   ██║   ██║███████║
-╚═╝     ╚═╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚══════╝"#;
-const DB_BANNER: &str = r#"██████╗ ██████╗ 
-██╔══██╗██╔══██╗
-██║  ██║██████╔╝
-██║  ██║██╔══██╗
-██████╔╝██████╔╝
-╚═════╝ ╚═════╝ "#;
-// Standard 8-color ANSI codes — adapt to the terminal's own color theme.
-// On dark backgrounds they render as bright/saturated; on light backgrounds
-// they render as darker/muted — readable either way.
-// 256-color codes (\x1b[38;5;Nm) are fixed-palette and look great on dark
-// terminals but become invisible or harsh on light/white backgrounds.
-const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
-const PINK: &str = "\x1b[35m";
-const CYAN: &str = "\x1b[36m";
-const BOLD: &str = "\x1b[1m";
-const REVERSE: &str = "\x1b[7m";
-const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 #[cfg(feature = "startup-sound")]
 pub(crate) const THOUGHT_SOUND_GAP_MS: u64 = 90;
@@ -242,6 +221,7 @@ fn reserve_thought_sound_delay_ms(playback_ms: u64) -> u64 {
 /// Called **after** the banner has been flushed to stdout.
 /// Silenced by setting `MENTISDB_STARTUP_SOUND=0` (or `false`/`no`/`off`).
 #[cfg(feature = "startup-sound")]
+#[allow(dead_code)]
 fn play_startup_jingle() {
     let enabled = std::env::var("MENTISDB_STARTUP_SOUND")
         .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
@@ -758,137 +738,80 @@ fn wait_for_daemon(mcp_addr: &str, max_attempts: u32) -> bool {
     false
 }
 
-/// Forward a single JSON-RPC request to the daemon's HTTP MCP endpoint and return the response.
+/// Forward a single JSON-RPC request to the daemon's streamable HTTP MCP
+/// endpoint (`POST /`) and return the response.
+///
+/// Transparent passthrough — no manual method mapping. The daemon's
+/// streamable HTTP endpoint handles the full MCP protocol (initialize,
+/// ping, tools/list, tools/call, resources/list, resources/read, prompts,
+/// sampling, roots, notifications).
 async fn proxy_jsonrpc_to_daemon(mcp_addr: &str, request: &str) -> Option<String> {
-    let _mcp_url = format!("http://{mcp_addr}/tools/call");
-    let parsed: serde_json::Value = serde_json::from_str(request).ok()?;
-    let id = parsed.get("id")?.clone();
-    let method = parsed.get("method")?.as_str()?;
-    let params = parsed
-        .get("params")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
+    let url = format!("http://{mcp_addr}/");
 
-    // Map stdio MCP methods to HTTP MCP endpoints
-    let (endpoint, body) = match method {
-        "initialize" => {
-            // Initialize is a no-op for proxy mode — the daemon is already initialized
-            return Some(serde_json::json!({
+    // Parse to extract the method for local-only optimizations
+    let parsed: serde_json::Value = serde_json::from_str(request).ok()?;
+
+    // Handle resources/read locally — the skill markdown is embedded in
+    // the proxy binary, so we can serve it without hitting the daemon.
+    let method = parsed.get("method")?.as_str()?;
+    if method == "resources/read" {
+        let id = parsed.get("id").cloned()?;
+        let params = parsed
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+        return Some(
+            serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {
-                        "tools": {"listChanged": false},
-                        "resources": {"subscribe": false, "listChanged": false}
-                    },
-                    "serverInfo": {
-                        "name": "mentisdb",
-                        "version": env!("CARGO_PKG_VERSION")
-                    },
-                    "instructions": "MentisDB is an append-only semantic memory server (proxy mode). READ THIS FIRST: call `resources/read` for `mentisdb://skill/core` immediately after initialize to load the embedded MentisDB operating skill."
+                    "contents": [{
+                        "uri": uri,
+                        "text": MENTISDB_SKILL_MD,
+                        "mimeType": "text/markdown"
+                    }]
                 }
-            }).to_string());
-        }
-        "ping" => {
-            return Some(
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": {}
-                })
-                .to_string(),
-            );
-        }
-        "tools/list" => ("http://{mcp_addr}/tools/list", serde_json::json!({})),
-        "tools/call" => {
-            let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let arguments = params
-                .get("arguments")
-                .cloned()
-                .unwrap_or(serde_json::json!({}));
-            let canonical = canonical_tool_name(name);
-            (
-                "http://{mcp_addr}/tools/execute",
-                serde_json::json!({
-                    "name": canonical,
-                    "arguments": arguments
-                }),
-            )
-        }
-        "resources/list" => {
-            // Resources are static — return the same as local mode
-            return Some(
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": {
-                        "resources": [{
-                            "uri": "mentisdb://skill/core",
-                            "name": "MentisDB Core Skill",
-                            "description": "Embedded MentisDB operating instructions"
-                        }]
-                    }
-                })
-                .to_string(),
-            );
-        }
-        "resources/read" => {
-            // Resources are static — return embedded skill markdown
-            let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
-            return Some(
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": {
-                        "contents": [{
-                            "uri": uri,
-                            "text": MENTISDB_SKILL_MD,
-                            "mimeType": "text/markdown"
-                        }]
-                    }
-                })
-                .to_string(),
-            );
-        }
-        _ => {
-            return Some(
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": {
-                        "code": -32601,
-                        "message": format!("Method not found: {method}")
-                    }
-                })
-                .to_string(),
-            );
-        }
-    };
+            })
+            .to_string(),
+        );
+    }
 
-    let endpoint = endpoint.replace("{mcp_addr}", mcp_addr);
-
-    // Use tokio::task::spawn_blocking for the blocking HTTP call
+    // Forward all other JSON-RPC requests to the daemon's POST / endpoint
+    let request_bytes = request.as_bytes().to_vec();
     #[allow(clippy::result_large_err)]
-    let resp = tokio::task::spawn_blocking(move || ureq::post(&endpoint).send_json(&body))
-        .await
-        .ok()?;
+    let resp = tokio::task::spawn_blocking(move || {
+        ureq::post(&url)
+            .set("Content-Type", "application/json")
+            .set("Accept", "application/json, text/event-stream")
+            .send(&*request_bytes)
+    })
+    .await
+    .ok()?;
 
     let resp = resp.ok()?;
     let resp_body: String = resp.into_string().ok()?;
 
-    // The HTTP MCP endpoint returns the tool result directly, wrap it in JSON-RPC
-    let result: serde_json::Value =
-        serde_json::from_str(&resp_body).unwrap_or(serde_json::json!({"text": resp_body}));
+    // The streamable HTTP endpoint may return:
+    // 1. A bare JSON-RPC response (most common for single-request methods)
+    // 2. An SSE event stream (for methods that produce server→client notifications)
+    //
+    // For SSE responses, extract the first JSON-RPC data event.
+    if resp_body.starts_with("event:") || resp_body.contains("event:") {
+        // Parse SSE: look for the first "data:" line containing JSON
+        for line in resp_body.lines() {
+            let line = line.trim();
+            if let Some(data) = line.strip_prefix("data: ") {
+                if data.starts_with('{') {
+                    return Some(data.to_string());
+                }
+            }
+        }
+        return None;
+    }
 
-    Some(
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": result
-        })
-        .to_string(),
-    )
+    // Bare JSON response — pass through as-is (already a JSON-RPC response)
+    Some(resp_body)
 }
 
 /// Run stdio mode with smart daemon detection.
@@ -954,7 +877,12 @@ async fn run_stdio_mode_local(
     Ok(())
 }
 
-/// Proxy stdio mode — forwards JSON-RPC to a running daemon's HTTP MCP endpoint.
+/// Proxy stdio mode — transparently forwards JSON-RPC to the daemon's
+/// streamable HTTP MCP endpoint (`POST /`), acting as a drop-in replacement
+/// for `mcp-remote` but with built-in daemon auto-launch.
+///
+/// Handles the full MCP protocol (tools, resources, prompts, sampling,
+/// roots, notifications) without manual method mapping.
 async fn run_stdio_mode_proxy(
     mcp_addr: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -1116,20 +1044,19 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             {
                 let latest_display = normalize_release_tag_display(&release.tag_name);
                 let current_version = env!("CARGO_PKG_VERSION");
-                let dialog_lines = build_update_available_lines(
-                    current_version,
-                    &latest_display,
-                    &release.html_url,
-                );
-                ascii_notice_box("mentisdbd update available", &dialog_lines);
+
                 if io::stdin().is_terminal() && io::stdout().is_terminal() {
-                    match prompt_yes_no("Selection") {
+                    match tui::show_update_dialog(
+                        current_version,
+                        &latest_display,
+                        &release.html_url,
+                    ) {
                         Ok(true) => {
-                            println!("Installing release {} via cargo…", latest_display);
+                            eprintln!("Installing release {} via cargo…", latest_display);
                             match install_latest_release(&release.tag_name, &update_config.repo) {
                                 Ok(path) => {
-                                    println!("Installed mentisdbd to {}", path.display());
-                                    println!("Please restart mentisdbd to use the new version.");
+                                    eprintln!("Installed mentisdbd to {}", path.display());
+                                    eprintln!("Please restart mentisdbd to use the new version.");
                                     return Ok(());
                                 }
                                 Err(e) => {
@@ -1138,13 +1065,18 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 }
                             }
                         }
-                        Ok(false) => println!("Update skipped. Continuing with current version…"),
+                        Ok(false) => {
+                            eprintln!("Update skipped. Continuing with current version…");
+                        }
                         Err(e) => {
-                            eprintln!("Prompt failed: {e}");
+                            eprintln!("Update dialog failed: {e}");
                             eprintln!("Continuing with current version…");
                         }
                     }
                 } else {
+                    eprintln!(
+                        "mentisdbd update available: {current_version} -> {latest_display}",
+                    );
                     eprintln!(
                         "Non-interactive terminal. Update manually:\n\
                          cargo install --git https://github.com/{} --tag {} --locked --force --bin {UPDATE_BINARY_NAME} {UPDATE_CRATE_NAME}",
@@ -1289,193 +1221,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let handles = start_servers(config.clone()).await?;
 
-    // ── Useful info first ────────────────────────────────────────────────────
-    print_endpoint_catalog(&handles);
-    print_chain_summary(&config)?;
-    print_agent_registry_summary(&config)?;
-    print_skill_registry_summary(&config)?;
-    print_tls_tip(&config, &handles);
-    println!("Press Ctrl+C to stop.");
-
-    // ── Startup summary at the bottom ────────────────────────────────────────
-    println!();
-    print_banner();
-    // Flush banner to stdout before the jingle plays.
-    let _ = std::io::stdout().flush();
-    #[cfg(feature = "startup-sound")]
-    play_startup_jingle();
-    println!("mentisdb v{}", env!("CARGO_PKG_VERSION"));
-    println!("mentisdbd started");
-
-    if let Some(report) = &storage_root_migration {
-        println!("Legacy storage adoption:");
-        if report.renamed_root_dir {
-            println!(
-                "  Renamed {} -> {}",
-                report.source_dir.display(),
-                report.target_dir.display()
-            );
-        } else {
-            println!(
-                "  Merged {} legacy entries from {} into {}",
-                report.merged_entries,
-                report.source_dir.display(),
-                report.target_dir.display()
-            );
-        }
-        if report.renamed_registry_file {
-            println!("  Renamed thoughtchain-registry.json -> mentisdb-registry.json");
-        }
-    }
-
-    println!("Configuration:");
-    print_env_var(
-        "MENTISDB_DIR",
-        Some(config.service.chain_dir.display().to_string()),
-    );
-    print_env_var(
-        "MENTISDB_DEFAULT_CHAIN_KEY",
-        Some(config.service.default_chain_key.clone()),
-    );
-    print_env_var(
-        "MENTISDB_STORAGE_ADAPTER",
-        Some(config.service.default_storage_adapter.to_string()),
-    );
-    print_env_var(
-        "MENTISDB_AUTO_FLUSH",
-        Some(config.service.auto_flush.to_string()),
-    );
-    print_env_var("MENTISDB_VERBOSE", Some(config.service.verbose.to_string()));
-    print_env_var(
-        "MENTISDB_LOG_FILE",
-        config
-            .service
-            .log_file
-            .as_ref()
-            .map(|p| p.display().to_string()),
-    );
-    print_env_var("MENTISDB_BIND_HOST", Some(config.mcp_addr.ip().to_string()));
-    print_env_var(
-        "MENTISDB_MCP_PORT",
-        Some(config.mcp_addr.port().to_string()),
-    );
-    print_env_var(
-        "MENTISDB_REST_PORT",
-        Some(config.rest_addr.port().to_string()),
-    );
-    print_env_var(
-        "MENTISDB_HTTPS_MCP_PORT",
-        Some(match config.https_mcp_addr {
-            Some(addr) => addr.port().to_string(),
-            None => "disabled".to_string(),
-        }),
-    );
-    print_env_var(
-        "MENTISDB_HTTPS_REST_PORT",
-        Some(match config.https_rest_addr {
-            Some(addr) => addr.port().to_string(),
-            None => "disabled".to_string(),
-        }),
-    );
-    print_env_var(
-        "MENTISDB_TLS_CERT",
-        Some(config.tls_cert_path.display().to_string()),
-    );
-    print_env_var(
-        "MENTISDB_TLS_KEY",
-        Some(config.tls_key_path.display().to_string()),
-    );
-    print_env_var(
-        "MENTISDB_DASHBOARD_PORT",
-        Some(match config.dashboard_addr {
-            Some(addr) => addr.port().to_string(),
-            None => "disabled".to_string(),
-        }),
-    );
-    print_env_var(
-        "MENTISDB_DASHBOARD_PIN",
-        Some(if config.dashboard_pin.is_some() {
-            "set".to_string()
-        } else {
-            "not set".to_string()
-        }),
-    );
-    print_env_var(
-        "MENTISDB_UPDATE_CHECK",
-        Some(update_config.enabled.to_string()),
-    );
-    print_env_var("MENTISDB_UPDATE_REPO", Some(update_config.repo.clone()));
-    print_env_var(
-        "RUST_LOG",
-        std::env::var("RUST_LOG")
-            .ok()
-            .or_else(|| Some("info (default)".to_string())),
-    );
-    #[cfg(feature = "startup-sound")]
-    print_env_var(
-        "MENTISDB_STARTUP_SOUND",
-        std::env::var("MENTISDB_STARTUP_SOUND")
-            .ok()
-            .or_else(|| Some("true (default)".to_string())),
-    );
-    #[cfg(feature = "startup-sound")]
-    print_env_var(
-        "MENTISDB_THOUGHT_SOUNDS",
-        std::env::var("MENTISDB_THOUGHT_SOUNDS")
-            .ok()
-            .or_else(|| Some("false (default)".to_string())),
-    );
-
-    if migration_reports.is_empty() {
-        println!("No chain migrations required.");
-    }
-    println!("{skill_registry_msg}");
-    println!("{BOLD}mentisdbd{RESET} running\n");
-
-    let is_first_run = should_show_first_run_setup_notice(&first_run_setup_status);
-
-    // ── Resolved endpoints ───────────────────────────────────────────────────
-    let mcp_local = format!("http://{}", handles.mcp.local_addr());
-    let rest_local = format!("http://{}", handles.rest.local_addr());
-    let mcp_port = handles.mcp.local_addr().port();
-    let rest_port = handles.rest.local_addr().port();
-    let mcp_friendly = format!("http://my.mentisdb.com:{mcp_port}");
-    let rest_friendly = format!("http://my.mentisdb.com:{rest_port}");
-
-    println!("{BOLD}Endpoints{RESET}");
-    println!("  MCP  (HTTP)  {mcp_local:<32}  {CYAN}{mcp_friendly}{RESET}");
-    println!("  REST (HTTP)  {rest_local:<32}  {CYAN}{rest_friendly}{RESET}");
-
-    if let Some(ref h) = handles.https_mcp {
-        let local = format!("https://{}", h.local_addr());
-        let port = h.local_addr().port();
-        let friendly = format!("https://my.mentisdb.com:{port}");
-        println!("  MCP  (TLS)   {local:<32}  {CYAN}{friendly}{RESET}");
-    }
-    if let Some(ref h) = handles.https_rest {
-        let local = format!("https://{}", h.local_addr());
-        let port = h.local_addr().port();
-        let friendly = format!("https://my.mentisdb.com:{port}");
-        println!("  REST (TLS)   {local:<32}  {CYAN}{friendly}{RESET}");
-    }
-    if let Some(ref h) = handles.dashboard {
-        let local = format!("https://{}/dashboard", h.local_addr());
-        let port = h.local_addr().port();
-        let friendly = format!("https://my.mentisdb.com:{port}/dashboard");
-        println!("  Dashboard    {local:<32}  {CYAN}{friendly}{RESET}");
-    }
-
-    let dashboard_url = handles
-        .dashboard
-        .as_ref()
-        .map(|h| format!("https://{}/dashboard", h.local_addr()));
-
-    if is_first_run {
-        println!();
-        println!("{DIM}Setup wizard will run first — agent primer shown after.{RESET}");
-    }
-
     // ── First-run setup wizard (before showing chain list + primer) ────────
+    let is_first_run = should_show_first_run_setup_notice(&first_run_setup_status);
     if let Err(error) = maybe_run_first_run_setup(&first_run_setup_status) {
         eprintln!("Startup setup wizard failed: {error}");
     }
@@ -1485,6 +1232,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let has_chains = !registry.chains.is_empty();
 
     // Prefer the HTTPS MCP address for the primer; fall back to plain HTTP.
+    let mcp_local = format!("http://{}", handles.mcp.local_addr());
+    let rest_local = format!("http://{}", handles.rest.local_addr());
+    let mcp_port = handles.mcp.local_addr().port();
+    let rest_port = handles.rest.local_addr().port();
     let primer_mcp_addr = handles
         .https_mcp
         .as_ref()
@@ -1492,41 +1243,194 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .unwrap_or_else(|| mcp_local.clone());
     let primer_paste_line = build_agent_primer_paste_line(&primer_mcp_addr, has_chains);
 
-    // ── Chain list ───────────────────────────────────────────────────────────
-    println!();
-    if registry.chains.is_empty() {
-        println!("{BOLD}Chains{RESET}  {DIM}none yet{RESET}");
+    // ── Build TUI state ─────────────────────────────────────────────────────
+    let mut tui_state = TuiState::new(env!("CARGO_PKG_VERSION"));
+    tui_state.started = true;
+    tui_state.chain_count = registry.chains.len();
+    tui_state.primer_text = primer_paste_line.clone();
+    tui_state.background_tip = background_launch_tip().to_string();
+
+    // Config lines for top-left pane
+    tui_state.config_lines = build_config_lines(&config, &update_config);
+
+    // Migration lines (shown in top-left pane)
+    if migration_reports.is_empty() {
+        tui_state.migration_lines.push("No chain migrations required.".to_string());
     } else {
-        println!(
-            "{BOLD}Chains{RESET}  {DIM}({}){RESET}",
-            registry.chains.len()
-        );
-        for (key, reg) in &registry.chains {
-            println!(
-                "  {CYAN}{key}{RESET}  {DIM}{} thought{}, {} agent{}{RESET}",
-                reg.thought_count,
-                if reg.thought_count == 1 { "" } else { "s" },
-                reg.agent_count,
-                if reg.agent_count == 1 { "" } else { "s" },
-            );
+        for report in &migration_reports {
+            tui_state.migration_lines.push(format!(
+                "Migrated chain {} from version {} to {} ({} thoughts)",
+                report.chain_key, report.from_version, report.to_version, report.thought_count
+            ));
+        }
+    }
+    tui_state.migration_lines.push(skill_registry_msg.clone());
+
+    // Storage root migration (legacy dir adoption)
+    if let Some(report) = &storage_root_migration {
+        if report.renamed_root_dir {
+            tui_state.migration_lines.push(format!(
+                "Legacy storage adoption: renamed {} -> {}",
+                report.source_dir.display(),
+                report.target_dir.display()
+            ));
+        } else if report.merged_entries > 0 {
+            tui_state.migration_lines.push(format!(
+                "Legacy storage adoption: merged {} entries from {} into {}",
+                report.merged_entries,
+                report.source_dir.display(),
+                report.target_dir.display()
+            ));
+        }
+        if report.renamed_registry_file {
+            tui_state.migration_lines
+                .push("Renamed thoughtchain-registry.json -> mentisdb-registry.json".to_string());
         }
     }
 
-    // ── Primer CTA ───────────────────────────────────────────────────────────
-    println!();
-    println!("{BOLD}▶  Prime your agent — paste into your AI chat:{RESET}");
-    println!();
-    println!("  {REVERSE}{BOLD} {primer_paste_line} {RESET}");
-    println!();
-
-    // ── Terminal-close warning ────────────────────────────────────────────────
-    print_terminal_warning();
-
-    let _ = dashboard_url;
-
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
+    // First-run setup notice
+    if is_first_run {
+        tui_state.migration_lines.push(String::new());
+        tui_state.migration_lines
+            .push("First-run setup:".to_string());
+        for line in build_first_run_setup_lines() {
+            tui_state.migration_lines.push(format!("  {line}"));
+        }
     }
+
+    // TLS info lines for top-right pane
+    tui_state.tls_info_lines = if handles.https_mcp.is_some() || handles.https_rest.is_some() {
+        build_tls_info_lines(&config, &handles)
+    } else {
+        Vec::new()
+    };
+
+    // Endpoint lines for top-right pane
+    tui_state.endpoint_lines = build_endpoint_lines(&handles, mcp_port, rest_port);
+
+    // Chain info
+    for (key, reg) in &registry.chains {
+        tui_state.chains.push(ChainInfo {
+            key: key.clone(),
+            version: reg.version,
+            adapter: reg.storage_adapter.to_string(),
+            thoughts: reg.thought_count as usize,
+            agents: reg.agent_count,
+            storage_path: reg.storage_location.clone(),
+        });
+    }
+
+    // Agent info — build per-agent thought counts in a single pass.
+    for (chain_key, reg) in &registry.chains {
+        if let Ok(chain) = MentisDb::open_with_storage(
+            reg.storage_adapter
+                .for_chain_key(&config.service.chain_dir, chain_key),
+        ) {
+            let agents = chain.list_agent_registry();
+            let thoughts = chain.thoughts();
+            let mut counts: std::collections::HashMap<&str, usize> =
+                std::collections::HashMap::new();
+            for t in thoughts {
+                *counts.entry(t.agent_id.as_str()).or_default() += 1;
+            }
+            for agent in &agents {
+                let live_count = counts.get(agent.agent_id.as_str()).copied().unwrap_or(0);
+                tui_state.agents.push(AgentInfo {
+                    chain_key: chain_key.clone(),
+                    name: agent.display_name.clone(),
+                    id: agent.agent_id.clone(),
+                    status: agent.status.to_string(),
+                    memories: live_count,
+                    description: agent
+                        .description
+                        .as_deref()
+                        .filter(|v| !v.trim().is_empty())
+                        .unwrap_or("—")
+                        .to_string(),
+                });
+            }
+        }
+    }
+
+    // Skill info
+    if let Ok(skill_registry) = SkillRegistry::open(&config.service.chain_dir) {
+        let skills = skill_registry.list_skills();
+        for summary in &skills {
+            let uploaded_by = summary
+                .latest_uploaded_by_agent_name
+                .as_deref()
+                .unwrap_or(&summary.latest_uploaded_by_agent_id);
+            tui_state.skills.push(SkillInfo {
+                name: summary.name.clone(),
+                status: summary.status.to_string(),
+                versions: summary.version_count,
+                tags: summary.tags.clone(),
+                uploaded_by: uploaded_by.to_string(),
+            });
+        }
+    }
+
+    tui_state.log_lines.push(format!(
+        "[{}] mentisdb v{} started",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+        env!("CARGO_PKG_VERSION")
+    ));
+    tui_state.log_lines.push(format!(
+        "[{}] MCP  (HTTP)  {}",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+        mcp_local
+    ));
+    tui_state.log_lines.push(format!(
+        "[{}] REST (HTTP)  {}",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+        rest_local
+    ));
+    if let Some(ref h) = handles.https_mcp {
+        tui_state.log_lines.push(format!(
+            "[{}] MCP  (TLS)   https://{}",
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+            h.local_addr()
+        ));
+    }
+    if let Some(ref h) = handles.https_rest {
+        tui_state.log_lines.push(format!(
+            "[{}] REST (TLS)   https://{}",
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+            h.local_addr()
+        ));
+    }
+    if let Some(ref h) = handles.dashboard {
+        tui_state.log_lines.push(format!(
+            "[{}] Dashboard    https://{}/dashboard",
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+            h.local_addr()
+        ));
+    }
+
+    let tui_state = Arc::new(std::sync::Mutex::new(tui_state));
+    let running = Arc::new(AtomicBool::new(true));
+    let _tui_state_clone = Arc::clone(&tui_state);
+    let running_clone = Arc::clone(&running);
+
+    // Play the "men-tis-D-B" startup jingle (default on, silenced via env var).
+    #[cfg(feature = "startup-sound")]
+    play_startup_jingle();
+
+    // Spawn a task to handle Ctrl+C and signal the TUI to quit
+    let ctrlc_handle = tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        running_clone.store(false, Ordering::SeqCst);
+    });
+
+    // Run the TUI on the main thread (blocks until quit)
+    let tui_result = tui::run_tui(tui_state, running);
+
+    ctrlc_handle.abort();
+
+    if let Err(e) = tui_result {
+        eprintln!("TUI error: {e}");
+    }
+
     Ok(())
 }
 
@@ -1852,7 +1756,6 @@ async fn run_update_standalone(force: bool) -> ExitCode {
     }
 }
 
-#[allow(dead_code)]
 #[tokio::main]
 async fn main() -> ExitCode {
     match parse_daemon_args(std::env::args_os().skip(1)) {
@@ -1911,35 +1814,10 @@ async fn main() -> ExitCode {
     }
 }
 
-fn print_env_var(name: &str, effective_value: Option<String>) {
-    if let Ok(raw_value) = std::env::var(name) {
-        println!(
-            "  {YELLOW}{name}{RESET}={raw_value} (effective: {GREEN}{}{RESET})",
-            display_value(effective_value)
-        );
-        return;
-    }
-
-    println!(
-        "  {YELLOW}{name}{RESET}=<unset> (effective default: {GREEN}{}{RESET})",
-        display_value(effective_value)
-    );
-}
-
-fn display_value(value: Option<String>) -> String {
-    value.unwrap_or_else(|| "<none>".to_string())
-}
-
 fn init_logger() {
     let mut builder = env_logger::Builder::from_env(Env::default().default_filter_or("info"));
     builder.format_timestamp_millis();
     let _ = builder.try_init();
-}
-
-fn print_banner() {
-    for (mentis, db) in MENTIS_BANNER.lines().zip(DB_BANNER.lines()) {
-        println!("{GREEN}{mentis}{RESET} {PINK}{db}{RESET}");
-    }
 }
 
 fn progress_bar(current: usize, total: usize) -> String {
@@ -1955,21 +1833,7 @@ fn progress_bar(current: usize, total: usize) -> String {
     )
 }
 
-fn print_endpoint_catalog(handles: &MentisDbServerHandles) {
-    print!(
-        "{}",
-        build_endpoint_catalog(
-            handles.mcp.local_addr(),
-            handles.rest.local_addr(),
-            handles.https_mcp.as_ref().map(|handle| handle.local_addr()),
-            handles
-                .https_rest
-                .as_ref()
-                .map(|handle| handle.local_addr()),
-        )
-    );
-}
-
+#[cfg(test)]
 pub(crate) fn build_endpoint_catalog(
     mcp_addr: std::net::SocketAddr,
     rest_addr: std::net::SocketAddr,
@@ -2205,431 +2069,276 @@ pub(crate) fn build_endpoint_catalog(
     out
 }
 
-// ── ASCII table renderer ───────────────────────────────────────────────────────
-
-/// Renders a bordered ASCII table to stdout.
-///
-/// `title`   – printed as a bold header above the table (pass `""` to skip).  
-/// `headers` – column header strings.  
-/// `rows`    – each inner `Vec<String>` is one data row; must match `headers` length.
-///
-/// Produces output like:
-/// ```text
-/// ┌──────────────┬─────────┬──────────┐
-/// │  Chain Key   │ Version │ Thoughts │
-/// ├──────────────┼─────────┼──────────┤
-/// │ borganism-.. │    1    │   177    │
-/// └──────────────┴─────────┴──────────┘
-/// ```
-fn ascii_table(title: &str, headers: &[&str], rows: &[Vec<String>]) {
-    // Compute column widths (max of header vs every cell, plus 2-char padding).
-    let ncols = headers.len();
-    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
-    for row in rows {
-        for (i, cell) in row.iter().enumerate() {
-            if i < ncols {
-                widths[i] = widths[i].max(cell.len());
-            }
-        }
-    }
-
-    // Box-drawing helpers.
-    let bar = |left: &str, fill: &str, sep: &str, right: &str| {
-        let mut s = left.to_string();
-        for (i, w) in widths.iter().enumerate() {
-            s.push_str(&fill.repeat(w + 2));
-            s.push_str(if i + 1 < ncols { sep } else { right });
-        }
-        s
-    };
-
-    let top = bar("┌", "─", "┬", "┐");
-    let mid = bar("├", "─", "┼", "┤");
-    let bottom = bar("└", "─", "┴", "┘");
-
-    let fmt_row = |cells: &[String]| {
-        let mut s = "│".to_string();
-        for (i, cell) in cells.iter().enumerate() {
-            if i < ncols {
-                s.push_str(&format!(" {:<width$} │", cell, width = widths[i]));
-            }
-        }
-        s
-    };
-
-    let fmt_header = |cells: &[&str]| {
-        let mut s = "│".to_string();
-        for (i, cell) in cells.iter().enumerate() {
-            if i < ncols {
-                // Headers are bold/cyan.
-                s.push_str(&format!(
-                    " {CYAN}{:<width$}{RESET} │",
-                    cell,
-                    width = widths[i]
-                ));
-            }
-        }
-        s
-    };
-
-    if !title.is_empty() {
-        println!("{YELLOW}{title}{RESET}");
-    }
-    println!("{DIM}{top}{RESET}");
-    println!("{}", fmt_header(headers));
-    println!("{DIM}{mid}{RESET}");
-    for row in rows {
-        println!("{}", fmt_row(row));
-    }
-    println!("{DIM}{bottom}{RESET}");
-    println!();
-}
-
-/// Like `ascii_table` but inserts a full-width "section" separator row
-/// (e.g. a chain name) to group subsequent rows under it.
-///
-/// `sections` is a slice of `(section_label, rows_for_that_section)`.
-fn ascii_table_grouped(title: &str, headers: &[&str], sections: &[(String, Vec<Vec<String>>)]) {
-    let ncols = headers.len();
-    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
-    for (label, rows) in sections {
-        // The section label spans the full table width; we account for it
-        // separately after we know all column widths.
-        let _ = label;
-        for row in rows {
-            for (i, cell) in row.iter().enumerate() {
-                if i < ncols {
-                    widths[i] = widths[i].max(cell.len());
-                }
-            }
-        }
-    }
-
-    // Total inner width (columns + separators) for a full-span label row.
-    let total_inner: usize = widths.iter().sum::<usize>() + ncols * 3 - 1;
-    // Ensure each section label fits.
-    // (We'll truncate labels that are too long rather than widen the table.)
-
-    let bar = |left: &str, fill: &str, sep: &str, right: &str| {
-        let mut s = left.to_string();
-        for (i, w) in widths.iter().enumerate() {
-            s.push_str(&fill.repeat(w + 2));
-            s.push_str(if i + 1 < ncols { sep } else { right });
-        }
-        s
-    };
-
-    let section_bar = |left: &str, fill: &str, right: &str| {
-        format!("{}{}{}", left, fill.repeat(total_inner), right)
-    };
-
-    let top = bar("┌", "─", "┬", "┐");
-    let mid = bar("├", "─", "┼", "┤");
-    let bottom = bar("└", "─", "┴", "┘");
-    let sec_mid = section_bar("├", "─", "┤");
-    let sec_mid2 = bar("├", "─", "┼", "┤");
-
-    let fmt_row = |cells: &[String]| {
-        let mut s = "│".to_string();
-        for (i, cell) in cells.iter().enumerate() {
-            if i < ncols {
-                s.push_str(&format!(" {:<width$} │", cell, width = widths[i]));
-            }
-        }
-        s
-    };
-
-    let fmt_header = |cells: &[&str]| {
-        let mut s = "│".to_string();
-        for (i, cell) in cells.iter().enumerate() {
-            if i < ncols {
-                s.push_str(&format!(
-                    " {CYAN}{:<width$}{RESET} │",
-                    cell,
-                    width = widths[i]
-                ));
-            }
-        }
-        s
-    };
-
-    let fmt_section_label = |label: &str| {
-        let label = if label.len() > total_inner {
-            format!("{}…", &label[..total_inner.saturating_sub(1)])
-        } else {
-            label.to_string()
-        };
-        format!(
-            "│ {PINK}{:<width$}{RESET} │",
-            label,
-            width = total_inner - 2
-        )
-    };
-
-    if !title.is_empty() {
-        println!("{YELLOW}{title}{RESET}");
-    }
-    println!("{DIM}{top}{RESET}");
-    println!("{}", fmt_header(headers));
-
-    for (s_idx, (label, rows)) in sections.iter().enumerate() {
-        println!("{DIM}{}{RESET}", if s_idx == 0 { &mid } else { &sec_mid2 });
-        println!("{DIM}{sec_mid}{RESET}");
-        println!("{}", fmt_section_label(label));
-        println!("{DIM}{sec_mid}{RESET}");
-        for row in rows {
-            println!("{}", fmt_row(row));
-        }
-    }
-
-    println!("{DIM}{bottom}{RESET}");
-    println!();
-}
-
-fn print_chain_summary(
-    config: &MentisDbServerConfig,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let registry = load_registered_chains(&config.service.chain_dir)?;
-    if registry.chains.is_empty() {
-        println!("{YELLOW}Chain Summary{RESET}");
-        println!("  No registered chains.\n");
-        return Ok(());
-    }
-
-    let headers = &[
-        "Chain Key",
-        "Ver",
-        "Adapter",
-        "Thoughts",
-        "Agents",
-        "Storage Location",
-    ];
-    // `refresh_registered_chain_counts` has already run before servers start and
-    // written live thought/agent counts to the registry.  Read directly from
-    // that refreshed registry — no need to re-open every chain file here.
-    let rows: Vec<Vec<String>> = registry
-        .chains
-        .values()
-        .map(|e| {
-            vec![
-                e.chain_key.clone(),
-                e.version.to_string(),
-                e.storage_adapter.to_string(),
-                e.thought_count.to_string(),
-                e.agent_count.to_string(),
-                e.storage_location.clone(),
-            ]
-        })
-        .collect();
-
-    ascii_table("Chain Summary", headers, &rows);
-    Ok(())
-}
-
-fn print_agent_registry_summary(
-    config: &MentisDbServerConfig,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let registry = load_registered_chains(&config.service.chain_dir)?;
-    if registry.chains.is_empty() {
-        println!("{YELLOW}Agent Registry{RESET}");
-        println!("  No registered chains.\n");
-        return Ok(());
-    }
-
-    let headers = &["Name", "ID", "Status", "Memories", "Description"];
-    let mut sections: Vec<(String, Vec<Vec<String>>)> = Vec::new();
-
-    for entry in registry.chains.values() {
-        match MentisDb::open_with_storage(
-            entry
-                .storage_adapter
-                .for_chain_key(&config.service.chain_dir, &entry.chain_key),
-        ) {
-            Ok(chain) => {
-                let agents = chain.list_agent_registry();
-                if agents.is_empty() {
-                    continue;
-                }
-                let thoughts = chain.thoughts();
-                let rows: Vec<Vec<String>> = agents
-                    .into_iter()
-                    .map(|agent| {
-                        let live_count = thoughts
-                            .iter()
-                            .filter(|t| t.agent_id == agent.agent_id)
-                            .count();
-                        let desc = agent
-                            .description
-                            .as_deref()
-                            .filter(|v| !v.trim().is_empty())
-                            .unwrap_or("—");
-                        let desc = if desc.len() > 60 {
-                            format!("{}…", &desc[..59])
-                        } else {
-                            desc.to_string()
-                        };
-                        vec![
-                            agent.display_name.clone(),
-                            agent.agent_id.clone(),
-                            agent.status.to_string(),
-                            live_count.to_string(),
-                            desc,
-                        ]
-                    })
-                    .collect();
-                sections.push((entry.chain_key.clone(), rows));
-            }
-            Err(error) => {
-                sections.push((
-                    entry.chain_key.clone(),
-                    vec![vec![
-                        format!("error: {error}"),
-                        String::new(),
-                        String::new(),
-                        String::new(),
-                        String::new(),
-                    ]],
-                ));
-            }
-        }
-    }
-
-    if sections.is_empty() {
-        println!("{YELLOW}Agent Registry{RESET}");
-        println!("  No agents registered.\n");
-    } else {
-        ascii_table_grouped("Agent Registry", headers, &sections);
-    }
-    Ok(())
-}
-
-fn print_skill_registry_summary(
-    config: &MentisDbServerConfig,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    match SkillRegistry::open(&config.service.chain_dir) {
-        Ok(registry) => {
-            let skills = registry.list_skills();
-            if skills.is_empty() {
-                println!("{YELLOW}Skill Registry{RESET}");
-                println!("  No skills registered.\n");
-                return Ok(());
-            }
-            let headers = &["Name", "Status", "Versions", "Tags", "Uploaded By"];
-            let rows: Vec<Vec<String>> = skills
-                .iter()
-                .map(|skill| {
-                    vec![
-                        skill.name.clone(),
-                        format!("{:?}", skill.status),
-                        skill.version_count.to_string(),
-                        if skill.tags.is_empty() {
-                            "—".to_string()
-                        } else {
-                            skill.tags.join(", ")
-                        },
-                        skill.latest_uploaded_by_agent_id.clone(),
-                    ]
-                })
-                .collect();
-            ascii_table("Skill Registry", headers, &rows);
-        }
-        Err(_) => {
-            println!("{YELLOW}Skill Registry{RESET}");
-            println!("  No skill registry found.\n");
-        }
-    }
-    Ok(())
-}
-
-/// Prints TLS certificate trust instructions and the `my.mentisdb.com` tip,
-/// but only when at least one HTTPS listener is active.
-///
-/// `my.mentisdb.com` is a public DNS A-record that resolves to `127.0.0.1`,
-/// providing a human-friendly hostname for the local daemon once the
-/// self-signed certificate has been trusted.
-fn print_tls_tip(config: &MentisDbServerConfig, handles: &MentisDbServerHandles) {
-    if handles.https_mcp.is_none() && handles.https_rest.is_none() {
-        return;
-    }
-
-    let mcp_port = handles.https_mcp.as_ref().map(|h| h.local_addr().port());
-    let rest_port = handles.https_rest.as_ref().map(|h| h.local_addr().port());
-
-    println!("TLS Certificate: {}", config.tls_cert_path.display());
-    println!();
-    println!("  {YELLOW}my.mentisdb.com{RESET} is a public DNS A-record \u{2192} 127.0.0.1");
-    println!("  You can use it as a friendly hostname for this local daemon.");
-    if let Some(port) = mcp_port {
-        println!("  MCP:  https://my.mentisdb.com:{port}");
-    }
-    if let Some(port) = rest_port {
-        println!("  REST: https://my.mentisdb.com:{port}");
-    }
-    println!();
-    println!("  To avoid certificate warnings, trust the self-signed cert once:");
-    println!("  {GREEN}macOS{RESET}:   sudo security add-trusted-cert -d -r trustRoot \\");
-    println!("             -k /Library/Keychains/System.keychain \\");
-    println!("             {}", config.tls_cert_path.display());
-    println!(
-        "  {GREEN}Linux{RESET}:   sudo cp {} /usr/local/share/ca-certificates/mentisdb.crt",
-        config.tls_cert_path.display()
-    );
-    println!("           sudo update-ca-certificates");
-    println!(
-        "  {GREEN}Windows{RESET}: certutil -addstore Root {}",
-        config.tls_cert_path.display()
-    );
-    println!();
-}
-
-/// Returns an OS-specific one-liner for launching mentisdbd in the background
-/// so it survives terminal close.
+/// Returns OS-specific instructions for launching mentisdbd in the background
+/// so it survives terminal close. Returns plain text — ratatui styles are
+/// applied in `render_bottom`.
 pub(crate) fn background_launch_tip() -> &'static str {
     if cfg!(target_os = "macos") {
         "  Run in the background (survives terminal close):\n\
           \n\
-          \x1b[2m    nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &\x1b[0m"
+              nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &"
     } else if cfg!(target_os = "linux") {
         "  Run in the background (survives terminal close):\n\
          \n\
-         \x1b[32m  Option A — systemd user service (recommended, auto-starts on login):\x1b[0m\n\
+           Option A — systemd user service (recommended, auto-starts on login):\n\
          \n\
-         \x1b[2m    # Create ~/.config/systemd/user/mentisdbd.service with:\x1b[0m\n\
-         \x1b[2m    # [Unit]\x1b[0m\n\
-         \x1b[2m    # Description=MentisDB daemon\x1b[0m\n\
-         \x1b[2m    # [Service]\x1b[0m\n\
-         \x1b[2m    # ExecStart=/usr/local/bin/mentisdbd\x1b[0m\n\
-         \x1b[2m    # Restart=on-failure\x1b[0m\n\
-         \x1b[2m    # [Install]\x1b[0m\n\
-         \x1b[2m    # WantedBy=default.target\x1b[0m\n\
-         \x1b[2m    systemctl --user enable --now mentisdbd\x1b[0m\n\
+             # Create ~/.config/systemd/user/mentisdbd.service with:\n\
+             # [Unit]\n\
+             # Description=MentisDB daemon\n\
+             # [Service]\n\
+             # ExecStart=/usr/local/bin/mentisdbd\n\
+             # Restart=on-failure\n\
+             # [Install]\n\
+             # WantedBy=default.target\n\
+             systemctl --user enable --now mentisdbd\n\
          \n\
-         \x1b[32m  Option B — nohup (current session only):\x1b[0m\n\
+           Option B — nohup (current session only):\n\
          \n\
-         \x1b[2m    nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &\x1b[0m"
+             nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &"
     } else if cfg!(target_os = "windows") {
         "  Run in the background (survives terminal close):\n\
          \n\
-         \x1b[32m  Option A — Task Scheduler (recommended, auto-starts on login):\x1b[0m\n\
+           Option A — Task Scheduler (recommended, auto-starts on login):\n\
          \n\
-         \x1b[2m    schtasks /create /tn MentisDB /tr mentisdbd.exe /sc ONLOGON /ru %USERNAME% /f\x1b[0m\n\
+             schtasks /create /tn MentisDB /tr mentisdbd.exe /sc ONLOGON /ru %USERNAME% /f\n\
          \n\
-         \x1b[32m  Option B — Start-Process (current user session only):\x1b[0m\n\
+           Option B — Start-Process (current user session only):\n\
          \n\
-         \x1b[2m    Start-Process mentisdbd.exe -WindowStyle Hidden\x1b[0m"
+             Start-Process mentisdbd.exe -WindowStyle Hidden"
     } else {
         "  Run in the background (survives terminal close):\n\
          \n\
-         \x1b[2m    nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &\x1b[0m"
+             nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &"
     }
 }
 
-/// Prints a warning that closing this terminal will stop the daemon,
-/// followed by an OS-appropriate tip for running it in the background.
-fn print_terminal_warning() {
-    println!("{YELLOW}⚠  Closing this terminal window will stop mentisdbd.{RESET}");
-    println!("{DIM}   Keep this window open, or run the daemon in the background:{RESET}");
-    println!();
-    println!("{}", background_launch_tip());
-    println!();
+
+/// Build configuration display lines for the TUI top-left pane.
+fn build_config_lines(config: &MentisDbServerConfig, update_config: &UpdateConfig) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    let mut add_var = |name: &str, raw: Option<String>, effective: String| {
+        if let Some(raw_value) = raw {
+            lines.push(format!(
+                "  {name}={raw_value} (effective: {effective})"
+            ));
+        } else {
+            lines.push(format!(
+                "  {name}=<unset> (effective default: {effective})"
+            ));
+        }
+    };
+
+    add_var(
+        "MENTISDB_DIR",
+        std::env::var("MENTISDB_DIR").ok(),
+        config.service.chain_dir.display().to_string(),
+    );
+    add_var(
+        "MENTISDB_DEFAULT_CHAIN_KEY",
+        std::env::var("MENTISDB_DEFAULT_CHAIN_KEY")
+            .ok()
+            .or_else(|| std::env::var("MENTISDB_DEFAULT_KEY").ok()),
+        config.service.default_chain_key.clone(),
+    );
+    add_var(
+        "MENTISDB_STORAGE_ADAPTER",
+        std::env::var("MENTISDB_STORAGE_ADAPTER").ok(),
+        config.service.default_storage_adapter.to_string(),
+    );
+    add_var(
+        "MENTISDB_AUTO_FLUSH",
+        std::env::var("MENTISDB_AUTO_FLUSH").ok(),
+        config.service.auto_flush.to_string(),
+    );
+    add_var(
+        "MENTISDB_VERBOSE",
+        std::env::var("MENTISDB_VERBOSE").ok(),
+        config.service.verbose.to_string(),
+    );
+    add_var(
+        "MENTISDB_LOG_FILE",
+        std::env::var("MENTISDB_LOG_FILE").ok(),
+        config
+            .service
+            .log_file
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string()),
+    );
+    add_var(
+        "MENTISDB_BIND_HOST",
+        std::env::var("MENTISDB_BIND_HOST").ok(),
+        config.mcp_addr.ip().to_string(),
+    );
+    add_var(
+        "MENTISDB_MCP_PORT",
+        std::env::var("MENTISDB_MCP_PORT").ok(),
+        config.mcp_addr.port().to_string(),
+    );
+    add_var(
+        "MENTISDB_REST_PORT",
+        std::env::var("MENTISDB_REST_PORT").ok(),
+        config.rest_addr.port().to_string(),
+    );
+    add_var(
+        "MENTISDB_HTTPS_MCP_PORT",
+        std::env::var("MENTISDB_HTTPS_MCP_PORT").ok(),
+        match config.https_mcp_addr {
+            Some(addr) => addr.port().to_string(),
+            None => "disabled".to_string(),
+        },
+    );
+    add_var(
+        "MENTISDB_HTTPS_REST_PORT",
+        std::env::var("MENTISDB_HTTPS_REST_PORT").ok(),
+        match config.https_rest_addr {
+            Some(addr) => addr.port().to_string(),
+            None => "disabled".to_string(),
+        },
+    );
+    add_var(
+        "MENTISDB_TLS_CERT",
+        std::env::var("MENTISDB_TLS_CERT").ok(),
+        config.tls_cert_path.display().to_string(),
+    );
+    add_var(
+        "MENTISDB_TLS_KEY",
+        std::env::var("MENTISDB_TLS_KEY").ok(),
+        config.tls_key_path.display().to_string(),
+    );
+    add_var(
+        "MENTISDB_DASHBOARD_PORT",
+        std::env::var("MENTISDB_DASHBOARD_PORT").ok(),
+        match config.dashboard_addr {
+            Some(addr) => addr.port().to_string(),
+            None => "disabled".to_string(),
+        },
+    );
+    add_var(
+        "MENTISDB_DASHBOARD_PIN",
+        std::env::var("MENTISDB_DASHBOARD_PIN").ok(),
+        if config.dashboard_pin.is_some() {
+            "set".to_string()
+        } else {
+            "not set".to_string()
+        },
+    );
+    add_var(
+        "MENTISDB_UPDATE_CHECK",
+        std::env::var("MENTISDB_UPDATE_CHECK").ok(),
+        update_config.enabled.to_string(),
+    );
+    add_var(
+        "MENTISDB_UPDATE_REPO",
+        std::env::var("MENTISDB_UPDATE_REPO").ok(),
+        update_config.repo.clone(),
+    );
+    add_var(
+        "RUST_LOG",
+        std::env::var("RUST_LOG").ok(),
+        "info (default)".to_string(),
+    );
+    #[cfg(feature = "startup-sound")]
+    add_var(
+        "MENTISDB_STARTUP_SOUND",
+        std::env::var("MENTISDB_STARTUP_SOUND").ok(),
+        "true (default)".to_string(),
+    );
+    #[cfg(feature = "startup-sound")]
+    add_var(
+        "MENTISDB_THOUGHT_SOUNDS",
+        std::env::var("MENTISDB_THOUGHT_SOUNDS").ok(),
+        "false (default)".to_string(),
+    );
+
+    lines
+}
+
+/// Build TLS info lines for the TUI top-right pane.
+fn build_tls_info_lines(
+    config: &MentisDbServerConfig,
+    handles: &MentisDbServerHandles,
+) -> Vec<String> {
+    if handles.https_mcp.is_none() && handles.https_rest.is_none() {
+        return Vec::new();
+    }
+
+    let mut lines = Vec::new();
+    let mcp_port = handles.https_mcp.as_ref().map(|h| h.local_addr().port());
+    let rest_port = handles.https_rest.as_ref().map(|h| h.local_addr().port());
+
+    lines.push(format!("TLS Certificate: {}", config.tls_cert_path.display()));
+    lines.push(String::new());
+    lines.push("  my.mentisdb.com is a public DNS A-record → 127.0.0.1".to_string());
+    lines.push("  You can use it as a friendly hostname for this local daemon.".to_string());
+    if let Some(port) = mcp_port {
+        lines.push(format!("  MCP:  https://my.mentisdb.com:{port}"));
+    }
+    if let Some(port) = rest_port {
+        lines.push(format!("  REST: https://my.mentisdb.com:{port}"));
+    }
+    lines.push(String::new());
+    lines.push("  To avoid certificate warnings, trust the self-signed cert once:".to_string());
+
+    if cfg!(target_os = "macos") {
+        lines.push("  macOS:   sudo security add-trusted-cert -d -r trustRoot \\".to_string());
+        lines.push("           -k /Library/Keychains/System.keychain \\".to_string());
+        lines.push(format!("           {}", config.tls_cert_path.display()));
+    } else if cfg!(target_os = "linux") {
+        lines.push(format!(
+            "  Linux:   sudo cp {} /usr/local/share/ca-certificates/mentisdb.crt",
+            config.tls_cert_path.display()
+        ));
+        lines.push("           sudo update-ca-certificates".to_string());
+    } else if cfg!(target_os = "windows") {
+        lines.push(format!(
+            "  Windows: certutil -addstore Root {}",
+            config.tls_cert_path.display()
+        ));
+    }
+
+    lines
+}
+
+/// Build endpoint display lines for the TUI top-right pane.
+fn build_endpoint_lines(
+    handles: &MentisDbServerHandles,
+    mcp_port: u16,
+    rest_port: u16,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    let mcp_local = format!("http://{}", handles.mcp.local_addr());
+    let rest_local = format!("http://{}", handles.rest.local_addr());
+    let mcp_friendly = format!("http://my.mentisdb.com:{mcp_port}");
+    let rest_friendly = format!("http://my.mentisdb.com:{rest_port}");
+
+    lines.push(format!(
+        "  MCP  (HTTP)  {mcp_local:<32}  {mcp_friendly}"
+    ));
+    lines.push(format!(
+        "  REST (HTTP)  {rest_local:<32}  {rest_friendly}"
+    ));
+
+    if let Some(ref h) = handles.https_mcp {
+        let local = format!("https://{}", h.local_addr());
+        let port = h.local_addr().port();
+        let friendly = format!("https://my.mentisdb.com:{port}");
+        lines.push(format!("  MCP  (TLS)   {local:<32}  {friendly}"));
+    }
+    if let Some(ref h) = handles.https_rest {
+        let local = format!("https://{}", h.local_addr());
+        let port = h.local_addr().port();
+        let friendly = format!("https://my.mentisdb.com:{port}");
+        lines.push(format!("  REST (TLS)   {local:<32}  {friendly}"));
+    }
+    if let Some(ref h) = handles.dashboard {
+        let local = format!("https://{}/dashboard", h.local_addr());
+        let port = h.local_addr().port();
+        let friendly = format!("https://my.mentisdb.com:{port}/dashboard");
+        lines.push(format!("  Dashboard    {local:<32}  {friendly}"));
+    }
+
+    lines
 }
