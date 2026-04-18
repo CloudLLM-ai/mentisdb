@@ -1381,8 +1381,8 @@ pub fn run_tui(
                             start
                         };
                         if let Some(start) = maybe_start {
-                            let moved =
-                                start.y != pos.y || pos.x.abs_diff(start.x) > 3;
+                            // Any movement counts; even a single character drag.
+                            let moved = start.y != pos.y || start.x != pos.x;
                             if moved {
                                 extract_from_buffer(terminal.current_buffer_mut(), start, pos)
                             } else {
@@ -1468,14 +1468,17 @@ pub fn run_tui(
 
             // Clipboard write and toast happen outside the state lock.
             if let Some(ref text) = text_to_copy {
-                let copied = clipboard
-                    .as_mut()
-                    .map(|cb| cb.set_text(text.as_str()).is_ok())
-                    .unwrap_or(false);
-                if copied {
-                    let mut s = state.lock().unwrap();
-                    s.toast = Some(("Text copied to clipboard!".to_string(), Instant::now()));
+                // Write via arboard (programmatic clipboard).
+                if let Some(ref mut cb) = clipboard {
+                    let _ = cb.set_text(text.as_str());
                 }
+                // Write via OSC 52: terminal emulator pastes this directly into
+                // the system clipboard — enables Cmd+C to work on macOS and
+                // supports iTerm2, Terminal.app, kitty, and other OSC-52-aware
+                // terminals even while mouse capture is active.
+                write_osc52(text);
+                let mut s = state.lock().unwrap();
+                s.toast = Some(("Text copied to clipboard!".to_string(), Instant::now()));
             }
         }
 
@@ -1488,6 +1491,37 @@ pub fn run_tui(
     }
 
     Ok(())
+}
+
+/// Writes `text` to the clipboard via the OSC 52 terminal escape sequence.
+/// This is supported by iTerm2, Terminal.app (macOS 14+), kitty, and most
+/// modern terminal emulators. It works even while mouse capture is active,
+/// so Cmd+C / terminal copy shortcuts see the updated clipboard.
+fn write_osc52(text: &str) {
+    use std::io::Write;
+    let encoded = base64_encode(text.as_bytes());
+    // OSC 52 ; c (clipboard) ; <base64> ST
+    let seq = format!("\x1b]52;c;{encoded}\x07");
+    let _ = io::stdout().write_all(seq.as_bytes());
+    let _ = io::stdout().flush();
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let n = match chunk.len() {
+            1 => (chunk[0] as u32) << 16,
+            2 => ((chunk[0] as u32) << 16) | ((chunk[1] as u32) << 8),
+            _ => ((chunk[0] as u32) << 16) | ((chunk[1] as u32) << 8) | chunk[2] as u32,
+        };
+        out.push(TABLE[(n >> 18 & 0x3F) as usize] as char);
+        out.push(TABLE[(n >> 12 & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 { TABLE[(n >> 6 & 0x3F) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TABLE[(n & 0x3F) as usize] as char } else { '=' });
+    }
+    out
 }
 
 /// Reads the rendered text in the drag rectangle directly from ratatui's
