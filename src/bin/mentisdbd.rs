@@ -31,14 +31,14 @@ use mcp::ToolProtocol;
 use mentisdb::integrations::detect::{detect_integrations_with_environment, DetectionStatus};
 use mentisdb::paths::{HostPlatform, PathEnvironment};
 use mentisdb::server::{
-    adopt_legacy_default_mentisdb_dir, start_servers, MentisDbMcpProtocol, MentisDbServerConfig,
-    MentisDbServerHandles, MentisDbService,
+    adopt_legacy_default_mentisdb_dir, start_servers, LegacyDefaultStorageMigration,
+    MentisDbMcpProtocol, MentisDbServerConfig, MentisDbServerHandles, MentisDbService,
 };
 use mentisdb::tui::{self, AgentInfo, ChainInfo, SkillInfo, TuiState};
 use mentisdb::{
     load_registered_chains, migrate_chain_hash_algorithm, migrate_registered_chains_with_adapter,
     migrate_skill_registry, refresh_registered_chain_counts, MentisDb, MentisDbMigrationEvent,
-    SkillRegistry, ThoughtType,
+    MentisDbMigrationReport, SkillRegistry, ThoughtType,
 };
 use serde::Deserialize;
 use std::ffi::OsString;
@@ -54,6 +54,18 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// Embedded MentisDB skill markdown for proxy-mode resource reads.
 const MENTISDB_SKILL_MD: &str = include_str!("../../MENTISDB_SKILL.md");
+
+type StartupData = (
+    MentisDbServerConfig,
+    UpdateConfig,
+    MentisDbServerHandles,
+    bool,
+    FirstRunSetupStatus,
+    String,
+    Vec<MentisDbMigrationReport>,
+    String,
+    Option<LegacyDefaultStorageMigration>,
+);
 
 /// Raise the open-file-descriptor limit to the OS hard cap (up to 65 535).
 ///
@@ -1018,6 +1030,252 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     raise_fd_limit();
     let log_rx = tui::init_tui_logger();
+
+    // Build initial TUI state immediately so the TUI renders right away.
+    let mut tui_state = TuiState::new(env!("CARGO_PKG_VERSION"));
+    tui_state.startup_status = "Starting…".to_string();
+    tui_state.log_lines.push(format!(
+        "[{}] mentisdb v{} starting",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+        env!("CARGO_PKG_VERSION")
+    ));
+
+    let tui_state = Arc::new(std::sync::Mutex::new(tui_state));
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = Arc::clone(&running);
+
+    // Spawn Ctrl+C handler
+    let ctrlc_handle = tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        running_clone.store(false, Ordering::SeqCst);
+    });
+
+    // Start the TUI on a background thread so it renders immediately.
+    let tui_state_for_tui = Arc::clone(&tui_state);
+    let running_for_tui = Arc::clone(&running);
+    let tui_handle =
+        std::thread::spawn(move || tui::run_tui(tui_state_for_tui, running_for_tui, log_rx));
+
+    // All startup work runs here on the main thread. Progress is fed
+    // into the TUI via the log channel and startup_status field.
+    let startup_result: Result<StartupData, _> = run_startup_sequence(&tui_state).await;
+
+    // Signal the TUI to quit so we can report any TUI thread error.
+    {
+        let mut s = tui_state.lock().unwrap();
+        s.should_quit = true;
+    }
+    if let Err(e) = tui_handle.join().unwrap() {
+        eprintln!("TUI error: {e}");
+    }
+    ctrlc_handle.abort();
+
+    // If startup failed, propagate the error.
+    let (
+        config,
+        update_config,
+        handles,
+        is_first_run,
+        first_run_setup_status,
+        primer_paste_line,
+        migration_reports,
+        skill_registry_msg,
+        storage_root_migration,
+    ): StartupData = startup_result?;
+
+    // ── Update TUI state with completed startup data ────────────────────────
+    {
+        let mut s = tui_state.lock().unwrap();
+        s.started = true;
+        s.startup_status = "mentisdbd running".to_string();
+        s.chain_count = 0;
+        s.primer_text = primer_paste_line.clone();
+        s.background_tip = background_launch_tip().to_string();
+        s.config_lines = build_config_lines(&config, &update_config);
+
+        if migration_reports.is_empty() {
+            s.migration_lines
+                .push("No chain migrations required.".to_string());
+        } else {
+            for report in &migration_reports {
+                s.migration_lines.push(format!(
+                    "Migrated chain {} from version {} to {} ({} thoughts)",
+                    report.chain_key, report.from_version, report.to_version, report.thought_count
+                ));
+            }
+        }
+        s.migration_lines.push(skill_registry_msg.clone());
+
+        if let Some(report) = &storage_root_migration {
+            if report.renamed_root_dir {
+                s.migration_lines.push(format!(
+                    "Legacy storage adoption: renamed {} -> {}",
+                    report.source_dir.display(),
+                    report.target_dir.display()
+                ));
+            } else if report.merged_entries > 0 {
+                s.migration_lines.push(format!(
+                    "Legacy storage adoption: merged {} entries from {} into {}",
+                    report.merged_entries,
+                    report.source_dir.display(),
+                    report.target_dir.display()
+                ));
+            }
+            if report.renamed_registry_file {
+                s.migration_lines.push(
+                    "Renamed thoughtchain-registry.json -> mentisdb-registry.json".to_string(),
+                );
+            }
+        }
+
+        if is_first_run {
+            s.migration_lines.push(String::new());
+            s.migration_lines.push("First-run setup:".to_string());
+            for line in build_first_run_setup_lines() {
+                s.migration_lines.push(format!("  {line}"));
+            }
+        }
+
+        s.tls_info_lines = if handles.https_mcp.is_some() || handles.https_rest.is_some() {
+            build_tls_info_lines(&config, &handles)
+        } else {
+            Vec::new()
+        };
+
+        let mcp_port = handles.mcp.local_addr().port();
+        let rest_port = handles.rest.local_addr().port();
+        s.endpoint_lines = build_endpoint_lines(&handles, mcp_port, rest_port);
+
+        let registry = load_registered_chains(&config.service.chain_dir).unwrap_or_default();
+        s.chain_count = registry.chains.len();
+
+        for (key, reg) in &registry.chains {
+            s.chains.push(ChainInfo {
+                key: key.clone(),
+                version: reg.version,
+                adapter: reg.storage_adapter.to_string(),
+                thoughts: reg.thought_count as usize,
+                agents: reg.agent_count,
+                storage_path: reg.storage_location.clone(),
+            });
+        }
+
+        for (chain_key, reg) in &registry.chains {
+            if let Ok(chain) = MentisDb::open_with_storage(
+                reg.storage_adapter
+                    .for_chain_key(&config.service.chain_dir, chain_key),
+            ) {
+                let agents = chain.list_agent_registry();
+                let thoughts = chain.thoughts();
+                let mut counts: std::collections::HashMap<&str, usize> =
+                    std::collections::HashMap::new();
+                for t in thoughts {
+                    *counts.entry(t.agent_id.as_str()).or_default() += 1;
+                }
+                for agent in &agents {
+                    let live_count = counts.get(agent.agent_id.as_str()).copied().unwrap_or(0);
+                    s.agents.push(AgentInfo {
+                        chain_key: chain_key.clone(),
+                        name: agent.display_name.clone(),
+                        id: agent.agent_id.clone(),
+                        status: agent.status.to_string(),
+                        memories: live_count,
+                        description: agent
+                            .description
+                            .as_deref()
+                            .filter(|v| !v.trim().is_empty())
+                            .unwrap_or("—")
+                            .to_string(),
+                    });
+                }
+            }
+        }
+
+        if let Ok(skill_registry) = SkillRegistry::open(&config.service.chain_dir) {
+            let skills = skill_registry.list_skills();
+            for summary in &skills {
+                let uploaded_by = summary
+                    .latest_uploaded_by_agent_name
+                    .as_deref()
+                    .unwrap_or(&summary.latest_uploaded_by_agent_id);
+                s.skills.push(SkillInfo {
+                    name: summary.name.clone(),
+                    status: summary.status.to_string(),
+                    versions: summary.version_count,
+                    tags: summary.tags.clone(),
+                    uploaded_by: uploaded_by.to_string(),
+                });
+            }
+        }
+
+        let mcp_local = format!("http://{}", handles.mcp.local_addr());
+        let rest_local = format!("http://{}", handles.rest.local_addr());
+        s.log_lines.push(format!(
+            "[{}] MCP  (HTTP)  {}",
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+            mcp_local
+        ));
+        s.log_lines.push(format!(
+            "[{}] REST (HTTP)  {}",
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+            rest_local
+        ));
+        if let Some(ref h) = handles.https_mcp {
+            s.log_lines.push(format!(
+                "[{}] MCP  (TLS)   https://{}",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                h.local_addr()
+            ));
+        }
+        if let Some(ref h) = handles.https_rest {
+            s.log_lines.push(format!(
+                "[{}] REST (TLS)   https://{}",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                h.local_addr()
+            ));
+        }
+        if let Some(ref h) = handles.dashboard {
+            s.log_lines.push(format!(
+                "[{}] Dashboard    https://{}/dashboard",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                h.local_addr()
+            ));
+        }
+    }
+
+    // ── First-run setup wizard ──────────────────────────────────────────────
+    if let Err(error) = maybe_run_first_run_setup(&first_run_setup_status) {
+        eprintln!("Startup setup wizard failed: {error}");
+    }
+
+    // ── Restart the TUI for the fully-initialized state ─────────────────────
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = Arc::clone(&running);
+    let ctrlc_handle = tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        running_clone.store(false, Ordering::SeqCst);
+    });
+
+    // We need a fresh log receiver. The old one was consumed by the first TUI.
+    let (new_tx, new_rx) = std::sync::mpsc::channel();
+    let new_logger = tui::TuiLogger::new(new_tx);
+    let _ = log::set_boxed_logger(Box::new(new_logger));
+
+    let tui_result = tui::run_tui(tui_state, running, new_rx);
+    ctrlc_handle.abort();
+    if let Err(e) = tui_result {
+        eprintln!("TUI error: {e}");
+    }
+
+    Ok(())
+}
+
+/// Runs all startup work (update check, migrations, server start) and feeds
+/// progress into the TUI. Returns all data needed to populate the TUI state
+/// once startup completes.
+async fn run_startup_sequence(
+    tui_state: &Arc<std::sync::Mutex<TuiState>>,
+) -> Result<StartupData, Box<dyn std::error::Error + Send + Sync>> {
     let storage_root_migration = if std::env::var_os("MENTISDB_DIR").is_none() {
         adopt_legacy_default_mentisdb_dir()?
     } else {
@@ -1025,8 +1283,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     let mut config = MentisDbServerConfig::from_env();
 
-    // Run update check BEFORE migrations so users get the fix before their
-    // chains are touched by an older binary that might crash on migration.
+    // Update check
+    {
+        let mut s = tui_state.lock().unwrap();
+        s.startup_status = "Checking for updates…".to_string();
+    }
+
     let update_config = update_config_from_env();
     if update_config.enabled {
         let latest = fetch_latest_release(&update_config.repo).await;
@@ -1038,18 +1300,24 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let current_version = env!("CARGO_PKG_VERSION");
 
                 if io::stdin().is_terminal() && io::stdout().is_terminal() {
-                    match tui::show_update_dialog(
+                    let choice = tui::TuiState::request_update_dialog(
+                        tui_state,
                         current_version,
                         &latest_display,
                         &release.html_url,
-                    ) {
-                        Ok(true) => {
-                            eprintln!("Installing release {} via cargo…", latest_display);
+                    );
+                    match choice {
+                        Some(true) => {
+                            {
+                                let mut s = tui_state.lock().unwrap();
+                                s.startup_status =
+                                    format!("Installing {latest_display}…").to_string();
+                            }
                             match install_latest_release(&release.tag_name, &update_config.repo) {
                                 Ok(path) => {
                                     eprintln!("Installed mentisdbd to {}", path.display());
                                     eprintln!("Please restart mentisdbd to use the new version.");
-                                    return Ok(());
+                                    return Err("Update installed, please restart.".into());
                                 }
                                 Err(e) => {
                                     eprintln!("Install failed: {e}");
@@ -1057,12 +1325,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 }
                             }
                         }
-                        Ok(false) => {
+                        Some(false) => {
                             eprintln!("Update skipped. Continuing with current version…");
                         }
-                        Err(e) => {
-                            eprintln!("Update dialog failed: {e}");
-                            eprintln!("Continuing with current version…");
+                        None => {
+                            eprintln!("Update skipped (TUI quit).");
+                            return Err("TUI quit during update dialog.".into());
                         }
                     }
                 } else {
@@ -1075,13 +1343,17 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     eprintln!("Continuing with current version…");
                 }
             }
-            Ok(_) => {} // up to date
+            Ok(_) => {}
             Err(e) => log::warn!("Update check failed: {e}"),
         }
     }
 
-    // Run migrations before starting servers.  Progress lines print live here
-    // (rare — only on first run or version upgrades).
+    // Migrations
+    {
+        let mut s = tui_state.lock().unwrap();
+        s.startup_status = "Running migrations…".to_string();
+    }
+
     let migration_reports = migrate_registered_chains_with_adapter(
         &config.service.chain_dir,
         config.service.default_storage_adapter,
@@ -1092,88 +1364,80 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 to_version,
                 current,
                 total,
-            } => println!(
-                "{} Migrating chain {} from version {} to version {}",
-                progress_bar(current, total),
-                chain_key,
-                from_version,
-                to_version
-            ),
+            } => {
+                let msg = format!(
+                    "[{}/{}] Migrating chain {} from v{} to v{}",
+                    current, total, chain_key, from_version, to_version
+                );
+                log::info!("{}", msg);
+            }
             MentisDbMigrationEvent::Completed {
                 chain_key,
                 from_version,
                 to_version,
                 current,
                 total,
-            } => println!(
-                "{} Migrated chain {} from version {} to version {}",
-                progress_bar(current, total),
-                chain_key,
-                from_version,
-                to_version
-            ),
+            } => {
+                let msg = format!(
+                    "[{}/{}] Migrated chain {} from v{} to v{}",
+                    current, total, chain_key, from_version, to_version
+                );
+                log::info!("{}", msg);
+            }
             MentisDbMigrationEvent::StartedReconciliation {
                 chain_key,
                 from_storage_adapter,
                 to_storage_adapter,
                 current,
                 total,
-            } => println!(
-                "{} Reconciling chain {} from {} storage to {} storage",
-                progress_bar(current, total),
-                chain_key,
-                from_storage_adapter,
-                to_storage_adapter
-            ),
+            } => {
+                let msg = format!(
+                    "[{}/{}] Reconciling chain {} from {} to {} storage",
+                    current, total, chain_key, from_storage_adapter, to_storage_adapter
+                );
+                log::info!("{}", msg);
+            }
             MentisDbMigrationEvent::CompletedReconciliation {
                 chain_key,
                 from_storage_adapter,
                 to_storage_adapter,
                 current,
                 total,
-            } => println!(
-                "{} Reconciled chain {} from {} storage to {} storage",
-                progress_bar(current, total),
-                chain_key,
-                from_storage_adapter,
-                to_storage_adapter
-            ),
-            // Hash rehash events are handled by the dedicated pass below.
+            } => {
+                let msg = format!(
+                    "[{}/{}] Reconciled chain {} from {} to {} storage",
+                    current, total, chain_key, from_storage_adapter, to_storage_adapter
+                );
+                log::info!("{}", msg);
+            }
             MentisDbMigrationEvent::StartedHashRehash { .. }
             | MentisDbMigrationEvent::CompletedHashRehash { .. } => {}
         },
     )?;
 
-    // Rehash any chains still using the legacy JSON-based hash algorithm (≤ 0.7.7 → ≥ 0.7.8).
-    // This is a no-op after the first upgrade run; detection is a single peek at the first
-    // thought in each chain file so unaffected chains cost nothing beyond the registry read.
     match migrate_chain_hash_algorithm(&config.service.chain_dir, |event| match event {
         MentisDbMigrationEvent::StartedHashRehash {
             chain_key,
             current,
             total,
-        } => println!(
-            "{} Rehashing chain {} (legacy JSON → bincode)",
-            progress_bar(current, total),
-            chain_key,
+        } => log::info!(
+            "[{}/{}] Rehashing chain {} (legacy JSON → bincode)",
+            current,
+            total,
+            chain_key
         ),
         MentisDbMigrationEvent::CompletedHashRehash {
             chain_key,
             current,
             total,
-        } => println!(
-            "{} Rehashed chain {}",
-            progress_bar(current, total),
-            chain_key,
-        ),
+        } => log::info!("[{}/{}] Rehashed chain {}", current, total, chain_key),
         _ => {}
     }) {
-        Ok(0) => {} // nothing to migrate
-        Ok(n) => println!("Hash algorithm migration complete: {n} chain(s) rehashed."),
+        Ok(0) => {}
+        Ok(n) => log::info!("Hash algorithm migration complete: {n} chain(s) rehashed."),
         Err(e) => log::warn!("Hash algorithm migration failed: {e}"),
     }
 
-    // Capture skill registry migration result to print later.
     let skill_registry_msg = match migrate_skill_registry(&config.service.chain_dir) {
         Ok(None) => "Skill registry: up to date, no migration required.".to_string(),
         Ok(Some(report)) => format!(
@@ -1187,16 +1451,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err(e) => panic!("Skill registry migration failed — cannot start server: {e}"),
     };
 
-    // Refresh any stale thought_count / agent_count values in the registry JSON.
-    // This repairs counts from older versions, hard crashes, or chains appended
-    // outside the running daemon.  On every append the registry is kept current
-    // (persist_chain_registration), but a startup pass guarantees correctness.
     if let Err(e) = refresh_registered_chain_counts(&config.service.chain_dir) {
         log::warn!("Could not refresh chain registry counts: {e}");
     }
-    let first_run_setup_status = detect_first_run_setup_status(&config.service.chain_dir);
 
-    // Register per-thought sound callback when MENTISDB_THOUGHT_SOUNDS is enabled.
     #[cfg(feature = "startup-sound")]
     {
         let thought_sounds_enabled = std::env::var("MENTISDB_THOUGHT_SOUNDS")
@@ -1209,218 +1467,326 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    let handles = start_servers(config.clone()).await?;
-
-    // ── First-run setup wizard (before showing chain list + primer) ────────
-    let is_first_run = should_show_first_run_setup_notice(&first_run_setup_status);
-    if let Err(error) = maybe_run_first_run_setup(&first_run_setup_status) {
-        eprintln!("Startup setup wizard failed: {error}");
+    // Start servers
+    {
+        let mut s = tui_state.lock().unwrap();
+        s.startup_status = "Starting servers…".to_string();
     }
 
-    // ── Refresh chain registry after wizard may have created one ───────────
+    let handles = start_servers(config.clone()).await?;
+
+    let first_run_setup_status = detect_first_run_setup_status(&config.service.chain_dir);
+    let is_first_run = should_show_first_run_setup_notice(&first_run_setup_status);
+
+    // Primer
     let registry = load_registered_chains(&config.service.chain_dir).unwrap_or_default();
     let has_chains = !registry.chains.is_empty();
-
-    // Prefer the HTTPS MCP address for the primer; fall back to plain HTTP.
-    let mcp_local = format!("http://{}", handles.mcp.local_addr());
-    let rest_local = format!("http://{}", handles.rest.local_addr());
-    let mcp_port = handles.mcp.local_addr().port();
-    let rest_port = handles.rest.local_addr().port();
     let primer_mcp_addr = handles
         .https_mcp
         .as_ref()
         .map(|h| format!("https://{}", h.local_addr()))
-        .unwrap_or_else(|| mcp_local.clone());
+        .unwrap_or_else(|| format!("http://{}", handles.mcp.local_addr()));
     let primer_paste_line = build_agent_primer_paste_line(&primer_mcp_addr, has_chains);
 
-    // ── Build TUI state ─────────────────────────────────────────────────────
-    let mut tui_state = TuiState::new(env!("CARGO_PKG_VERSION"));
-    tui_state.started = true;
-    tui_state.chain_count = registry.chains.len();
-    tui_state.primer_text = primer_paste_line.clone();
-    tui_state.background_tip = background_launch_tip().to_string();
-
-    // Config lines for top-left pane
-    tui_state.config_lines = build_config_lines(&config, &update_config);
-
-    // Migration lines (shown in top-left pane)
-    if migration_reports.is_empty() {
-        tui_state
-            .migration_lines
-            .push("No chain migrations required.".to_string());
-    } else {
-        for report in &migration_reports {
-            tui_state.migration_lines.push(format!(
-                "Migrated chain {} from version {} to {} ({} thoughts)",
-                report.chain_key, report.from_version, report.to_version, report.thought_count
-            ));
-        }
-    }
-    tui_state.migration_lines.push(skill_registry_msg.clone());
-
-    // Storage root migration (legacy dir adoption)
-    if let Some(report) = &storage_root_migration {
-        if report.renamed_root_dir {
-            tui_state.migration_lines.push(format!(
-                "Legacy storage adoption: renamed {} -> {}",
-                report.source_dir.display(),
-                report.target_dir.display()
-            ));
-        } else if report.merged_entries > 0 {
-            tui_state.migration_lines.push(format!(
-                "Legacy storage adoption: merged {} entries from {} into {}",
-                report.merged_entries,
-                report.source_dir.display(),
-                report.target_dir.display()
-            ));
-        }
-        if report.renamed_registry_file {
-            tui_state
-                .migration_lines
-                .push("Renamed thoughtchain-registry.json -> mentisdb-registry.json".to_string());
-        }
+    {
+        let mut s = tui_state.lock().unwrap();
+        s.startup_status = "Loading chains and agents…".to_string();
     }
 
-    // First-run setup notice
-    if is_first_run {
-        tui_state.migration_lines.push(String::new());
-        tui_state
-            .migration_lines
-            .push("First-run setup:".to_string());
-        for line in build_first_run_setup_lines() {
-            tui_state.migration_lines.push(format!("  {line}"));
-        }
-    }
-
-    // TLS info lines for top-right pane
-    tui_state.tls_info_lines = if handles.https_mcp.is_some() || handles.https_rest.is_some() {
-        build_tls_info_lines(&config, &handles)
-    } else {
-        Vec::new()
-    };
-
-    // Endpoint lines for top-right pane
-    tui_state.endpoint_lines = build_endpoint_lines(&handles, mcp_port, rest_port);
-
-    // Chain info
-    for (key, reg) in &registry.chains {
-        tui_state.chains.push(ChainInfo {
-            key: key.clone(),
-            version: reg.version,
-            adapter: reg.storage_adapter.to_string(),
-            thoughts: reg.thought_count as usize,
-            agents: reg.agent_count,
-            storage_path: reg.storage_location.clone(),
-        });
-    }
-
-    // Agent info — build per-agent thought counts in a single pass.
-    for (chain_key, reg) in &registry.chains {
-        if let Ok(chain) = MentisDb::open_with_storage(
-            reg.storage_adapter
-                .for_chain_key(&config.service.chain_dir, chain_key),
-        ) {
-            let agents = chain.list_agent_registry();
-            let thoughts = chain.thoughts();
-            let mut counts: std::collections::HashMap<&str, usize> =
-                std::collections::HashMap::new();
-            for t in thoughts {
-                *counts.entry(t.agent_id.as_str()).or_default() += 1;
-            }
-            for agent in &agents {
-                let live_count = counts.get(agent.agent_id.as_str()).copied().unwrap_or(0);
-                tui_state.agents.push(AgentInfo {
-                    chain_key: chain_key.clone(),
-                    name: agent.display_name.clone(),
-                    id: agent.agent_id.clone(),
-                    status: agent.status.to_string(),
-                    memories: live_count,
-                    description: agent
-                        .description
-                        .as_deref()
-                        .filter(|v| !v.trim().is_empty())
-                        .unwrap_or("—")
-                        .to_string(),
-                });
-            }
-        }
-    }
-
-    // Skill info
-    if let Ok(skill_registry) = SkillRegistry::open(&config.service.chain_dir) {
-        let skills = skill_registry.list_skills();
-        for summary in &skills {
-            let uploaded_by = summary
-                .latest_uploaded_by_agent_name
-                .as_deref()
-                .unwrap_or(&summary.latest_uploaded_by_agent_id);
-            tui_state.skills.push(SkillInfo {
-                name: summary.name.clone(),
-                status: summary.status.to_string(),
-                versions: summary.version_count,
-                tags: summary.tags.clone(),
-                uploaded_by: uploaded_by.to_string(),
-            });
-        }
-    }
-
-    tui_state.log_lines.push(format!(
-        "[{}] mentisdb v{} started",
-        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
-        env!("CARGO_PKG_VERSION")
-    ));
-    tui_state.log_lines.push(format!(
-        "[{}] MCP  (HTTP)  {}",
-        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
-        mcp_local
-    ));
-    tui_state.log_lines.push(format!(
-        "[{}] REST (HTTP)  {}",
-        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
-        rest_local
-    ));
-    if let Some(ref h) = handles.https_mcp {
-        tui_state.log_lines.push(format!(
-            "[{}] MCP  (TLS)   https://{}",
-            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
-            h.local_addr()
-        ));
-    }
-    if let Some(ref h) = handles.https_rest {
-        tui_state.log_lines.push(format!(
-            "[{}] REST (TLS)   https://{}",
-            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
-            h.local_addr()
-        ));
-    }
-    if let Some(ref h) = handles.dashboard {
-        tui_state.log_lines.push(format!(
-            "[{}] Dashboard    https://{}/dashboard",
-            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
-            h.local_addr()
-        ));
-    }
-
-    let tui_state = Arc::new(std::sync::Mutex::new(tui_state));
-    let running = Arc::new(AtomicBool::new(true));
-    let _tui_state_clone = Arc::clone(&tui_state);
-    let running_clone = Arc::clone(&running);
-
-    // Play the "men-tis-D-B" startup jingle (default on, silenced via env var).
     #[cfg(feature = "startup-sound")]
     play_startup_jingle();
 
-    // Spawn a task to handle Ctrl+C and signal the TUI to quit
+    Ok((
+        config,
+        update_config,
+        handles,
+        is_first_run,
+        first_run_setup_status,
+        primer_paste_line,
+        migration_reports,
+        skill_registry_msg,
+        storage_root_migration,
+    ))
+}
+
+/// Like `run()` but forces the update dialog to appear even if already at the
+/// latest release. Used via `mentisdbd --force-update`.
+async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    raise_fd_limit();
+    let log_rx = tui::init_tui_logger();
+
+    let mut tui_state = TuiState::new(env!("CARGO_PKG_VERSION"));
+    tui_state.startup_status = "Checking for updates…".to_string();
+    tui_state.log_lines.push(format!(
+        "[{}] mentisdb v{} starting (--force-update)",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+        env!("CARGO_PKG_VERSION")
+    ));
+
+    let tui_state = Arc::new(std::sync::Mutex::new(tui_state));
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = Arc::clone(&running);
+
     let ctrlc_handle = tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
         running_clone.store(false, Ordering::SeqCst);
     });
 
-    // Run the TUI on the main thread (blocks until quit)
-    let tui_result = tui::run_tui(tui_state, running, log_rx);
+    let tui_state_clone = Arc::clone(&tui_state);
+    let running_clone2 = Arc::clone(&running);
+    let tui_handle =
+        std::thread::spawn(move || tui::run_tui(tui_state_clone, running_clone2, log_rx));
 
+    // Force-update: always fetch latest and show dialog regardless of version.
+    let update_config = update_config_from_env();
+    let latest = fetch_latest_release(&update_config.repo).await;
+    match latest {
+        Ok(ref release) => {
+            let latest_display = normalize_release_tag_display(&release.tag_name);
+            let current_version = env!("CARGO_PKG_VERSION");
+
+            if io::stdin().is_terminal() && io::stdout().is_terminal() {
+                let choice = tui::TuiState::request_update_dialog(
+                    &tui_state,
+                    current_version,
+                    &latest_display,
+                    &release.html_url,
+                );
+                match choice {
+                    Some(true) => {
+                        {
+                            let mut s = tui_state.lock().unwrap();
+                            s.startup_status = format!("Installing {latest_display}…").to_string();
+                        }
+                        match install_latest_release(&release.tag_name, &update_config.repo) {
+                            Ok(path) => {
+                                eprintln!("Installed mentisdbd to {}", path.display());
+                                eprintln!("Please restart mentisdbd to use the new version.");
+                                return Err("Update installed, please restart.".into());
+                            }
+                            Err(e) => {
+                                eprintln!("Install failed: {e}");
+                                eprintln!("Continuing with current version…");
+                            }
+                        }
+                    }
+                    Some(false) => {
+                        eprintln!("Update skipped. Continuing with current version…");
+                    }
+                    None => {
+                        eprintln!("Update skipped (TUI quit).");
+                        return Err("TUI quit during update dialog.".into());
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to fetch latest release: {e}");
+            eprintln!("Continuing with current version…");
+        }
+    }
+
+    // After the update dialog, continue with normal startup.
+    let startup_result: Result<StartupData, _> = run_startup_sequence(&tui_state).await;
+
+    {
+        let mut s = tui_state.lock().unwrap();
+        s.should_quit = true;
+    }
+    if let Err(e) = tui_handle.join().unwrap() {
+        eprintln!("TUI error: {e}");
+    }
     ctrlc_handle.abort();
 
+    let (
+        config,
+        update_config,
+        handles,
+        is_first_run,
+        first_run_setup_status,
+        primer_paste_line,
+        migration_reports,
+        skill_registry_msg,
+        storage_root_migration,
+    ) = startup_result?;
+
+    {
+        let mut s = tui_state.lock().unwrap();
+        s.started = true;
+        s.startup_status = "mentisdbd running".to_string();
+        s.chain_count = 0;
+        s.primer_text = primer_paste_line.clone();
+        s.background_tip = background_launch_tip().to_string();
+        s.config_lines = build_config_lines(&config, &update_config);
+
+        if migration_reports.is_empty() {
+            s.migration_lines
+                .push("No chain migrations required.".to_string());
+        } else {
+            for report in &migration_reports {
+                s.migration_lines.push(format!(
+                    "Migrated chain {} from version {} to {} ({} thoughts)",
+                    report.chain_key, report.from_version, report.to_version, report.thought_count
+                ));
+            }
+        }
+        s.migration_lines.push(skill_registry_msg.clone());
+
+        if let Some(report) = &storage_root_migration {
+            if report.renamed_root_dir {
+                s.migration_lines.push(format!(
+                    "Legacy storage adoption: renamed {} -> {}",
+                    report.source_dir.display(),
+                    report.target_dir.display()
+                ));
+            } else if report.merged_entries > 0 {
+                s.migration_lines.push(format!(
+                    "Legacy storage adoption: merged {} entries from {} into {}",
+                    report.merged_entries,
+                    report.source_dir.display(),
+                    report.target_dir.display()
+                ));
+            }
+            if report.renamed_registry_file {
+                s.migration_lines.push(
+                    "Renamed thoughtchain-registry.json -> mentisdb-registry.json".to_string(),
+                );
+            }
+        }
+
+        if is_first_run {
+            s.migration_lines.push(String::new());
+            s.migration_lines.push("First-run setup:".to_string());
+            for line in build_first_run_setup_lines() {
+                s.migration_lines.push(format!("  {line}"));
+            }
+        }
+
+        s.tls_info_lines = if handles.https_mcp.is_some() || handles.https_rest.is_some() {
+            build_tls_info_lines(&config, &handles)
+        } else {
+            Vec::new()
+        };
+
+        let mcp_port: u16 = handles.mcp.local_addr().port();
+        let rest_port: u16 = handles.rest.local_addr().port();
+        s.endpoint_lines = build_endpoint_lines(&handles, mcp_port, rest_port);
+
+        let registry = load_registered_chains(&config.service.chain_dir).unwrap_or_default();
+        s.chain_count = registry.chains.len();
+
+        for (key, reg) in &registry.chains {
+            s.chains.push(ChainInfo {
+                key: key.clone(),
+                version: reg.version,
+                adapter: reg.storage_adapter.to_string(),
+                thoughts: reg.thought_count as usize,
+                agents: reg.agent_count,
+                storage_path: reg.storage_location.clone(),
+            });
+        }
+
+        for (chain_key, reg) in &registry.chains {
+            if let Ok(chain) = MentisDb::open_with_storage(
+                reg.storage_adapter
+                    .for_chain_key(&config.service.chain_dir, chain_key),
+            ) {
+                let agents = chain.list_agent_registry();
+                let thoughts = chain.thoughts();
+                let mut counts: std::collections::HashMap<&str, usize> =
+                    std::collections::HashMap::new();
+                for t in thoughts {
+                    *counts.entry(t.agent_id.as_str()).or_default() += 1;
+                }
+                for agent in &agents {
+                    let live_count = counts.get(agent.agent_id.as_str()).copied().unwrap_or(0);
+                    s.agents.push(AgentInfo {
+                        chain_key: chain_key.clone(),
+                        name: agent.display_name.clone(),
+                        id: agent.agent_id.clone(),
+                        status: agent.status.to_string(),
+                        memories: live_count,
+                        description: agent
+                            .description
+                            .as_deref()
+                            .filter(|v| !v.trim().is_empty())
+                            .unwrap_or("—")
+                            .to_string(),
+                    });
+                }
+            }
+        }
+
+        if let Ok(skill_registry) = SkillRegistry::open(&config.service.chain_dir) {
+            let skills = skill_registry.list_skills();
+            for summary in &skills {
+                let uploaded_by = summary
+                    .latest_uploaded_by_agent_name
+                    .as_deref()
+                    .unwrap_or(&summary.latest_uploaded_by_agent_id);
+                s.skills.push(SkillInfo {
+                    name: summary.name.clone(),
+                    status: summary.status.to_string(),
+                    versions: summary.version_count,
+                    tags: summary.tags.clone(),
+                    uploaded_by: uploaded_by.to_string(),
+                });
+            }
+        }
+
+        let mcp_local = format!("http://{}", handles.mcp.local_addr());
+        let rest_local = format!("http://{}", handles.rest.local_addr());
+        s.log_lines.push(format!(
+            "[{}] MCP  (HTTP)  {}",
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+            mcp_local
+        ));
+        s.log_lines.push(format!(
+            "[{}] REST (HTTP)  {}",
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+            rest_local
+        ));
+        if let Some(ref h) = handles.https_mcp {
+            s.log_lines.push(format!(
+                "[{}] MCP  (TLS)   https://{}",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                h.local_addr()
+            ));
+        }
+        if let Some(ref h) = handles.https_rest {
+            s.log_lines.push(format!(
+                "[{}] REST (TLS)   https://{}",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                h.local_addr()
+            ));
+        }
+        if let Some(ref h) = handles.dashboard {
+            s.log_lines.push(format!(
+                "[{}] Dashboard    https://{}/dashboard",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                h.local_addr()
+            ));
+        }
+    }
+
+    if let Err(error) = maybe_run_first_run_setup(&first_run_setup_status) {
+        eprintln!("Startup setup wizard failed: {error}");
+    }
+
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = Arc::clone(&running);
+    let ctrlc_handle = tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        running_clone.store(false, Ordering::SeqCst);
+    });
+
+    let (new_tx, new_rx) = std::sync::mpsc::channel();
+    let new_logger = tui::TuiLogger::new(new_tx);
+    let _ = log::set_boxed_logger(Box::new(new_logger));
+
+    let tui_result = tui::run_tui(tui_state, running, new_rx);
+    ctrlc_handle.abort();
     if let Err(e) = tui_result {
         eprintln!("TUI error: {e}");
     }
@@ -1434,6 +1800,7 @@ mentisdbd daemon
 
 Usage:
   mentisdbd
+  mentisdbd --force-update
   mentisdbd --help
   mentisdbd --mode stdio
   mentisdbd --mode http
@@ -1447,6 +1814,11 @@ Usage:
   mentisdbd agents [--chain <key>] [--url <url>]
   mentisdbd backup [--dir <path>] [--output <path>] [--flush] [--include-tls]
   mentisdbd restore <archive.mbak> [--dir <path>] [--overwrite] [--yes]
+
+Flags:
+  --force-update
+    Show the update dialog even if already at the latest release.
+    Useful for testing the update flow.
 
 Backup subcommand:
   backup
@@ -1560,6 +1932,7 @@ Examples:
 pub(crate) enum DaemonArgMode {
     Help,
     Run,
+    RunWithForceUpdate,
     Stdio,
     Both,
     Update,
@@ -1591,6 +1964,11 @@ where
         command.extend(args);
         return Ok(DaemonArgMode::CliSubcommand(command));
     }
+
+    // Handle --force-update flag (shows update dialog even if up to date)
+    let force_update = args
+        .iter()
+        .any(|arg| arg.to_string_lossy() == "--force-update");
 
     if args.len() == 1 && matches!(first.as_ref(), "update" | "force-update") {
         return if first.as_ref() == "update" {
@@ -1628,6 +2006,10 @@ where
         .any(|arg| arg.to_string_lossy() == "--stdio-mcp")
     {
         return Ok(DaemonArgMode::Stdio);
+    }
+
+    if force_update {
+        return Ok(DaemonArgMode::RunWithForceUpdate);
     }
 
     Err(format!(
@@ -1764,6 +2146,13 @@ async fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
+        Ok(DaemonArgMode::RunWithForceUpdate) => match run_with_force_update().await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::from(1)
+            }
+        },
         Ok(DaemonArgMode::Stdio) => {
             init_logger();
             let config = MentisDbServerConfig::from_env();
@@ -1812,19 +2201,6 @@ fn init_logger() {
     let mut builder = env_logger::Builder::from_env(Env::default().default_filter_or("info"));
     builder.format_timestamp_millis();
     let _ = builder.try_init();
-}
-
-fn progress_bar(current: usize, total: usize) -> String {
-    let total = total.max(1);
-    let current = current.min(total);
-    let filled = ((current * 20) / total).min(20);
-    format!(
-        "[{}{}] {}/{}",
-        "#".repeat(filled),
-        "-".repeat(20 - filled),
-        current,
-        total
-    )
 }
 
 #[cfg(test)]

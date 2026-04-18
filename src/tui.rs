@@ -147,6 +147,7 @@ impl FocusedPane {
 pub struct TuiState {
     pub version: String,
     pub started: bool,
+    pub startup_status: String,
     pub config_lines: Vec<String>,
     pub migration_lines: Vec<String>,
     pub endpoint_lines: Vec<String>,
@@ -169,6 +170,12 @@ pub struct TuiState {
     pub right_scroll: usize,
     pub focused_pane: FocusedPane,
     pub should_quit: bool,
+    /// When Some, a modal update dialog is shown. Contains
+    /// (current_version, latest_display, release_url).
+    pub update_dialog: Option<(String, String, String)>,
+    /// Sender to reply to the update dialog. The background startup
+    /// thread waits on the paired receiver for the user's choice.
+    pub update_response_tx: Option<mpsc::Sender<bool>>,
     /// Layout areas cached during the last render pass for mouse hit-testing.
     last_top_left_area: Rect,
     last_top_right_area: Rect,
@@ -183,6 +190,7 @@ impl TuiState {
         Self {
             version: version.to_string(),
             started: false,
+            startup_status: "Starting…".to_string(),
             config_lines: Vec::new(),
             migration_lines: Vec::new(),
             endpoint_lines: Vec::new(),
@@ -205,6 +213,8 @@ impl TuiState {
             right_scroll: 0,
             focused_pane: FocusedPane::Tables,
             should_quit: false,
+            update_dialog: None,
+            update_response_tx: None,
             last_top_left_area: Rect::default(),
             last_top_right_area: Rect::default(),
             last_prime_area: Rect::default(),
@@ -293,6 +303,28 @@ impl TuiState {
     pub fn select_skill_next(&mut self) {
         cycle_table_selection(&mut self.skill_table_state, self.skills.len(), true);
     }
+
+    /// Request an in-TUI update dialog. Blocks until the user responds
+    /// (y/N/Enter/Esc) or the TUI is quit. Returns `None` if the TUI
+    /// was quit before the user made a choice.
+    pub fn request_update_dialog(
+        state: &Arc<std::sync::Mutex<TuiState>>,
+        current_version: &str,
+        latest_display: &str,
+        release_url: &str,
+    ) -> Option<bool> {
+        let (tx, rx) = mpsc::channel();
+        {
+            let mut s = state.lock().unwrap();
+            s.update_dialog = Some((
+                current_version.to_string(),
+                latest_display.to_string(),
+                release_url.to_string(),
+            ));
+            s.update_response_tx = Some(tx);
+        }
+        rx.recv().ok()
+    }
 }
 
 /// Cycles the selected row in a [`TableState`], wrapping around at both ends.
@@ -368,6 +400,14 @@ fn ui(frame: &mut Frame, state: &mut TuiState) {
     render_tables(frame, state, tables_area);
     render_logs(frame, state, logs_area);
     render_hint_bar(frame, state, hint_area);
+
+    if !state.started {
+        render_startup_overlay(frame, state, full_area);
+    }
+
+    if state.update_dialog.is_some() {
+        render_update_dialog_overlay(frame, state, full_area);
+    }
 }
 
 /// Returns the border style for a pane — highlighted when focused.
@@ -743,8 +783,8 @@ fn render_skill_table(frame: &mut Frame, state: &mut TuiState, area: Rect) {
 }
 
 fn render_logs(frame: &mut Frame, state: &TuiState, area: Rect) {
-    let lines: Vec<Line> = state
-        .log_lines
+    let reversed: Vec<&str> = state.log_lines.iter().map(|l| l.as_str()).rev().collect();
+    let lines: Vec<Line> = reversed
         .iter()
         .map(|l| {
             let style = if l.contains("ERROR") || l.contains("error") {
@@ -754,7 +794,7 @@ fn render_logs(frame: &mut Frame, state: &TuiState, area: Rect) {
             } else {
                 Style::default().fg(Color::DarkGray)
             };
-            Line::from(Span::styled(l.as_str(), style))
+            Line::from(Span::styled(*l, style))
         })
         .collect();
 
@@ -859,6 +899,103 @@ fn render_hint_bar(frame: &mut Frame, state: &TuiState, area: Rect) {
         Paragraph::new(hint_line).style(Style::default().bg(Color::DarkGray).fg(Color::White));
     frame.render_widget(paragraph, area);
 }
+
+fn render_startup_overlay(frame: &mut Frame, state: &TuiState, full_area: Rect) {
+    let lines = vec![
+        Line::from(Span::styled(
+            &state.startup_status,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Press q to quit during startup.",
+            Style::default().add_modifier(Modifier::DIM),
+        )),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(" Startup ");
+
+    let box_width = 50u16.min(full_area.width);
+    let box_height = lines.len() as u16 + 4;
+    let popup = Rect {
+        x: full_area.width.saturating_sub(box_width) / 2,
+        y: full_area.height.saturating_sub(box_height) / 2,
+        width: box_width,
+        height: box_height,
+    };
+
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let inner_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(lines.len() as u16)])
+        .split(inner);
+
+    let paragraph = Paragraph::new(lines)
+        .alignment(ratatui::layout::Alignment::Center)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner_layout[0]);
+}
+
+fn render_update_dialog_overlay(frame: &mut Frame, state: &TuiState, full_area: Rect) {
+    let Some((ref current, ref latest, ref url)) = state.update_dialog else {
+        return;
+    };
+
+    let lines = vec![
+        Line::from(Span::styled(
+            "mentisdbd update available",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(format!("Current core version: {current}")),
+        Line::from(format!("Latest release tag : {latest}")),
+        Line::from(format!("Release page       : {url}")),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Install release and restart now? [y/N]",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(" Update ");
+
+    let box_width = 60u16.min(full_area.width);
+    let box_height = (lines.len() + 4) as u16;
+    let popup = Rect {
+        x: full_area.width.saturating_sub(box_width) / 2,
+        y: full_area.height.saturating_sub(box_height) / 2,
+        width: box_width,
+        height: box_height,
+    };
+
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let inner_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(lines.len() as u16)])
+        .split(inner);
+
+    let paragraph = Paragraph::new(lines)
+        .alignment(ratatui::layout::Alignment::Center)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner_layout[0]);
+}
+
 ///
 /// This ensures the terminal is cleaned up even when an error propagates
 /// through `?` before reaching explicit cleanup code.
@@ -912,6 +1049,28 @@ pub fn run_tui(
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     let mut s = state.lock().unwrap();
+                    // When update dialog is shown, only y/n/Esc/Enter matter.
+                    if s.update_dialog.is_some() {
+                        match key.code {
+                            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                if let Some(tx) = s.update_response_tx.take() {
+                                    let _ = tx.send(true);
+                                }
+                                s.update_dialog = None;
+                            }
+                            KeyCode::Char('n')
+                            | KeyCode::Char('N')
+                            | KeyCode::Enter
+                            | KeyCode::Esc => {
+                                if let Some(tx) = s.update_response_tx.take() {
+                                    let _ = tx.send(false);
+                                }
+                                s.update_dialog = None;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => {
                             s.should_quit = true;

@@ -1,7 +1,31 @@
-0.9.3.39 UNRELEASED
+0.9.3.39 APR/18/2026
+  - feat(tui): full ratatui-based terminal user interface replaces text startup output
+    — three-pane layout: top (banner + config + endpoints), middle (tabbed tables for
+    chains/agents/skills with FocusedPane cycling via Tab/Shift+Tab, mouse click focus,
+    contextual vim-style hint bar), bottom (agent primer + terminal-close warning);
+    all panes scrollable with clamped bounds; TerminalCleanup RAII guard ensures safe
+    terminal restoration on panic or early return; standard 8-color palette adapts to
+    dark and light terminal backgrounds; update dialog modal centered on screen before
+    migrations; play_startup_jingle() restored before TUI startup
+  - fix(tui): custom TuiLogger routes env_logger output into TUI log buffer via mpsc
+    channel, preventing raw stderr from corrupting the ratatui alternate screen
+  - fix(stdio): proxy_jsonrpc_to_daemon now forwards raw JSON-RPC to the daemon's
+    streamable HTTP endpoint (POST /) instead of manual method mapping, supporting
+    the full MCP protocol (tools, resources, prompts, sampling, roots, notifications);
+    resources/read still served locally (embedded skill markdown)
   - fix(daemon): remove broken `brew services start mentisdb` from macOS background
     launch tip — the formula does not ship a launchd plist, so the command always
     failed; startup messaging now shows only the working nohup one-liner
+  - chore: make ratatui 0.30 a non-optional always-on server dependency
+  - fix: silence per-thought audio during benchmarks (MENTISDB_THOUGHT_SOUNDS=false)
+  - chore: gitignore pymentisdb build artefacts + *.mbak backups
+  - feat(tui): startup progress overlay — TUI renders immediately with a centered
+    modal showing current startup phase (checking updates, running migrations,
+    starting servers, loading chains); update dialog appears as an in-TUI modal
+    instead of a separate terminal session; --force-update flag forces the update
+    dialog to appear even if already at the latest release
+  - feat(tui): log panel shows newest entries on top (reversed order) so the most
+    recent events are always visible without scrolling
 
 
 0.9.2.38 APR/17/2026
