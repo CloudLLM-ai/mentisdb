@@ -159,7 +159,6 @@ pub struct TuiState {
     pub skills: Vec<SkillInfo>,
     pub log_lines: Vec<String>,
     pub primer_text: String,
-    pub background_tip: String,
     pub chain_count: usize,
     pub tab_index: usize,
     pub tab_titles: Vec<&'static str>,
@@ -205,7 +204,6 @@ impl TuiState {
             skills: Vec::new(),
             log_lines: Vec::new(),
             primer_text: String::new(),
-            background_tip: String::new(),
             chain_count: 0,
             tab_index: 0,
             tab_titles: vec!["Chains", "Agents", "Skills"],
@@ -518,7 +516,7 @@ fn render_top_left(frame: &mut Frame, state: &TuiState, area: Rect) {
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            "mentisdbd started",
+            "mentisdbd starting…",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -1439,96 +1437,3 @@ fn tab_index_from_click(titles: &[&str], tabs_area: Rect, click_x: u16) -> Optio
     None
 }
 
-/// Shows a centered modal update dialog in the TUI.
-///
-/// Returns `true` if the user chose to install the update, `false` to skip.
-/// This is called before the main TUI loop, so it manages its own terminal
-/// lifecycle (enters alternate screen, shows the dialog, exits cleanly).
-pub fn show_update_dialog(
-    current_version: &str,
-    latest_display: &str,
-    release_url: &str,
-) -> io::Result<bool> {
-    let mut stdout = io::stdout();
-    crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
-    crossterm::terminal::enable_raw_mode()?;
-
-    let _cleanup = TerminalCleanup;
-
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let lines = vec![
-        Line::from(Span::styled(
-            "mentisdbd update available",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(format!("Current core version: {current_version}")),
-        Line::from(format!("Latest release tag : {latest_display}")),
-        Line::from(format!("Release page       : {release_url}")),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Install release and restart now? [y/N]",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-    ];
-
-    let paragraph = Paragraph::new(lines.clone())
-        .alignment(ratatui::layout::Alignment::Center)
-        .wrap(Wrap { trim: false });
-
-    let choice: bool = loop {
-        terminal.draw(|frame| {
-            let area = frame.area();
-
-            let box_width = 60u16.min(area.width);
-            let box_height = (lines.len() + 4) as u16;
-
-            let popup_area = Rect {
-                x: area.width.saturating_sub(box_width) / 2,
-                y: area.height.saturating_sub(box_height) / 2,
-                width: box_width,
-                height: box_height,
-            };
-
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Double)
-                .border_style(Style::default().fg(Color::Yellow))
-                .title(" Update ");
-
-            let inner = block.inner(popup_area);
-            frame.render_widget(block, popup_area);
-
-            let inner_layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(lines.len() as u16)])
-                .split(inner);
-
-            frame.render_widget(&paragraph, inner_layout[0]);
-        })?;
-
-        if event::poll(Duration::from_millis(200))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                match key.code {
-                    KeyCode::Char('y') | KeyCode::Char('Y') => {
-                        break true;
-                    }
-                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter | KeyCode::Esc => {
-                        break false;
-                    }
-                    _ => {}
-                }
-            }
-        }
-    };
-
-    // TerminalCleanup drop handles restore automatically.
-    Ok(choice)
-}

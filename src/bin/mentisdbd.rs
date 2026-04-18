@@ -1094,7 +1094,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         s.startup_status = "mentisdbd running".to_string();
         s.chain_count = 0;
         s.primer_text = primer_paste_line.clone();
-        s.background_tip = background_launch_tip().to_string();
         s.config_lines = build_config_lines(&config, &update_config);
 
         if migration_reports.is_empty() {
@@ -1613,7 +1612,6 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
         s.startup_status = "mentisdbd running".to_string();
         s.chain_count = 0;
         s.primer_text = primer_paste_line.clone();
-        s.background_tip = background_launch_tip().to_string();
         s.config_lines = build_config_lines(&config, &update_config);
 
         if migration_reports.is_empty() {
@@ -2420,49 +2418,6 @@ pub(crate) fn build_endpoint_catalog(
     }
 
     out
-}
-
-/// Returns OS-specific instructions for launching mentisdbd in the background
-/// so it survives terminal close. Returns plain text — ratatui styles are
-/// applied in `render_bottom`.
-pub(crate) fn background_launch_tip() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "  Run in the background (survives terminal close):\n\
-          \n\
-              nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &"
-    } else if cfg!(target_os = "linux") {
-        "  Run in the background (survives terminal close):\n\
-         \n\
-           Option A — systemd user service (recommended, auto-starts on login):\n\
-         \n\
-             # Create ~/.config/systemd/user/mentisdbd.service with:\n\
-             # [Unit]\n\
-             # Description=MentisDB daemon\n\
-             # [Service]\n\
-             # ExecStart=/usr/local/bin/mentisdbd\n\
-             # Restart=on-failure\n\
-             # [Install]\n\
-             # WantedBy=default.target\n\
-             systemctl --user enable --now mentisdbd\n\
-         \n\
-           Option B — nohup (current session only):\n\
-         \n\
-             nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &"
-    } else if cfg!(target_os = "windows") {
-        "  Run in the background (survives terminal close):\n\
-         \n\
-           Option A — Task Scheduler (recommended, auto-starts on login):\n\
-         \n\
-             schtasks /create /tn MentisDB /tr mentisdbd.exe /sc ONLOGON /ru %USERNAME% /f\n\
-         \n\
-           Option B — Start-Process (current user session only):\n\
-         \n\
-             Start-Process mentisdbd.exe -WindowStyle Hidden"
-    } else {
-        "  Run in the background (survives terminal close):\n\
-         \n\
-             nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &"
-    }
 }
 
 /// Build configuration display lines for the TUI top-left pane.
