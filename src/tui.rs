@@ -866,9 +866,11 @@ fn render_skill_table(frame: &mut Frame, state: &mut TuiState, area: Rect) {
 }
 
 fn render_logs(frame: &mut Frame, state: &TuiState, area: Rect) {
-    let reversed: Vec<&str> = state.log_lines.iter().map(|l| l.as_str()).rev().collect();
-    let lines: Vec<Line> = reversed
+    // Iterate in reverse (newest first) without an intermediate allocation.
+    let lines: Vec<Line> = state
+        .log_lines
         .iter()
+        .rev()
         .map(|l| {
             let style = if l.contains("ERROR") || l.contains("error") {
                 Style::default().fg(Color::Red)
@@ -877,7 +879,7 @@ fn render_logs(frame: &mut Frame, state: &TuiState, area: Rect) {
             } else {
                 Style::default().fg(Color::DarkGray)
             };
-            Line::from(Span::styled(*l, style))
+            Line::from(Span::styled(l.as_str(), style))
         })
         .collect();
 
