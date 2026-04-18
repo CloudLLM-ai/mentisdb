@@ -1,6 +1,18 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 → 0.9.2.38)
+## Shipped (0.8.2 → 0.9.3.39)
+
+### 0.9.3.39 — Ratatui TUI + Clipboard + Streamable HTTP Passthrough
+- ratatui 0.30.0 TUI — live three-pane dashboard (server info, endpoints & TLS, tabbed tables for Chains/Agents/Skills, scrollable event log) with Tab/Shift+Tab pane cycling, vim-style contextual hint bar, and RAII terminal cleanup
+- drag-to-select copies any text — drag the mouse across any content in any pane; on mouse release the selected rectangle is read directly from ratatui's render buffer and written to clipboard via arboard + OSC 52 (enables native Cmd+C in iTerm2, Terminal.app, kitty, WezTerm); real-time selection highlight via REVERSED cell style overlay
+- 'c' key explicit copy — copies the focused item (chain key, agent ID, skill name, primer paste line, visible log lines) with a 2-second green toast confirmation
+- seamless single-TUI lifecycle — one TUI for the entire daemon lifetime; no flash between startup progress overlay and running state
+- startup crash overlay — startup failures shown as a red full-screen overlay with scrollable log, keeping TUI alive until the user quits
+- agent primer panel — "Prime your agent" panel with single paste line for AI chat clients
+- Streamable HTTP passthrough — stdio proxy forwards all JSON-RPC to `POST /` on the daemon's Streamable HTTP endpoint; full MCP protocol transparent to all MCP clients
+- log panel newest-first display — most recent entries always visible at top; correct auto-scroll pinned to newest, not oldest
+- chain key and skill name columns auto-sized to longest entry — no truncated names
+- update dialog — centered modal when a newer GitHub release is available
 
 ### 0.9.2.38 — Smart Stdio Mode
 - stdio smart daemon detection — `mentisdbd --mode stdio` auto-detects a running daemon and proxies to it, or launches one in the background when none is found; falls back to local mode only if launch fails

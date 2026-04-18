@@ -17,8 +17,8 @@ pub mod paths;
 pub mod search;
 #[cfg(feature = "server")]
 pub mod server;
-pub mod tui;
 mod skills;
+pub mod tui;
 #[cfg(feature = "server")]
 /// Webhook notification system for notifying external HTTP endpoints on thought append events.
 pub mod webhooks;

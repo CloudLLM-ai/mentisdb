@@ -5,27 +5,53 @@
     contextual vim-style hint bar), bottom (agent primer + terminal-close warning);
     all panes scrollable with clamped bounds; TerminalCleanup RAII guard ensures safe
     terminal restoration on panic or early return; standard 8-color palette adapts to
-    dark and light terminal backgrounds; update dialog modal centered on screen before
-    migrations; play_startup_jingle() restored before TUI startup
-  - fix(tui): custom TuiLogger routes env_logger output into TUI log buffer via mpsc
-    channel, preventing raw stderr from corrupting the ratatui alternate screen
+    dark and light terminal backgrounds
+  - feat(tui): drag-to-select copies any visible text — drag the mouse across any
+    content (log lines, chain/agent/skill rows, endpoints, config, primer); on mouse
+    release the selected rectangle is read from ratatui's live render buffer and
+    written to clipboard via arboard + OSC 52 (enables Cmd+C on macOS in iTerm2,
+    Terminal.app, kitty, WezTerm); live selection highlight via REVERSED cell style
+  - feat(tui): 'c' key copies focused item — chain key, agent ID, skill name, full
+    primer paste line, or visible log lines; 2-second green toast anchored near the
+    focused pane confirms every copy
+  - feat(tui): startup progress overlay — TUI renders immediately with a centered
+    modal showing current phase; update dialog appears as an in-TUI modal
+  - fix(tui): seamless single-TUI lifecycle — daemon runs one TUI instance for its
+    entire lifetime; eliminates the visible flash/crash between startup and running
+    phases that occurred when two TUI instances were started sequentially
+  - fix(tui): startup crash overlay — when startup fails, a red full-screen overlay
+    shows the error and keeps the TUI alive so the user can scroll logs before
+    quitting; previously the daemon exited silently
+  - fix(tui): log auto-scroll corrected for newest-first display — was pinned to the
+    oldest entry (scroll=len-1 in a reversed list); now pins to scroll=0 (top=newest)
+  - fix(tui): ratatui buffer swap — text extraction from drag-select now runs inside
+    the terminal.draw() closure via frame.buffer_mut(), which is the live pre-swap
+    buffer; current_buffer_mut() after draw() returns the cleared next-frame buffer
+  - fix(tui): overlays use Clear widget to prevent background content bleeding through
+    popup borders; startup overlay and update dialog are mutually exclusive
+  - fix(tui): accurate startup status — "Checking chains for migrations…" instead of
+    "Running migrations…" when no migrations are needed
+  - fix(tui): chain key and skill name columns auto-sized to longest entry + 1
+  - fix(tui): custom TuiLogger routes log output into TUI log buffer via mpsc channel,
+    preventing raw stderr from corrupting the ratatui alternate screen
+  - fix(tui): first-run setup wizard deferred to a separate terminal — wizard cannot
+    run while TUI owns the terminal in raw/alternate-screen mode; TUI shows a note
+    directing the user to run `mentisdbd wizard` in a separate terminal instead
+  - perf(tui): render_logs no longer allocates an intermediate Vec<&str> on every
+    frame; single .iter().rev() pass reduces allocations at 10 Hz render rate
+  - refactor(tui): removed dead code left by a prior session — show_update_dialog(),
+    background_tip field, and background_launch_tip() were set/defined but never
+    called or rendered
   - fix(stdio): proxy_jsonrpc_to_daemon now forwards raw JSON-RPC to the daemon's
     streamable HTTP endpoint (POST /) instead of manual method mapping, supporting
     the full MCP protocol (tools, resources, prompts, sampling, roots, notifications);
     resources/read still served locally (embedded skill markdown)
   - fix(daemon): remove broken `brew services start mentisdb` from macOS background
-    launch tip — the formula does not ship a launchd plist, so the command always
-    failed; startup messaging now shows only the working nohup one-liner
+    launch tip — the formula does not ship a launchd plist; startup messaging now
+    shows only the working nohup one-liner
   - chore: make ratatui 0.30 a non-optional always-on server dependency
   - fix: silence per-thought audio during benchmarks (MENTISDB_THOUGHT_SOUNDS=false)
   - chore: gitignore pymentisdb build artefacts + *.mbak backups
-  - feat(tui): startup progress overlay — TUI renders immediately with a centered
-    modal showing current startup phase (checking updates, running migrations,
-    starting servers, loading chains); update dialog appears as an in-TUI modal
-    instead of a separate terminal session; --force-update flag forces the update
-    dialog to appear even if already at the latest release
-  - feat(tui): log panel shows newest entries on top (reversed order) so the most
-    recent events are always visible without scrolling
 
 
 0.9.2.38 APR/17/2026

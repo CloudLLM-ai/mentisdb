@@ -7,8 +7,7 @@
 #![allow(missing_docs)]
 
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
-    MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind,
 };
 use log::{Level, Record};
 use ratatui::{
@@ -288,7 +287,7 @@ impl TuiState {
 
     /// Number of content lines in the top-left panel (banner + version + config + migrations).
     fn left_content_len(&self) -> usize {
-        let banner_lines = MENTIS_BANNER.lines().count();
+        let banner_lines = MENTIS_PART.lines().count();
         // banner + version + status + blank + "Configuration:" header + config + migrations
         banner_lines + 2 + 1 + 1 + self.config_lines.len() + self.migration_lines.len()
     }
@@ -423,13 +422,21 @@ fn cycle_table_selection(table_state: &mut TableState, len: usize, forward: bool
     table_state.select(Some(i));
 }
 
-const MENTIS_BANNER: &str = "\
-███╗   ███╗███████╗███╗   ██╗████████╗██╗███████╗ ██████╗ ██████╗ 
-████╗ ████║██╔════╝████╗  ██║╚══██╔══╝██║██╔════╝ ██╔══██╗██╔══██╗
-██╔████╔██║█████╗  ██╔██╗ ██║   ██║   ██║███████╗ ██║  ██║██████╔╝
-██║╚██╔╝██║██╔══╝  ██║╚██╗██║   ██║   ██║╚════██║ ██║  ██║██╔══██╗
-██║ ╚═╝ ██║███████╗██║ ╚████║   ██║   ██║███████║ ██████╔╝██████╔╝
-╚═╝     ╚═╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚══════╝ ╚═════╝ ╚═════╝ ";
+const MENTIS_PART: &str = "\
+███╗   ███╗███████╗███╗   ██╗████████╗██╗███████╗
+████╗ ████║██╔════╝████╗  ██║╚══██╔══╝██║██╔════╝
+██╔████╔██║█████╗  ██╔██╗ ██║   ██║   ██║███████╗
+██║╚██╔╝██║██╔══╝  ██║╚██╗██║   ██║   ██║╚════██║
+██║ ╚═╝ ██║███████╗██║ ╚████║   ██║   ██║███████║
+╚═╝     ╚═╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚══════╝";
+
+const DB_PART: &str = "\
+ ██████╗ ██████╗
+ ██╔══██╗██╔══██╗
+ ██║  ██║██████╔╝
+ ██║  ██║██╔══██╗
+ ██████╔╝██████╔╝
+ ╚═════╝ ╚═════╝ ";
 
 fn ui(frame: &mut Frame, state: &mut TuiState) {
     let full_area = frame.area();
@@ -495,7 +502,9 @@ fn ui(frame: &mut Frame, state: &mut TuiState) {
                 width: x2 - x1 + 1,
                 height: y2 - y1 + 1,
             };
-            frame.buffer_mut().set_style(sel, Style::default().add_modifier(Modifier::REVERSED));
+            frame
+                .buffer_mut()
+                .set_style(sel, Style::default().add_modifier(Modifier::REVERSED));
         }
     }
 
@@ -519,11 +528,11 @@ fn border_style_for(state: &TuiState, pane: FocusedPane) -> Style {
 fn render_top_left(frame: &mut Frame, state: &TuiState, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
-    for banner_line in MENTIS_BANNER.lines() {
-        lines.push(Line::from(Span::styled(
-            banner_line.to_string(),
-            Style::default().fg(Color::Green),
-        )));
+    for (mentis, db) in MENTIS_PART.lines().zip(DB_PART.lines()) {
+        lines.push(Line::from(vec![
+            Span::styled(mentis.to_string(), Style::default().fg(Color::Green)),
+            Span::styled(db.to_string(), Style::default().fg(Color::Cyan)),
+        ]));
     }
 
     lines.push(Line::from(Span::styled(
@@ -1159,9 +1168,7 @@ fn render_crash_overlay(frame: &mut Frame, err: &str, full_area: Rect) {
     let lines = vec![
         Line::from(Span::styled(
             "mentisdbd startup failed",
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(err, Style::default().fg(Color::Red))),
@@ -1178,9 +1185,7 @@ fn render_crash_overlay(frame: &mut Frame, err: &str, full_area: Rect) {
         .border_style(Style::default().fg(Color::Red))
         .title(Span::styled(
             " Startup Error ",
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ));
 
     let box_width = 72u16.min(full_area.width);
@@ -1355,8 +1360,11 @@ pub fn run_tui(
                             },
                             KeyCode::Left if s.focused_pane == FocusedPane::Tables => {
                                 let len = s.tab_titles.len();
-                                s.tab_index =
-                                    if s.tab_index == 0 { len - 1 } else { s.tab_index - 1 };
+                                s.tab_index = if s.tab_index == 0 {
+                                    len - 1
+                                } else {
+                                    s.tab_index - 1
+                                };
                             }
                             KeyCode::Right if s.focused_pane == FocusedPane::Tables => {
                                 s.tab_index = (s.tab_index + 1) % s.tab_titles.len();
@@ -1369,7 +1377,10 @@ pub fn run_tui(
                 }
 
                 Event::Mouse(mouse) => {
-                    let pos = Position { x: mouse.column, y: mouse.row };
+                    let pos = Position {
+                        x: mouse.column,
+                        y: mouse.row,
+                    };
                     match mouse.kind {
                         // ── Mouse button down: start drag, update focus ──────────
                         MouseEventKind::Down(_) => {
@@ -1390,11 +1401,9 @@ pub fn run_tui(
                             {
                                 s.focused_pane = FocusedPane::Tables;
                                 if s.last_tabs_area.contains(pos) {
-                                    if let Some(idx) = tab_index_from_click(
-                                        &s.tab_titles,
-                                        s.last_tabs_area,
-                                        pos.x,
-                                    ) {
+                                    if let Some(idx) =
+                                        tab_index_from_click(&s.tab_titles, s.last_tabs_area, pos.x)
+                                    {
                                         s.tab_index = idx;
                                     }
                                 }
@@ -1487,9 +1496,8 @@ fn write_osc52(text: &str) {
 }
 
 fn base64_encode(data: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let n = match chunk.len() {
             1 => (chunk[0] as u32) << 16,
@@ -1498,8 +1506,16 @@ fn base64_encode(data: &[u8]) -> String {
         };
         out.push(TABLE[(n >> 18 & 0x3F) as usize] as char);
         out.push(TABLE[(n >> 12 & 0x3F) as usize] as char);
-        out.push(if chunk.len() > 1 { TABLE[(n >> 6 & 0x3F) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { TABLE[(n & 0x3F) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6 & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 0x3F) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -1546,4 +1562,3 @@ fn tab_index_from_click(titles: &[&str], tabs_area: Rect, click_x: u16) -> Optio
     }
     None
 }
-

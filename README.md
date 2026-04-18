@@ -59,11 +59,13 @@ Then start the daemon:
 mentisdbd
 ```
 
-On an interactive first run with no configured client integrations,
-`mentisdbd` offers to launch the setup wizard immediately after startup so you
-do not have to guess the next command.
+When run in an interactive terminal, `mentisdbd` launches a **full TUI** with
+scrollable panes for configuration, chain/agent/skill tables, and a live event
+log. On an interactive first run with no configured client integrations, it
+offers to launch the setup wizard immediately after startup so you do not have
+to guess the next command.
 
-Run persistently after closing your SSH session:
+Run persistently after closing your SSH session (no TUI in background mode):
 
 ```bash
 nohup mentisdbd &
