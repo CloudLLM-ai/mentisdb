@@ -14,7 +14,7 @@ exclude = ["data/", "docs/", "lme-benches/", ".fastembed_cache/", ".github/", "s
 
 [features]
 default = ["server", "startup-sound", "llm-extraction"]
-server = ["dep:axum", "dep:env_logger", "dep:log", "dep:tokio", "mcp/server", "dep:rcgen", "dep:axum-server", "dep:rustls-pemfile", "dep:reqwest", "dep:rustls"]
+server = ["dep:axum", "dep:env_logger", "dep:log", "dep:tokio", "mcp/server", "dep:rcgen", "dep:axum-server", "dep:rustls-pemfile", "dep:reqwest", "dep:rustls", "dep:ratatui"]
 startup-sound = ["dep:rodio"]
 local-embeddings = ["dep:fastembed", "dep:rustls"]
 llm-extraction = ["dep:openai-rust2", "dep:anyhow"]
@@ -33,6 +33,7 @@ diffy = "0.4"
 ed25519-dalek = { version = "2", features = ["alloc"] }
 sha2 = "0.10.9"
 crossterm = "0.28"
+ratatui = { version = "0.30.0", optional = true }
 toml_edit = "0.22.27"
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
 mcp = { package = "cloudllm_mcp", version = "0.1.0" }
