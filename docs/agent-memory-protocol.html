@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Toward a Standard Agent Memory Protocol — Lessons from Hermes and MentisDB</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2.5rem; margin-bottom: 0.75rem; border-bottom: 1px solid #e8e8e8; padding-bottom: 0.4rem; }
+    h3 { font-size: 1.1rem; margin-top: 1.75rem; margin-bottom: 0.5rem; font-weight: 600; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.88em; font-family: 'SF Mono', 'Fira Code', monospace; }
+    pre { background: #1e1e2e; color: #cdd6f4; padding: 1.25rem; border-radius: 6px; overflow-x: auto; margin-bottom: 1.25rem; font-size: 0.85em; line-height: 1.55; }
+    pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+    .kw  { color: #cba6f7; } /* keywords */
+    .fn  { color: #89b4fa; } /* function names */
+    .st  { color: #a6e3a1; } /* strings */
+    .cm  { color: #6c7086; font-style: italic; } /* comments */
+    .dt  { color: #fab387; } /* decorators / types */
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1.25rem; font-size: 0.88rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.8rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.6rem; }
+    li { margin-bottom: 0.3rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2.5rem 0; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight {
+      background: #eef2ff;
+      border-left: 3px solid #4361ee;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+      border-radius: 0 4px 4px 0;
+    }
+    .highlight p:last-child { margin-bottom: 0; }
+    .callout {
+      background: #f0fdf4;
+      border-left: 3px solid #22c55e;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+      border-radius: 0 4px 4px 0;
+    }
+    .callout p:last-child { margin-bottom: 0; }
+    .warn {
+      background: #fffbeb;
+      border-left: 3px solid #f59e0b;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+      border-radius: 0 4px 4px 0;
+    }
+    .toc { background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 6px; padding: 1rem 1.5rem; margin-bottom: 2rem; }
+    .toc h4 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; color: #666; margin-bottom: 0.6rem; font-weight: 600; }
+    .toc ol { margin-bottom: 0; }
+    .toc li { margin-bottom: 0.15rem; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 19, 2026</div>
+
+<h1>Toward a Standard Agent Memory Protocol — Lessons from Hermes and MentisDB</h1>
+
+<p>
+  AI agent frameworks all ship their own memory abstraction, and none of them talk to each
+  other. LangChain has <code>BaseMemory</code>. Semantic Kernel has plugins. AutoGen has
+  a conversation buffer. Each one is tied to its framework's idioms, and none expose the
+  lifecycle hooks an external memory backend actually needs to do its job.
+</p>
+
+<p>
+  After studying <a href="https://github.com/NousResearch/hermes-agent">Hermes</a>
+  — Nous Research's production self-improving agent — we found what we believe is the
+  most complete open-source memory abstraction in any agent framework today:
+  the <code>MemoryProvider</code> ABC in <code>agent/memory_provider.py</code>. It
+  covers initialization, turn-by-turn sync, semantic prefetch, context compression,
+  delegation observability, and clean shutdown. It deserves to be a community standard.
+</p>
+
+<p>
+  This post has three parts:
+</p>
+
+<div class="toc">
+  <h4>Contents</h4>
+  <ol>
+    <li><a href="#protocol">The MemoryProvider Protocol — what it is and why it works</a></li>
+    <li><a href="#implementation">Implementing MentisDB as a native Hermes memory provider</a></li>
+    <li><a href="#mcp-tutorial">Zero-code tutorial: MentisDB as an MCP tool inside Hermes</a></li>
+  </ol>
+</div>
+
+<hr>
+
+<h2 id="protocol">Part 1 — The MemoryProvider Protocol</h2>
+
+<h3>Why existing abstractions fall short</h3>
+
+<p>
+  LangChain's <code>BaseMemory</code> exposes two methods:
+  <code>load_memory_variables(inputs)</code> and
+  <code>save_context(inputs, outputs)</code>. That covers recall and persistence. It doesn't
+  cover: what tools the backend exposes to the model, what happens before context is
+  compressed, how session boundaries are signaled, or how a parent agent observes subagent
+  completions. You end up wiring those yourself, per framework, per project.
+</p>
+
+<p>
+  Semantic Kernel plugins are richer but not memory-specific — they model everything as a
+  generic skill with no lifecycle awareness. AutoGen's conversation buffers are in-process
+  only; swapping them out requires forking the agent.
+</p>
+
+<p>
+  Hermes gets it right. Here is the full protocol, annotated:
+</p>
+
+<h3>The interface</h3>
+
+<pre><code><span class="kw">from</span> abc <span class="kw">import</span> ABC, abstractmethod
+<span class="kw">from</span> typing <span class="kw">import</span> List, Dict, Any
+
+<span class="kw">class</span> <span class="fn">MemoryProvider</span>(ABC):
+    <span class="cm">"""Abstract base class for pluggable agent memory backends."""</span>
+
+    <span class="cm"># ── Identity ──────────────────────────────────────────────────────</span>
+
+    <span class="dt">@property</span>
+    <span class="dt">@abstractmethod</span>
+    <span class="kw">def</span> <span class="fn">name</span>(self) -> str:
+        <span class="cm">"""Short identifier, e.g. 'mentisdb', 'honcho', 'mem0'."""</span>
+
+    <span class="cm"># ── Lifecycle (must implement) ─────────────────────────────────────</span>
+
+    <span class="dt">@abstractmethod</span>
+    <span class="kw">def</span> <span class="fn">is_available</span>(self) -> bool:
+        <span class="cm">"""Return True if the backend is reachable and configured.
+        Called once at startup — no network calls that could stall init."""</span>
+
+    <span class="dt">@abstractmethod</span>
+    <span class="kw">def</span> <span class="fn">initialize</span>(self, session_id: str, **kwargs) -> <span class="kw">None</span>:
+        <span class="cm">"""Called once per session. Receives:
+          session_id      — stable session identifier
+          platform        — 'cli', 'telegram', 'discord', 'gateway', …
+          user_id         — for multi-tenant scoping
+          agent_identity  — per-profile/persona scoping
+          hermes_home     — path to ~/.hermes
+          session_title   — human-readable label
+        """</span>
+
+    <span class="dt">@abstractmethod</span>
+    <span class="kw">def</span> <span class="fn">get_tool_schemas</span>(self) -> List[Dict[str, Any]]:
+        <span class="cm">"""OpenAI-format tool schemas exposed directly to the model.
+        The agent registers these alongside its built-in tools so the
+        model can call them explicitly (e.g. mentisdb_recall, mentisdb_store)."""</span>
+
+    <span class="cm"># ── Per-turn operations (optional, no-op defaults) ─────────────────</span>
+
+    <span class="kw">def</span> <span class="fn">system_prompt_block</span>(self) -> str:
+        <span class="cm">"""Static guidance injected into the system prompt at session start.
+        Use sparingly — every token here is spent on every API call."""</span>
+        <span class="kw">return</span> <span class="st">""</span>
+
+    <span class="kw">def</span> <span class="fn">prefetch</span>(self, query: str, *, session_id: str = <span class="st">""</span>) -> str:
+        <span class="cm">"""Return relevant context for the upcoming turn.
+        Called once at turn start; result is fenced and appended to the
+        user message at API-call time (not persisted to message history).
+        Should be fast — it blocks the turn. Use queue_prefetch for async."""</span>
+        <span class="kw">return</span> <span class="st">""</span>
+
+    <span class="kw">def</span> <span class="fn">queue_prefetch</span>(self, query: str, *, session_id: str = <span class="st">""</span>) -> <span class="kw">None</span>:
+        <span class="cm">"""Schedule a background prefetch for the NEXT turn.
+        Called at end-of-turn so results are ready before the next one starts.
+        Implement as a daemon thread; result cached in self._prefetch_result."""</span>
+
+    <span class="kw">def</span> <span class="fn">sync_turn</span>(self, user_content: str, assistant_content: str,
+                  *, session_id: str = <span class="st">""</span>, **kwargs) -> <span class="kw">None</span>:
+        <span class="cm">"""Persist the completed turn to the backend.
+        Called after every successful turn. Both user and assistant sides
+        are available — store whichever is useful for your retrieval model."""</span>
+
+    <span class="kw">def</span> <span class="fn">handle_tool_call</span>(self, tool_name: str, args: Dict, **kwargs) -> str:
+        <span class="cm">"""Dispatch a model-initiated tool call (from get_tool_schemas).
+        Return a JSON string — the agent inserts it as the tool result."""</span>
+        <span class="kw">return</span> <span class="st">'{}'</span>
+
+    <span class="cm"># ── Lifecycle hooks (opt-in, no-op defaults) ───────────────────────</span>
+
+    <span class="kw">def</span> <span class="fn">on_turn_start</span>(self, turn_number: int, message: str, **kwargs) -> <span class="kw">None</span>:
+        <span class="cm">"""Called at the start of each turn with the user's message.
+        Useful for cadence-gating: run deep ops every N turns, not every turn."""</span>
+
+    <span class="kw">def</span> <span class="fn">on_session_end</span>(self, messages: List[Dict]) -> <span class="kw">None</span>:
+        <span class="cm">"""Called at session boundary (exit, /reset, gateway timeout).
+        Full message history is available for extraction / summarization."""</span>
+
+    <span class="kw">def</span> <span class="fn">on_pre_compress</span>(self, messages: List[Dict]) -> str:
+        <span class="cm">"""Called before context compression discards old messages.
+        Extract and persist key facts before they are gone.
+        Return a string to include in the compression summary (optional)."""</span>
+        <span class="kw">return</span> <span class="st">""</span>
+
+    <span class="kw">def</span> <span class="fn">on_memory_write</span>(self, action: str, target: str, content: str) -> <span class="kw">None</span>:
+        <span class="cm">"""Bridge: called when the agent's built-in memory tool fires.
+        action: 'add' | 'replace' | 'remove'
+        target: 'memory' | 'user'
+        Lets you mirror MEMORY.md writes to the external backend automatically."""</span>
+
+    <span class="kw">def</span> <span class="fn">on_delegation</span>(self, task: str, result: str,
+                       *, child_session_id: str = <span class="st">""</span>, **kwargs) -> <span class="kw">None</span>:
+        <span class="cm">"""Called when a subagent completes a delegated task.
+        Parent agent's provider observes the subtask outcome — useful for
+        cross-session memory propagation in multi-agent workflows."""</span>
+
+    <span class="kw">def</span> <span class="fn">shutdown</span>(self) -> <span class="kw">None</span>:
+        <span class="cm">"""Close connections, flush buffers, release resources."""</span>
+</code></pre>
+
+<h3>Why this design is correct</h3>
+
+<p>
+  Six principles make it work:
+</p>
+
+<ol>
+  <li>
+    <strong>Frozen snapshot injection.</strong> Memory is loaded once at
+    <code>initialize()</code> and injected into the system prompt. Mid-session writes go to
+    disk or the backend immediately but do <em>not</em> mutate the prompt.
+    This preserves the LLM's prefix cache across turns — the system prompt stays
+    bit-identical, so the KV cache is reused. The model sees the updated memory at the
+    <em>next</em> session, not mid-turn.
+  </li>
+  <li>
+    <strong>Prefetch at turn boundary, not at API call.</strong> <code>prefetch()</code>
+    is called once at turn start. The result is fenced into the user message at API-call
+    time but never written back to message history. This decouples "what the model recalls"
+    from "what is persisted" — you can recall rich context without polluting the chain.
+    <code>queue_prefetch()</code> lets you warm the cache for the <em>next</em> turn while
+    the current one is still processing.
+  </li>
+  <li>
+    <strong>Built-in write bridging.</strong> When the agent's native
+    <code>memory</code> tool fires (writing to <code>MEMORY.md</code>), the agent calls
+    <code>on_memory_write()</code> on every registered provider. Your backend stays in
+    sync with the built-in memory store without the model needing to call a separate tool.
+  </li>
+  <li>
+    <strong>Pre-compression extraction.</strong> Before the agent compresses old messages
+    out of context, it calls <code>on_pre_compress()</code>. This is the last chance to
+    extract and persist key facts before they are gone. Without this hook, information
+    that never made it into the memory store disappears permanently.
+  </li>
+  <li>
+    <strong>Delegation observability.</strong> In multi-agent workflows, the parent agent
+    calls <code>on_delegation()</code> when a subagent finishes. The memory backend can
+    propagate what was learned in the subtask back to the parent's chain — enabling
+    fleet-level memory compounding.
+  </li>
+  <li>
+    <strong>One external provider, graceful degradation.</strong> Only one external
+    provider is active at a time (alongside the always-on built-in store). Failures in
+    the external provider are caught, logged, and do not crash the agent. The built-in
+    memory is always the safety net.
+  </li>
+</ol>
+
+<h3>Comparison to other abstractions</h3>
+
+<table>
+  <thead>
+    <tr>
+      <th>Feature</th>
+      <th>MemoryProvider (Hermes)</th>
+      <th>BaseMemory (LangChain)</th>
+      <th>Semantic Kernel Plugin</th>
+      <th>AutoGen Buffer</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Recall / persist</td>
+      <td>✓</td><td>✓</td><td>✓</td><td>✓</td>
+    </tr>
+    <tr>
+      <td>Tool exposure to model</td>
+      <td>✓ <code>get_tool_schemas()</code></td>
+      <td>—</td>
+      <td>✓ (generic)</td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td>Async prefetch / caching</td>
+      <td>✓ <code>queue_prefetch()</code></td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td>Pre-compression hook</td>
+      <td>✓ <code>on_pre_compress()</code></td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td>Built-in write bridge</td>
+      <td>✓ <code>on_memory_write()</code></td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td>Delegation observability</td>
+      <td>✓ <code>on_delegation()</code></td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td>Session boundary hook</td>
+      <td>✓ <code>on_session_end()</code></td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td>Failure isolation</td>
+      <td>✓ (catches &amp; logs)</td>
+      <td>Raises</td>
+      <td>Raises</td>
+      <td>Raises</td>
+    </tr>
+    <tr>
+      <td>Multi-tenant scoping</td>
+      <td>✓ (user_id, agent_identity)</td>
+      <td>—</td>
+      <td>Partial</td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td>Config / setup wizard</td>
+      <td>✓ <code>get_config_schema()</code></td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>
+  We believe this interface, with minor additions for async-native support and a
+  standardized config schema, should be the basis of a community
+  <strong>agent-memory-protocol</strong> spec — adopted across LangChain, AutoGen,
+  LlamaIndex, and any framework that wants memory backends to be genuinely portable.
+</p>
+
+<hr>
+
+<h2 id="implementation">Part 2 — Implementing MentisDB as a Native Hermes Provider</h2>
+
+<p>
+  The full lifecycle integration — turn sync, semantic prefetch, built-in write bridging,
+  session-end summarization — requires implementing the <code>MemoryProvider</code> ABC.
+  The result is a plugin file that drops into
+  <code>~/.hermes/plugins/mentisdb/__init__.py</code> with <strong>zero changes to
+  Hermes itself</strong>.
+</p>
+
+<div class="callout">
+  <p>
+    <strong>Prerequisites:</strong> <code>mentisdbd</code> running locally
+    (<code>cargo install mentisdb &amp;&amp; mentisdbd &amp;</code>),
+    Python 3.11+, <code>httpx</code> installed in the Hermes venv.
+  </p>
+</div>
+
+<h3>Plugin structure</h3>
+
+<pre><code>~/.hermes/plugins/
+└── mentisdb/
+    ├── __init__.py     ← the provider (paste code below)
+    └── plugin.yaml     ← metadata for the setup wizard
+</code></pre>
+
+<p><strong>plugin.yaml</strong></p>
+
+<pre><code>name: mentisdb
+description: "Durable, hash-chained semantic memory via MentisDB"
+pip_dependencies:
+  - httpx
+config:
+  - key: MENTISDB_URL
+    label: "MentisDB daemon URL"
+    default: "http://localhost:9471"
+    required: false
+  - key: MENTISDB_CHAIN_KEY
+    label: "Chain key (leave blank to use agent identity)"
+    required: false
+</code></pre>
+
+<p><strong>__init__.py</strong> — ~250 lines, full lifecycle integration:</p>
+
+<pre><code><span class="kw">from</span> __future__ <span class="kw">import</span> annotations
+<span class="kw">import</span> json, logging, os, threading
+<span class="kw">from</span> typing <span class="kw">import</span> Dict, List, Any
+
+<span class="kw">try</span>:
+    <span class="kw">import</span> httpx
+<span class="kw">except</span> ImportError:
+    httpx = <span class="kw">None</span>
+
+<span class="kw">from</span> agent.memory_provider <span class="kw">import</span> MemoryProvider
+
+logger = logging.getLogger(<span class="st">"mentisdb"</span>)
+
+<span class="cm"># ── Tool schemas exposed to the model ──────────────────────────────────────</span>
+
+<span class="fn">RECALL_SCHEMA</span> = {
+    <span class="st">"name"</span>: <span class="st">"mentisdb_recall"</span>,
+    <span class="st">"description"</span>: (
+        <span class="st">"Search your long-term memory (MentisDB) for relevant context. "</span>
+        <span class="st">"Use this when you need to recall a past decision, fact, or lesson."</span>
+    ),
+    <span class="st">"parameters"</span>: {
+        <span class="st">"type"</span>: <span class="st">"object"</span>,
+        <span class="st">"properties"</span>: {
+            <span class="st">"query"</span>: {<span class="st">"type"</span>: <span class="st">"string"</span>, <span class="st">"description"</span>: <span class="st">"What to search for"</span>},
+            <span class="st">"limit"</span>: {<span class="st">"type"</span>: <span class="st">"integer"</span>, <span class="st">"description"</span>: <span class="st">"Max results (default 8)"</span>},
+        },
+        <span class="st">"required"</span>: [<span class="st">"query"</span>],
+    },
+}
+
+<span class="fn">STORE_SCHEMA</span> = {
+    <span class="st">"name"</span>: <span class="st">"mentisdb_store"</span>,
+    <span class="st">"description"</span>: (
+        <span class="st">"Persist a fact, lesson, or decision to long-term memory (MentisDB). "</span>
+        <span class="st">"Use for things that should survive beyond this session."</span>
+    ),
+    <span class="st">"parameters"</span>: {
+        <span class="st">"type"</span>: <span class="st">"object"</span>,
+        <span class="st">"properties"</span>: {
+            <span class="st">"content"</span>: {<span class="st">"type"</span>: <span class="st">"string"</span>, <span class="st">"description"</span>: <span class="st">"Content to store"</span>},
+            <span class="st">"thought_type"</span>: {
+                <span class="st">"type"</span>: <span class="st">"string"</span>,
+                <span class="st">"description"</span>: (
+                    <span class="st">"Memory category: Fact, LessonLearned, Decision, "</span>
+                    <span class="st">"Observation, Summary, Reference, or Hypothesis"</span>
+                ),
+            },
+            <span class="st">"tags"</span>: {
+                <span class="st">"type"</span>: <span class="st">"array"</span>,
+                <span class="st">"items"</span>: {<span class="st">"type"</span>: <span class="st">"string"</span>},
+                <span class="st">"description"</span>: <span class="st">"Optional tags for filtering"</span>,
+            },
+        },
+        <span class="st">"required"</span>: [<span class="st">"content"</span>],
+    },
+}
+
+
+<span class="cm"># ── Provider implementation ─────────────────────────────────────────────────</span>
+
+<span class="kw">class</span> <span class="fn">MentisDBMemoryProvider</span>(MemoryProvider):
+    <span class="cm">"""Full-lifecycle MentisDB memory provider for Hermes.
+
+    Features:
+    - Semantic prefetch injected as fenced context before each turn
+    - Background prefetch queued during current turn for next turn
+    - Turn sync: both user and assistant messages persisted as thoughts
+    - Built-in memory bridge: MEMORY.md writes mirrored to MentisDB
+    - Pre-compression extraction: key facts saved before messages are discarded
+    - Session-end summary stored as a Summary thought
+    """</span>
+
+    <span class="kw">def</span> <span class="fn">__init__</span>(self):
+        self._url = <span class="st">"http://localhost:9471"</span>
+        self._chain_key = <span class="st">"hermes"</span>
+        self._client: httpx.Client | <span class="kw">None</span> = <span class="kw">None</span>
+        self._prefetch_cache = <span class="st">""</span>
+        self._prefetch_thread: threading.Thread | <span class="kw">None</span> = <span class="kw">None</span>
+        self._prefetch_lock = threading.Lock()
+
+    <span class="dt">@property</span>
+    <span class="kw">def</span> <span class="fn">name</span>(self) -> str:
+        <span class="kw">return</span> <span class="st">"mentisdb"</span>
+
+    <span class="kw">def</span> <span class="fn">is_available</span>(self) -> bool:
+        <span class="kw">if</span> httpx <span class="kw">is</span> <span class="kw">None</span>:
+            <span class="kw">return</span> <span class="kw">False</span>
+        url = os.environ.get(<span class="st">"MENTISDB_URL"</span>, <span class="st">"http://localhost:9471"</span>)
+        <span class="kw">try</span>:
+            r = httpx.get(f<span class="st">"{url}/health"</span>, timeout=2.0)
+            <span class="kw">return</span> r.status_code == 200
+        <span class="kw">except</span> Exception:
+            <span class="kw">return</span> <span class="kw">False</span>
+
+    <span class="kw">def</span> <span class="fn">initialize</span>(self, session_id: str, **kwargs) -> <span class="kw">None</span>:
+        self._url = os.environ.get(<span class="st">"MENTISDB_URL"</span>, <span class="st">"http://localhost:9471"</span>)
+        <span class="cm"># Use explicit chain key, or fall back to agent identity, or 'hermes'</span>
+        self._chain_key = (
+            os.environ.get(<span class="st">"MENTISDB_CHAIN_KEY"</span>)
+            <span class="kw">or</span> kwargs.get(<span class="st">"agent_identity"</span>)
+            <span class="kw">or</span> <span class="st">"hermes"</span>
+        )
+        self._session_id = session_id
+        self._client = httpx.Client(
+            base_url=self._url,
+            headers={<span class="st">"Content-Type"</span>: <span class="st">"application/json"</span>},
+            timeout=15.0,
+        )
+        logger.info(<span class="st">"MentisDB provider initialized: chain=%s"</span>, self._chain_key)
+
+    <span class="kw">def</span> <span class="fn">system_prompt_block</span>(self) -> str:
+        <span class="kw">return</span> (
+            <span class="st">"## Long-term Memory (MentisDB)\n"</span>
+            <span class="st">"Your memory is backed by MentisDB — a durable, hash-chained memory engine.\n"</span>
+            <span class="st">"Use `mentisdb_recall` to search past sessions. "</span>
+            <span class="st">"Use `mentisdb_store` for facts, decisions, and lessons that should persist.\n"</span>
+            <span class="st">"Relevant context from past sessions is automatically injected before each turn."</span>
+        )
+
+    <span class="kw">def</span> <span class="fn">prefetch</span>(self, query: str, *, session_id: str = <span class="st">""</span>) -> str:
+        <span class="cm"># Return cached background result if available</span>
+        <span class="kw">if</span> self._prefetch_thread <span class="kw">and</span> self._prefetch_thread.is_alive():
+            self._prefetch_thread.join(timeout=3.0)
+        <span class="kw">with</span> self._prefetch_lock:
+            cached = self._prefetch_cache
+            self._prefetch_cache = <span class="st">""</span>
+        <span class="kw">if</span> cached:
+            <span class="kw">return</span> cached
+        <span class="cm"># Synchronous fallback if no cache</span>
+        <span class="kw">return</span> self._search(query, limit=8)
+
+    <span class="kw">def</span> <span class="fn">queue_prefetch</span>(self, query: str, *, session_id: str = <span class="st">""</span>) -> <span class="kw">None</span>:
+        <span class="kw">def</span> <span class="fn">_run</span>():
+            result = self._search(query, limit=8)
+            <span class="kw">with</span> self._prefetch_lock:
+                self._prefetch_cache = result
+
+        self._prefetch_thread = threading.Thread(target=_run, daemon=<span class="kw">True</span>)
+        self._prefetch_thread.start()
+
+    <span class="kw">def</span> <span class="fn">sync_turn</span>(self, user_content: str, assistant_content: str,
+                  *, session_id: str = <span class="st">""</span>, **kwargs) -> <span class="kw">None</span>:
+        <span class="kw">for</span> content, role <span class="kw">in</span> [(user_content, <span class="st">"user"</span>), (assistant_content, <span class="st">"assistant"</span>)]:
+            <span class="kw">if</span> content:
+                self._append(content, thought_type=<span class="st">"Observation"</span>,
+                             tags=[<span class="st">"hermes"</span>, f<span class="st">"role:{role}"</span>,
+                                   f<span class="st">"session:{self._session_id}"</span>])
+
+    <span class="kw">def</span> <span class="fn">get_tool_schemas</span>(self) -> List[Dict]:
+        <span class="kw">return</span> [RECALL_SCHEMA, STORE_SCHEMA]
+
+    <span class="kw">def</span> <span class="fn">handle_tool_call</span>(self, tool_name: str, args: Dict, **kwargs) -> str:
+        <span class="kw">try</span>:
+            <span class="kw">if</span> tool_name == <span class="st">"mentisdb_recall"</span>:
+                results = self._search(args[<span class="st">"query"</span>], limit=args.get(<span class="st">"limit"</span>, 8))
+                <span class="kw">return</span> json.dumps({<span class="st">"results"</span>: results})
+            <span class="kw">elif</span> tool_name == <span class="st">"mentisdb_store"</span>:
+                self._append(
+                    args[<span class="st">"content"</span>],
+                    thought_type=args.get(<span class="st">"thought_type"</span>, <span class="st">"LessonLearned"</span>),
+                    tags=args.get(<span class="st">"tags"</span>, []),
+                )
+                <span class="kw">return</span> json.dumps({<span class="st">"status"</span>: <span class="st">"stored"</span>})
+            <span class="kw">return</span> json.dumps({<span class="st">"error"</span>: f<span class="st">"Unknown tool: {tool_name}"</span>})
+        <span class="kw">except</span> Exception <span class="kw">as</span> e:
+            logger.error(<span class="st">"MentisDB tool call failed: %s"</span>, e)
+            <span class="kw">return</span> json.dumps({<span class="st">"error"</span>: str(e)})
+
+    <span class="kw">def</span> <span class="fn">on_memory_write</span>(self, action: str, target: str, content: str) -> <span class="kw">None</span>:
+        <span class="cm"># Mirror built-in MEMORY.md / USER.md writes to MentisDB</span>
+        <span class="kw">if</span> action <span class="kw">in</span> (<span class="st">"add"</span>, <span class="st">"replace"</span>) <span class="kw">and</span> content:
+            self._append(content, thought_type=<span class="st">"LessonLearned"</span>,
+                         tags=[<span class="st">"hermes"</span>, f<span class="st">"memory-file:{target}"</span>])
+
+    <span class="kw">def</span> <span class="fn">on_pre_compress</span>(self, messages: List[Dict]) -> str:
+        <span class="cm"># Extract user messages being compressed; store as Observations</span>
+        <span class="kw">for</span> msg <span class="kw">in</span> messages:
+            <span class="kw">if</span> msg.get(<span class="st">"role"</span>) == <span class="st">"user"</span> <span class="kw">and</span> msg.get(<span class="st">"content"</span>):
+                self._append(str(msg[<span class="st">"content"</span>])[:2000],
+                             thought_type=<span class="st">"Observation"</span>,
+                             tags=[<span class="st">"hermes"</span>, <span class="st">"pre-compress"</span>])
+        <span class="kw">return</span> <span class="st">""</span>
+
+    <span class="kw">def</span> <span class="fn">on_session_end</span>(self, messages: List[Dict]) -> <span class="kw">None</span>:
+        <span class="cm"># Store a compact session summary as a Summary thought</span>
+        user_msgs = [m[<span class="st">"content"</span>] <span class="kw">for</span> m <span class="kw">in</span> messages
+                     <span class="kw">if</span> m.get(<span class="st">"role"</span>) == <span class="st">"user"</span> <span class="kw">and</span> m.get(<span class="st">"content"</span>)]
+        <span class="kw">if</span> user_msgs:
+            summary = f<span class="st">"Session {self._session_id}: {len(user_msgs)} turns. "</span>
+            summary += <span class="st">"Topics: "</span> + <span class="st">"; "</span>.join(str(m)[:80] <span class="kw">for</span> m <span class="kw">in</span> user_msgs[:5])
+            self._append(summary, thought_type=<span class="st">"Summary"</span>,
+                         tags=[<span class="st">"hermes"</span>, <span class="st">"session-end"</span>,
+                               f<span class="st">"session:{self._session_id}"</span>])
+
+    <span class="kw">def</span> <span class="fn">on_delegation</span>(self, task: str, result: str,
+                       *, child_session_id: str = <span class="st">""</span>, **kwargs) -> <span class="kw">None</span>:
+        <span class="cm"># Persist subagent outcome so the parent can recall it later</span>
+        content = f<span class="st">"Delegated task: {task[:300]}\nResult: {result[:500]}"</span>
+        self._append(content, thought_type=<span class="st">"Observation"</span>,
+                     tags=[<span class="st">"hermes"</span>, <span class="st">"delegation"</span>,
+                           f<span class="st">"child:{child_session_id}"</span>])
+
+    <span class="kw">def</span> <span class="fn">shutdown</span>(self) -> <span class="kw">None</span>:
+        <span class="kw">if</span> self._client:
+            self._client.close()
+            self._client = <span class="kw">None</span>
+
+    <span class="cm"># ── Internal helpers ───────────────────────────────────────────────────────</span>
+
+    <span class="kw">def</span> <span class="fn">_search</span>(self, query: str, limit: int = 8) -> str:
+        <span class="kw">if not</span> self._client:
+            <span class="kw">return</span> <span class="st">""</span>
+        <span class="kw">try</span>:
+            r = self._client.post(
+                <span class="st">"/v1/search"</span>,
+                json={<span class="st">"query"</span>: query, <span class="st">"limit"</span>: limit,
+                      <span class="st">"chain_key"</span>: self._chain_key},
+            )
+            r.raise_for_status()
+            thoughts = r.json().get(<span class="st">"thoughts"</span>, [])
+            <span class="kw">return</span> <span class="st">"\n\n"</span>.join(
+                f<span class="st">"[{t.get('thought_type', 'Memory')}] {t['content']}"</span>
+                <span class="kw">for</span> t <span class="kw">in</span> thoughts
+            )
+        <span class="kw">except</span> Exception <span class="kw">as</span> e:
+            logger.warning(<span class="st">"MentisDB search failed: %s"</span>, e)
+            <span class="kw">return</span> <span class="st">""</span>
+
+    <span class="kw">def</span> <span class="fn">_append</span>(self, content: str, thought_type: str = <span class="st">"Observation"</span>,
+               tags: list | <span class="kw">None</span> = <span class="kw">None</span>) -> <span class="kw">None</span>:
+        <span class="kw">if not</span> self._client <span class="kw">or not</span> content.strip():
+            <span class="kw">return</span>
+        <span class="kw">try</span>:
+            self._client.post(
+                <span class="st">"/v1/thoughts"</span>,
+                json={
+                    <span class="st">"content"</span>: content,
+                    <span class="st">"thought_type"</span>: thought_type,
+                    <span class="st">"chain_key"</span>: self._chain_key,
+                    <span class="st">"tags"</span>: tags <span class="kw">or</span> [],
+                },
+            )
+        <span class="kw">except</span> Exception <span class="kw">as</span> e:
+            logger.warning(<span class="st">"MentisDB append failed: %s"</span>, e)
+
+
+<span class="cm"># ── Plugin entry point ──────────────────────────────────────────────────────</span>
+
+<span class="kw">def</span> <span class="fn">register</span>(ctx):
+    ctx.register_memory_provider(MentisDBMemoryProvider())
+</code></pre>
+
+<h3>Activation</h3>
+
+<p>Run the setup wizard:</p>
+
+<pre><code>hermes memory setup</code></pre>
+
+<p>
+  Pick <strong>mentisdb</strong> from the list. The wizard reads <code>plugin.yaml</code>,
+  asks for the URL (default <code>http://localhost:9471</code>) and chain key, writes
+  secrets to <code>~/.hermes/.env</code>, and saves <code>memory.provider: mentisdb</code>
+  to <code>~/.hermes/config.yaml</code>. Restart Hermes and MentisDB is the active memory backend.
+</p>
+
+<p>
+  Verify it loaded:
+</p>
+
+<pre><code>hermes memory status</code></pre>
+
+<hr>
+
+<h2 id="mcp-tutorial">Part 3 — Zero-Code Tutorial: MentisDB as an MCP Tool in Hermes</h2>
+
+<p>
+  If you just want to call MentisDB tools from inside Hermes without any lifecycle
+  integration, you can use Hermes' built-in MCP support. MentisDB speaks the MCP
+  protocol natively on port 9471. No code, no plugin file — just two lines of config.
+</p>
+
+<div class="warn">
+  <p>
+    <strong>What you get vs. the native provider:</strong> MCP tools are model-callable
+    on demand. They do <em>not</em> fire automatically on each turn, sync turns in the
+    background, observe context compression, or participate in session boundaries.
+    Use this for quick lookups and writes; use the native provider (Part 2) for full
+    lifecycle integration.
+  </p>
+</div>
+
+<h3>Step 1 — Start the MentisDB daemon</h3>
+
+<pre><code><span class="cm"># Install (if not already)</span>
+cargo install mentisdb
+
+<span class="cm"># Start the daemon (runs on port 9471 by default)</span>
+mentisdbd &amp;
+
+<span class="cm"># Or in the foreground with the TUI</span>
+mentisdbd
+</code></pre>
+
+<p>Verify it's up:</p>
+
+<pre><code>curl -s http://localhost:9471/health
+<span class="cm"># → {"status":"ok"}</span></code></pre>
+
+<h3>Step 2 — Register MentisDB as an MCP server in Hermes</h3>
+
+<p>Open <code>~/.hermes/config.yaml</code> and add:</p>
+
+<pre><code>mcp_servers:
+  mentisdb:
+    url: <span class="st">"http://localhost:9471"</span>
+</code></pre>
+
+<p>That's it. Restart Hermes.</p>
+
+<h3>Step 3 — Verify tool discovery</h3>
+
+<p>At startup, Hermes connects to the MCP server and discovers all available tools.
+You'll see them listed under the <code>mentisdb</code> server prefix:</p>
+
+<pre><code>hermes tools list | grep mcp_mentisdb
+<span class="cm"># mcp_mentisdb_mentisdb_append_thought
+# mcp_mentisdb_mentisdb_search
+# mcp_mentisdb_mentisdb_recent_context
+# mcp_mentisdb_mentisdb_bootstrap
+# … (all MentisDB MCP tools)</span>
+</code></pre>
+
+<h3>Step 4 — Use from a session</h3>
+
+<p>
+  Start Hermes and ask it to use MentisDB directly. The model will call the MCP tools
+  as needed:
+</p>
+
+<pre><code><span class="cm"># In a Hermes session:</span>
+You: Search my MentisDB memory for anything about the authentication refactor.
+
+<span class="cm"># Hermes calls: mcp_mentisdb_mentisdb_search({"query": "authentication refactor"})</span>
+<span class="cm"># Returns ranked results from MentisDB</span>
+</code></pre>
+
+<pre><code>You: Store this in MentisDB: the auth service now uses RS256 JWTs, not HS256.
+
+<span class="cm"># Hermes calls: mcp_mentisdb_mentisdb_append_thought({
+#   "content": "the auth service now uses RS256 JWTs, not HS256",
+#   "thought_type": "LessonLearned"
+# })</span>
+</code></pre>
+
+<h3>Step 5 — Prime an agent from MentisDB at session start</h3>
+
+<p>
+  Tell Hermes to always bootstrap from MentisDB at the start of a session by adding
+  this to your system prompt or <code>~/.hermes/memories/MEMORY.md</code>:
+</p>
+
+<pre><code>At the start of each session, call mcp_mentisdb_mentisdb_bootstrap to load
+the current chain context before answering any questions.
+</code></pre>
+
+<p>
+  Or use the MentisDB primer line directly. From the TUI, press <code>c</code> while
+  the Prime panel is focused to copy it, then paste it into Hermes:
+</p>
+
+<pre><code>prime yourself for optimal mentisdb usage. load agent orion from mentisdb chain.
+call mentisdb_bootstrap then mentisdb_skill_md
+</code></pre>
+
+<h3>Optional — restrict which tools Hermes exposes</h3>
+
+<p>
+  If you want only search and append (not admin tools):
+</p>
+
+<pre><code>mcp_servers:
+  mentisdb:
+    url: <span class="st">"http://localhost:9471"</span>
+    tools:
+      - mentisdb_search
+      - mentisdb_append_thought
+      - mentisdb_recent_context
+</code></pre>
+
+<h3>Optional — use HTTPS</h3>
+
+<p>
+  If your MentisDB daemon has TLS configured (<code>MENTISDB_TLS_CERT</code> /
+  <code>MENTISDB_TLS_KEY</code>), point Hermes at the HTTPS MCP port instead:
+</p>
+
+<pre><code>mcp_servers:
+  mentisdb:
+    url: <span class="st">"https://my.mentisdb.com:9473"</span>
+</code></pre>
+
+<hr>
+
+<h2>What's next</h2>
+
+<p>
+  The native provider plugin (Part 2) is the right integration for production use. We
+  plan to submit it as a pull request to the Hermes repository so it ships bundled — the
+  same way Honcho, Mem0, and Hindsight are bundled today.
+</p>
+
+<p>
+  On the protocol side: we want to work with the agent community — LangChain, AutoGen,
+  LlamaIndex, and others — to formalize the <code>MemoryProvider</code> interface as a
+  shared <strong>agent-memory-protocol</strong> spec. A backend that implements the
+  protocol once should work unmodified in any conforming agent framework. MentisDB would
+  be the reference implementation.
+</p>
+
+<p>
+  If you're building an agent framework and want to adopt the protocol, or if you've
+  already built something similar and want to compare notes:
+  <a href="https://github.com/CloudLLM-ai/mentisdb/discussions">open a discussion on GitHub</a>.
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>
