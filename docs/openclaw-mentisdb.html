@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB × OpenClaw — Memory Integration Guide and Protocol Comparison</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2.5rem; margin-bottom: 0.75rem; border-bottom: 1px solid #e8e8e8; padding-bottom: 0.4rem; }
+    h3 { font-size: 1.1rem; margin-top: 1.75rem; margin-bottom: 0.5rem; font-weight: 600; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.88em; font-family: 'SF Mono', 'Fira Code', monospace; }
+    pre { background: #1e1e2e; color: #cdd6f4; padding: 1.25rem; border-radius: 6px; overflow-x: auto; margin-bottom: 1.25rem; font-size: 0.85em; line-height: 1.55; }
+    pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+    .kw  { color: #cba6f7; }
+    .fn  { color: #89b4fa; }
+    .st  { color: #a6e3a1; }
+    .cm  { color: #6c7086; font-style: italic; }
+    .dt  { color: #fab387; }
+    .ty  { color: #f38ba8; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1.25rem; font-size: 0.88rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.8rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    td.yes { color: #16a34a; font-weight: 600; }
+    td.no  { color: #9ca3af; }
+    td.partial { color: #d97706; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.6rem; }
+    li { margin-bottom: 0.3rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2.5rem 0; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+    .callout { background: #f0fdf4; border-left: 3px solid #22c55e; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .callout p:last-child { margin-bottom: 0; }
+    .warn { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .warn p:last-child { margin-bottom: 0; }
+    .toc { background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 6px; padding: 1rem 1.5rem; margin-bottom: 2rem; }
+    .toc h4 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; color: #666; margin-bottom: 0.6rem; font-weight: 600; }
+    .toc ol { margin-bottom: 0; }
+    .toc li { margin-bottom: 0.15rem; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 21, 2026</div>
+
+<h1>MentisDB × OpenClaw — Memory Integration Guide and Protocol Comparison</h1>
+
+<p>
+  Last week we
+  <a href="agent-memory-protocol.html">analyzed Hermes' memory architecture</a>
+  and proposed its <code>MemoryProvider</code> ABC as the basis for a community
+  <em>agent-memory-protocol</em> standard. This week we applied the same analysis to
+  <a href="https://github.com/openclaw/openclaw">OpenClaw</a> — a TypeScript
+  multi-channel AI gateway with 17,000+ commits, active daily development, and sponsors
+  including OpenAI, GitHub, and NVIDIA.
+</p>
+
+<p>
+  The results are revealing. OpenClaw and Hermes both solve the pluggable memory
+  problem — but with different philosophies, different languages, and meaningfully
+  different tradeoffs. And one key prediction from the Hermes post turned out to be
+  wrong in an instructive way.
+</p>
+
+<div class="toc">
+  <h4>Contents</h4>
+  <ol>
+    <li><a href="#openclaw">What OpenClaw is — and how fast it moves</a></li>
+    <li><a href="#memory">OpenClaw's memory architecture</a></li>
+    <li><a href="#mcp-tutorial">Zero-code tutorial: MentisDB as an MCP tool in OpenClaw</a></li>
+    <li><a href="#native">Native TypeScript backend implementation</a></li>
+    <li><a href="#comparison">Comparing the two: Hermes vs OpenClaw vs our proposed standard</a></li>
+    <li><a href="#reassessment">Reassessing the protocol proposal</a></li>
+  </ol>
+</div>
+
+<hr>
+
+<h2 id="openclaw">What OpenClaw Is — and How Fast It Moves</h2>
+
+<p>
+  OpenClaw is a personal AI gateway. Where Hermes is a self-improving agent primarily
+  accessed through a terminal, OpenClaw is a multi-channel daemon: it runs as a
+  background service and routes messages between Claude and every messaging platform
+  you already use — WhatsApp, Telegram, Slack, Discord, Signal, iMessage, Matrix,
+  Zalo, WeChat, QQ, and more. You talk to your AI from your phone; OpenClaw handles
+  the protocol translation, tool dispatch, memory, and delivery.
+</p>
+
+<p>
+  The version tag as of this writing is <code>2026.4.20</code>. Its git history has
+  over 17,000 commits. The last 12 commits are all from the past few days: CI
+  performance tuning, test refactoring, shared fixture helpers. This is a codebase
+  under continuous professional maintenance, not a research prototype.
+</p>
+
+<p>
+  The relevance for memory integration: OpenClaw must work reliably across sessions
+  measured in weeks or months, across multiple messaging platforms, often for multiple
+  users simultaneously via its gateway mode. Memory isn't optional — it's load-bearing
+  infrastructure.
+</p>
+
+<hr>
+
+<h2 id="memory">OpenClaw's Memory Architecture</h2>
+
+<h3>The capability registration pattern</h3>
+
+<p>
+  Where Hermes defines memory via an ABC that providers inherit, OpenClaw uses a
+  <strong>capability registration</strong> pattern. A memory plugin registers a bundle
+  of callbacks rather than subclassing an interface:
+</p>
+
+<pre><code><span class="cm">// src/plugins/memory-state.ts</span>
+<span class="kw">export type</span> <span class="ty">MemoryPluginCapability</span> = {
+  promptBuilder?:    <span class="ty">MemoryPromptSectionBuilder</span>;
+  flushPlanResolver?: <span class="ty">MemoryFlushPlanResolver</span>;
+  runtime?:          <span class="ty">MemoryPluginRuntime</span>;
+  publicArtifacts?:  <span class="ty">MemoryPluginPublicArtifactsProvider</span>;
+};
+
+<span class="kw">export function</span> <span class="fn">registerMemoryCapability</span>(
+  pluginId: <span class="ty">string</span>,
+  capability: <span class="ty">MemoryPluginCapability</span>,
+): <span class="kw">void</span> {
+  memoryPluginState.capability = { pluginId, capability: { ...capability } };
+}
+</code></pre>
+
+<p>
+  Each slot is independently replaceable:
+</p>
+
+<ul>
+  <li>
+    <strong><code>promptBuilder</code></strong> — returns the system-prompt block that tells the
+    model when and how to use memory. Default guidance: "before answering anything about
+    prior work, decisions, or user preferences, run <code>memory_search</code> first."
+  </li>
+  <li>
+    <strong><code>flushPlanResolver</code></strong> — called before context compression to
+    decide which thoughts should be durably written to <code>MEMORY.md</code>. This is
+    OpenClaw's equivalent of Hermes' <code>on_pre_compress()</code> hook, but declarative:
+    the resolver returns a plan, and OpenClaw executes it.
+  </li>
+  <li>
+    <strong><code>runtime</code></strong> — the actual search/index engine. This is where
+    the <code>MemorySearchManager</code> interface lives.
+  </li>
+  <li>
+    <strong><code>publicArtifacts</code></strong> — lists memory artifacts that can be
+    surfaced externally (e.g., in the gateway dashboard). No Hermes equivalent.
+  </li>
+</ul>
+
+<h3>The MemorySearchManager interface</h3>
+
+<p>
+  The <code>runtime</code> slot expects a <code>MemorySearchManager</code>, defined in
+  the SDK. The three existing backends all implement it:
+</p>
+
+<pre><code><span class="cm">// extensions/memory-core/src/memory/manager.ts</span>
+<span class="kw">export class</span> <span class="ty">MemoryIndexManager</span>
+  <span class="kw">extends</span> <span class="ty">MemoryManagerEmbeddingOps</span>
+  <span class="kw">implements</span> <span class="ty">MemorySearchManager</span>
+{
+  <span class="kw">async</span> <span class="fn">search</span>(
+    query: <span class="ty">string</span>,
+    opts?: {
+      maxResults?: <span class="ty">number</span>;
+      minScore?: <span class="ty">number</span>;
+      sessionKey?: <span class="ty">string</span>;
+      onDebug?: (debug: <span class="ty">MemorySearchRuntimeDebug</span>) => <span class="kw">void</span>;
+    },
+  ): <span class="ty">Promise</span>&lt;<span class="ty">MemorySearchResult</span>[]&gt;
+
+  <span class="kw">async</span> <span class="fn">warmSession</span>(sessionKey?: <span class="ty">string</span>): <span class="ty">Promise</span>&lt;<span class="kw">void</span>&gt;
+
+  <span class="fn">status</span>(): <span class="ty">MemoryProviderStatus</span>
+
+  <span class="kw">async</span> <span class="fn">close</span>(): <span class="ty">Promise</span>&lt;<span class="kw">void</span>&gt;
+}
+</code></pre>
+
+<p>
+  Search results are a typed union:
+</p>
+
+<pre><code><span class="cm">// src/plugins/memory-state.ts</span>
+<span class="kw">type</span> <span class="ty">MemoryCorpusSearchResult</span> = {
+  corpus:   <span class="ty">string</span>;
+  path:     <span class="ty">string</span>;
+  title?:   <span class="ty">string</span>;
+  kind?:    <span class="ty">string</span>;
+  score:    <span class="ty">number</span>;
+  snippet:  <span class="ty">string</span>;
+  lines?:   { start: <span class="ty">number</span>; end: <span class="ty">number</span> };
+};
+</code></pre>
+
+<h3>Three backends today</h3>
+
+<table>
+  <thead>
+    <tr><th>Backend</th><th>Storage</th><th>Search</th><th>When to use</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>builtin</strong></td>
+      <td>SQLite per agent<br><code>~/.openclaw/state/memory/{agentId}.sqlite</code></td>
+      <td>FTS5 + optional vector</td>
+      <td>Default. Works offline, zero config.</td>
+    </tr>
+    <tr>
+      <td><strong>qmd</strong></td>
+      <td>Quantum Memory Daemon (local sidecar)</td>
+      <td>Vector + reranking + query expansion</td>
+      <td>Higher recall quality, local-first.</td>
+    </tr>
+    <tr>
+      <td><strong>honcho</strong></td>
+      <td>Honcho cloud service</td>
+      <td>AI-native, cross-session user modeling</td>
+      <td>Multi-user, cross-device memory.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Memory in the agent loop</h3>
+
+<p>
+  Five integration points, each corresponding to a different phase of a conversation turn:
+</p>
+
+<ol>
+  <li>
+    <strong>System prompt assembly</strong> — <code>promptBuilder()</code> injects recall
+    guidance. The model is told to call <code>memory_search</code> before answering
+    questions about prior context.
+  </li>
+  <li>
+    <strong>Tool registration</strong> — <code>memory_search</code> and
+    <code>memory_get</code> are registered from
+    <code>extensions/memory-core/src/tools.ts</code> and appear in the agent's tool
+    catalog.
+  </li>
+  <li>
+    <strong>Session warmup</strong> — <code>warmSession(sessionKey)</code> is called at
+    session start. Implementations use this to trigger background index sync.
+  </li>
+  <li>
+    <strong>Search-triggered sync</strong> — when the model calls
+    <code>memory_search</code>, the runtime can optionally kick off an async re-sync
+    for subsequent turns.
+  </li>
+  <li>
+    <strong>Context compression</strong> — before messages are discarded,
+    <code>flushPlanResolver</code> decides what to durably write. A silent agent turn
+    runs the plan and appends to <code>MEMORY.md</code>, append-only, guardian-protected.
+  </li>
+</ol>
+
+<h3>MCP is a first-class citizen</h3>
+
+<p>
+  Unlike Hermes — where MCP is one of several tool integration paths — OpenClaw treats
+  MCP as a primary tool registration mechanism. The configuration type
+  (<code>src/config/types.mcp.ts</code>) supports both stdio and HTTP transports. MCP
+  tools are materialized into OpenClaw's native tool catalog at startup via
+  <code>pi-bundle-mcp-materialize.ts</code>, subject to the same tool policy and
+  allow/deny logic as built-in tools.
+</p>
+
+<pre><code><span class="cm">// src/config/types.mcp.ts</span>
+<span class="kw">export type</span> <span class="ty">McpServerConfig</span> = {
+  command?: <span class="ty">string</span>;           <span class="cm">// stdio transport</span>
+  args?: <span class="ty">string</span>[];
+  url?: <span class="ty">string</span>;               <span class="cm">// HTTP transport</span>
+  transport?: <span class="st">"sse"</span> | <span class="st">"streamable-http"</span>;
+  headers?: <span class="ty">Record</span>&lt;<span class="ty">string</span>, <span class="ty">string</span> | <span class="ty">number</span> | <span class="ty">boolean</span>&gt;;
+  connectionTimeoutMs?: <span class="ty">number</span>;
+};
+</code></pre>
+
+<hr>
+
+<h2 id="mcp-tutorial">Zero-Code Tutorial: MentisDB as an MCP Tool in OpenClaw</h2>
+
+<div class="callout">
+  <p>
+    <strong>Time to working:</strong> under two minutes. No code, no compilation, no
+    plugin installation — just four lines of YAML and a daemon restart.
+  </p>
+</div>
+
+<h3>Step 1 — Start the MentisDB daemon</h3>
+
+<pre><code><span class="cm"># Install once</span>
+cargo install mentisdb
+
+<span class="cm"># Start the daemon (MCP endpoint on port 9471)</span>
+mentisdbd &amp;
+
+<span class="cm"># Verify</span>
+curl -s http://localhost:9471/health
+<span class="cm"># → {"status":"ok"}</span>
+</code></pre>
+
+<h3>Step 2 — Register MentisDB in openclaw.config.yml</h3>
+
+<pre><code>mcp:
+  servers:
+    mentisdb:
+      url: <span class="st">"http://localhost:9471"</span>
+      transport: <span class="st">"streamable-http"</span>
+      connectionTimeoutMs: 5000
+</code></pre>
+
+<p>Save and restart OpenClaw:</p>
+
+<pre><code>openclaw gateway restart
+</code></pre>
+
+<h3>Step 3 — Confirm tool discovery</h3>
+
+<pre><code>openclaw tools list | grep mentisdb
+<span class="cm"># mcp_mentisdb_mentisdb_search
+# mcp_mentisdb_mentisdb_append_thought
+# mcp_mentisdb_mentisdb_recent_context
+# mcp_mentisdb_mentisdb_bootstrap
+# … all MentisDB MCP tools</span>
+</code></pre>
+
+<p>
+  MentisDB tools are now available in every agent conversation, just like any other
+  built-in tool. The model can call them directly:
+</p>
+
+<pre><code><span class="cm"># From any channel (Telegram, WhatsApp, Slack, …)</span>
+You: Search my memory for anything about the API rate limiting fix from last month.
+
+<span class="cm"># OpenClaw routes to: mcp_mentisdb_mentisdb_search({"query": "API rate limiting fix"})</span>
+<span class="cm"># Returns ranked results from MentisDB's hybrid retrieval pipeline</span>
+</code></pre>
+
+<h3>Optional — restrict exposed tools</h3>
+
+<pre><code>mcp:
+  servers:
+    mentisdb:
+      url: <span class="st">"http://localhost:9471"</span>
+      transport: <span class="st">"streamable-http"</span>
+      tools:
+        - mentisdb_search
+        - mentisdb_append_thought
+        - mentisdb_recent_context
+</code></pre>
+
+<h3>Optional — prime the agent to use MentisDB first</h3>
+
+<p>
+  Add to your agent's system prompt or <code>MEMORY.md</code>:
+</p>
+
+<pre><code>At the start of each conversation, call mentisdb_bootstrap to load context
+from the chain before answering any questions.
+</code></pre>
+
+<h3>Optional — HTTPS</h3>
+
+<pre><code>mcp:
+  servers:
+    mentisdb:
+      url: <span class="st">"https://my.mentisdb.com:9473"</span>
+      transport: <span class="st">"streamable-http"</span>
+</code></pre>
+
+<hr>
+
+<h2 id="native">Native TypeScript Backend Implementation</h2>
+
+<p>
+  For full lifecycle integration — automatic turn sync, session warmup, flush plan
+  participation — you can implement MentisDB as a native OpenClaw memory backend.
+  This is a TypeScript extension plugin, not a Python ABC subclass.
+</p>
+
+<p>
+  Create the plugin directory:
+</p>
+
+<pre><code>~/.openclaw/plugins/
+└── memory-mentisdb/
+    ├── package.json
+    ├── openclaw.plugin.json
+    └── src/
+        ├── index.ts        ← entry point, registers the capability
+        └── manager.ts      ← MemorySearchManager implementation
+</code></pre>
+
+<p><strong>openclaw.plugin.json</strong></p>
+
+<pre><code>{
+  <span class="st">"id"</span>: <span class="st">"memory-mentisdb"</span>,
+  <span class="st">"name"</span>: <span class="st">"MentisDB Memory"</span>,
+  <span class="st">"description"</span>: <span class="st">"Durable, hash-chained semantic memory via MentisDB"</span>,
+  <span class="st">"version"</span>: <span class="st">"1.0.0"</span>,
+  <span class="st">"entrypoint"</span>: <span class="st">"./src/index.ts"</span>,
+  <span class="st">"capabilities"</span>: [<span class="st">"memory"</span>]
+}
+</code></pre>
+
+<p><strong>src/manager.ts</strong> — the search backend:</p>
+
+<pre><code><span class="kw">import</span> type { MemorySearchManager, MemorySearchResult, MemoryProviderStatus }
+  <span class="kw">from</span> <span class="st">"@openclaw/sdk"</span>;
+
+<span class="kw">export class</span> <span class="ty">MentisDBManager</span> <span class="kw">implements</span> <span class="ty">MemorySearchManager</span> {
+  <span class="kw">private</span> baseUrl: <span class="ty">string</span>;
+  <span class="kw">private</span> chainKey: <span class="ty">string</span>;
+  <span class="kw">private</span> abortController: <span class="ty">AbortController</span> | <span class="kw">null</span> = <span class="kw">null</span>;
+
+  <span class="fn">constructor</span>(opts: { url: <span class="ty">string</span>; chainKey: <span class="ty">string</span> }) {
+    <span class="kw">this</span>.baseUrl  = opts.url;
+    <span class="kw">this</span>.chainKey = opts.chainKey;
+  }
+
+  <span class="kw">async</span> <span class="fn">search</span>(
+    query: <span class="ty">string</span>,
+    opts?: { maxResults?: <span class="ty">number</span>; minScore?: <span class="ty">number</span>; sessionKey?: <span class="ty">string</span> },
+  ): <span class="ty">Promise</span>&lt;<span class="ty">MemorySearchResult</span>[]&gt; {
+    <span class="kw">const</span> resp = <span class="kw">await</span> fetch(`<span class="st">${this.baseUrl}/v1/search</span>`, {
+      method: <span class="st">"POST"</span>,
+      headers: { <span class="st">"Content-Type"</span>: <span class="st">"application/json"</span> },
+      body: JSON.stringify({
+        query,
+        limit:     opts?.maxResults ?? 10,
+        chain_key: <span class="kw">this</span>.chainKey,
+      }),
+    });
+    <span class="kw">if</span> (!resp.ok) <span class="kw">return</span> [];
+
+    <span class="kw">const</span> { thoughts } = <span class="kw">await</span> resp.json();
+    <span class="kw">return</span> (thoughts ?? []).map((t: <span class="kw">any</span>) => ({
+      corpus:  <span class="st">"mentisdb"</span>,
+      path:    `<span class="st">mentisdb://${t.id}</span>`,
+      title:   t.thought_type,
+      kind:    t.thought_type?.toLowerCase(),
+      score:   t.score ?? 0.5,
+      snippet: t.content,
+    }));
+  }
+
+  <span class="kw">async</span> <span class="fn">warmSession</span>(sessionKey?: <span class="ty">string</span>): <span class="ty">Promise</span>&lt;<span class="kw">void</span>&gt; {
+    <span class="cm">// Optional: trigger background sync, verify daemon reachability</span>
+    <span class="kw">await</span> fetch(`<span class="st">${this.baseUrl}/health</span>`).catch(() => {});
+  }
+
+  <span class="fn">status</span>(): <span class="ty">MemoryProviderStatus</span> {
+    <span class="kw">return</span> { available: <span class="kw">true</span>, label: <span class="st">"MentisDB"</span> };
+  }
+
+  <span class="kw">async</span> <span class="fn">close</span>(): <span class="ty">Promise</span>&lt;<span class="kw">void</span>&gt; {
+    <span class="kw">this</span>.abortController?.abort();
+  }
+}
+
+<span class="cm">/** Append a thought to MentisDB (called from flush plan + sync_turn). */</span>
+<span class="kw">export async function</span> <span class="fn">appendThought</span>(opts: {
+  baseUrl:     <span class="ty">string</span>;
+  chainKey:    <span class="ty">string</span>;
+  content:     <span class="ty">string</span>;
+  thoughtType: <span class="ty">string</span>;
+  tags?:       <span class="ty">string</span>[];
+}): <span class="ty">Promise</span>&lt;<span class="kw">void</span>&gt; {
+  <span class="kw">await</span> fetch(`<span class="st">${opts.baseUrl}/v1/thoughts</span>`, {
+    method: <span class="st">"POST"</span>,
+    headers: { <span class="st">"Content-Type"</span>: <span class="st">"application/json"</span> },
+    body: JSON.stringify({
+      content:      opts.content,
+      thought_type: opts.thoughtType,
+      chain_key:    opts.chainKey,
+      tags:         opts.tags ?? [],
+    }),
+  }).catch(console.error);
+}
+</code></pre>
+
+<p><strong>src/index.ts</strong> — register the capability:</p>
+
+<pre><code><span class="kw">import type</span> { OpenClawPluginAPI } <span class="kw">from</span> <span class="st">"@openclaw/sdk"</span>;
+<span class="kw">import</span> { MentisDBManager, appendThought } <span class="kw">from</span> <span class="st">"./manager.js"</span>;
+
+<span class="kw">export function</span> <span class="fn">register</span>(api: <span class="ty">OpenClawPluginAPI</span>): <span class="kw">void</span> {
+  <span class="kw">const</span> config = api.getConfig();
+  <span class="kw">const</span> baseUrl  = config.env?.MENTISDB_URL  ?? <span class="st">"http://localhost:9471"</span>;
+  <span class="kw">const</span> chainKey = config.env?.MENTISDB_CHAIN ?? <span class="st">"openclaw"</span>;
+
+  <span class="kw">const</span> manager = <span class="kw">new</span> <span class="ty">MentisDBManager</span>({ url: baseUrl, chainKey });
+
+  api.registerMemoryCapability(<span class="st">"memory-mentisdb"</span>, {
+    <span class="cm">// ── Prompt block ──────────────────────────────────────────────────────</span>
+    promptBuilder: (_tools) =>
+      <span class="st">"Your long-term memory is stored in MentisDB. Before answering questions\n"</span>
+      + <span class="st">"about past decisions, prior work, or user preferences, call memory_search."</span>,
+
+    <span class="cm">// ── Flush plan: what to persist before context compression ────────────</span>
+    flushPlanResolver: <span class="kw">async</span> (messages) => {
+      <span class="kw">const</span> userMsgs = messages
+        .filter(m => m.role === <span class="st">"user"</span> && m.content)
+        .slice(-5);
+      <span class="kw">return</span> userMsgs.map(m => ({
+        content: <span class="ty">String</span>(m.content).slice(0, 2000),
+        write: <span class="kw">async</span> () =>
+          appendThought({
+            baseUrl, chainKey,
+            content:     <span class="ty">String</span>(m.content).slice(0, 2000),
+            thoughtType: <span class="st">"Observation"</span>,
+            tags:        [<span class="st">"openclaw"</span>, <span class="st">"pre-compress"</span>],
+          }),
+      }));
+    },
+
+    <span class="cm">// ── Runtime: the actual search engine ────────────────────────────────</span>
+    runtime: {
+      manager,
+      <span class="cm">// sync_turn: called after every completed turn</span>
+      onTurnComplete: <span class="kw">async</span> (userContent, assistantContent) => {
+        <span class="kw">await</span> appendThought({
+          baseUrl, chainKey,
+          content:     `User: ${userContent}\nAssistant: ${assistantContent}`.slice(0, 3000),
+          thoughtType: <span class="st">"Observation"</span>,
+          tags:        [<span class="st">"openclaw"</span>, <span class="st">"turn"</span>],
+        });
+      },
+    },
+
+    <span class="cm">// ── Public artifacts: list memories in gateway dashboard ──────────────</span>
+    publicArtifacts: {
+      listArtifacts: <span class="kw">async</span> () => [{
+        id:    <span class="st">"mentisdb-chain"</span>,
+        label: `MentisDB chain: ${chainKey}`,
+        kind:  <span class="st">"memory-index"</span>,
+      }],
+    },
+  });
+}
+</code></pre>
+
+<p>
+  Activate via config:
+</p>
+
+<pre><code>memory:
+  provider: memory-mentisdb
+  env:
+    MENTISDB_URL:   <span class="st">"http://localhost:9471"</span>
+    MENTISDB_CHAIN: <span class="st">"openclaw"</span>
+</code></pre>
+
+<hr>
+
+<h2 id="comparison">Comparing the Two: Hermes vs OpenClaw vs Our Proposed Standard</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Feature</th>
+      <th>Hermes MemoryProvider</th>
+      <th>OpenClaw MemoryPlugin</th>
+      <th>Proposed Standard</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Language</strong></td>
+      <td>Python</td>
+      <td>TypeScript</td>
+      <td>Language-agnostic spec</td>
+    </tr>
+    <tr>
+      <td><strong>Pattern</strong></td>
+      <td>ABC inheritance</td>
+      <td>Capability registration</td>
+      <td>Either (composable preferred)</td>
+    </tr>
+    <tr>
+      <td><strong>Recall / persist</strong></td>
+      <td class="yes">✓ prefetch + sync_turn</td>
+      <td class="yes">✓ search + onTurnComplete</td>
+      <td class="yes">✓ required</td>
+    </tr>
+    <tr>
+      <td><strong>Prompt injection</strong></td>
+      <td class="yes">✓ system_prompt_block()</td>
+      <td class="yes">✓ promptBuilder()</td>
+      <td class="yes">✓ required</td>
+    </tr>
+    <tr>
+      <td><strong>Tool exposure to model</strong></td>
+      <td class="yes">✓ get_tool_schemas()</td>
+      <td class="yes">✓ via memory_search / memory_get built-ins</td>
+      <td class="yes">✓ required</td>
+    </tr>
+    <tr>
+      <td><strong>Async prefetch / caching</strong></td>
+      <td class="yes">✓ queue_prefetch()</td>
+      <td class="yes">✓ warmSession() + async sync</td>
+      <td class="yes">✓ required</td>
+    </tr>
+    <tr>
+      <td><strong>Pre-compression hook</strong></td>
+      <td class="yes">✓ on_pre_compress()</td>
+      <td class="yes">✓ flushPlanResolver()</td>
+      <td class="yes">✓ required</td>
+    </tr>
+    <tr>
+      <td><strong>Built-in write bridging</strong></td>
+      <td class="yes">✓ on_memory_write()</td>
+      <td class="partial">~ guardian-protected MEMORY.md append</td>
+      <td class="yes">✓ recommended</td>
+    </tr>
+    <tr>
+      <td><strong>Delegation observability</strong></td>
+      <td class="yes">✓ on_delegation()</td>
+      <td class="no">— not exposed</td>
+      <td class="yes">✓ recommended</td>
+    </tr>
+    <tr>
+      <td><strong>Session boundary hook</strong></td>
+      <td class="yes">✓ on_session_end()</td>
+      <td class="partial">~ implicit via close()</td>
+      <td class="yes">✓ required</td>
+    </tr>
+    <tr>
+      <td><strong>Public artifact listing</strong></td>
+      <td class="no">— not in Hermes</td>
+      <td class="yes">✓ publicArtifacts</td>
+      <td class="partial">~ nice to have</td>
+    </tr>
+    <tr>
+      <td><strong>Multi-tenant scoping</strong></td>
+      <td class="yes">✓ user_id, agent_identity in initialize()</td>
+      <td class="yes">✓ sessionKey in search() / warmSession()</td>
+      <td class="yes">✓ required</td>
+    </tr>
+    <tr>
+      <td><strong>MCP as first class</strong></td>
+      <td class="partial">~ one integration path among several</td>
+      <td class="yes">✓ primary tool registration mechanism</td>
+      <td class="yes">✓ required</td>
+    </tr>
+    <tr>
+      <td><strong>Failure isolation</strong></td>
+      <td class="yes">✓ catches &amp; logs, agent continues</td>
+      <td class="yes">✓ same pattern</td>
+      <td class="yes">✓ required</td>
+    </tr>
+    <tr>
+      <td><strong>Config / setup wizard</strong></td>
+      <td class="yes">✓ get_config_schema()</td>
+      <td class="partial">~ via plugin.json + env keys</td>
+      <td class="yes">✓ recommended</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>
+  Both frameworks cover the core protocol. OpenClaw adds <code>publicArtifacts</code>
+  (no Hermes equivalent) and makes MCP a first-class transport. Hermes adds
+  <code>on_delegation()</code> (no OpenClaw equivalent) and a richer setup wizard
+  abstraction. Neither is strictly a superset of the other.
+</p>
+
+<hr>
+
+<h2 id="reassessment">Reassessing the Protocol Proposal</h2>
+
+<p>
+  In the Hermes post we proposed six design principles for an
+  <em>agent-memory-protocol</em> standard. OpenClaw is an independent implementation
+  built by a different team — it's an honest test of whether those principles hold.
+</p>
+
+<h3>What the proposal got right</h3>
+
+<p>
+  <strong>Frozen snapshot injection.</strong> ✓ Both frameworks freeze the memory snapshot
+  into the system prompt at session start. OpenClaw's <code>MEMORY.md</code> is loaded
+  once; Hermes' <code>MEMORY.md</code> is loaded once. Mid-session writes go to disk,
+  not the active prompt. This isn't a coincidence — it's the only approach that preserves
+  the LLM's prefix cache. Any standard must mandate it.
+</p>
+
+<p>
+  <strong>Pre-compression extraction.</strong> ✓ Both frameworks hook before context is
+  compressed. Hermes calls <code>on_pre_compress()</code>. OpenClaw calls
+  <code>flushPlanResolver()</code>. The mechanism differs — Hermes is imperative (extract
+  now), OpenClaw is declarative (return a plan, system executes it) — but the intent is
+  identical. Any standard must define this hook.
+</p>
+
+<p>
+  <strong>Async prefetch at turn boundary.</strong> ✓ Both frameworks warm the cache for
+  the next turn while the current one is processing. Hermes uses Python threads;
+  OpenClaw uses async warmSession calls. Same pattern, different runtime.
+</p>
+
+<p>
+  <strong>Failure isolation.</strong> ✓ Both frameworks catch exceptions in memory
+  provider calls and continue. This is non-negotiable for production agents.
+</p>
+
+<h3>Where the proposal needs revision</h3>
+
+<p>
+  <strong>ABC inheritance vs. capability registration.</strong>
+  The Hermes post assumed that a standard would look like an abstract base class — a
+  single interface you subclass. OpenClaw proves otherwise. Its capability registration
+  pattern is equally expressive and arguably more composable: you register only the
+  callbacks you implement, and each can be replaced independently without touching the
+  others. A language-agnostic standard should define the
+  <em>protocol</em> (which events fire, in what order, with what arguments) rather
+  than mandating an implementation pattern. ABC or capability registration are both
+  conforming implementations.
+</p>
+
+<p>
+  <strong>MCP must be part of the standard, not optional.</strong>
+  The Hermes post treated MCP as one integration path. OpenClaw treats it as the
+  <em>primary</em> tool registration mechanism. Given that MCP is rapidly becoming the
+  universal tool protocol — backed by Anthropic, adopted by GitHub Copilot, Cursor,
+  Claude Desktop, and now OpenClaw — any memory protocol that doesn't specify how
+  MCP interacts with memory tools will be incomplete within twelve months.
+  The standard should define: how a memory backend exposes tools via MCP, and how
+  an agent framework routes those MCP tools through the memory lifecycle hooks.
+</p>
+
+<p>
+  <strong>Delegation observability is real, but niche.</strong>
+  Hermes' <code>on_delegation()</code> hook — called when a subagent completes — has
+  no OpenClaw equivalent. OpenClaw runs in a gateway context where multi-agent
+  delegation isn't the primary model. This suggests <code>on_delegation()</code> should
+  be <em>optional</em> in the standard, not required. It matters for orchestration
+  frameworks; it's irrelevant for single-user gateways.
+</p>
+
+<p>
+  <strong>"One provider" is a Hermes constraint, not a universal principle.</strong>
+  Hermes enforces one external provider at a time. OpenClaw does the same implicitly
+  (via the single <code>capability</code> slot). But this is an implementation choice
+  that both frameworks made for practical reasons, not a protocol requirement. A
+  standard should not mandate single-provider — some use cases legitimately need
+  two backends (e.g., local fast recall + remote long-term storage with different
+  latency profiles).
+</p>
+
+<h3>The revised protocol requirements</h3>
+
+<p>
+  Based on both implementations, here is what a conforming memory protocol must define:
+</p>
+
+<ol>
+  <li><strong>Availability check</strong> — synchronous, no network calls, called at startup</li>
+  <li><strong>Session initialization</strong> — receives session_id, platform, user scoping context</li>
+  <li><strong>System prompt block</strong> — static guidance for the model, injected once at session start</li>
+  <li><strong>Tool schemas</strong> — OpenAI-compatible schemas for model-callable memory tools</li>
+  <li><strong>Tool dispatch</strong> — handle model-initiated calls to registered tools</li>
+  <li><strong>Async prefetch</strong> — warm cache for next turn while current turn processes</li>
+  <li><strong>Turn sync</strong> — persist completed (user, assistant) turn to backend</li>
+  <li><strong>Pre-compression extraction</strong> — hook fires before messages are discarded; either imperative or declarative plan</li>
+  <li><strong>Session boundary</strong> — called at session end with full message history</li>
+  <li><strong>MCP interop</strong> — memory tools must be exposable via MCP; the framework must route MCP tool calls through the memory lifecycle</li>
+  <li><strong>Failure isolation</strong> — all provider calls must be caught; errors logged but agent continues</li>
+</ol>
+
+<p>
+  Optional (implement for richer integrations):
+</p>
+
+<ul>
+  <li>Built-in write bridging (observe core memory writes)</li>
+  <li>Delegation observability (for multi-agent orchestration)</li>
+  <li>Public artifact listing (for dashboard / UI surface)</li>
+  <li>Config schema (for setup wizard integration)</li>
+</ul>
+
+<p>
+  These eleven required points and four optional extensions are where both Hermes and
+  OpenClaw converge — independently, built by different teams, in different languages,
+  for different deployment models. That convergence is the evidence that they belong in
+  a standard.
+</p>
+
+<h2>Next steps</h2>
+
+<p>
+  The native TypeScript backend in Part 3 is a working starting point.
+  We plan to publish it as a proper <code>@mentisdb/openclaw-plugin</code> npm package
+  and submit it as a pull request to the OpenClaw plugin registry alongside the
+  Python <code>MemoryProvider</code> plugin for Hermes.
+</p>
+
+<p>
+  For the protocol itself: we'll open a GitHub discussion to collect feedback from both
+  the Hermes and OpenClaw communities before drafting a formal spec.
+  If you're building an agent framework and want to participate:
+  <a href="https://github.com/CloudLLM-ai/mentisdb/discussions">join the discussion</a>.
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>
