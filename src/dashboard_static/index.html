@@ -2187,8 +2187,11 @@
                 <tr class="clickable" data-tidx="${i}">
                   <td class="mono" style="color:#8b949e;font-size:0.81rem">${esc(String(t.index ?? i+1))}</td>
                   <td>${typeBadge(t.thought_type)}${entityTypeBadge(t.entity_type)}</td>
+                  <td style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9d1d9">
+                    ${esc((t.content||'').slice(0,120))}${(t.content||'').length>120?'…':''}
+                  </td>
                   <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.timestamp||t.created_at))}</td>
-                  <td style="white-space:nowrap"><button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);padding:2px 6px;font-size:0.75rem" title="Branch from this thought" onclick="event.stopPropagation();window._openBranchChain('${esc(chainKey||'')}', '${esc(t.id||t.thought_id||'')}')">⑂</button></td>
+                  <td style="white-space:nowrap"><button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);padding:2px 6px;font-size:0.75rem" title="Branch from this thought" onclick="event.stopPropagation();window._openBranchChain('${esc(chainKey||'')}', '${esc(t.id||t.thought_id||'')}'}">⑂</button></td>
                 </tr>
               `).join('')}
             </tbody>
