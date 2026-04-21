@@ -1906,51 +1906,75 @@
     document.getElementById('al-add-btn').addEventListener('click', () => openAddAgentModal());
     const el = document.getElementById('al-body');
     spinner(el);
-    api('/dashboard/api/agents')
-      .then(data => {
-        const keys = Object.keys(data || {});
-        if (!keys.length) { el.innerHTML = '<div class="empty-state">No agents found.</div>'; return; }
-        el.innerHTML = keys.map(ck => {
-          const chainEntry = data[ck] || {};
-          const agents = agentsFromChainEntry(chainEntry);
-          const totalAgents = Number.isFinite(chainEntry.total_agents) ? chainEntry.total_agents : agents.length;
-          const totalThoughts = Number.isFinite(chainEntry.total_thoughts)
-            ? chainEntry.total_thoughts
-            : agents.reduce((sum, agent) => sum + Number(agent.thought_count || 0), 0);
+
+    // 1. Load chain list first (fast, just reads registry)
+    api('/dashboard/api/chains')
+      .then(chains => {
+        if (!chains.length) { el.innerHTML = '<div class="empty-state">No chains found.</div>'; return; }
+
+        // Render skeleton with spinners per chain
+        el.innerHTML = chains.map(c => {
+          const ck = c.chain_key || '';
           return `
             <div class="section-label" id="${agentListAnchorId(ck)}"><a href="${agentListHash(ck)}" class="mono" style="color:inherit;text-decoration:none">Chain: ${esc(ck)}</a></div>
-            <div style="display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px">
-              <span class="badge badge-blue">Total Agents: ${esc(String(totalAgents))}</span>
-              <span class="badge badge-purple">Total Thoughts: ${esc(String(totalThoughts))}</span>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px" id="al-badges-${esc(ck)}">
+              <span class="badge badge-blue">Total Agents: —</span>
+              <span class="badge badge-purple">Total Thoughts: —</span>
             </div>
             <div class="card" style="margin-bottom:20px">
               <div class="table-wrap"><table>
                 <thead><tr><th>Agent ID</th><th>Display Name</th><th>Owner</th><th>Thoughts</th><th>Status</th><th></th></tr></thead>
-                <tbody>
-                  ${!agents.length
-                    ? '<tr><td colspan="6" class="empty-state">No agents in this chain.</td></tr>'
-                    : agents.filter(a => a != null).map(a => `
-                      <tr>
-                        <td class="mono" style="font-size:0.83rem"><a href="#agents/${encodeURIComponent(ck)}/${encodeURIComponent(a.agent_id)}" style="color:#58a6ff;text-decoration:none">${esc(a.agent_id)}</a></td>
-                        <td>${esc(a.display_name || '—')}</td>
-                        <td>${esc(a.owner || '—')}</td>
-                        <td>${esc(String(a.thought_count ?? '—'))}</td>
-                        <td>${statusBadge(a.status)}</td>
-                        <td><a class="btn btn-secondary btn-sm" href="#agents/${encodeURIComponent(ck)}/${encodeURIComponent(a.agent_id)}">View</a></td>
-                      </tr>
-                    `).join('')
-                  }
+                <tbody id="al-tbody-${esc(ck)}">
+                  <tr><td colspan="6"><div class="spinner-wrap"><div class="spinner"></div></div></td></tr>
                 </tbody>
               </table></div>
             </div>
           `;
         }).join('');
+
         if (targetChainKey) {
           const target = document.getElementById(agentListAnchorId(targetChainKey));
-          if (target) {
-            target.scrollIntoView({ behavior: 'auto', block: 'start' });
-          }
+          if (target) target.scrollIntoView({ behavior: 'auto', block: 'start' });
         }
+
+        // 2. Fire off parallel per-chain agent loads
+        chains.forEach(c => {
+          const ck = c.chain_key || '';
+          api(`/dashboard/api/agents/${encodeURIComponent(ck)}`)
+            .then(agents => {
+              const tbody = document.getElementById(`al-tbody-${esc(ck)}`);
+              const badges = document.getElementById(`al-badges-${esc(ck)}`);
+              if (!tbody) return;
+
+              const totalThoughts = agents.reduce((sum, a) => sum + Number(a.thought_count || 0), 0);
+              if (badges) {
+                badges.innerHTML = `
+                  <span class="badge badge-blue">Total Agents: ${esc(String(agents.length))}</span>
+                  <span class="badge badge-purple">Total Thoughts: ${esc(String(totalThoughts))}</span>
+                `;
+              }
+
+              if (!agents.length) {
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No agents in this chain.</td></tr>';
+                return;
+              }
+
+              tbody.innerHTML = agents.filter(a => a != null).map(a => `
+                <tr>
+                  <td class="mono" style="font-size:0.83rem"><a href="#agents/${encodeURIComponent(ck)}/${encodeURIComponent(a.agent_id)}" style="color:#58a6ff;text-decoration:none">${esc(a.agent_id)}</a></td>
+                  <td>${esc(a.display_name || '—')}</td>
+                  <td>${esc(a.agent_owner || a.owner || '—')}</td>
+                  <td>${esc(String(a.thought_count ?? '—'))}</td>
+                  <td>${statusBadge(a.status)}</td>
+                  <td><a class="btn btn-secondary btn-sm" href="#agents/${encodeURIComponent(ck)}/${encodeURIComponent(a.agent_id)}">View</a></td>
+                </tr>
+              `).join('');
+            })
+            .catch(err => {
+              const tbody = document.getElementById(`al-tbody-${esc(ck)}`);
+              if (tbody) tbody.innerHTML = `<tr><td colspan="6" class="empty-state" style="color:#f85149">${esc(err.message)}</td></tr>`;
+            });
+        });
       })
       .catch(err => errBox(el, err.message));
   }
