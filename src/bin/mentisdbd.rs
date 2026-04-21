@@ -23,7 +23,7 @@
 //! - `MENTISDB_UPDATE_CHECK` (default `true`; set `0`/`false`/`no`/`off` to disable background GitHub release checks)
 //! - `MENTISDB_UPDATE_REPO` (default `CloudLLM-ai/mentisdb`)
 //! - `MENTISDB_STARTUP_SOUND` (default `true`; set `0`/`false`/`no`/`off` to silence)
-//! - `MENTISDB_THOUGHT_SOUNDS` (default `false`; set `1`/`true`/`yes`/`on` to enable per-thought sounds)
+//! - `MENTISDB_THOUGHT_SOUNDS` (default `false`; set `1`/`true`/`yes`/`on` to enable per-thought and per-read sounds)
 //! - `RUST_LOG`
 
 use env_logger::Env;
@@ -170,6 +170,64 @@ impl Iterator for SquareWave {
 
 #[cfg(feature = "startup-sound")]
 impl rodio::Source for SquareWave {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> std::num::NonZero<u16> {
+        std::num::NonZero::new(1).unwrap()
+    }
+    fn sample_rate(&self) -> std::num::NonZero<u32> {
+        std::num::NonZero::new(self.sample_rate).unwrap()
+    }
+    fn total_duration(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_millis(
+            self.num_samples as u64 * 1_000 / self.sample_rate as u64,
+        ))
+    }
+}
+
+/// A sine-wave tone source for `rodio`.
+///
+/// Produces a mono pure sine wave at `freq` Hz.  Amplitude is low (±0.2)
+/// so the high-frequency read pings stay pleasant.
+#[cfg(feature = "startup-sound")]
+struct SineWave {
+    freq: f32,
+    sample_rate: u32,
+    num_samples: usize,
+    elapsed: usize,
+}
+
+#[cfg(feature = "startup-sound")]
+impl SineWave {
+    fn new(freq: f32, duration_ms: u64) -> Self {
+        const SR: u32 = 44_100;
+        let num_samples = (SR as f64 * duration_ms as f64 / 1_000.0) as usize;
+        Self {
+            freq,
+            sample_rate: SR,
+            num_samples,
+            elapsed: 0,
+        }
+    }
+}
+
+#[cfg(feature = "startup-sound")]
+impl Iterator for SineWave {
+    type Item = f32;
+    fn next(&mut self) -> Option<f32> {
+        if self.elapsed >= self.num_samples {
+            return None;
+        }
+        let t = self.elapsed as f32 / self.sample_rate as f32;
+        let sample = (self.freq * t * 2.0 * std::f32::consts::PI).sin() * 0.2;
+        self.elapsed += 1;
+        Some(sample)
+    }
+}
+
+#[cfg(feature = "startup-sound")]
+impl rodio::Source for SineWave {
     fn current_span_len(&self) -> Option<usize> {
         None
     }
@@ -342,6 +400,84 @@ pub fn play_thought_sound(tt: ThoughtType) {
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
     }
     play_notes(notes);
+}
+
+// ── Per-read-operation sounds ─────────────────────────────────────────────────
+
+/// Returns the note sequence `(freq_hz, duration_ms)` for a given read operation.
+///
+/// All read sounds use **sine waves** in the **2 500–4 500 Hz** range — two to
+/// three octaves above the square-wave write sounds — so the distinction is
+/// immediate and instinctive:
+///
+/// | Timbre | Frequency range | Feel |
+/// |--------|----------------|------|
+/// | **Write** (square) | 250–1 000 Hz | heavy, stamping, committing |
+/// | **Read** (sine) | 2 500–4 500 Hz | light, scanning, querying |
+///
+/// Every sequence totals ≤ 150 ms.
+#[cfg(feature = "startup-sound")]
+fn read_sound_sequence(operation: &str) -> &'static [(f32, u64)] {
+    match operation {
+        // ── Search family ────────────────────────────────────────────────────
+        "search" => &[(3200.0, 70), (3600.0, 80)],           // rising scan
+        "lexical_search" => &[(3000.0, 60), (3400.0, 70)],   // word lookup
+        "ranked_search" => &[(3400.0, 60), (4000.0, 80)],    // ranking jump
+        "federated_search" => &[(3000.0, 50), (3500.0, 50), (4000.0, 70)], // multi-source
+        "context_bundles" => &[(2800.0, 60), (3200.0, 60), (3600.0, 70)], // bundling ascent
+
+        // ── Agent registry ───────────────────────────────────────────────────
+        "list_chains" => &[(4000.0, 60)],         // single bright ping
+        "list_agents" => &[(3800.0, 60)],         // bright ping
+        "get_agent" => &[(4200.0, 60)],           // specific retrieval
+        "list_agent_registry" => &[(3900.0, 60)],
+        "list_entity_types" => &[(3700.0, 60)],
+
+        // ── Thought traversal ────────────────────────────────────────────────
+        "recent_context" => &[(3500.0, 70), (3000.0, 50)], // context dip
+        "memory_markdown" => &[(3300.0, 70), (3700.0, 70)], // export tone
+        "get_thought" => &[(4100.0, 60)],          // sharp fetch
+        "get_genesis_thought" => &[(4300.0, 60)],  // origin ping
+        "traverse_thoughts" => &[(3100.0, 60), (3400.0, 60), (3700.0, 70)], // walking through
+        "head" => &[(4000.0, 60)],                // tip ping
+
+        // ── Skills ───────────────────────────────────────────────────────────
+        "skill_md" => &[(3400.0, 60)],
+        "list_skills" => &[(3200.0, 60)],
+        "skill_manifest" => &[(3000.0, 60)],
+        "search_skill" => &[(3500.0, 70), (3800.0, 70)],
+        "read_skill" => &[(3600.0, 70), (4000.0, 70)],
+        "skill_versions" => &[(3800.0, 60), (3400.0, 50)], // version bounce
+
+        // ── Webhooks & misc ──────────────────────────────────────────────────
+        "list_webhooks" => &[(2900.0, 60)],       // lowest read, listener
+
+        // ── Fallback ─────────────────────────────────────────────────────────
+        _ => &[(3600.0, 60)],                     // generic read ping
+    }
+}
+
+/// Plays a sequence of sine-wave notes.
+#[cfg(feature = "startup-sound")]
+fn play_read_notes(notes: &[(f32, u64)]) {
+    if let Ok(mut device_sink) = rodio::DeviceSinkBuilder::open_default_sink() {
+        device_sink.log_on_drop(false);
+        let sink = rodio::Player::connect_new(device_sink.mixer());
+        for &(freq, ms) in notes {
+            sink.append(SineWave::new(freq, ms));
+        }
+        sink.sleep_until_end();
+    }
+}
+
+/// Plays the sound associated with a read operation.
+///
+/// Enabled only when the `startup-sound` feature is compiled in **and**
+/// `MENTISDB_THOUGHT_SOUNDS` is set to a truthy value.
+#[cfg(feature = "startup-sound")]
+pub fn play_read_sound(operation: &str) {
+    let notes = read_sound_sequence(operation);
+    play_read_notes(notes);
 }
 
 fn env_var_truthy(name: &str, default: bool) -> bool {
@@ -1454,7 +1590,8 @@ async fn run_startup_sequence(
         if thought_sounds_enabled {
             config.service = config
                 .service
-                .with_on_thought_appended(Arc::new(play_thought_sound));
+                .with_on_thought_appended(Arc::new(play_thought_sound))
+                .with_on_read_logged(Arc::new(|op: &str| play_read_sound(op)));
         }
     }
 
@@ -1901,7 +2038,7 @@ Important environment variables:
 
   MENTISDB_STARTUP_SOUND
   MENTISDB_THOUGHT_SOUNDS
-    Startup and per-thought audio controls
+    Startup, per-thought, and per-read audio controls
 
 Examples:
   MENTISDB_DIR=~/.cloudllm/mentisdb mentisdbd

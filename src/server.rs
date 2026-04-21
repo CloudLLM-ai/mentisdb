@@ -239,6 +239,15 @@ pub struct MentisDbServiceConfig {
     /// [`with_on_thought_appended`](Self::with_on_thought_appended). Defaults
     /// to `None` (no callback).
     pub on_thought_appended: Option<Arc<dyn Fn(ThoughtType) + Send + Sync>>,
+    /// Optional callback fired after every logged read operation.
+    ///
+    /// The callback receives the operation name (e.g. `"search"`, `"list_chains"`)
+    /// and is invoked inside a `tokio::task::spawn_blocking` task, making it
+    /// safe for blocking I/O such as audio playback.
+    ///
+    /// Used by `mentisdbd` to emit audio feedback on read access. Defaults to
+    /// `None`.
+    pub on_read_logged: Option<Arc<dyn Fn(&str) + Send + Sync>>,
     /// Optional Jaccard similarity threshold for automatic deduplication on
     /// append. When set, each new thought's content is compared against recent
     /// thoughts and a `Supersedes` relation is auto-added if similarity exceeds
@@ -261,6 +270,10 @@ impl std::fmt::Debug for MentisDbServiceConfig {
             .field(
                 "on_thought_appended",
                 &self.on_thought_appended.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "on_read_logged",
+                &self.on_read_logged.as_ref().map(|_| "<callback>"),
             )
             .field("dedup_threshold", &self.dedup_threshold)
             .field("dedup_scan_window", &self.dedup_scan_window)
@@ -309,6 +322,7 @@ impl MentisDbServiceConfig {
             log_file: None,
             auto_flush: true,
             on_thought_appended: None,
+            on_read_logged: None,
             dedup_threshold: None,
             dedup_scan_window: 64,
         }
@@ -437,6 +451,37 @@ impl MentisDbServiceConfig {
     /// ```
     pub fn with_on_thought_appended(mut self, cb: Arc<dyn Fn(ThoughtType) + Send + Sync>) -> Self {
         self.on_thought_appended = Some(cb);
+        self
+    }
+
+    /// Register a callback that fires after every logged read operation.
+    ///
+    /// The callback receives the operation name (e.g. `"search"`, `"list_chains"`)
+    /// and is invoked inside a `tokio::task::spawn_blocking` task, making it
+    /// safe for blocking I/O such as audio playback.
+    ///
+    /// This is the extension point used by `mentisdbd` to emit audio feedback
+    /// on read access commands.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use std::{path::PathBuf, sync::Arc};
+    /// use mentisdb::StorageAdapterKind;
+    /// use mentisdb::server::MentisDbServiceConfig;
+    ///
+    /// let config = MentisDbServiceConfig::new(
+    ///     PathBuf::from("/tmp/mentisdb"),
+    ///     "my-chain",
+    ///     StorageAdapterKind::Binary,
+    /// )
+    /// .with_on_read_logged(Arc::new(|operation: &str| {
+    ///     eprintln!("🔍 read: {operation}");
+    /// }));
+    /// assert!(config.on_read_logged.is_some());
+    /// ```
+    pub fn with_on_read_logged(mut self, cb: Arc<dyn Fn(&str) + Send + Sync>) -> Self {
+        self.on_read_logged = Some(cb);
         self
     }
 
@@ -4024,6 +4069,14 @@ impl MentisDbService {
 
         self.interaction_log
             .write(&format_interaction_log_entry(&entry), self.config.verbose);
+
+        if entry.access == "read" {
+            if let Some(ref cb) = self.config.on_read_logged {
+                let cb = cb.clone();
+                let op = entry.operation;
+                tokio::task::spawn_blocking(move || cb(op));
+            }
+        }
     }
 
     async fn resolve_registered_skill_agent(
