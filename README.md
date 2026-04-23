@@ -335,8 +335,9 @@ Once startup completes, it prints:
   Play the 4-note "men-tis-D-B" startup jingle. Default: `true`. Set `0`, `false`, `no`,
   or `off` to silence.
 - `MENTISDB_THOUGHT_SOUNDS`
-  Play a unique short sound for each thought type on append. Default: `false`. Set `1`,
-  `true`, `yes`, or `on` to enable.
+  Play unique short sounds for thought types on append (square-wave, 250–1,000 Hz) and
+  for read operations (sine-wave, 2,500–4,500 Hz). Default: `false`. Set `1`, `true`,
+  `yes`, or `on` to enable.
 - `MENTISDB_DEDUP_THRESHOLD`
   Jaccard similarity threshold for automatic deduplication on append (0.0–1.0). When
   unset, auto-dedup is disabled. When set, a new thought whose content is sufficiently

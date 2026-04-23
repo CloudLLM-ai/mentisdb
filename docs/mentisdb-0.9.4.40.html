@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.9.4.40 — 99% Faster Ranked Search, Dashboard Instant Load, Read Sounds</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 23, 2026</div>
+
+<h1>MentisDB 0.9.4.40 — 99% Faster Ranked Search, Dashboard Instant Load, Read Sounds</h1>
+
+<p>
+  0.9.4.40 is a performance and polish release. Ranked search queries that used to
+  rebuild the entire BM25 index on every call now run in under 250 µs. The dashboard
+  Agents page renders instantly even with dozens of chains. And the daemon now gives
+  you audio feedback on every read operation, so you can tell whether MentisDB is
+  scanning or committing just by listening.
+</p>
+
+<div class="highlight">
+  <p>
+    <strong>Ranked search is 99.3% faster.</strong> On a 5,000-thought chain,
+    <code>query_ranked_lexical_content</code> drops from ~35 ms to ~237 µs.
+    <code>query_ranked_filtered_lexical</code> drops from ~35 ms to ~23 µs.
+    The index is built once at chain open time and updated incrementally on every
+    <code>append_thought</code> — no more O(n) rebuild inside the query hot path.
+  </p>
+</div>
+
+<h2>Incremental LexicalIndex</h2>
+
+<p>
+  The previous implementation called <code>LexicalIndex::build_with_registry</code>
+  inside every ranked search query. That meant tokenizing all thought content, tags,
+  concepts, agent IDs, and registry metadata into BM25 posting lists from scratch
+  — every single time you searched.
+</p>
+
+<p>
+  The new implementation stores a <code>LexicalIndex</code> as a first-class field
+  on <code>MentisDb</code>, builds it once when the chain is opened, and appends to
+  it incrementally via <code>lexical_index.observe()</code> on every thought commit.
+  Query latency becomes sub-millisecond and scales sub-linearly with chain size.
+</p>
+
+<table>
+  <tr><th>Benchmark</th><th>Before</th><th>After</th><th>Improvement</th></tr>
+  <tr><td><code>query_ranked_lexical_content</code></td><td>35.4 ms</td><td>237 µs</td><td>99.3%</td></tr>
+  <tr><td><code>query_ranked_filtered_lexical</code></td><td>35.2 ms</td><td>23 µs</td><td>99.9%</td></tr>
+  <tr><td><code>query_baseline_append_order</code></td><td>1.82 ms</td><td>1.83 ms</td><td>no change</td></tr>
+</table>
+
+<h2>Dashboard: Instant Agents Page</h2>
+
+<p>
+  The Agents page used to call <code>/dashboard/api/agents</code>, which synchronously
+  opened every chain and counted all thoughts. With many chains this was O(chains × thoughts)
+  and blocked the entire page.
+</p>
+
+<p>
+  The new implementation loads in two phases:
+</p>
+
+<ol>
+  <li><strong>Phase 1</strong> — calls <code>/dashboard/api/chains</code> (fast registry read)
+    to render a skeleton with spinners per chain.</li>
+  <li><strong>Phase 2</strong> — fires parallel requests to
+    <code>/dashboard/api/agents/:chain_key</code> for each chain, updating DOM
+    sections independently as responses arrive.</li>
+</ol>
+
+<p>
+  The page skeleton appears instantly. Slow chains don't block fast ones.
+  Every refresh hits live APIs, so counts are always accurate.
+</p>
+
+<h2>Read Sounds</h2>
+
+<p>
+  When <code>MENTISDB_THOUGHT_SOUNDS=true</code>, every logged read operation now
+  plays a unique short chime. The design makes the read/write distinction instinctive:
+</p>
+
+<table>
+  <tr><th>Operation</th><th>Waveform</th><th>Frequency</th><th>Feel</th></tr>
+  <tr><td>Write (append, bootstrap)</td><td>Square wave</td><td>250–1,000 Hz</td><td>Heavy, stamping, committing</td></tr>
+  <tr><td>Read (search, list, get)</td><td>Sine wave</td><td>2,500–4,500 Hz</td><td>Light, scanning, querying</td></tr>
+</table>
+
+<p>
+  Twenty-three read operations each have a unique 60–150 ms sequence, but they all
+  share the "read timbre." You can learn individual sounds over time, but you always
+  know instantly whether MentisDB is reading or writing.
+</p>
+
+<h2>Upgrade</h2>
+
+<pre><code>cargo install mentisdb --force</code></pre>
+
+<p>
+  No migration required. The incremental LexicalIndex is transparent — existing chains
+  are indexed once on open and then maintained automatically.
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://crates.io/crates/mentisdb">crates.io</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>

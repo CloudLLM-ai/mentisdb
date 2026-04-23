@@ -1,6 +1,12 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 → 0.9.3.39)
+## Shipped (0.8.2 → 0.9.4.40)
+
+### 0.9.4.40 — Search Speed-Up, Dashboard Perf, Read Sounds
+- **Incremental LexicalIndex** — ranked search queries no longer rebuild the full BM25 index on every call; index is built once at chain open and updated incrementally on append. `query_ranked_lexical_content` drops from ~35 ms to ~237 µs (99.3% faster) on a 5K-thought chain.
+- **Per-read-operation audio feedback** — when `MENTISDB_THOUGHT_SOUNDS=true`, every logged read command (search, list_chains, get_thought, etc.) plays a unique 60–150 ms sine-wave chime in the 2.5–4.5 kHz range. Write sounds remain square-wave at 250 Hz–1 kHz. You can tell read from write by ear.
+- **Dashboard Agents page loads instantly** — two-phase loading: skeleton renders from the fast chain registry, then parallel per-chain agent fetches populate each section independently. Eliminates the serial O(chains × thoughts) blocking that made the page unusable with many chains.
+- **Dashboard table alignment fix** — Recent Thoughts table on the agent detail page had misaligned columns (date under Content, Branch button under Date). Fixed.
 
 ### 0.9.3.39 — Ratatui TUI + Clipboard + Streamable HTTP Passthrough
 - ratatui 0.30.0 TUI — live three-pane dashboard (server info, endpoints & TLS, tabbed tables for Chains/Agents/Skills, scrollable event log) with Tab/Shift+Tab pane cycling, vim-style contextual hint bar, and RAII terminal cleanup
