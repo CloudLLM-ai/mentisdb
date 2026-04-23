@@ -3613,6 +3613,7 @@ pub struct MentisDb {
     agent_registry: AgentRegistry,
     entity_type_registry: EntityTypeRegistry,
     query_indexes: QueryIndexes,
+    lexical_index: crate::search::lexical::LexicalIndex,
     storage: Box<dyn StorageAdapter>,
     auto_flush: bool,
     persistence: Option<ChainPersistenceMetadata>,
@@ -3738,6 +3739,7 @@ impl MentisDb {
 
         let mut chain = Self {
             query_indexes: QueryIndexes::from_thoughts(&thoughts),
+            lexical_index: crate::search::lexical::LexicalIndex::empty(),
             thoughts,
             id_to_index,
             hash_to_index,
@@ -3809,6 +3811,12 @@ impl MentisDb {
                 persist_thoughts_to_path(path, kind, &chain.thoughts)?;
             }
         }
+
+        chain.lexical_index =
+            crate::search::lexical::LexicalIndex::build_with_registry(
+                &chain.thoughts,
+                &chain.agent_registry,
+            );
 
         Ok(chain)
     }
@@ -4213,6 +4221,11 @@ impl MentisDb {
         self.hash_to_index
             .insert(thought.hash.clone(), self.thoughts.len());
         self.query_indexes.observe(self.thoughts.len(), &thought);
+        self.lexical_index.observe(
+            self.thoughts.len(),
+            &thought,
+            &self.agent_registry,
+        );
         self.thoughts.push(thought.clone());
 
         // Update the invalidated-thoughts index if this thought contains
@@ -6352,11 +6365,7 @@ impl MentisDb {
             .iter()
             .map(|thought| thought.index as usize)
             .collect();
-        let index = crate::search::lexical::LexicalIndex::build_with_registry(
-            &self.thoughts,
-            self.agent_registry(),
-        );
-        index
+        self.lexical_index
             .search_in_positions(&crate::search::lexical::LexicalQuery::new(text), &positions)
             .into_iter()
             .map(|hit| (hit.doc_position, hit))

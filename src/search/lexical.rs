@@ -452,6 +452,112 @@ impl LexicalIndex {
         }
     }
 
+    /// Create an empty lexical index ready for incremental observation.
+    pub fn empty() -> Self {
+        Self {
+            metadata: LexicalIndexMetadata {
+                index_format_version: LEXICAL_INDEX_FORMAT_VERSION,
+                normalizer_version: LEXICAL_NORMALIZER_VERSION,
+                thought_count: 0,
+                head_hash: None,
+            },
+            document_stats: Vec::new(),
+            postings: HashMap::new(),
+            average_content_len: 0.0,
+            average_tag_len: 0.0,
+            average_concept_len: 0.0,
+            average_agent_id_len: 0.0,
+            average_agent_registry_len: 0.0,
+        }
+    }
+
+    /// Incrementally add one thought to the lexical index.
+    pub fn observe(&mut self, doc_position: usize, thought: &Thought, registry: &AgentRegistry) {
+        let content_tokens = normalize_lexical_tokens(&thought.content, false);
+        let tag_tokens = thought
+            .tags
+            .iter()
+            .flat_map(|tag| normalize_lexical_tokens(tag, false))
+            .collect::<Vec<_>>();
+        let concept_tokens = thought
+            .concepts
+            .iter()
+            .flat_map(|concept| normalize_lexical_tokens(concept, false))
+            .collect::<Vec<_>>();
+        let agent_id_tokens = normalize_lexical_tokens(&thought.agent_id, false);
+        let agent_registry_tokens = registry
+            .agents
+            .get(&thought.agent_id)
+            .map(agent_registry_tokens)
+            .unwrap_or_default();
+
+        let content_len = content_tokens.len() as u32;
+        let tag_len = tag_tokens.len() as u32;
+        let concept_len = concept_tokens.len() as u32;
+        let agent_id_len = agent_id_tokens.len() as u32;
+        let agent_registry_len = agent_registry_tokens.len() as u32;
+
+        let n = self.document_stats.len() as f32;
+        self.average_content_len =
+            (self.average_content_len * n + content_len as f32) / (n + 1.0);
+        self.average_tag_len = (self.average_tag_len * n + tag_len as f32) / (n + 1.0);
+        self.average_concept_len =
+            (self.average_concept_len * n + concept_len as f32) / (n + 1.0);
+        self.average_agent_id_len =
+            (self.average_agent_id_len * n + agent_id_len as f32) / (n + 1.0);
+        self.average_agent_registry_len =
+            (self.average_agent_registry_len * n + agent_registry_len as f32) / (n + 1.0);
+
+        self.document_stats.push(LexicalDocumentStats {
+            doc_position,
+            thought_index: thought.index,
+            thought_id: thought.id,
+            timestamp: thought.timestamp,
+            importance: thought.importance,
+            confidence: thought.confidence,
+            content_len,
+            tag_len,
+            concept_len,
+            agent_id_len,
+            agent_registry_len,
+            total_len: content_len + tag_len + concept_len + agent_id_len + agent_registry_len,
+        });
+
+        let mut frequencies = HashMap::<String, LexicalPosting>::new();
+        observe_tokens(
+            doc_position,
+            &content_tokens,
+            LexicalField::Content,
+            &mut frequencies,
+        );
+        observe_tokens(doc_position, &tag_tokens, LexicalField::Tags, &mut frequencies);
+        observe_tokens(
+            doc_position,
+            &concept_tokens,
+            LexicalField::Concepts,
+            &mut frequencies,
+        );
+        observe_tokens(
+            doc_position,
+            &agent_id_tokens,
+            LexicalField::AgentId,
+            &mut frequencies,
+        );
+        observe_tokens(
+            doc_position,
+            &agent_registry_tokens,
+            LexicalField::AgentRegistry,
+            &mut frequencies,
+        );
+
+        for (term, posting) in frequencies {
+            self.postings.entry(term).or_default().push(posting);
+        }
+
+        self.metadata.thought_count = self.document_stats.len();
+        self.metadata.head_hash = Some(thought.hash.clone());
+    }
+
     /// Return metadata describing this lexical index snapshot.
     pub fn metadata(&self) -> &LexicalIndexMetadata {
         &self.metadata

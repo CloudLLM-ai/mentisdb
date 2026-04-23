@@ -1,3 +1,28 @@
+0.9.4.40 UNRELEASED
+  - perf(search): incremental LexicalIndex — built once at chain open time and
+    updated incrementally on every append_thought; eliminates the O(n) full-index
+    rebuild that was happening inside every ranked search query; drops
+    query_ranked_lexical_content latency from ~35 ms to ~237 µs (99.3% faster)
+    and query_ranked_filtered_lexical from ~35 ms to ~23 µs (99.9% faster) on
+    a 5 000-thought chain; scales sub-linearly with chain size instead of linearly
+  - feat(daemon): per-read-operation sine-wave sounds — each logged read command
+    (search, list_chains, get_thought, etc.) plays a unique 60–150 ms chime when
+    MENTISDB_THOUGHT_SOUNDS=true; read sounds use pure sine waves in the 2 500–
+    4 500 Hz range, while write sounds remain square-wave at 250–1 000 Hz, making
+    the read/write distinction instinctive by pitch and timbre
+  - perf(dashboard): Agents page now loads in two phases — phase 1 renders an
+    instant skeleton from /dashboard/api/chains (fast registry read), then phase 2
+    fires parallel per-chain requests to /dashboard/api/agents/:chain_key; each
+    section populates independently as its response arrives, eliminating the
+    serial O(total chains × total thoughts) blocking that made the page unusable
+    with many chains
+  - fix(dashboard): align Recent Thoughts table columns on agent detail page —
+    the <tbody> was missing the Content <td>, causing the Date to slide under the
+    Content header and the Branch button to slide under the Date header; restored
+    the content preview cell and reordered cells to match headers
+  - docs: agent memory protocol post — Hermes MemoryProvider as community standard
+  - docs: OpenClaw × MentisDB integration post and protocol reassessment
+
 0.9.3.39 APR/18/2026
   - feat(tui): full ratatui-based terminal user interface replaces text startup output
     — three-pane layout: top (banner + config + endpoints), middle (tabbed tables for
