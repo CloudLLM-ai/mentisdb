@@ -26,6 +26,8 @@
 //! - `MENTISDB_THOUGHT_SOUNDS` (default `false`; set `1`/`true`/`yes`/`on` to enable per-thought and per-read sounds)
 //! - `RUST_LOG`
 
+#![cfg_attr(test, allow(dead_code))]
+
 use env_logger::Env;
 use mcp::ToolProtocol;
 use mentisdb::integrations::detect::{detect_integrations_with_environment, DetectionStatus};
