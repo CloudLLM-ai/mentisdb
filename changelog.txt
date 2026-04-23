@@ -1,4 +1,4 @@
-0.9.4.40 UNRELEASED
+0.9.4.40 APR/23/2026
   - perf(search): incremental LexicalIndex — built once at chain open time and
     updated incrementally on every append_thought; eliminates the O(n) full-index
     rebuild that was happening inside every ranked search query; drops
