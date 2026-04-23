@@ -498,11 +498,9 @@ impl LexicalIndex {
         let agent_registry_len = agent_registry_tokens.len() as u32;
 
         let n = self.document_stats.len() as f32;
-        self.average_content_len =
-            (self.average_content_len * n + content_len as f32) / (n + 1.0);
+        self.average_content_len = (self.average_content_len * n + content_len as f32) / (n + 1.0);
         self.average_tag_len = (self.average_tag_len * n + tag_len as f32) / (n + 1.0);
-        self.average_concept_len =
-            (self.average_concept_len * n + concept_len as f32) / (n + 1.0);
+        self.average_concept_len = (self.average_concept_len * n + concept_len as f32) / (n + 1.0);
         self.average_agent_id_len =
             (self.average_agent_id_len * n + agent_id_len as f32) / (n + 1.0);
         self.average_agent_registry_len =
@@ -530,7 +528,12 @@ impl LexicalIndex {
             LexicalField::Content,
             &mut frequencies,
         );
-        observe_tokens(doc_position, &tag_tokens, LexicalField::Tags, &mut frequencies);
+        observe_tokens(
+            doc_position,
+            &tag_tokens,
+            LexicalField::Tags,
+            &mut frequencies,
+        );
         observe_tokens(
             doc_position,
             &concept_tokens,

@@ -178,6 +178,7 @@ const SKILL_SAFETY_WARNINGS: [&str; 4] = [
 /// }
 /// ```
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 pub struct MentisDbServiceConfig {
     /// Root directory that contains all MentisDB chain storage files.
     ///

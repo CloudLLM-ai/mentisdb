@@ -420,26 +420,26 @@ pub fn play_thought_sound(tt: ThoughtType) {
 fn read_sound_sequence(operation: &str) -> &'static [(f32, u64)] {
     match operation {
         // ── Search family ────────────────────────────────────────────────────
-        "search" => &[(3200.0, 70), (3600.0, 80)],           // rising scan
-        "lexical_search" => &[(3000.0, 60), (3400.0, 70)],   // word lookup
-        "ranked_search" => &[(3400.0, 60), (4000.0, 80)],    // ranking jump
+        "search" => &[(3200.0, 70), (3600.0, 80)], // rising scan
+        "lexical_search" => &[(3000.0, 60), (3400.0, 70)], // word lookup
+        "ranked_search" => &[(3400.0, 60), (4000.0, 80)], // ranking jump
         "federated_search" => &[(3000.0, 50), (3500.0, 50), (4000.0, 70)], // multi-source
         "context_bundles" => &[(2800.0, 60), (3200.0, 60), (3600.0, 70)], // bundling ascent
 
         // ── Agent registry ───────────────────────────────────────────────────
-        "list_chains" => &[(4000.0, 60)],         // single bright ping
-        "list_agents" => &[(3800.0, 60)],         // bright ping
-        "get_agent" => &[(4200.0, 60)],           // specific retrieval
+        "list_chains" => &[(4000.0, 60)], // single bright ping
+        "list_agents" => &[(3800.0, 60)], // bright ping
+        "get_agent" => &[(4200.0, 60)],   // specific retrieval
         "list_agent_registry" => &[(3900.0, 60)],
         "list_entity_types" => &[(3700.0, 60)],
 
         // ── Thought traversal ────────────────────────────────────────────────
         "recent_context" => &[(3500.0, 70), (3000.0, 50)], // context dip
         "memory_markdown" => &[(3300.0, 70), (3700.0, 70)], // export tone
-        "get_thought" => &[(4100.0, 60)],          // sharp fetch
-        "get_genesis_thought" => &[(4300.0, 60)],  // origin ping
+        "get_thought" => &[(4100.0, 60)],                  // sharp fetch
+        "get_genesis_thought" => &[(4300.0, 60)],          // origin ping
         "traverse_thoughts" => &[(3100.0, 60), (3400.0, 60), (3700.0, 70)], // walking through
-        "head" => &[(4000.0, 60)],                // tip ping
+        "head" => &[(4000.0, 60)],                         // tip ping
 
         // ── Skills ───────────────────────────────────────────────────────────
         "skill_md" => &[(3400.0, 60)],
@@ -450,10 +450,10 @@ fn read_sound_sequence(operation: &str) -> &'static [(f32, u64)] {
         "skill_versions" => &[(3800.0, 60), (3400.0, 50)], // version bounce
 
         // ── Webhooks & misc ──────────────────────────────────────────────────
-        "list_webhooks" => &[(2900.0, 60)],       // lowest read, listener
+        "list_webhooks" => &[(2900.0, 60)], // lowest read, listener
 
         // ── Fallback ─────────────────────────────────────────────────────────
-        _ => &[(3600.0, 60)],                     // generic read ping
+        _ => &[(3600.0, 60)], // generic read ping
     }
 }
 

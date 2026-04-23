@@ -3812,11 +3812,10 @@ impl MentisDb {
             }
         }
 
-        chain.lexical_index =
-            crate::search::lexical::LexicalIndex::build_with_registry(
-                &chain.thoughts,
-                &chain.agent_registry,
-            );
+        chain.lexical_index = crate::search::lexical::LexicalIndex::build_with_registry(
+            &chain.thoughts,
+            &chain.agent_registry,
+        );
 
         Ok(chain)
     }
@@ -4221,11 +4220,8 @@ impl MentisDb {
         self.hash_to_index
             .insert(thought.hash.clone(), self.thoughts.len());
         self.query_indexes.observe(self.thoughts.len(), &thought);
-        self.lexical_index.observe(
-            self.thoughts.len(),
-            &thought,
-            &self.agent_registry,
-        );
+        self.lexical_index
+            .observe(self.thoughts.len(), &thought, &self.agent_registry);
         self.thoughts.push(thought.clone());
 
         // Update the invalidated-thoughts index if this thought contains
