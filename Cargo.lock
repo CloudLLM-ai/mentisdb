@@ -2611,7 +2611,7 @@ dependencies = [
 
 [[package]]
 name = "mentisdb"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "anyhow",
  "arboard",
