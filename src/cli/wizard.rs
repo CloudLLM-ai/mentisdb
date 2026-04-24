@@ -176,18 +176,25 @@ pub(super) fn run_wizard(
     Ok(())
 }
 
-/// Interactive checkbox selector using raw terminal mode.
+/// Interactive checkbox selector using ratatui.
 ///
-/// Displays each integration with a `[x]`/`[ ]` checkbox and a `>` cursor.
-/// The user navigates with ↑/↓ (or k/j), toggles with Space, selects all
-/// with `a`, deselects all with `n`, and confirms with Enter.
+/// Displays each integration with a `[x]`/`[ ]` checkbox, integration name,
+/// detection status, and config target path. Navigation with ↑/↓ (or k/j),
+/// Space to toggle, Enter to confirm, Esc to restore defaults and continue,
+/// a/all to select all, n/none to deselect all.
 fn interactive_checkbox_select(
     catalog: &SetupCatalogPlan,
     out: &mut dyn Write,
 ) -> io::Result<Vec<IntegrationKind>> {
-    use crossterm::{
-        event::{self, Event, KeyCode, KeyModifiers},
-        terminal,
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+    use crossterm::terminal;
+    use ratatui::{
+        backend::CrosstermBackend,
+        layout::{Constraint, Direction, Layout},
+        style::{Color, Modifier, Style},
+        text::{Line, Span},
+        widgets::{Block, Borders, List, ListState, Paragraph, Scrollbar, ScrollbarOrientation},
+        Terminal,
     };
 
     let integrations: Vec<&SetupPlan> = catalog.integrations.iter().collect();
@@ -195,59 +202,194 @@ fn interactive_checkbox_select(
         return Ok(Vec::new());
     }
 
+    let display_names: Vec<String> = integrations
+        .iter()
+        .map(|p| p.integration.display_name().to_string())
+        .collect();
+    let max_name = display_names.iter().map(|n| n.len()).max().unwrap_or(0);
+
     let mut checked: Vec<bool> = integrations
         .iter()
         .map(|p| p.detection_status == DetectionStatus::InstalledOrUsed)
         .collect();
-    let mut cursor_idx: usize = 0;
-    let n = integrations.len();
-
-    writeln!(out, "Select integrations to configure:")?;
-    writeln!(out)?;
-    out.flush()?;
+    let mut list_state = ListState::default().with_selected(Some(0));
 
     terminal::enable_raw_mode()?;
-    let _ = write!(out, "\x1b[?25l"); // hide cursor
+    crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
+
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
 
     let result: io::Result<Vec<IntegrationKind>> = (|| {
-        draw_checkbox_list(out, &integrations, &checked, cursor_idx)?;
-
         loop {
+            terminal.draw(|frame| {
+                let area = frame.area();
+                let narrow = area.width < 60;
+
+                let items: Vec<Line> = integrations
+                    .iter()
+                    .zip(display_names.iter())
+                    .zip(checked.iter())
+                    .map(|((plan, name), &is_checked)| {
+                        let checkbox = if is_checked { "[x]" } else { "[ ]" };
+                        let padded_name =
+                            format!("{:<width$}", name, width = max_name);
+                        let status = plan.detection_status.as_str();
+                        let status_style = match plan.detection_status {
+                            DetectionStatus::Configured => Style::new().fg(Color::Green),
+                            DetectionStatus::InstalledOrUsed => Style::new().fg(Color::Yellow),
+                            _ => Style::new().fg(Color::Gray),
+                        };
+                        if narrow {
+                            Line::from(vec![
+                                Span::raw(checkbox),
+                                Span::raw(" "),
+                                Span::raw(padded_name),
+                                Span::raw(" "),
+                                Span::styled(status.to_string(), status_style),
+                            ])
+                        } else {
+                            let path = plan.spec.config_target.path.display().to_string();
+                            let used = 3 // checkbox + space
+                                + padded_name.len()
+                                + 1 // space
+                                + status.len()
+                                + 1; // space before path
+                            let avail = (area.width as usize).saturating_sub(used);
+                            let truncated = if path.len() > avail && avail > 2 {
+                                format!("{}…", &path[..avail - 1])
+                            } else if avail <= 2 {
+                                String::new()
+                            } else {
+                                path
+                            };
+                            Line::from(vec![
+                                Span::raw(checkbox),
+                                Span::raw(" "),
+                                Span::raw(padded_name),
+                                Span::raw(" "),
+                                Span::styled(status.to_string(), status_style),
+                                Span::raw(" "),
+                                Span::styled(truncated, Style::new().fg(Color::DarkGray)),
+                            ])
+                        }
+                    })
+                    .collect();
+
+                let selected = list_state.selected().unwrap_or(0);
+                let count_selected = checked.iter().filter(|&&c| c).count();
+                let total = checked.len();
+                let items_len = items.len();
+
+                let header_text = format!(" {} of {} selected", count_selected, total);
+
+                let instructions = "↑/↓/k/j: move  Space: toggle  a: all  n: none  Enter: confirm  Esc: reset defaults";
+                let footer_lines = if area.width < 40 { 2u16 } else { 1u16 };
+                let extra_rows = 1u16; // header line
+
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1 + extra_rows), // header
+                        Constraint::Min(0),                 // list
+                        Constraint::Length(footer_lines),   // instructions
+                    ])
+                    .split(area);
+
+                // Header
+                let header_block = Block::default()
+                    .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+                    .title(" Select integrations to configure ");
+                frame.render_widget(header_block, chunks[0]);
+                let header_para = Paragraph::new(Line::from(Span::styled(
+                    header_text,
+                    Style::new().fg(Color::Cyan),
+                )));
+                frame.render_widget(header_para, chunks[0]);
+
+                // List
+                let list = List::new(items)
+                    .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
+                    .highlight_style(
+                        Style::new()
+                            .fg(Color::Black)
+                            .bg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .highlight_symbol("> ");
+                let mut list_state = ListState::default().with_selected(Some(selected));
+                frame.render_stateful_widget(list, chunks[1], &mut list_state);
+
+                // Scrollbar
+                let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(Some("▲"))
+                    .end_symbol(Some("▼"));
+                let mut scrollbar_state =
+                    ratatui::widgets::ScrollbarState::new(items_len)
+                        .position(selected);
+                let scrollbar_area = ratatui::layout::Rect {
+                    x: chunks[1].right().saturating_sub(1),
+                    y: chunks[1].y,
+                    width: 1,
+                    height: chunks[1].height,
+                };
+                frame.render_stateful_widget(
+                    scrollbar,
+                    scrollbar_area,
+                    &mut scrollbar_state,
+                );
+
+                // Footer instructions
+                let footer_block = Block::default()
+                    .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM);
+                frame.render_widget(footer_block, chunks[2]);
+                let footer_para = Paragraph::new(Line::from(Span::styled(
+                    instructions,
+                    Style::new().add_modifier(Modifier::DIM),
+                )));
+                frame.render_widget(footer_para, chunks[2]);
+            })?;
+
             if let Event::Key(key) = event::read()? {
-                match (key.code, key.modifiers) {
-                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                let selected = list_state.selected().unwrap_or(0);
+                let n = integrations.len();
+                match key.code {
+                    KeyCode::Char('c')
+                        if key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                    {
                         return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
                     }
-                    (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                        cursor_idx = cursor_idx.saturating_sub(1);
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        list_state.select(Some(selected.saturating_sub(1)));
                     }
-                    (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-                        if cursor_idx + 1 < n {
-                            cursor_idx += 1;
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if selected + 1 < n {
+                            list_state.select(Some(selected + 1));
                         }
                     }
-                    (KeyCode::Char(' '), _) => {
-                        checked[cursor_idx] = !checked[cursor_idx];
+                    KeyCode::Char(' ') => {
+                        checked[selected] = !checked[selected];
                     }
-                    (KeyCode::Char('a' | 'A'), _) => {
+                    KeyCode::Char('a' | 'A') => {
                         checked.iter_mut().for_each(|c| *c = true);
                     }
-                    (KeyCode::Char('n' | 'N'), _) => {
+                    KeyCode::Char('n' | 'N') => {
                         checked.iter_mut().for_each(|c| *c = false);
                     }
-                    (KeyCode::Enter, _) => break,
-                    (KeyCode::Esc, _) => {
-                        // Restore defaults on Escape
+                    KeyCode::Enter => break,
+                    KeyCode::Esc => {
                         for (i, p) in integrations.iter().enumerate() {
                             checked[i] = p.detection_status == DetectionStatus::InstalledOrUsed;
                         }
                         break;
                     }
-                    _ => continue,
+                    _ => {}
                 }
-                // Redraw: n integration rows + 1 hint row
-                write!(out, "\x1b[{}A", n + 1)?; // move cursor up
-                draw_checkbox_list(out, &integrations, &checked, cursor_idx)?;
             }
         }
 
@@ -259,50 +401,12 @@ fn interactive_checkbox_select(
             .collect())
     })();
 
-    let _ = write!(out, "\x1b[?25h"); // show cursor
-    let _ = terminal::disable_raw_mode();
+    terminal::disable_raw_mode()?;
+    crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
+    let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
     writeln!(out)?;
 
     result
-}
-
-/// Render the checkbox list in raw-mode style (`\r\n` line endings).
-fn draw_checkbox_list(
-    out: &mut dyn Write,
-    integrations: &[&SetupPlan],
-    checked: &[bool],
-    cursor_idx: usize,
-) -> io::Result<()> {
-    const BOLD: &str = "\x1b[1m";
-    const DIM: &str = "\x1b[2m";
-    const RESET: &str = "\x1b[0m";
-
-    for (i, (plan, &is_checked)) in integrations.iter().zip(checked.iter()).enumerate() {
-        let arrow = if i == cursor_idx { ">" } else { " " };
-        let checkbox = if is_checked { "[x]" } else { "[ ]" };
-        let (pre, post) = if i == cursor_idx {
-            (BOLD, RESET)
-        } else {
-            ("", "")
-        };
-        write!(
-            out,
-            "  {}{} {}  {:<20} {:<18} {}{}\r\n",
-            pre,
-            arrow,
-            checkbox,
-            plan.integration.display_name(),
-            plan.detection_status.as_str(),
-            plan.spec.config_target.path.display(),
-            post,
-        )?;
-    }
-    write!(
-        out,
-        "{}  ↑/↓: move   Space: toggle   a: all   n: none   Enter: confirm{}\r\n",
-        DIM, RESET
-    )?;
-    out.flush()
 }
 
 fn render_catalog_summary(catalog: &SetupCatalogPlan, out: &mut dyn Write) -> io::Result<()> {
