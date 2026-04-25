@@ -739,7 +739,6 @@ async fn rest_router_writes_interaction_logs_to_file_when_console_logging_is_dis
     append_thought_via_rest(router, "log-file", "astro", "Insight", None, "log me").await;
 
     let log_contents = std::fs::read_to_string(&log_path).unwrap();
-    assert!(log_contents.contains("[mentisdbd]"));
     assert!(log_contents.contains("op=append"));
     assert!(log_contents.contains("chain=log-file"));
 

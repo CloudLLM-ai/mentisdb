@@ -7081,8 +7081,9 @@ fn normalize_label(input: &str) -> String {
 
 fn format_interaction_log_entry(entry: &InteractionLogEntry) -> String {
     let metadata = &entry.metadata;
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S");
     let mut log_line = format!(
-        "[mentisdbd] access={} op={} chain={} result_count={} agent_ids={} agent_names={} thought_types={} roles={} tags={} concepts={}",
+        "[{now}] access={} op={} chain={} result_count={} agent_ids={} agent_names={} thought_types={} roles={} tags={} concepts={}",
         entry.access,
         entry.operation,
         entry.chain_key,
