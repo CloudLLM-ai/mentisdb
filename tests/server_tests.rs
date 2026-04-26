@@ -2241,7 +2241,7 @@ async fn live_mcp_server_supports_standard_initialize_and_tools_list() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(initialize_json["result"]["protocolVersion"], "2025-06-18");
+    assert_eq!(initialize_json["result"]["protocolVersion"], "2025-11-25");
     assert_eq!(initialize_json["result"]["serverInfo"]["name"], "mentisdb");
     assert_eq!(
         initialize_json["result"]["capabilities"]["resources"]["listChanged"],
