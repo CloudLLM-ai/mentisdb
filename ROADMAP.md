@@ -1,6 +1,11 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 → 0.9.4.40)
+## Shipped (0.8.2 → 0.9.5.41)
+
+### 0.9.5.41 — MCP 2025-11-25 + Hermes Native Integration
+- **MCP 2025-11-25 protocol support** — cloudllm_mcp upgraded to 0.2.1; initialize handshake negotiates "2025-11-25"; conditional Origin validation on streamable HTTP servers
+- **Hermes native MentisDB MemoryProvider** — Nous Research's Hermes agent ships a direct memory plugin against the MentisDB MCP tools; first third-party agent integration without an MCP bridge
+- **Dashboard fix** — "+Bootstrap New Chain" and "↺ Refresh" buttons restored after a one-shot guard bug dropped their click handlers during page transitions
 
 ### 0.9.4.40 — Search Speed-Up, Dashboard Perf, Read Sounds
 - **Incremental LexicalIndex** — ranked search queries no longer rebuild the full BM25 index on every call; index is built once at chain open and updated incrementally on append. `query_ranked_lexical_content` drops from ~35 ms to ~237 µs (99.3% faster) on a 5K-thought chain.
@@ -139,7 +144,8 @@ New unique advantages since April 10:
 
 New competitive threats:
 - **Hindsight** — independently verified SOTA benchmarks; managed service
-- **Cognee v1.0** — 15k stars, Hermes integration
+- **Cognee v1.0** — 15k stars, graph-based memory
+- **Hermes** — open-source agent by Nous Research; now natively integrated with MentisDB via MemoryProvider
 - **LangMem** — default in LangGraph Platform deployments; massive distribution advantage
 
 The next battle is ecosystem and distribution, not features.

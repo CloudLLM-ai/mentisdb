@@ -1,3 +1,25 @@
+0.9.5.41 APR/26/2026
+  - feat(mcp): upgrade cloudllm_mcp to 0.2.1 — MCP 2025-11-25 protocol support;
+    streamable HTTP servers now validate Origin headers for security on bound
+    addresses and transparently skip validation on unspecified (0.0.0.0/::/::1)
+    addresses for compatibility with tools that don't send Origin; protocol version
+    negotiated during initialize is now "2025-11-25"
+  - feat(ecosystem): Hermes agent by Nous Research ships a native MentisDB
+    MemoryProvider — Hermes can now connect directly to a running mentisdbd instance
+    for durable semantic memory without an intermediary MCP bridge; the Hermes team
+    implemented their own memory plugin against the MentisDB API for deeper
+    integration into the Hermes agent lifecycle
+  - fix(dashboard): restore "+Bootstrap New Chain" and "↺ Refresh" buttons on the
+    Chains page — a refactor in 8ce4ff2 moved the Bootstrap modal HTML to a static
+    section and introduced a one-shot `_chainBootstrapWired` guard, but accidentally
+    dropped the `cl-bootstrap-btn` and `cl-refresh-btn` click handlers; the buttons
+    rendered but did nothing after the first renderChainList() call because the guard
+    prevented re-attaching handlers when the header DOM was rebuilt
+  - fix(dashboard): header buttons (Refresh, Bootstrap) now re-attach their event
+    listeners on every `renderChainList()` call instead of only on the first call,
+    fixing a latent bug where navigating between pages (Chains → Agents → back to
+    Chains) silently broke those buttons after any page transition
+
 0.9.4.40 APR/23/2026
   - perf(search): incremental LexicalIndex — built once at chain open time and
     updated incrementally on every append_thought; eliminates the O(n) full-index

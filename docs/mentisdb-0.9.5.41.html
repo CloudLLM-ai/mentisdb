@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.9.5.41 — MCP 2025-11-25, Hermes Native Integration, Dashboard Fixes</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 26, 2026</div>
+
+<h1>MentisDB 0.9.5.41 — MCP 2025-11-25, Hermes Native Integration, Dashboard Fixes</h1>
+
+<p>
+  0.9.5.41 upgrades MentisDB's MCP protocol support to the latest specification
+  and marks the first third-party agent to ship a native MentisDB memory plugin.
+  Hermes, the open-source agent from Nous Research, now connects directly to
+  <code>mentisdbd</code> for durable semantic memory without needing an MCP bridge.
+</p>
+
+<div class="highlight">
+  <p>
+    <strong>Hermes now has a native MentisDB MemoryProvider.</strong> The Hermes team
+    implemented their own memory plugin against the MentisDB API for direct agent-level
+    integration — no intermediary MCP bridge, no extra process, just Hermes talking
+    directly to a running <code>mentisdbd</code> instance.
+  </p>
+</div>
+
+<h2>MCP 2025-11-25 Protocol Support</h2>
+
+<p>
+  The <code>cloudllm_mcp</code> dependency has been upgraded from 0.1.0 to 0.2.1,
+  bringing full support for the MCP 2025-11-25 protocol revision. The initialize
+  handshake now negotiates <code>"2025-11-25"</code> instead of <code>"2025-06-18"</code>.
+</p>
+
+<p>
+  Streamable HTTP servers now validate <code>Origin</code> headers for security on
+  bound addresses, and transparently skip origin validation on unspecified addresses
+  (<code>0.0.0.0</code>, <code>::</code>, <code>::1</code>) for compatibility with
+  tools and SDKs that don't send <code>Origin</code> headers during the MCP handshake.
+</p>
+
+<table>
+  <tr><th>Component</th><th>Before</th><th>After</th></tr>
+  <tr><td>MCP Protocol Version</td><td>2025-06-18</td><td>2025-11-25</td></tr>
+  <tr><td>cloudllm_mcp</td><td>0.1.0</td><td>0.2.1</td></tr>
+  <tr><td>Origin Validation</td><td>Always enforced</td><td>Conditional (bound vs unspecified addr)</td></tr>
+</table>
+
+<h2>Hermes Native Integration</h2>
+
+<p>
+  Nous Research's Hermes agent is an open-source AI agent framework designed for
+  research, reasoning, and autonomous task execution. The Hermes team built a native
+  <code>MemoryProvider</code> plugin that speaks the MentisDB protocol directly:
+</p>
+
+<ol>
+  <li>Hermes reads <code>initialize.instructions</code> from the MCP handshake</li>
+  <li>The instructions direct Hermes to load the MentisDB operating skill from
+    <code>resources/read(mentisdb://skill/core)</code></li>
+  <li>Hermes bootstraps a memory chain and begins writing durable Checkpoints,
+    Decisions, LessonLearned records, and Retrieval calls through the MentisDB
+    MCP tools — the same way any other MCP-capable client does</li>
+</ol>
+
+<p>
+  This is the first community-driven native MentisDB integration, validating the
+  vision of an open, agent-agnostic memory layer. Any agent framework can now follow
+  the same pattern: implement a memory plugin against the standard MCP tools MentisDB
+  exposes, and your agent gets durable semantic memory that survives context resets,
+  model swaps, and session boundaries.
+</p>
+
+<h2>Dashboard Fix</h2>
+
+<p>
+  The "+Bootstrap New Chain" and "↺ Refresh" buttons on the dashboard Chains page
+  stopped working after a refactor in the previous release. The root cause was a
+  one-shot <code>_chainBootstrapWired</code> guard that attached click handlers only
+  once, but <code>renderChainList()</code> recreates the button DOM elements on every
+  call. After any page navigation (Chains → Agents → back to Chains), the buttons
+  rendered but did nothing.
+</p>
+
+<p>
+  The fix re-attaches the header button listeners on every render call while keeping
+  the one-shot guard for the static modal elements that survive DOM replacement. This
+  is safe and follows the same pattern used by every other dynamic table in the
+  dashboard.
+</p>
+
+<h2>Upgrade</h2>
+
+<pre><code>cargo install mentisdb --force</code></pre>
+
+<p>
+  No migration required. Existing chains, skills, and agent registries are fully
+  compatible. The MCP protocol version bump is negotiated transparently during the
+  <code>initialize</code> handshake. If you use Hermes, make sure you're running the
+  latest Hermes release with the native MentisDB MemoryProvider.
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://crates.io/crates/mentisdb">crates.io</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>
