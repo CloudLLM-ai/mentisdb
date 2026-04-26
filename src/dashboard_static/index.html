@@ -1207,6 +1207,15 @@
       <div class="card"><div id="cl-body"></div></div>
     `;
 
+    // Re-attach every render: these buttons are recreated when the page header is rebuilt
+    document.getElementById('cl-refresh-btn').addEventListener('click', () => {
+      renderChainList();
+    });
+    document.getElementById('cl-bootstrap-btn').addEventListener('click', () => {
+      document.getElementById('cl-bootstrap-modal').style.display = '';
+      document.getElementById('cl-ck').focus();
+    });
+    // One-shot: modal elements are static HTML outside #app and survive DOM replacement
     if (!window._chainBootstrapWired) {
       window._chainBootstrapWired = true;
       document.getElementById('cl-bootstrap-cancel').addEventListener('click', () => {
