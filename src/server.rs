@@ -1913,6 +1913,7 @@ fn standard_and_legacy_mcp_router(service: Arc<MentisDbService>, addr: SocketAdd
 }
 
 fn standard_mcp_only_router(service: Arc<MentisDbService>, addr: SocketAddr) -> Router {
+    let skip_origin = addr.ip().is_unspecified();
     Router::new()
         .route("/health", get(health_handler))
         .merge(streamable_http_router(
@@ -1924,7 +1925,8 @@ fn standard_mcp_only_router(service: Arc<MentisDbService>, addr: SocketAddr) -> 
             },
             &StreamableHttpConfig::new(MENTISDB_PROTOCOL_NAME, env!("CARGO_PKG_VERSION"))
                 .with_server_title("MentisDB")
-                .with_instructions(MENTISDB_MCP_BOOTSTRAP_INSTRUCTIONS),
+                .with_instructions(MENTISDB_MCP_BOOTSTRAP_INSTRUCTIONS)
+                .with_skip_origin_validation(skip_origin),
             Arc::new(MentisDbMcpProtocol::new(service)),
         ))
 }
