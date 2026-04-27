@@ -80,9 +80,9 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use mcp::http::axum_router as shared_mcp_router;
 use mcp::{
-    streamable_http_router, HttpServerConfig, IpFilter, ResourceError, ResourceMetadata,
-    StreamableHttpConfig, ToolError, ToolMetadata, ToolParameter, ToolParameterType, ToolProtocol,
-    ToolResult,
+    streamable_http_router, streamable_http_router_with_sse, HttpServerConfig, IpFilter,
+    ResourceError, ResourceMetadata, SseBroadcaster, SseEventHandler, StreamableHttpConfig,
+    ToolError, ToolMetadata, ToolParameter, ToolParameterType, ToolProtocol, ToolResult,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -774,7 +774,7 @@ impl MentisDbServerConfig {
 /// );
 ///
 /// // Port 0 → OS picks a free port.
-/// let mut handle = start_mcp_server(SocketAddr::from(([127, 0, 0, 1], 0)), config).await?;
+/// let (mut handle, _broadcaster) = start_mcp_server(SocketAddr::from(([127, 0, 0, 1], 0)), config).await?;
 /// println!("MCP listening on {}", handle.local_addr());
 ///
 /// // … do work …
@@ -1138,7 +1138,7 @@ fn rename_legacy_registry_file_if_needed(chain_dir: &Path) -> io::Result<bool> {
 ///     "agent-memory",
 ///     StorageAdapterKind::Binary,
 /// );
-/// let server = start_mcp_server(SocketAddr::from(([127, 0, 0, 1], 0)), config).await?;
+/// let (server, _broadcaster) = start_mcp_server(SocketAddr::from(([127, 0, 0, 1], 0)), config).await?;
 /// println!("{}", server.local_addr());
 /// # Ok(())
 /// # }
@@ -1146,9 +1146,16 @@ fn rename_legacy_registry_file_if_needed(chain_dir: &Path) -> io::Result<bool> {
 pub async fn start_mcp_server(
     addr: SocketAddr,
     config: MentisDbServiceConfig,
-) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
+) -> Result<(ServerHandle, SseBroadcaster), Box<dyn Error + Send + Sync>> {
     let service = Arc::new(MentisDbService::new(config));
-    start_router(addr, standard_and_legacy_mcp_router(service, addr)).await
+    let (event_handler, broadcaster) = SseEventHandler::new(256);
+    let router = standard_and_legacy_mcp_router(
+        service,
+        addr,
+        Some(broadcaster.clone()),
+        Some(Arc::new(event_handler)),
+    );
+    start_router(addr, router).await.map(|h| (h, broadcaster))
 }
 
 /// Start a standalone MentisDb REST server.
@@ -1236,7 +1243,7 @@ pub async fn start_rest_server(
 ///     StorageAdapterKind::Binary,
 /// );
 ///
-/// let handle = start_https_mcp_server(
+/// let (handle, _broadcaster) = start_https_mcp_server(
 ///     SocketAddr::from(([127, 0, 0, 1], 9473)),
 ///     config,
 ///     PathBuf::from("/tmp/mentisdb/tls/cert.pem"),
@@ -1252,15 +1259,18 @@ pub async fn start_https_mcp_server(
     config: MentisDbServiceConfig,
     cert_path: PathBuf,
     key_path: PathBuf,
-) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
+) -> Result<(ServerHandle, SseBroadcaster), Box<dyn Error + Send + Sync>> {
     let service = Arc::new(MentisDbService::new(config));
-    start_tls_router(
+    let (event_handler, broadcaster) = SseEventHandler::new(256);
+    let router = standard_and_legacy_mcp_router(
+        service,
         addr,
-        standard_and_legacy_mcp_router(service, addr),
-        cert_path,
-        key_path,
-    )
-    .await
+        Some(broadcaster.clone()),
+        Some(Arc::new(event_handler)),
+    );
+    start_tls_router(addr, router, cert_path, key_path)
+        .await
+        .map(|h| (h, broadcaster))
 }
 
 /// Start a standalone MentisDB REST server over HTTPS/TLS.
@@ -1379,7 +1389,15 @@ pub async fn start_servers(
     // each service holds its own DashMap<chain_key, Arc<RwLock<MentisDb>>>.
     let service = Arc::new(MentisDbService::new(config.service.clone()));
 
-    let mcp = start_mcp_server_with_service(config.mcp_addr, service.clone()).await?;
+    let (event_handler, broadcaster) = SseEventHandler::new(256);
+
+    let mcp = start_mcp_server_with_service(
+        config.mcp_addr,
+        service.clone(),
+        Some(broadcaster.clone()),
+        Some(Arc::new(event_handler.clone())),
+    )
+    .await?;
     let rest = start_router(config.rest_addr, rest_router_with_service(service.clone())).await?;
 
     let https_mcp = if let Some(addr) = config.https_mcp_addr {
@@ -1389,6 +1407,8 @@ pub async fn start_servers(
                 service.clone(),
                 config.tls_cert_path.clone(),
                 config.tls_key_path.clone(),
+                Some(broadcaster.clone()),
+                Some(Arc::new(event_handler.clone())),
             )
             .await?,
         )
@@ -1451,8 +1471,10 @@ pub async fn start_servers(
 async fn start_mcp_server_with_service(
     addr: SocketAddr,
     service: Arc<MentisDbService>,
+    sse_broadcaster: Option<SseBroadcaster>,
+    event_handler: Option<Arc<dyn mcp::McpEventHandler>>,
 ) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
-    start_router(addr, standard_and_legacy_mcp_router(service, addr)).await
+    start_router(addr, standard_and_legacy_mcp_router(service, addr, sse_broadcaster, event_handler)).await
 }
 
 /// Start the HTTPS MCP server using an existing shared [`MentisDbService`] arc.
@@ -1461,10 +1483,12 @@ async fn start_https_mcp_server_with_service(
     service: Arc<MentisDbService>,
     cert_path: PathBuf,
     key_path: PathBuf,
+    sse_broadcaster: Option<SseBroadcaster>,
+    event_handler: Option<Arc<dyn mcp::McpEventHandler>>,
 ) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
     start_tls_router(
         addr,
-        standard_and_legacy_mcp_router(service, addr),
+        standard_and_legacy_mcp_router(service, addr, sse_broadcaster, event_handler),
         cert_path,
         key_path,
     )
@@ -1900,34 +1924,45 @@ impl MentisDbMcpProtocol {
     }
 }
 
-fn standard_and_legacy_mcp_router(service: Arc<MentisDbService>, addr: SocketAddr) -> Router {
-    standard_mcp_only_router(service.clone(), addr).merge(shared_mcp_router(
+fn standard_and_legacy_mcp_router(
+    service: Arc<MentisDbService>,
+    addr: SocketAddr,
+    sse_broadcaster: Option<SseBroadcaster>,
+    event_handler: Option<Arc<dyn mcp::McpEventHandler>>,
+) -> Router {
+    standard_mcp_only_router(service.clone(), addr, sse_broadcaster, event_handler.clone()).merge(shared_mcp_router(
         &HttpServerConfig {
             addr,
             bearer_token: None,
             ip_filter: IpFilter::new(),
-            event_handler: None,
+            event_handler,
         },
         Arc::new(MentisDbMcpProtocol::new(service)),
     ))
 }
 
-fn standard_mcp_only_router(service: Arc<MentisDbService>, addr: SocketAddr) -> Router {
+fn standard_mcp_only_router(
+    service: Arc<MentisDbService>,
+    addr: SocketAddr,
+    sse_broadcaster: Option<SseBroadcaster>,
+    event_handler: Option<Arc<dyn mcp::McpEventHandler>>,
+) -> Router {
     let skip_origin = addr.ip().is_unspecified();
     Router::new()
         .route("/health", get(health_handler))
-        .merge(streamable_http_router(
+        .merge(streamable_http_router_with_sse(
             &HttpServerConfig {
                 addr,
                 bearer_token: None,
                 ip_filter: IpFilter::new(),
-                event_handler: None,
+                event_handler,
             },
             &StreamableHttpConfig::new(MENTISDB_PROTOCOL_NAME, env!("CARGO_PKG_VERSION"))
                 .with_server_title("MentisDB")
                 .with_instructions(MENTISDB_MCP_BOOTSTRAP_INSTRUCTIONS)
                 .with_skip_origin_validation(skip_origin),
             Arc::new(MentisDbMcpProtocol::new(service)),
+            sse_broadcaster,
         ))
 }
 
