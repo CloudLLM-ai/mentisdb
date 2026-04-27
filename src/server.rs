@@ -3443,18 +3443,31 @@ impl MentisDbService {
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
         let last_n = request.last_n.unwrap_or(12);
-        let start = chain.thoughts().len().saturating_sub(last_n);
-        let tail = &chain.thoughts()[start..];
+        let thoughts: Vec<&crate::Thought> = if let Some(ref agent_id) = request.agent_id {
+            chain
+                .thoughts()
+                .iter()
+                .rev()
+                .filter(|t| t.agent_id == *agent_id)
+                .take(last_n)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect()
+        } else {
+            let start = chain.thoughts().len().saturating_sub(last_n);
+            chain.thoughts()[start..].iter().collect()
+        };
         self.log_interaction(InteractionLogEntry {
             access: "read",
             operation: "recent_context",
             chain_key,
-            metadata: InteractionMetadata::from_chain_thoughts(&chain, tail.iter()),
-            result_count: Some(tail.len()),
+            metadata: InteractionMetadata::from_chain_thoughts(&chain, thoughts.iter().copied()),
+            result_count: Some(thoughts.len()),
             note: Some(format!("last_n={last_n}")),
         });
         Ok(RecentContextResponse {
-            prompt: chain.to_catchup_prompt(last_n),
+            prompt: chain.to_catchup_prompt_with(&thoughts),
         })
     }
 
@@ -5136,6 +5149,7 @@ struct UpsertEntityTypeResponse {
 struct RecentContextRequest {
     chain_key: Option<String>,
     last_n: Option<usize>,
+    agent_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -6137,7 +6151,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
             "Render recent MentisDb context as a prompt snippet suitable for resuming work.",
         )
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
-        .with_parameter(ToolParameter::new("last_n", ToolParameterType::Integer).with_description("How many recent thoughts to include.")),
+        .with_parameter(ToolParameter::new("last_n", ToolParameterType::Integer).with_description("How many recent thoughts to include."))
+        .with_parameter(ToolParameter::new("agent_id", ToolParameterType::String).with_description("Optional agent id filter to scope context to one agent.")),
         ToolMetadata::new(
             "mentisdb_memory_markdown",
             "Export a MEMORY.md style Markdown summary from MentisDb.",

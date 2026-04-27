@@ -6854,13 +6854,18 @@ impl MentisDb {
     /// Render the last `n` thoughts as a lightweight catch-up prompt.
     pub fn to_catchup_prompt(&self, last_n: usize) -> String {
         let start = self.thoughts.len().saturating_sub(last_n);
-        let tail = &self.thoughts[start..];
-        if tail.is_empty() {
+        let tail: Vec<&Thought> = self.thoughts[start..].iter().collect();
+        self.to_catchup_prompt_with(&tail)
+    }
+
+    /// Render a catchup prompt from an explicit slice of thoughts.
+    pub fn to_catchup_prompt_with(&self, thoughts: &[&Thought]) -> String {
+        if thoughts.is_empty() {
             return String::new();
         }
 
         let mut prompt = String::from("=== RECENT CONTEXT ===\n\n");
-        for thought in tail {
+        for thought in thoughts {
             prompt.push_str(&format!(
                 "[#{}] {:?} / {:?} ({}) {}\n",
                 thought.index,
