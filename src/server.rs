@@ -80,9 +80,9 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use mcp::http::axum_router as shared_mcp_router;
 use mcp::{
-    streamable_http_router, streamable_http_router_with_sse, HttpServerConfig, IpFilter,
-    ResourceError, ResourceMetadata, SseBroadcaster, SseEventHandler, StreamableHttpConfig,
-    ToolError, ToolMetadata, ToolParameter, ToolParameterType, ToolProtocol, ToolResult,
+    streamable_http_router_with_sse, HttpServerConfig, IpFilter, ResourceError, ResourceMetadata,
+    SseBroadcaster, SseEventHandler, StreamableHttpConfig, ToolError, ToolMetadata, ToolParameter,
+    ToolParameterType, ToolProtocol, ToolResult,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1696,17 +1696,26 @@ pub fn mcp_router(config: MentisDbServiceConfig) -> Router {
 ///     );
 ///
 ///     // The standard MCP router exposes POST / for streamable-HTTP MCP.
+///     let bind_host = std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
+///     let (app, _broadcaster) = standard_mcp_router(config, bind_host);
 ///     let app = Router::new()
-///         .merge(standard_mcp_router(config))
+///         .merge(app)
 ///         .route("/status", get(|| async { "ok" }));
 ///
 ///     let listener = tokio::net::TcpListener::bind("127.0.0.1:9471").await.unwrap();
 ///     axum::serve(listener, app).await.unwrap();
 /// }
 /// ```
-pub fn standard_mcp_router(config: MentisDbServiceConfig) -> Router {
+pub fn standard_mcp_router(config: MentisDbServiceConfig, bind_host: IpAddr) -> (Router, SseBroadcaster) {
     let service = Arc::new(MentisDbService::new(config));
-    standard_mcp_only_router(service, SocketAddr::from(([127, 0, 0, 1], 0)))
+    let (event_handler, broadcaster) = SseEventHandler::new(256);
+    let router = standard_mcp_only_router(
+        service,
+        SocketAddr::new(bind_host, 0),
+        Some(broadcaster.clone()),
+        Some(Arc::new(event_handler)),
+    );
+    (router, broadcaster)
 }
 
 /// Build the REST router without binding a socket.

@@ -2195,11 +2195,11 @@ async fn rest_router_manages_agent_registry_records() {
 #[tokio::test]
 async fn live_mcp_server_supports_standard_initialize_and_tools_list() {
     let dir = unique_chain_dir();
-    let router = standard_mcp_router(MentisDbServiceConfig::new(
+    let (router, _broadcaster) = standard_mcp_router(MentisDbServiceConfig::new(
         dir.clone(),
         "server-test",
         StorageAdapterKind::Binary,
-    ));
+    ), std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     let client_addr = std::net::SocketAddr::from(([127, 0, 0, 1], 49000));
 
     let mut initialize_request = Request::builder()
