@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # ---- builder ----------------------------------------------------------------
-FROM rust:1.83-bookworm AS builder
+FROM rust:1.85-bookworm AS builder
 
 # System deps required to compile alsa-sys + reqwest TLS (openssl-sys).
 RUN apt-get update && apt-get install -y --no-install-recommends \
