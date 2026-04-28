@@ -1,3 +1,13 @@
+0.9.6.42 UNRELEASED
+  - feat(mcp): SSE support on MCP servers — start_mcp_server and start_https_mcp_server
+    now return (ServerHandle, SseBroadcaster) tuples; GET endpoint returns text/event-stream
+    with live MCP events, POST requests auto-broadcast JSON-RPC results/errors as SSE events;
+    cloudllm_mcp bumped to 0.3.0
+  - feat(server): bind_host parameter on standard_mcp_router — respects MENTISDB_BIND_HOST
+    env var (defaults to 127.0.0.1) for flexible network binding on multi-homed machines
+  - feat(mcp): add agent_id parameter to mentisdb_recent_context — allows filtering recent
+    context by specific agent identity instead of always using the chain's default agent
+
 0.9.5.41 APR/26/2026
   - feat(mcp): upgrade cloudllm_mcp to 0.2.1 — MCP 2025-11-25 protocol support;
     streamable HTTP servers now validate Origin headers for security on bound

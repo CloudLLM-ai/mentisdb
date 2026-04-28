@@ -6859,6 +6859,10 @@ impl MentisDb {
     }
 
     /// Render a catchup prompt from an explicit slice of thoughts.
+    ///
+    /// Thoughts should be in chronological order (ascending index). The output
+    /// format matches `to_catchup_prompt` but operates on a pre-filtered set,
+    /// e.g. thoughts scoped to a single agent via `recent_context`'s `agent_id` filter.
     pub fn to_catchup_prompt_with(&self, thoughts: &[&Thought]) -> String {
         if thoughts.is_empty() {
             return String::new();

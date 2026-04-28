@@ -2195,11 +2195,10 @@ async fn rest_router_manages_agent_registry_records() {
 #[tokio::test]
 async fn live_mcp_server_supports_standard_initialize_and_tools_list() {
     let dir = unique_chain_dir();
-    let (router, _broadcaster) = standard_mcp_router(MentisDbServiceConfig::new(
-        dir.clone(),
-        "server-test",
-        StorageAdapterKind::Binary,
-    ), std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    let (router, _broadcaster) = standard_mcp_router(
+        MentisDbServiceConfig::new(dir.clone(), "server-test", StorageAdapterKind::Binary),
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+    );
     let client_addr = std::net::SocketAddr::from(([127, 0, 0, 1], 49000));
 
     let mut initialize_request = Request::builder()
@@ -3541,5 +3540,146 @@ async fn start_servers_shares_state_across_mcp_and_rest() {
     );
 
     drop(handles);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn recent_context_with_agent_id_filter() {
+    let dir = unique_chain_dir();
+    let chain_key = "recent-agent-filter";
+    let router = rest_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+
+    // Append thoughts from two different agents
+    append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "agent-alpha",
+        "FactLearned",
+        None,
+        "Alpha fact one",
+    )
+    .await;
+    append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "agent-beta",
+        "FactLearned",
+        None,
+        "Beta fact one",
+    )
+    .await;
+    append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "agent-alpha",
+        "Insight",
+        None,
+        "Alpha insight two",
+    )
+    .await;
+    append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "agent-beta",
+        "Insight",
+        None,
+        "Beta insight two",
+    )
+    .await;
+    append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "agent-alpha",
+        "FactLearned",
+        None,
+        "Alpha fact three",
+    )
+    .await;
+
+    // Request recent context filtered to agent-alpha
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/recent-context")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": chain_key,
+                        "last_n": 10,
+                        "agent_id": "agent-alpha"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let prompt = body["prompt"].as_str().expect("prompt field");
+
+    // Should contain agent-alpha thoughts only
+    assert!(prompt.contains("Alpha fact one"), "alpha fact one present");
+    assert!(
+        prompt.contains("Alpha insight two"),
+        "alpha insight two present"
+    );
+    assert!(
+        prompt.contains("Alpha fact three"),
+        "alpha fact three present"
+    );
+    // Should NOT contain agent-beta thoughts
+    assert!(!prompt.contains("Beta fact one"), "beta fact one excluded");
+    assert!(
+        !prompt.contains("Beta insight two"),
+        "beta insight two excluded"
+    );
+
+    // Request without agent_id filter — should contain all thoughts
+    let response_all = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/recent-context")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": chain_key,
+                        "last_n": 10
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response_all.status(), StatusCode::OK);
+    let body_all: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response_all.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let prompt_all = body_all["prompt"].as_str().expect("prompt field");
+    assert!(
+        prompt_all.contains("Alpha fact one"),
+        "alpha present in unfiltered"
+    );
+    assert!(
+        prompt_all.contains("Beta fact one"),
+        "beta present in unfiltered"
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }

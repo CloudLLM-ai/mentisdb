@@ -1474,7 +1474,11 @@ async fn start_mcp_server_with_service(
     sse_broadcaster: Option<SseBroadcaster>,
     event_handler: Option<Arc<dyn mcp::McpEventHandler>>,
 ) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
-    start_router(addr, standard_and_legacy_mcp_router(service, addr, sse_broadcaster, event_handler)).await
+    start_router(
+        addr,
+        standard_and_legacy_mcp_router(service, addr, sse_broadcaster, event_handler),
+    )
+    .await
 }
 
 /// Start the HTTPS MCP server using an existing shared [`MentisDbService`] arc.
@@ -1706,7 +1710,18 @@ pub fn mcp_router(config: MentisDbServiceConfig) -> Router {
 ///     axum::serve(listener, app).await.unwrap();
 /// }
 /// ```
-pub fn standard_mcp_router(config: MentisDbServiceConfig, bind_host: IpAddr) -> (Router, SseBroadcaster) {
+///
+/// # Returns
+///
+/// A tuple of `(Router, SseBroadcaster)`:
+/// - `Router` — the Axum router with streamable-HTTP MCP (`POST /`) and health check (`GET /health`).
+/// - `SseBroadcaster` — a broadcast channel for server-sent events. Call `.subscribe()` to receive
+///   live MCP events (tool calls, results, errors) as SSE frames. Useful for real-time dashboards,
+///   logging, or downstream event processing.
+pub fn standard_mcp_router(
+    config: MentisDbServiceConfig,
+    bind_host: IpAddr,
+) -> (Router, SseBroadcaster) {
     let service = Arc::new(MentisDbService::new(config));
     let (event_handler, broadcaster) = SseEventHandler::new(256);
     let router = standard_mcp_only_router(
@@ -1939,7 +1954,13 @@ fn standard_and_legacy_mcp_router(
     sse_broadcaster: Option<SseBroadcaster>,
     event_handler: Option<Arc<dyn mcp::McpEventHandler>>,
 ) -> Router {
-    standard_mcp_only_router(service.clone(), addr, sse_broadcaster, event_handler.clone()).merge(shared_mcp_router(
+    standard_mcp_only_router(
+        service.clone(),
+        addr,
+        sse_broadcaster,
+        event_handler.clone(),
+    )
+    .merge(shared_mcp_router(
         &HttpServerConfig {
             addr,
             bearer_token: None,
@@ -3488,16 +3509,15 @@ impl MentisDbService {
         let chain = chain.read().await;
         let last_n = request.last_n.unwrap_or(12);
         let thoughts: Vec<&crate::Thought> = if let Some(ref agent_id) = request.agent_id {
-            chain
+            let mut filtered: Vec<&crate::Thought> = chain
                 .thoughts()
                 .iter()
                 .rev()
                 .filter(|t| t.agent_id == *agent_id)
                 .take(last_n)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect()
+                .collect();
+            filtered.reverse();
+            filtered
         } else {
             let start = chain.thoughts().len().saturating_sub(last_n);
             chain.thoughts()[start..].iter().collect()
