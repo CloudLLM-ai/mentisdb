@@ -367,10 +367,8 @@ fn interactive_checkbox_select(
                     KeyCode::Up | KeyCode::Char('k') => {
                         list_state.select(Some(selected.saturating_sub(1)));
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if selected + 1 < n {
-                            list_state.select(Some(selected + 1));
-                        }
+                    KeyCode::Down | KeyCode::Char('j') if selected + 1 < n => {
+                        list_state.select(Some(selected + 1));
                     }
                     KeyCode::Char(' ') => {
                         checked[selected] = !checked[selected];
