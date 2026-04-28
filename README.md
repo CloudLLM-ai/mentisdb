@@ -1240,6 +1240,8 @@ qwen mcp add --transport http mentisdb http://127.0.0.1:9471
 `mentisdbd` exposes both:
 
 - a standard streamable HTTP MCP endpoint at `POST /`
+- a Server-Sent Events (SSE) endpoint at `GET /` returning `text/event-stream` with
+  live MCP protocol events — every tool call result and error is broadcast in real time
 - the legacy CloudLLM-compatible MCP endpoints at `POST /tools/list` and
   `POST /tools/execute`
 

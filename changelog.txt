@@ -1,4 +1,4 @@
-0.9.6.42 UNRELEASED
+0.9.6.42 APR/28/2026
   - feat(mcp): SSE support on MCP servers — start_mcp_server and start_https_mcp_server
     now return (ServerHandle, SseBroadcaster) tuples; GET endpoint returns text/event-stream
     with live MCP events, POST requests auto-broadcast JSON-RPC results/errors as SSE events;

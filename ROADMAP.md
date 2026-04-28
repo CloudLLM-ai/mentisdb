@@ -1,6 +1,11 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 → 0.9.5.41)
+## Shipped (0.8.2 → 0.9.6.42)
+
+### 0.9.6.42 — SSE, bind_host, Agent-Scoped Context
+- **SSE on MCP servers** — `start_mcp_server` and `start_https_mcp_server` return `(ServerHandle, SseBroadcaster)`; GET endpoint serves `text/event-stream` with live MCP events; POST auto-broadcasts JSON-RPC results/errors as SSE events; cloudllm_mcp 0.3.0
+- **bind_host parameter** — `standard_mcp_router` accepts `bind_host` (via `MENTISDB_BIND_HOST` env var, default `127.0.0.1`); binds to `0.0.0.0` for Docker containers and multi-homed machines
+- **Agent-scoped recent context** — `mentisdb_recent_context` accepts optional `agent_id` parameter; when set, returns the last N thoughts from that agent, not the chain's last N overall
 
 ### 0.9.5.41 — MCP 2025-11-25 + Hermes Native Integration
 - **MCP 2025-11-25 protocol support** — cloudllm_mcp upgraded to 0.2.1; initialize handshake negotiates "2025-11-25"; conditional Origin validation on streamable HTTP servers
