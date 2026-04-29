@@ -1,12 +1,12 @@
 //! Backup and restore for MentisDB instances.
 //!
-//! MentisDB backups are zip archives (`.mbak`) containing a manifest and all
+//! MentisDB backups are zip archives (`.mentis`) containing a manifest and all
 //! storage files needed to replicate a running instance on another machine or after
 //! a failure. This module handles both creating backups and restoring from them.
 //!
 //! # Backup Format
 //!
-//! A backup is a ZIP archive named `mentisdb-YYYY-MM-DD-HH-MM-SS.mbak` containing:
+//! A backup is a ZIP archive named `mentisdb-YYYY-MM-DD-HH-MM-SS.mentis` containing:
 //!
 //! - `mentisdb.manifest.json` — metadata and file清单
 //! - All chain data files (`.tcbin`, `.agents.json`, `.entity-types.json`, vector sidecars)
@@ -29,7 +29,7 @@
 //!
 //! let options = BackupOptions {
 //!     source_dir: PathBuf::from("/home/user/.cloudllm/mentisdb"),
-//!     output_path: Some(PathBuf::from("/backups/mentisdb-2026-04-14.mbak")),
+//!     output_path: Some(PathBuf::from("/backups/mentisdb-2026-04-14.mentis")),
 //!     flush_before_backup: true,
 //!     include_tls: true,
 //! };
@@ -46,7 +46,7 @@
 //! use std::path::PathBuf;
 //!
 //! restore_backup(
-//!     PathBuf::from("/backups/mentisdb-2026-04-14.mbak"),
+//!     PathBuf::from("/backups/mentisdb-2026-04-14.mentis"),
 //!     PathBuf::from("/home/user/.cloudllm/mentisdb"),
 //!     RestoreOptions { overwrite: false },
 //! ).unwrap();
@@ -67,7 +67,7 @@ pub const BACKUP_FORMAT_VERSION: u32 = 1;
 /// Filename prefix for backup archives.
 pub const BACKUP_FILENAME_PREFIX: &str = "mentisdb-";
 /// Filename extension for backup archives.
-pub const BACKUP_EXTENSION: &str = "mbak";
+pub const BACKUP_EXTENSION: &str = "mentis";
 /// Name of the manifest file inside a backup archive.
 pub const MANIFEST_FILENAME: &str = "mentisdb.manifest.json";
 
@@ -179,7 +179,7 @@ impl BackupManifest {
 pub struct BackupOptions {
     /// Root `MENTISDB_DIR` to back up.
     pub source_dir: PathBuf,
-    /// Path where the `.mbak` archive should be written. If `None`, a
+    /// Path where the `.mentis` archive should be written. If `None`, a
     /// timestamped filename is generated in the current working directory.
     pub output_path: Option<PathBuf>,
     /// Flush all open storage adapters before reading files. This ensures the
@@ -213,7 +213,7 @@ pub struct RestoreOptions {
 ///
 /// let filename = generate_backup_filename();
 /// assert!(filename.starts_with("mentisdb-"));
-/// assert!(filename.ends_with(".mbak"));
+/// assert!(filename.ends_with(".mentis"));
 /// ```
 pub fn generate_backup_filename() -> String {
     let now = chrono::Utc::now();
@@ -283,7 +283,7 @@ fn sha256_file(path: &Path) -> io::Result<(String, u64)> {
     Ok((format!("{:x}", hasher.finalize()), size))
 }
 
-/// Create a backup of the given `MENTISDB_DIR` and write an `.mbak` archive.
+/// Create a backup of the given `MENTISDB_DIR` and write an `.mentis` archive.
 ///
 /// This function flushes all chains, walks the source directory, computes SHA-256
 /// hashes for each file, and writes a timestamped ZIP archive. The archive is
@@ -316,7 +316,7 @@ fn sha256_file(path: &Path) -> io::Result<(String, u64)> {
 ///
 /// let opts = BackupOptions {
 ///     source_dir: PathBuf::from("/home/alice/.cloudllm/mentisdb"),
-///     output_path: Some(PathBuf::from("/tmp/my-backup.mbak")),
+///     output_path: Some(PathBuf::from("/tmp/my-backup.mentis")),
 ///     flush_before_backup: false,
 ///     include_tls: true,
 /// };
@@ -486,7 +486,7 @@ pub fn create_backup(options: &BackupOptions) -> io::Result<BackupManifest> {
 
 /// Restore a backup archive into a target `MENTISDB_DIR`.
 ///
-/// This function extracts all files from an `.mbak` archive into the target
+/// This function extracts all files from an `.mentis` archive into the target
 /// directory. By default, existing files are preserved (idempotent restore).
 ///
 /// # Verification
@@ -509,7 +509,7 @@ pub fn create_backup(options: &BackupOptions) -> io::Result<BackupManifest> {
 /// use std::path::PathBuf;
 ///
 /// let result = restore_backup(
-///     PathBuf::from("/backups/mentisdb-2026-04-14.mbak"),
+///     PathBuf::from("/backups/mentisdb-2026-04-14.mentis"),
 ///     PathBuf::from("/home/bob/.cloudllm/mentisdb"),
 ///     RestoreOptions { overwrite: false },
 /// );
@@ -587,7 +587,7 @@ pub fn restore_backup(
 /// use mentisdb::backup::list_backup_contents;
 /// use std::path::PathBuf;
 ///
-/// let files = list_backup_contents(PathBuf::from("/backups/mentisdb-2026-04-14.mbak")).unwrap();
+/// let files = list_backup_contents(PathBuf::from("/backups/mentisdb-2026-04-14.mentis")).unwrap();
 ///
 /// for f in files {
 ///     println!("{} ({} bytes)", f.relative_path, f.uncompressed_bytes);
@@ -619,7 +619,7 @@ mod tests {
     fn test_backup_and_restore_roundtrip() {
         let tmp = TempDir::new().unwrap();
         let source = create_minimal_source(&tmp);
-        let backup_path = tmp.path().join("test.mbak");
+        let backup_path = tmp.path().join("test.mentis");
 
         let manifest = create_backup(&BackupOptions {
             source_dir: source.clone(),
@@ -654,7 +654,7 @@ mod tests {
     fn test_list_backup_contents() {
         let tmp = TempDir::new().unwrap();
         let source = create_minimal_source(&tmp);
-        let backup_path = tmp.path().join("test.mbak");
+        let backup_path = tmp.path().join("test.mentis");
 
         create_backup(&BackupOptions {
             source_dir: source,
@@ -672,7 +672,7 @@ mod tests {
     fn test_checksum_verification_detects_corruption() {
         let tmp = TempDir::new().unwrap();
         let source = create_minimal_source(&tmp);
-        let backup_path = tmp.path().join("test.mbak");
+        let backup_path = tmp.path().join("test.mentis");
 
         let manifest = create_backup(&BackupOptions {
             source_dir: source,
@@ -761,14 +761,14 @@ mod tests {
         assert!(name.starts_with(BACKUP_FILENAME_PREFIX));
         let expected_suffix = format!(".{}", BACKUP_EXTENSION);
         assert!(name.ends_with(&expected_suffix));
-        // Should be timestamp-like: mentisdb-YYYY-MM-DD-HH-MM-SS.mbak
+        // Should be timestamp-like: mentisdb-YYYY-MM-DD-HH-MM-SS.mentis
         assert!(name.len() >= 30);
     }
 
     #[test]
     fn test_restore_rejects_path_traversal_entries() {
         let tmp = TempDir::new().unwrap();
-        let backup_path = tmp.path().join("unsafe.mbak");
+        let backup_path = tmp.path().join("unsafe.mentis");
 
         let payload = b"malicious";
         let sha256 = format!("{:x}", Sha256::digest(payload));
