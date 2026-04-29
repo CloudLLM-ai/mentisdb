@@ -100,6 +100,40 @@ fn raise_fd_limit() {
 #[cfg(not(unix))]
 fn raise_fd_limit() {}
 
+/// Clean up the TUI terminal state (alternate screen, raw mode) and
+/// replace the current process with `args[0]` followed by `args[1..]`.
+/// On Unix this uses `exec()` so there is no window with no TUI.
+/// On non-Unix we spawn and exit.
+fn restart_process(args: &[String]) -> ! {
+    // Restore the terminal so the new process starts clean.
+    let _ = crossterm::terminal::disable_raw_mode();
+    let _ = crossterm::execute!(
+        io::stdout(),
+        crossterm::terminal::LeaveAlternateScreen,
+        crossterm::cursor::Show
+    );
+
+    let exe = std::env::current_exe().expect("failed to get current exe");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(&exe)
+            .args(args)
+            .exec();
+        // exec only returns on failure.
+        eprintln!("Failed to restart: {err}");
+        std::process::exit(1);
+    }
+    #[cfg(not(unix))]
+    {
+        let status = std::process::Command::new(&exe)
+            .args(args)
+            .status()
+            .expect("failed to spawn restart");
+        std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
 const YELLOW: &str = "\x1b[33m";
 const RESET: &str = "\x1b[0m";
 #[cfg(feature = "startup-sound")]
@@ -1461,14 +1495,7 @@ async fn run_startup_sequence(
                                         &relaunch_cmd,
                                     );
                                     if restart {
-                                        let mut cmd = std::process::Command::new(
-                                            std::env::current_exe()?,
-                                        );
-                                        for arg in original_args {
-                                            cmd.arg(arg);
-                                        }
-                                        cmd.spawn()?;
-                                        std::process::exit(0);
+                                        restart_process(original_args);
                                     }
                                     return Err("Update installed, please restart.".into());
                                 }
@@ -1731,14 +1758,7 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
                                     &relaunch_cmd,
                                 );
                                 if restart {
-                                    let mut cmd = std::process::Command::new(
-                                        std::env::current_exe()?,
-                                    );
-                                    for arg in &original_args {
-                                        cmd.arg(arg);
-                                    }
-                                    cmd.spawn()?;
-                                    std::process::exit(0);
+                                    restart_process(&original_args);
                                 }
                                 return Err("Update installed, please restart.".into());
                             }
