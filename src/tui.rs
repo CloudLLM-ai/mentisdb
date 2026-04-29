@@ -178,6 +178,12 @@ pub struct TuiState {
     /// Sender to reply to the update dialog. The background startup
     /// thread waits on the paired receiver for the user's choice.
     pub update_response_tx: Option<mpsc::Sender<bool>>,
+    /// When Some, the update succeeded and we show a success overlay with
+    /// restart instructions.  Contains the exact relaunch command.
+    pub update_success: Option<String>,
+    /// Sender for the update-success dialog.  `true` = restart now,
+    /// `false` = quit without restarting.
+    pub update_success_tx: Option<mpsc::Sender<bool>>,
     /// Temporary toast shown after a clipboard copy. Cleared after 2 s.
     pub toast: Option<(String, Instant)>,
     /// Active drag-select gesture: start and current screen positions.
@@ -222,6 +228,8 @@ impl TuiState {
             should_quit: false,
             update_dialog: None,
             update_response_tx: None,
+            update_success: None,
+            update_success_tx: None,
             toast: None,
             drag_start: None,
             drag_current: None,
@@ -396,6 +404,22 @@ impl TuiState {
         }
         rx.recv().ok()
     }
+
+    /// Show a success overlay after a successful in-TUI update. Blocks
+    /// until the user responds (r to restart, q/Esc to quit) or the TUI
+    /// is quit. Returns `true` if the user chose to restart.
+    pub fn request_update_success(
+        state: &Arc<std::sync::Mutex<TuiState>>,
+        relaunch_cmd: &str,
+    ) -> bool {
+        let (tx, rx) = mpsc::channel();
+        {
+            let mut s = state.lock().unwrap();
+            s.update_success = Some(relaunch_cmd.to_string());
+            s.update_success_tx = Some(tx);
+        }
+        rx.recv().unwrap_or(false)
+    }
 }
 
 /// Cycles the selected row in a [`TableState`], wrapping around at both ends.
@@ -483,6 +507,8 @@ fn ui(frame: &mut Frame, state: &mut TuiState) {
     // Overlays: at most one modal is shown at a time.
     if let Some(ref err) = state.startup_error {
         render_crash_overlay(frame, err, full_area);
+    } else if state.update_success.is_some() {
+        render_update_success_overlay(frame, state, full_area);
     } else if state.update_dialog.is_some() {
         render_update_dialog_overlay(frame, state, full_area);
     } else if !state.started {
@@ -1111,7 +1137,67 @@ fn render_update_dialog_overlay(frame: &mut Frame, state: &TuiState, full_area: 
         .border_style(Style::default().fg(Color::Yellow))
         .title(" Update ");
 
-    let box_width = 60u16.min(full_area.width);
+    let box_width = 80u16.min(full_area.width);
+    let box_height = (lines.len() + 4) as u16;
+    let popup = Rect {
+        x: full_area.width.saturating_sub(box_width) / 2,
+        y: full_area.height.saturating_sub(box_height) / 2,
+        width: box_width,
+        height: box_height,
+    };
+
+    let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+
+    let inner_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(lines.len() as u16)])
+        .split(inner);
+
+    let paragraph = Paragraph::new(lines)
+        .alignment(ratatui::layout::Alignment::Center)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner_layout[0]);
+}
+
+fn render_update_success_overlay(frame: &mut Frame, state: &TuiState, full_area: Rect) {
+    let Some(ref relaunch_cmd) = state.update_success else {
+        return;
+    };
+
+    let lines = vec![
+        Line::from(Span::styled(
+            "Update installed successfully",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Press r to restart now, or q to quit and relaunch manually:",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {relaunch_cmd}"),
+            Style::default().fg(Color::Cyan),
+        )),
+        Line::from(""),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(Color::Green))
+        .title(Span::styled(
+            " Update Complete ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    let box_width = 80u16.min(full_area.width);
     let box_height = (lines.len() + 4) as u16;
     let popup = Rect {
         x: full_area.width.saturating_sub(box_width) / 2,
@@ -1313,6 +1399,26 @@ pub fn run_tui(
                                     let _ = tx.send(false);
                                 }
                                 s.update_dialog = None;
+                            }
+                            _ => {}
+                        }
+                    } else if s.update_success.is_some() {
+                        match key.code {
+                            KeyCode::Char('r') | KeyCode::Char('R') => {
+                                if let Some(tx) = s.update_success_tx.take() {
+                                    let _ = tx.send(true);
+                                }
+                                s.update_success = None;
+                                s.should_quit = true;
+                            }
+                            KeyCode::Char('q')
+                            | KeyCode::Char('Q')
+                            | KeyCode::Esc => {
+                                if let Some(tx) = s.update_success_tx.take() {
+                                    let _ = tx.send(false);
+                                }
+                                s.update_success = None;
+                                s.should_quit = true;
                             }
                             _ => {}
                         }
