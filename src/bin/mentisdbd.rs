@@ -1197,7 +1197,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // All startup work runs here on the main thread. Progress is fed
     // into the TUI via the log channel and startup_status field.
-    let startup_result: Result<StartupData, _> = run_startup_sequence(&tui_state).await;
+    let original_args: Vec<String> = std::env::args().skip(1).collect();
+    let startup_result: Result<StartupData, _> =
+        run_startup_sequence(&tui_state, &original_args).await;
 
     if let Err(e) = startup_result {
         // Show crash overlay in TUI so the user can read the error + logs.
@@ -1404,6 +1406,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 /// once startup completes.
 async fn run_startup_sequence(
     tui_state: &Arc<std::sync::Mutex<TuiState>>,
+    original_args: &[String],
 ) -> Result<StartupData, Box<dyn std::error::Error + Send + Sync>> {
     let storage_root_migration = if std::env::var_os("MENTISDB_DIR").is_none() {
         adopt_legacy_default_mentisdb_dir()?
@@ -1444,8 +1447,29 @@ async fn run_startup_sequence(
                             }
                             match install_latest_release(&release.tag_name, &update_config.repo) {
                                 Ok(path) => {
-                                    eprintln!("Installed mentisdbd to {}", path.display());
-                                    eprintln!("Please restart mentisdbd to use the new version.");
+                                    let exe = std::env::current_exe()
+                                        .map(|p| p.to_string_lossy().to_string())
+                                        .unwrap_or_else(|_| "mentisdbd".to_string());
+                                    let mut cmd_parts = vec![exe];
+                                    cmd_parts.extend(original_args.iter().cloned());
+                                    let relaunch_cmd = cmd_parts.join(" ");
+
+                                    log::info!("Installed mentisdbd to {}", path.display());
+
+                                    let restart = tui::TuiState::request_update_success(
+                                        tui_state,
+                                        &relaunch_cmd,
+                                    );
+                                    if restart {
+                                        let mut cmd = std::process::Command::new(
+                                            std::env::current_exe()?,
+                                        );
+                                        for arg in original_args {
+                                            cmd.arg(arg);
+                                        }
+                                        cmd.spawn()?;
+                                        std::process::exit(0);
+                                    }
                                     return Err("Update installed, please restart.".into());
                                 }
                                 Err(e) => {
@@ -1691,8 +1715,31 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
                         }
                         match install_latest_release(&release.tag_name, &update_config.repo) {
                             Ok(path) => {
-                                eprintln!("Installed mentisdbd to {}", path.display());
-                                eprintln!("Please restart mentisdbd to use the new version.");
+                                let exe = std::env::current_exe()
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .unwrap_or_else(|_| "mentisdbd".to_string());
+                                let original_args: Vec<String> =
+                                    std::env::args().skip(1).collect();
+                                let mut cmd_parts = vec![exe];
+                                cmd_parts.extend(original_args.iter().cloned());
+                                let relaunch_cmd = cmd_parts.join(" ");
+
+                                log::info!("Installed mentisdbd to {}", path.display());
+
+                                let restart = tui::TuiState::request_update_success(
+                                    &tui_state,
+                                    &relaunch_cmd,
+                                );
+                                if restart {
+                                    let mut cmd = std::process::Command::new(
+                                        std::env::current_exe()?,
+                                    );
+                                    for arg in &original_args {
+                                        cmd.arg(arg);
+                                    }
+                                    cmd.spawn()?;
+                                    std::process::exit(0);
+                                }
                                 return Err("Update installed, please restart.".into());
                             }
                             Err(e) => {
@@ -1718,7 +1765,9 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
     }
 
     // After the update dialog, continue with normal startup.
-    let startup_result: Result<StartupData, _> = run_startup_sequence(&tui_state).await;
+    let original_args: Vec<String> = std::env::args().skip(1).collect();
+    let startup_result: Result<StartupData, _> =
+        run_startup_sequence(&tui_state, &original_args).await;
 
     if let Err(e) = startup_result {
         {
