@@ -302,6 +302,31 @@ fn run_restore(
         ));
     }
 
+    // Abort if the daemon is running — restoring while the daemon is active
+    // risks the daemon's in-memory state overwriting restored files on next flush.
+    match ureq::post("http://127.0.0.1:9472/v1/admin/flush").call() {
+        Ok(resp) if resp.status() == 200 => {
+            return Err(
+                "Restore aborted: mentisdbd is running. Stop the daemon first \
+                 (mentisdbd stop or kill the process), then restore."
+                    .to_string(),
+            );
+        }
+        Err(e) if e.kind() == ureq::ErrorKind::ConnectionFailed => {
+            // Daemon not running — safe to proceed
+        }
+        Err(_) => {
+            // Other connection error (timeout, etc.) — assume not running
+        }
+        Ok(_) => {
+            // Unexpected response — treat as daemon running
+            return Err(
+                "Restore aborted: mentisdbd appears to be running. Stop the daemon first, then restore."
+                    .to_string(),
+            );
+        }
+    }
+
     let target_dir = cmd
         .target_dir
         .as_ref()
