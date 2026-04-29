@@ -72,7 +72,7 @@ pub struct AgentsCommand {
 pub struct BackupCommand {
     /// Path to the source MENTISDB_DIR (defaults to the platform default).
     pub source_dir: Option<String>,
-    /// Path where the .mbak archive should be written.
+    /// Path where the .mentis archive should be written.
     pub output_path: Option<String>,
     /// Flush all storage adapters before backing up.
     pub flush: bool,
@@ -83,7 +83,7 @@ pub struct BackupCommand {
 /// Parsed `restore` subcommand arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreCommand {
-    /// Path to the .mbak archive to restore.
+    /// Path to the .mentis archive to restore.
     pub archive_path: String,
     /// Path to the target MENTISDB_DIR (defaults to the platform default).
     pub target_dir: Option<String>,
@@ -161,8 +161,8 @@ Usage:
   mentisdbd add <content> [--type <type>] [--scope <scope>] [--tag <tag>] [--agent <id>] [--chain <key>] [--url <url>]
   mentisdbd search <query> [--limit <n>] [--scope <scope>] [--chain <key>] [--url <url>]
   mentisdbd agents [--chain <key>] [--url <url>]
-  mentisdbd backup [--dir <path>] [--output <path>] [--flush] [--include-tls]
-  mentisdbd restore <archive.mbak> [--dir <path>] [--overwrite] [--yes]
+  mentisdbd backup [-o <path>] [--dir <path>] [--flush] [--include-tls]
+  mentisdbd restore <archive.mentis> [--dir <path>] [--overwrite] [--yes]
 
 Daemon modes (start HTTP servers by default):
   --mode stdio     Start MCP server over stdio (for Claude Desktop subprocess)
@@ -263,7 +263,7 @@ Commands:
       --help           Show this help text
 
   backup
-    Create a .mbak backup archive of the MENTISDB_DIR.
+    Create a .mentis backup archive of the MENTISDB_DIR.
 
     The backup includes all chain data files (*.tcbin, *.agents.json,
     *.entity-types.json, *.vectors.*.json), the global registry, and
@@ -275,33 +275,37 @@ Commands:
 
     Examples:
       mentisdbd backup
-      mentisdbd backup --output /backups/mentisdb-2026-04-14.mbak
+      mentisdbd backup -o /backups/mentisdb-2026-04-14.mentis
       mentisdbd backup --dir ~/.cloudllm/mentisdb --flush --include-tls
 
     Options:
+      -o <path>          Path for the .mentis archive (default: ./mentisdb-YYYY-MM-DD-HH-MM-SS.mentis)
       --dir <path>       Path to MENTISDB_DIR (default: platform default)
-      --output <path>    Path for the .mbak archive (default: ./mentisdb-YYYY-MM-DD-HH-MM-SS.mbak)
-      --flush           Flush all storage adapters before backing up (recommended if daemon is running)
+      --flush            Flush all storage adapters before backing up (recommended if daemon is running)
       --include-tls      Include TLS certificates and keys in the backup
       --help             Show this help text
 
   restore
-    Restore a MENTISDB_DIR from a .mbak backup archive.
+    Restore a MENTISDB_DIR from a .mentis backup archive.
 
     Restores all chain data, registry, skills, and optionally TLS files.
     By default, existing files are preserved (idempotent). Pass --overwrite
     to replace all files with their backed-up versions.
 
+    The daemon must not be running during restore. If mentisdbd is detected,
+    the restore aborts with a message to stop the daemon first. This prevents
+    the daemon's in-memory state from overwriting restored files.
+
     If files already exist in the target directory and --overwrite is not
     passed, an interactive prompt asks for confirmation before overwriting.
 
     Examples:
-      mentisdbd restore mentisdb-2026-04-14.mbak
-      mentisdbd restore /backups/mentisdb-2026-04-14.mbak --dir ~/.cloudllm/mentisdb
-      mentisdbd restore /backups/mentisdb-2026-04-14.mbak --overwrite
+      mentisdbd restore mentisdb-2026-04-14.mentis
+      mentisdbd restore /backups/mentisdb-2026-04-14.mentis --dir ~/.cloudllm/mentisdb
+      mentisdbd restore /backups/mentisdb-2026-04-14.mentis --overwrite
 
     Options:
-      <archive.mbak>     Path to the .mbak backup archive (required)
+      <archive.mentis>   Path to the .mentis backup archive (required)
       --dir <path>       Path to MENTISDB_DIR (default: platform default)
       --overwrite        Overwrite existing files in the target directory (skips interactive prompt)
       --yes              Assume yes to all prompts (skips interactive confirmation)
@@ -600,10 +604,10 @@ fn parse_backup(args: Vec<String>) -> Result<CliCommand, String> {
                 );
                 index += 2;
             }
-            "--output" => {
+            "-o" | "--output" => {
                 output_path = Some(
                     args.get(index + 1)
-                        .ok_or_else(|| "--output requires a value".to_string())?
+                        .ok_or_else(|| "-o requires a value".to_string())?
                         .clone(),
                 );
                 index += 2;
@@ -637,7 +641,7 @@ fn parse_restore(args: Vec<String>) -> Result<CliCommand, String> {
     }
     let archive_path = args
         .get(1)
-        .ok_or_else(|| "restore requires <archive.mbak>".to_string())?
+        .ok_or_else(|| "restore requires <archive.mentis>".to_string())?
         .clone();
     let mut target_dir = None;
     let mut overwrite = false;
