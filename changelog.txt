@@ -1,3 +1,11 @@
+0.9.7.43 UNRELEASED
+  - fix(update): clean up TUI terminal before restart to prevent ANSI garbage;
+    old code called cmd.spawn()+exit(0) which killed the TUI thread without
+    running TerminalCleanup, so the new process inherited alternate screen +
+    raw mode; new restart_process() helper disables raw mode, leaves alternate
+    screen, and uses exec() on Unix to replace the process (no zombie window),
+    falling back to spawn+exit on non-Unix with terminal restored
+
 0.9.6.42 APR/29/2026
   - feat(tui): wider update dialog (80 cols) so GitHub release URL fits without
     wrapping; successful update now shows a green "Update Complete" overlay with
