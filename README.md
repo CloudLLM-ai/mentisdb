@@ -952,42 +952,44 @@ MentisDB includes built-in backup and restore commands in the `mentisdbd` CLI.
 ### Create a backup
 
 ```bash
-# Default: platform MENTISDB_DIR → ./mentisdb-YYYY-MM-DD-HH-MM-SS.mbak
+# Default: platform MENTISDB_DIR → ./mentisdb-YYYY-MM-DD-HH-MM-SS.mentis
 mentisdbd backup
 
 # Custom output path
-mentisdbd backup --output /backups/mentisdb-2026-04-14.mbak
+mentisdbd backup -o /backups/mentisdb-2026-04-14.mentis
 
 # Include TLS certificates
 mentisdbd backup --include-tls
 
 # Full example
-mentisdbd backup --dir ~/.cloudllm/mentisdb --output /backups/mentisdb-2026-04-14.mbak --include-tls
+mentisdbd backup --dir ~/.cloudllm/mentisdb -o /backups/mentisdb-2026-04-14.mentis --include-tls
 ```
 
 When the daemon is running, `backup` calls `POST /v1/admin/flush` before reading files to ensure a consistent snapshot even with `MENTISDB_AUTO_FLUSH=false`. If the daemon is not running, files are captured as-is.
 
 ### Restore a backup
 
+The daemon must be stopped before restoring. If `mentisdbd` is detected running, the restore aborts with a message to stop the daemon first.
+
 ```bash
 # Idempotent restore (preserves existing files)
-mentisdbd restore /backups/mentisdb-2026-04-14.mbak
+mentisdbd restore /backups/mentisdb-2026-04-14.mentis
 
 # Restore to a specific directory
-mentisdbd restore /backups/mentisdb-2026-04-14.mbak --dir ~/.cloudllm/mentisdb
+mentisdbd restore /backups/mentisdb-2026-04-14.mentis --dir ~/.cloudllm/mentisdb
 
 # Force overwrite of all files
-mentisdbd restore /backups/mentisdb-2026-04-14.mbak --overwrite
+mentisdbd restore /backups/mentisdb-2026-04-14.mentis --overwrite
 
 # Skip interactive confirmation prompts
-mentisdbd restore /backups/mentisdb-2026-04-14.mbak --yes
+mentisdbd restore /backups/mentisdb-2026-04-14.mentis --yes
 ```
 
 Restore is **idempotent by default** — existing files are preserved. If files in the archive already exist in the target directory and `--overwrite` is not passed, an interactive prompt asks for confirmation. Pass `--yes` to skip all prompts.
 
 ### Archive format
 
-A backup is a `.mbak` ZIP archive containing:
+A backup is a `.mentis` ZIP archive containing:
 - `mentisdb.manifest.json` — SHA-256 checksums and metadata
 - `*.tcbin` — binary chain storage
 - `*.agents.json` — per-chain agent registries

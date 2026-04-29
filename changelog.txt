@@ -1,4 +1,8 @@
 0.9.6.42 APR/28/2026
+  - feat(backup): rename backup format from .mbak to .mentis; backup CLI now
+    uses -o shorthand for --output (both still accepted); restore aborts with
+    a clear error if mentisdbd is detected running, preventing the daemon's
+    in-memory state from overwriting restored files on next flush
   - feat(mcp): SSE support on MCP servers — start_mcp_server and start_https_mcp_server
     now return (ServerHandle, SseBroadcaster) tuples; GET endpoint returns text/event-stream
     with live MCP events, POST requests auto-broadcast JSON-RPC results/errors as SSE events;

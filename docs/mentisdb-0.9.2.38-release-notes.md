@@ -49,7 +49,7 @@ service, appends via REST, and asserts the MCP side immediately sees the new
 ## Backup and Restore
 
 Two new subcommands, `mentisdbd backup` and `mentisdbd restore`, create and restore
-`.mbak` archives of the full `MENTISDB_DIR`.
+`.mentis` archives of the full `MENTISDB_DIR`.
 
 - SHA-256 manifest for every file; verification before any file is written on restore.
 - Flags: `--flush`, `--include-tls`, `--overwrite`.
