@@ -1,4 +1,8 @@
-0.9.6.42 APR/28/2026
+0.9.6.42 APR/29/2026
+  - feat(tui): wider update dialog (80 cols) so GitHub release URL fits without
+    wrapping; successful update now shows a green "Update Complete" overlay with
+    the exact relaunch command and offers r to restart in-place or q to quit;
+    mentisdbd auto-restarts with the same CLI args when the user presses r
   - feat(backup): rename backup format from .mbak to .mentis; backup CLI now
     uses -o shorthand for --output (both still accepted); restore aborts with
     a clear error if mentisdbd is detected running, preventing the daemon's
