@@ -152,6 +152,191 @@ async fn agent_detail_form_hydrates_values_after_dom_insertion() {
 }
 
 #[tokio::test]
+async fn dashboard_serves_skill_edit_controls() {
+    let dir = unique_chain_dir();
+    let router = dashboard_router_for_dir(&dir);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let html = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8(html.to_vec()).unwrap();
+
+    assert!(html.contains("id=\"edit-skill-overlay\""));
+    assert!(html.contains("Save New Version"));
+    assert!(html.contains("id=\"sd-edit-btn\""));
+    assert!(html.contains("Edit Skill"));
+    assert!(html.contains("data-skill-edit data-skill-id=\"${esc(s.skill_id)}\""));
+    assert!(html.contains("el.querySelectorAll('[data-skill-edit]').forEach(btn =>"));
+    assert!(html.contains("if (skillId) window._openEditSkill(skillId);"));
+    assert!(!html.contains("onclick=\"window._openEditSkill("));
+    assert!(html.contains("editBtn.addEventListener('click', () => window._openEditSkill(skillId, SD.versionId));"));
+    assert!(html.contains("function(skillId, versionId)"));
+    assert!(html.contains("?version=${encodeURIComponent(versionId)}"));
+    assert!(html.contains("skill_id: _editSkillId"));
+    assert!(html.contains("api('/dashboard/api/skills'"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn dashboard_skill_edit_upload_creates_new_version_and_reads_selected_version() {
+    let dir = unique_chain_dir();
+    let router = dashboard_router_for_dir(&dir);
+    let skill_id = "dashboard-edit-skill";
+    let first_content = r#"---
+schema_version: 1
+name: Dashboard Edit Skill
+description: First dashboard skill version
+---
+
+# Dashboard Edit Skill
+
+First dashboard body.
+"#;
+    let second_content = r#"---
+schema_version: 1
+name: Dashboard Edit Skill
+description: Second dashboard skill version
+---
+
+# Dashboard Edit Skill
+
+Second dashboard body.
+"#;
+
+    let first_upload = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/dashboard/api/skills")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "agent_id": "rust-backend-engineer",
+                        "skill_id": skill_id,
+                        "content": first_content,
+                        "format": "markdown"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first_upload.status(), axum::http::StatusCode::OK);
+    let first_body = axum::body::to_bytes(first_upload.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let first_json: Value = serde_json::from_slice(&first_body).unwrap();
+    assert_eq!(first_json["skill_id"], skill_id);
+    assert_eq!(first_json["version_count"], 1);
+
+    let second_upload = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/dashboard/api/skills")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "agent_id": "rust-backend-engineer",
+                        "skill_id": skill_id,
+                        "content": second_content,
+                        "format": "markdown"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second_upload.status(), axum::http::StatusCode::OK);
+    let second_body = axum::body::to_bytes(second_upload.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let second_json: Value = serde_json::from_slice(&second_body).unwrap();
+    assert_eq!(second_json["skill_id"], skill_id);
+    assert_eq!(second_json["version_count"], 2);
+
+    let versions = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/dashboard/api/skills/{skill_id}/versions"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(versions.status(), axum::http::StatusCode::OK);
+    let versions_body = axum::body::to_bytes(versions.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let versions_json: Value = serde_json::from_slice(&versions_body).unwrap();
+    let versions = versions_json.as_array().unwrap();
+    assert_eq!(versions.len(), 2);
+    let first_version_id = versions
+        .iter()
+        .find(|version| version["version_number"] == 0)
+        .and_then(|version| version["version_id"].as_str())
+        .expect("first uploaded version should be listed");
+
+    let latest = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/dashboard/api/skills/{skill_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(latest.status(), axum::http::StatusCode::OK);
+    let latest_body = axum::body::to_bytes(latest.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let latest_json: Value = serde_json::from_slice(&latest_body).unwrap();
+    assert!(latest_json["markdown"]
+        .as_str()
+        .unwrap()
+        .contains("Second dashboard body."));
+
+    let selected = router
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/dashboard/api/skills/{skill_id}?version={first_version_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(selected.status(), axum::http::StatusCode::OK);
+    let selected_body = axum::body::to_bytes(selected.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let selected_json: Value = serde_json::from_slice(&selected_body).unwrap();
+    let selected_markdown = selected_json["markdown"].as_str().unwrap();
+    assert!(selected_markdown.contains("First dashboard body."));
+    assert!(!selected_markdown.contains("Second dashboard body."));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn dashboard_chain_agent_counts_link_to_agent_sections() {
     let dir = unique_chain_dir();
     let router = dashboard_router_for_dir(&dir);

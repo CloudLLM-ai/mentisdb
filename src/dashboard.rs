@@ -841,6 +841,13 @@ struct DiffQuery {
     to: Option<String>,
 }
 
+/// Query parameters for reading a skill.
+#[derive(Deserialize)]
+struct SkillReadQuery {
+    /// Optional version UUID. When omitted, the latest version is returned.
+    version: Option<String>,
+}
+
 // ── API: chain listing ────────────────────────────────────────────────────────
 
 /// `GET /dashboard/api/chains`
@@ -1738,6 +1745,7 @@ async fn api_skills(
 async fn api_get_skill(
     State(state): State<DashboardState>,
     Path(skill_id): Path<String>,
+    Query(params): Query<SkillReadQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     refresh_skill_registry(&state).await?;
     let skills = state.skills.read().await;
@@ -1748,8 +1756,18 @@ async fn api_get_skill(
         .find(|s| s.skill_id == skill_id)
         .ok_or_else(|| not_found(format!("skill '{skill_id}' not found")))?;
 
+    let version_id = match params.version.as_deref() {
+        Some(raw) => Some(raw.parse::<Uuid>().map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?),
+        None => None,
+    };
+
     let output = skills
-        .read_skill(&skill_id, None, SkillFormat::Markdown)
+        .read_skill(&skill_id, version_id, SkillFormat::Markdown)
         .map_err(internal_error)?;
 
     Ok(Json(

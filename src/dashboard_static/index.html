@@ -2641,13 +2641,20 @@
                   <td class="mono" style="font-size:0.81rem;color:#8b949e">${esc(s.latest_uploaded_by_agent_id || '—')}</td>
                   <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(s.updated_at))}</td>
                   <td onclick="event.stopPropagation()" style="white-space:nowrap">
-                    <button class="btn btn-secondary btn-sm" onclick="window._openEditSkill('${esc(s.skill_id)}')" title="Edit this skill">✏️ Edit</button>
+                    <button class="btn btn-secondary btn-sm" data-skill-edit data-skill-id="${esc(s.skill_id)}" title="Edit this skill">✏️ Edit</button>
                   </td>
                 </tr>
               `).join('')}
             </tbody>
           </table></div>
         `;
+        el.querySelectorAll('[data-skill-edit]').forEach(btn => {
+          btn.addEventListener('click', event => {
+            event.stopPropagation();
+            const skillId = btn.getAttribute('data-skill-id');
+            if (skillId) window._openEditSkill(skillId);
+          });
+        });
       })
       .catch(err => errBox(el, err.message));
   }
@@ -2694,6 +2701,7 @@
             </select>
           </div>
         ` : ''}
+        <button class="btn btn-secondary btn-sm" id="sd-edit-btn" style="${versions && versions.length ? '' : 'margin-left:auto'}">Edit Skill</button>
         ${(summary.status||'').toLowerCase() !== 'revoked' ? `
           <button class="btn btn-danger btn-sm" id="sd-revoke-btn" style="margin-left:8px">Revoke Skill…</button>
         ` : ''}
@@ -2751,6 +2759,11 @@
         </div>
       </div>
     `;
+
+    const editBtn = document.getElementById('sd-edit-btn');
+    if (editBtn) {
+      editBtn.addEventListener('click', () => window._openEditSkill(skillId, SD.versionId));
+    }
 
     // Revoke skill controls
     const revokeBtn = document.getElementById('sd-revoke-btn');
@@ -3155,7 +3168,7 @@
       if (e.key === 'Escape' && document.getElementById('edit-skill-overlay').style.display !== 'none') closeEditSkill();
     });
 
-    window._openEditSkill = function(skillId) {
+    window._openEditSkill = function(skillId, versionId) {
       _editSkillId = skillId;
       _editAgentId = null;
       _editFormat  = 'markdown';
@@ -3167,7 +3180,10 @@
       saveBtn.disabled = false;
       document.getElementById('edit-skill-overlay').style.display = '';
 
-      api(`/dashboard/api/skills/${encodeURIComponent(skillId)}`)
+      const url = versionId
+        ? `/dashboard/api/skills/${encodeURIComponent(skillId)}?version=${encodeURIComponent(versionId)}`
+        : `/dashboard/api/skills/${encodeURIComponent(skillId)}`;
+      api(url)
         .then(data => {
           const summary  = data.summary || {};
           _editAgentId = summary.latest_uploaded_by_agent_id || '';
