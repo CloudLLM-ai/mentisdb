@@ -931,6 +931,19 @@ async fn proxy_jsonrpc_to_daemon(mcp_addr: &str, request: &str) -> Option<String
     // Handle resources/read locally — the skill markdown is embedded in
     // the proxy binary, so we can serve it without hitting the daemon.
     let method = parsed.get("method")?.as_str()?;
+
+    // Notifications (no id) — return a minimal valid JSON-RPC response
+    // so the client's parser always finds complete JSON on the pipe.
+    // Without this, Claude Desktop's readMessage → JSON.parse hits an
+    // empty buffer and throws "Unexpected end of JSON input" because
+    // the proxy hasn't written the tools/list response yet.
+    if parsed.get("id").is_none() {
+        return Some(
+            serde_json::json!({"jsonrpc": "2.0", "id": "ack", "result": {}})
+                .to_string(),
+        );
+    }
+
     if method == "resources/read" {
         let id = parsed.get("id").cloned()?;
         let params = parsed
