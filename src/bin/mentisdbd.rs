@@ -117,9 +117,7 @@ fn restart_process(args: &[String]) -> ! {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        let err = std::process::Command::new(&exe)
-            .args(args)
-            .exec();
+        let err = std::process::Command::new(&exe).args(args).exec();
         // exec only returns on failure.
         eprintln!("Failed to restart: {err}");
         std::process::exit(1);
@@ -895,7 +893,15 @@ fn launch_daemon() -> Result<(), String> {
         // On Windows, use START /B to run detached
         let exe_str = exe.to_string_lossy();
         let status = Command::new("cmd")
-            .args(["/C", "start", "/B", &exe_str, "--mode", "http", "--headless"])
+            .args([
+                "/C",
+                "start",
+                "/B",
+                &exe_str,
+                "--mode",
+                "http",
+                "--headless",
+            ])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1817,8 +1823,7 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
                                 let exe = std::env::current_exe()
                                     .map(|p| p.to_string_lossy().to_string())
                                     .unwrap_or_else(|_| "mentisdbd".to_string());
-                                let original_args: Vec<String> =
-                                    std::env::args().skip(1).collect();
+                                let original_args: Vec<String> = std::env::args().skip(1).collect();
                                 let mut cmd_parts = vec![exe];
                                 cmd_parts.extend(original_args.iter().cloned());
                                 let relaunch_cmd = cmd_parts.join(" ");
@@ -2241,9 +2246,7 @@ where
     }
 
     // Handle --headless flag (skip TUI, used when auto-launching daemon from proxy)
-    let headless = args
-        .iter()
-        .any(|arg| arg.to_string_lossy() == "--headless");
+    let headless = args.iter().any(|arg| arg.to_string_lossy() == "--headless");
 
     // Handle --mode flag
     if let Some(mode_idx) = args

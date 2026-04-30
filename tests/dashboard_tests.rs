@@ -179,7 +179,9 @@ async fn dashboard_serves_skill_edit_controls() {
     assert!(html.contains("el.querySelectorAll('[data-skill-edit]').forEach(btn =>"));
     assert!(html.contains("if (skillId) window._openEditSkill(skillId);"));
     assert!(!html.contains("onclick=\"window._openEditSkill("));
-    assert!(html.contains("editBtn.addEventListener('click', () => window._openEditSkill(skillId, SD.versionId));"));
+    assert!(html.contains(
+        "editBtn.addEventListener('click', () => window._openEditSkill(skillId, SD.versionId));"
+    ));
     assert!(html.contains("function(skillId, versionId)"));
     assert!(html.contains("?version=${encodeURIComponent(versionId)}"));
     assert!(html.contains("skill_id: _editSkillId"));

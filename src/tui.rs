@@ -1411,9 +1411,7 @@ pub fn run_tui(
                                 s.update_success = None;
                                 s.should_quit = true;
                             }
-                            KeyCode::Char('q')
-                            | KeyCode::Char('Q')
-                            | KeyCode::Esc => {
+                            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
                                 if let Some(tx) = s.update_success_tx.take() {
                                     let _ = tx.send(false);
                                 }
