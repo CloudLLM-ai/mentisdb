@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.9.7.43 - Dashboard Skill Editing and Stdio Reliability</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    ul { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.95rem; }
+    th, td { border: 1px solid #e0e0e0; padding: 0.55rem 0.7rem; text-align: left; vertical-align: top; }
+    th { background: #f0f0f0; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 30, 2026</div>
+
+<h1>MentisDB 0.9.7.43 - Dashboard Skill Editing and Stdio Reliability</h1>
+
+<p>
+  0.9.7.43 turns the web dashboard into a safer skill maintenance surface:
+  operators can edit skills directly from the Skills table or a skill detail
+  page, save the edit as a new immutable version, and inspect historical
+  versions without overwriting audit history.
+</p>
+
+<div class="highlight">
+  <p>
+    <strong>Skill edits are versioned, not destructive.</strong> Saving from the
+    dashboard reuses the existing upload path, preserving the original uploader
+    identity and source format while creating the next immutable version.
+  </p>
+</div>
+
+<h2>What Changed</h2>
+
+<ul>
+  <li><strong>Dashboard skill editing.</strong> Each skill row has an Edit button, and each skill detail page now has its own Edit Skill button.</li>
+  <li><strong>Correct version editing.</strong> The detail page defaults to the latest version and, after version selection, edits the version being viewed.</li>
+  <li><strong>Safer rendered Markdown.</strong> Dashboard-rendered skill links now escape link labels and href attributes, allow only http/https/mailto protocols, and render unsafe links as plain text.</li>
+  <li><strong>Stdio proxy stability.</strong> The stdio proxy no longer writes synthetic notification acknowledgements that confuse strict MCP clients, and background daemon launch uses <code>--mode http --headless</code> so no TUI starts on null stdin.</li>
+  <li><strong>Primer consistency.</strong> The agent primer now says <code>use mentisdb as your memory system</code> across the TUI, mentisdb.com, and docs.mentisdb.com.</li>
+</ul>
+
+<h2>Verification</h2>
+
+<table>
+  <thead>
+    <tr><th>Gate</th><th>Result</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>cargo fmt -- --check</code></td><td>Passed</td></tr>
+    <tr><td><code>cargo clippy --all-features -- -D warnings</code></td><td>Passed</td></tr>
+    <tr><td><code>cargo test --all-features</code></td><td>Passed, including 80 doc-tests with 4 ignored</td></tr>
+    <tr><td>Benchmarks</td><td>Skipped for this release by operator request; no benchmark numbers were changed.</td></tr>
+  </tbody>
+</table>
+
+<h2>Upgrade</h2>
+
+<pre><code>cargo install mentisdb --force</code></pre>
+
+<p>
+  No manual migration is required. Existing skill registries continue to work;
+  dashboard edits simply create new skill versions on top of the existing
+  immutable history.
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb/releases/tag/0.9.7.43">GitHub release</a> &middot;
+  <a href="https://crates.io/crates/mentisdb">crates.io</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>
