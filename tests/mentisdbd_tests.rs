@@ -461,23 +461,21 @@ fn scheduler_spaces_bursts_without_overlap() {
 #[test]
 fn agent_primer_no_chains_shows_bootstrap() {
     let paste_line = mentisdbd_impl::build_agent_primer_paste_line("https://127.0.0.1:9473", false);
-    assert!(paste_line.contains("prime yourself for optimal mentisdb usage"));
-    assert!(paste_line.contains("mentisdb_skill_md"));
+    assert_eq!(paste_line, "use mentisdb as your memory system");
 }
 
 /// Primer is the same regardless of chain state.
 #[test]
 fn agent_primer_with_chains_shows_resume() {
     let paste_line = mentisdbd_impl::build_agent_primer_paste_line("https://127.0.0.1:9473", true);
-    assert!(paste_line.contains("prime yourself for optimal mentisdb usage"));
-    assert!(paste_line.contains("mentisdb_skill_md"));
+    assert_eq!(paste_line, "use mentisdb as your memory system");
 }
 
 /// Primer is consistent regardless of dashboard state.
 #[test]
 fn agent_primer_no_dashboard() {
     let paste_line = mentisdbd_impl::build_agent_primer_paste_line("https://127.0.0.1:9473", false);
-    assert!(paste_line.contains("mentisdb_skill_md"));
+    assert_eq!(paste_line, "use mentisdb as your memory system");
 }
 
 #[test]
