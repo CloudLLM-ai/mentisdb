@@ -581,6 +581,40 @@
     </div>
   </div>
 
+  <!-- ================================================================ -->
+  <!-- EDIT SKILL OVERLAY                                               -->
+  <!-- ================================================================ -->
+  <div id="edit-skill-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:2000;overflow-y:auto;padding:24px 16px">
+    <div style="max-width:780px;margin:0 auto;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:24px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+        <h3 style="margin:0;color:#e6edf3">✏️ Edit Skill</h3>
+        <button id="edit-skill-close" style="background:none;border:none;color:#8b949e;font-size:1.4rem;cursor:pointer;line-height:1">&times;</button>
+      </div>
+      <div id="edit-skill-loading" style="color:#8b949e;font-size:0.88rem;padding:20px;text-align:center">
+        Loading skill content…
+      </div>
+      <div id="edit-skill-form" style="display:none">
+        <div style="display:flex;gap:16px;margin-bottom:14px;flex-wrap:wrap">
+          <div class="kv"><span class="kv-k">Skill ID</span><span class="kv-v mono" id="edit-skill-id-display"></span></div>
+          <div class="kv"><span class="kv-k">Agent</span><span class="kv-v mono" id="edit-skill-agent-display"></span></div>
+          <div class="kv"><span class="kv-k">Format</span><span class="kv-v" id="edit-skill-format-display"></span></div>
+        </div>
+        <div class="form-group">
+          <label style="color:#8b949e;font-size:0.85rem;display:block;margin-bottom:4px">Skill Content</label>
+          <textarea id="edit-skill-content" placeholder="Skill Markdown or JSON content…"
+            style="width:100%;box-sizing:border-box;height:420px;background:#0d1117;color:#c9d1d9;
+                   border:1px solid #30363d;border-radius:6px;padding:12px;font-family:monospace;
+                   font-size:0.82rem;resize:vertical;line-height:1.5"></textarea>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px">
+          <button id="edit-skill-save" class="btn btn-primary btn-sm">Save New Version</button>
+          <button id="edit-skill-cancel" class="btn btn-secondary btn-sm">Cancel</button>
+          <span id="edit-skill-fb" class="feedback"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Static modals (always in DOM so Branch/Delete/Merge work from any page) -->
   <div id="cl-bootstrap-modal" style="display:none">
     <div class="card" style="border-color:#388bfd;margin-bottom:16px">
@@ -2597,15 +2631,18 @@
         if (!skills || !skills.length) { el.innerHTML = '<div class="empty-state">No skills found.</div>'; return; }
         el.innerHTML = `
           <div class="table-wrap"><table>
-            <thead><tr><th>Name</th><th>Status</th><th>Versions</th><th>Uploader</th><th>Updated</th></tr></thead>
+            <thead><tr><th>Name</th><th>Status</th><th>Versions</th><th>Uploader</th><th>Updated</th><th></th></tr></thead>
             <tbody>
               ${skills.map(s => `
                 <tr class="clickable" onclick="location.hash='skills/${encodeURIComponent(s.skill_id)}'">
                   <td style="color:#58a6ff;font-weight:600">${esc(s.name || s.skill_id)}</td>
                   <td>${statusBadge(s.status)}</td>
                   <td>${esc(String(s.version_count ?? '—'))}</td>
-                  <td class="mono" style="font-size:0.81rem;color:#8b949e">${esc(s.uploader_agent_id || '—')}</td>
+                  <td class="mono" style="font-size:0.81rem;color:#8b949e">${esc(s.latest_uploaded_by_agent_id || '—')}</td>
                   <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(s.updated_at))}</td>
+                  <td onclick="event.stopPropagation()" style="white-space:nowrap">
+                    <button class="btn btn-secondary btn-sm" onclick="window._openEditSkill('${esc(s.skill_id)}')" title="Edit this skill">✏️ Edit</button>
+                  </td>
                 </tr>
               `).join('')}
             </tbody>
@@ -3083,6 +3120,103 @@
     });
 
     window.openAddAgentModal = open;
+  }
+
+  // =====================================================================
+  // EDIT SKILL MODAL
+  // =====================================================================
+  {
+    const loadingEl   = document.getElementById('edit-skill-loading');
+    const formEl      = document.getElementById('edit-skill-form');
+    const idDisplay   = document.getElementById('edit-skill-id-display');
+    const agentDisplay = document.getElementById('edit-skill-agent-display');
+    const formatDisplay = document.getElementById('edit-skill-format-display');
+    const contentTA   = document.getElementById('edit-skill-content');
+    const saveBtn     = document.getElementById('edit-skill-save');
+    const cancelBtn   = document.getElementById('edit-skill-cancel');
+    const fb          = document.getElementById('edit-skill-fb');
+
+    let _editSkillId = null;
+    let _editAgentId = null;
+    let _editFormat  = 'markdown';
+
+    function closeEditSkill() {
+      document.getElementById('edit-skill-overlay').style.display = 'none';
+      _editSkillId = null;
+      _editAgentId = null;
+    }
+
+    document.getElementById('edit-skill-close').addEventListener('click', closeEditSkill);
+    cancelBtn.addEventListener('click', closeEditSkill);
+    document.getElementById('edit-skill-overlay').addEventListener('click', e => {
+      if (e.target === document.getElementById('edit-skill-overlay')) closeEditSkill();
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && document.getElementById('edit-skill-overlay').style.display !== 'none') closeEditSkill();
+    });
+
+    window._openEditSkill = function(skillId) {
+      _editSkillId = skillId;
+      _editAgentId = null;
+      _editFormat  = 'markdown';
+      fb.textContent = '';
+      fb.className = 'feedback';
+      loadingEl.style.display = '';
+      formEl.style.display = 'none';
+      contentTA.value = '';
+      saveBtn.disabled = false;
+      document.getElementById('edit-skill-overlay').style.display = '';
+
+      api(`/dashboard/api/skills/${encodeURIComponent(skillId)}`)
+        .then(data => {
+          const summary  = data.summary || {};
+          _editAgentId = summary.latest_uploaded_by_agent_id || '';
+          _editFormat  = (summary.latest_source_format || 'markdown').toLowerCase();
+          idDisplay.textContent = skillId;
+          agentDisplay.textContent = _editAgentId || '—';
+          formatDisplay.textContent = _editFormat;
+          contentTA.value = data.markdown || '';
+          loadingEl.style.display = 'none';
+          formEl.style.display = '';
+          contentTA.focus();
+        })
+        .catch(err => {
+          loadingEl.innerHTML = `<div class="error-state">⚠️ ${esc(err.message)}</div>`;
+        });
+    };
+
+    saveBtn.addEventListener('click', () => {
+      const content = contentTA.value.trim();
+      if (!content) { showFeedback(fb, false, 'Content cannot be empty.'); contentTA.focus(); return; }
+      if (!_editAgentId) { showFeedback(fb, false, 'No uploader agent found for this skill.'); return; }
+      saveBtn.disabled = true;
+      fb.textContent = 'Saving…';
+      fb.className = 'feedback show';
+      const payload = {
+        agent_id: _editAgentId,
+        content: content,
+        format: _editFormat,
+        skill_id: _editSkillId,
+      };
+      api('/dashboard/api/skills', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      .then(d => {
+        const name = (d && (d.name || d.skill_id)) || 'skill';
+        showFeedback(fb, true, `Saved new version of "${name}".`);
+        setTimeout(() => {
+          closeEditSkill();
+          if (location.hash === '#skills' || location.hash === '') renderSkillList();
+          else if (location.hash === '#skills/' + encodeURIComponent(_editSkillId)) renderSkillDetail(_editSkillId);
+        }, 1200);
+      })
+      .catch(err => {
+        showFeedback(fb, false, err.message);
+        saveBtn.disabled = false;
+      });
+    });
   }
 
   </script>

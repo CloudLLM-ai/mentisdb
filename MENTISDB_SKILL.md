@@ -154,7 +154,7 @@ Merging a branch back in is explicit: use `mentisdb_merge_chains`.
 
 1. **Pre-warm with shared memory** — load the chain before spawning.
 2. **Keep context ≤50%** — write `Summary` / `Checkpoint` / handoffs BEFORE hitting limits or being compacted.
-3. **Write a `TaskComplete`** when a leaf task finishes durably.
+3. **Write a `TaskComplete` immediately when work finishes** — don't wait to be asked. Save it the moment a task completes, not at the end of the conversation.
 4. **Handoffs = `Summary` with `role: Checkpoint`** — include what's done, pending, and next steps.
 5. **PM pattern** — one coordinator decomposes, dispatches parallel specialists, synthesizes wave by wave.
 6. **Flush pending memories** (`LessonLearned`, `Decision`, `Constraint`) before exit — unsaved learnings die with the agent.
@@ -197,4 +197,4 @@ Scopes stored as `scope:{variant}` tags — set on append, filter in search:
 
 ## ❌ ANTI-PATTERNS
 
-Raw-log writes instead of rules. New agent IDs for the same role. Skipping `recent_context` at start. Vague summaries. Redundant bootstraps. Unfiltered full-chain loads. No checkpoint before compaction. Sub-agents spawned without shared-memory pre-warm or dying without flushing memories. Writing near-duplicates when dedup is on (auto-superseded anyway).
+Raw-log writes instead of rules. New agent IDs for the same role. Skipping `recent_context` at start. Vague summaries. Redundant bootstraps. Unfiltered full-chain loads. No checkpoint before compaction. Sub-agents spawned without shared-memory pre-warm or dying without flushing memories. Writing near-duplicates when dedup is on (auto-superseded anyway). **Deferring memory writes** — save `TaskComplete` and `LessonLearned` the moment they happen, not when prompted.

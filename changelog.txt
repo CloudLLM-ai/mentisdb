@@ -1,8 +1,32 @@
 0.9.7.43 UNRELEASED
-  - fix(mcp): write valid JSON-RPC ack for notifications in stdio proxy so
-    Claude Desktop connects without 'Unexpected end of JSON input' error;
-    notifications now get {jsonrpc:2.0, id:'ack', result:{}} so the client's
-    parser always finds complete JSON on the pipe
+  - fix(stdio): remove synthetic ack for notifications in stdio proxy — the old
+    {id:'ack', result:{}} response broke Claude Desktop's MCP SDK which validates
+    that response ids match pending requests; notifications are now silently
+    absorbed (forwarded to daemon, nothing written to stdout), fixing the
+    'Unexpected end of JSON input' error that prevented Claude Desktop from
+    connecting
+  - feat(stdio): --headless mode for background daemon auto-launch — the stdio
+    proxy now passes --mode http --headless when spawning a background daemon,
+    starting HTTP servers without the TUI (which crashes when stdin is null);
+    adds DaemonArgMode::RunHeadless and run_headless() that skips TUI/terminal
+    setup, runs migrations silently, and waits for SIGINT
+  - feat(dashboard): skill editing — each skill row now has an Edit button that
+    opens a modal with a textarea pre-filled with the skill's current markdown
+    content; Save calls the existing upload endpoint to create a new version;
+    preserves original agent_id and format; also fixes uploader column showing
+    '—' instead of actual agent name
+  - fix(stdio): tighten SSE detection in proxy — changed from contains('event:')
+    to starts_with('event:') / starts_with('data:') to avoid false positives
+    from tool descriptions containing the substring; added empty response body
+    filter so 202 Accepted responses don't write empty lines to stdout
+  - fix(stdio): local stdio mode now echoes client's protocol version instead of
+    hardcoded 2025-06-18, and tool definitions include execution field
+    {taskSupport:'optional'} matching the daemon's streamable HTTP output
+  - feat(primer): updated priming phrase to 'use mentisdb as your memory system'
+    across TUI, mentisdb.com, and docs.mentisdb.com
+  - refactor(skill): MENTISDB_SKILL.md — strengthened TaskComplete trigger rule
+    to emphasize immediate write on completion (not deferred), added 'deferring
+    memory writes' to anti-patterns list
   - fix(update): clean up TUI terminal before restart to prevent ANSI garbage;
     old code called cmd.spawn()+exit(0) which killed the TUI thread without
     running TerminalCleanup, so the new process inherited alternate screen +

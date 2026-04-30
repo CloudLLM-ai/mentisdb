@@ -635,7 +635,7 @@ pub(crate) fn build_first_run_setup_lines() -> Vec<String> {
 ///
 /// The line is printed outside any box so it can be triple-click selected cleanly.
 pub(crate) fn build_agent_primer_paste_line(_mcp_addr: &str, _has_chains: bool) -> String {
-    "prime yourself for optimal mentisdb usage, call mentisdb_skill_md and update your local mentisdb skill".to_string()
+    "use mentisdb as your memory system".to_string()
 }
 
 fn detect_first_run_setup_status(chain_dir: &Path) -> FirstRunSetupStatus {
@@ -878,6 +878,9 @@ fn launch_daemon() -> Result<(), String> {
         // On Unix, use nohup + double-fork pattern via setsid
         let status = Command::new("nohup")
             .arg(&exe)
+            .arg("--mode")
+            .arg("http")
+            .arg("--headless")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -892,7 +895,7 @@ fn launch_daemon() -> Result<(), String> {
         // On Windows, use START /B to run detached
         let exe_str = exe.to_string_lossy();
         let status = Command::new("cmd")
-            .args(["/C", "start", "/B", &exe_str])
+            .args(["/C", "start", "/B", &exe_str, "--mode", "http", "--headless"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -932,16 +935,23 @@ async fn proxy_jsonrpc_to_daemon(mcp_addr: &str, request: &str) -> Option<String
     // the proxy binary, so we can serve it without hitting the daemon.
     let method = parsed.get("method")?.as_str()?;
 
-    // Notifications (no id) — return a minimal valid JSON-RPC response
-    // so the client's parser always finds complete JSON on the pipe.
-    // Without this, Claude Desktop's readMessage → JSON.parse hits an
-    // empty buffer and throws "Unexpected end of JSON input" because
-    // the proxy hasn't written the tools/list response yet.
+    // Notifications (no id) — silently absorb.  Per the JSON-RPC spec,
+    // notifications MUST NOT receive a response.  The original synthetic
+    // ack broke Claude Desktop because its MCP SDK validates that every
+    // response id matches a pending request; "ack" matched nothing,
+    // triggering "Unexpected end of JSON input".
     if parsed.get("id").is_none() {
-        return Some(
-            serde_json::json!({"jsonrpc": "2.0", "id": "ack", "result": {}})
-                .to_string(),
-        );
+        // Still forward to the daemon so it can track client state
+        // (e.g. notifications/initialized), but don't write anything
+        // back to stdout — the daemon returns 202 Accepted with no body.
+        let request_bytes = request.as_bytes().to_vec();
+        let _ = tokio::task::spawn_blocking(move || {
+            ureq::post(&url)
+                .set("Content-Type", "application/json")
+                .send(&*request_bytes)
+        })
+        .await;
+        return None;
     }
 
     if method == "resources/read" {
@@ -987,7 +997,10 @@ async fn proxy_jsonrpc_to_daemon(mcp_addr: &str, request: &str) -> Option<String
     // 2. An SSE event stream (for methods that produce server→client notifications)
     //
     // For SSE responses, extract the first JSON-RPC data event.
-    if resp_body.starts_with("event:") || resp_body.contains("event:") {
+    //
+    // IMPORTANT: only check `starts_with` — `contains("event:")` false-positives
+    // on tool descriptions that happen to contain the substring.
+    if resp_body.starts_with("event:") || resp_body.starts_with("data:") {
         // Parse SSE: look for the first "data:" line containing JSON
         for line in resp_body.lines() {
             let line = line.trim();
@@ -1001,6 +1014,9 @@ async fn proxy_jsonrpc_to_daemon(mcp_addr: &str, request: &str) -> Option<String
     }
 
     // Bare JSON response — pass through as-is (already a JSON-RPC response)
+    if resp_body.is_empty() {
+        return None;
+    }
     Some(resp_body)
 }
 
@@ -1108,6 +1124,11 @@ async fn handle_stdio_jsonrpc(line: &str, protocol: &MentisDbMcpProtocol) -> Opt
         return None;
     }
 
+    // Notifications (no id) — silently absorb, no response per JSON-RPC spec.
+    if request.get("id").is_none() {
+        return None;
+    }
+
     let id = request.get("id").cloned()?;
     let method = request.get("method")?.as_str()?;
     let params = request
@@ -1116,18 +1137,25 @@ async fn handle_stdio_jsonrpc(line: &str, protocol: &MentisDbMcpProtocol) -> Opt
         .unwrap_or(serde_json::Value::Null);
 
     let result: Result<serde_json::Value, String> = match method {
-        "initialize" => Ok(serde_json::json!({
-            "protocolVersion": "2025-06-18",
-            "capabilities": {
-                "tools": {"listChanged": false},
-                "resources": {"subscribe": false, "listChanged": false}
-            },
-            "serverInfo": {
-                "name": "mentisdb",
-                "version": env!("CARGO_PKG_VERSION")
-            },
-            "instructions": "MentisDB is an append-only semantic memory server. READ THIS FIRST: call `resources/read` for `mentisdb://skill/core` immediately after initialize to load the embedded MentisDB operating skill."
-        })),
+        "initialize" => {
+            // Echo back the client's protocol version per the MCP spec.
+            let client_version = params
+                .get("protocolVersion")
+                .and_then(|v| v.as_str())
+                .unwrap_or("2025-11-25");
+            Ok(serde_json::json!({
+                "protocolVersion": client_version,
+                "capabilities": {
+                    "tools": {"listChanged": false},
+                    "resources": {"subscribe": false, "listChanged": false}
+                },
+                "serverInfo": {
+                    "name": "mentisdb",
+                    "version": env!("CARGO_PKG_VERSION")
+                },
+                "instructions": "MentisDB is an append-only semantic memory server. READ THIS FIRST: call `resources/read` for `mentisdb://skill/core` immediately after initialize to load the embedded MentisDB operating skill."
+            }))
+        }
         "ping" => Ok(serde_json::json!({})),
         "tools/list" => match protocol.list_tools().await {
             Ok(tools) => Ok(serde_json::json!({
@@ -1136,7 +1164,8 @@ async fn handle_stdio_jsonrpc(line: &str, protocol: &MentisDbMcpProtocol) -> Opt
                     serde_json::json!({
                         "name": def.name,
                         "description": def.description,
-                        "inputSchema": def.parameters_schema
+                        "inputSchema": def.parameters_schema,
+                        "execution": {"taskSupport": "optional"}
                     })
                 }).collect::<Vec<_>>()
             })),
@@ -1203,6 +1232,40 @@ fn canonical_tool_name(name: &str) -> String {
         return name.to_string();
     }
     format!("mentisdb_{}", name)
+}
+
+/// Headless HTTP server mode — starts servers without TUI.
+/// Used when the stdio proxy auto-launches a background daemon.
+async fn run_headless() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    #[cfg(feature = "server")]
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    raise_fd_limit();
+    init_logger();
+
+    let config = MentisDbServerConfig::from_env();
+
+    // Run migrations silently
+    if std::env::var_os("MENTISDB_DIR").is_none() {
+        let _ = adopt_legacy_default_mentisdb_dir();
+    }
+    let _ = migrate_registered_chains_with_adapter(
+        &config.service.chain_dir,
+        config.service.default_storage_adapter,
+        |_| {}, // no-op event handler
+    );
+
+    // Start servers
+    let handles = start_servers(config).await?;
+
+    eprintln!(
+        "[mentisdbd headless] MCP http://{} REST http://{}",
+        handles.mcp.local_addr(),
+        handles.rest.local_addr(),
+    );
+
+    // Wait for Ctrl+C
+    tokio::signal::ctrl_c().await.ok();
+    Ok(())
 }
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -2135,6 +2198,7 @@ pub(crate) enum DaemonArgMode {
     Help,
     Run,
     RunWithForceUpdate,
+    RunHeadless,
     Stdio,
     Both,
     Update,
@@ -2180,6 +2244,11 @@ where
         };
     }
 
+    // Handle --headless flag (skip TUI, used when auto-launching daemon from proxy)
+    let headless = args
+        .iter()
+        .any(|arg| arg.to_string_lossy() == "--headless");
+
     // Handle --mode flag
     if let Some(mode_idx) = args
         .iter()
@@ -2191,7 +2260,13 @@ where
         let mode = args[mode_idx + 1].to_string_lossy();
         match mode.as_ref() {
             "stdio" => return Ok(DaemonArgMode::Stdio),
-            "http" => return Ok(DaemonArgMode::Run),
+            "http" => {
+                return Ok(if headless {
+                    DaemonArgMode::RunHeadless
+                } else {
+                    DaemonArgMode::Run
+                })
+            }
             "both" => return Ok(DaemonArgMode::Both),
             _ => {
                 return Err(format!(
@@ -2349,6 +2424,13 @@ async fn main() -> ExitCode {
             }
         },
         Ok(DaemonArgMode::RunWithForceUpdate) => match run_with_force_update().await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::from(1)
+            }
+        },
+        Ok(DaemonArgMode::RunHeadless) => match run_headless().await {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("{error}");
