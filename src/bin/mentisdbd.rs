@@ -946,9 +946,9 @@ async fn proxy_jsonrpc_to_daemon(mcp_addr: &str, request: &str) -> Option<String
         // back to stdout — the daemon returns 202 Accepted with no body.
         let request_bytes = request.as_bytes().to_vec();
         let _ = tokio::task::spawn_blocking(move || {
-            ureq::post(&url)
+            let _ = ureq::post(&url)
                 .set("Content-Type", "application/json")
-                .send(&*request_bytes)
+                .send(&*request_bytes);
         })
         .await;
         return None;
@@ -1125,10 +1125,6 @@ async fn handle_stdio_jsonrpc(line: &str, protocol: &MentisDbMcpProtocol) -> Opt
     }
 
     // Notifications (no id) — silently absorb, no response per JSON-RPC spec.
-    if request.get("id").is_none() {
-        return None;
-    }
-
     let id = request.get("id").cloned()?;
     let method = request.get("method")?.as_str()?;
     let params = request
