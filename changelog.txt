@@ -1,4 +1,13 @@
-0.9.7.43 UNRELEASED
+0.9.7.43 APR/30/2026
+  - fix(dashboard): harden skill Markdown rendering — dashboard-rendered skill
+    links now escape labels and href attributes, allow only http/https/mailto
+    protocols, and render unsafe links as plain text, preventing stored skill
+    content from creating scriptable links in the same-origin dashboard
+  - fix(dashboard): editing from the skill detail page now targets the version
+    being viewed and defaults to the latest version instead of the oldest
+    version; valid-but-missing version UUIDs now return 404 instead of 500
+  - chore(backup): ignore the new *.mentis backup archive extension in git so
+    private chain, agent, vector, and skill data is not accidentally committed
   - fix(stdio): remove synthetic ack for notifications in stdio proxy — the old
     {id:'ack', result:{}} response broke Claude Desktop's MCP SDK which validates
     that response ids match pending requests; notifications are now silently
