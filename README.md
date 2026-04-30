@@ -938,7 +938,7 @@ Dashboard capabilities:
 - latest agent-thought browsing without restarting the daemon after new thoughts are appended
 - chain import from `MEMORY.md`
 - cross-chain agent-memory copy with agent metadata preserved on the target chain
-- skill browsing, diffing, deprecation, and revocation
+- skill browsing, diffing, editing into new immutable versions, deprecation, and revocation
 
 Protect the dashboard with `MENTISDB_DASHBOARD_PIN` whenever the daemon is reachable
 outside localhost.
@@ -1150,7 +1150,7 @@ Each uploaded skill version records:
 - source format
 - integrity hash
 
-Uploaders must already exist in the agent registry for the referenced chain. Reusing an existing `skill_id` creates a new immutable version; it does not overwrite history.
+Uploaders must already exist in the agent registry for the referenced chain. Reusing an existing `skill_id` creates a new immutable version; it does not overwrite history. The dashboard can create those new versions from either the Skills table or a skill detail page while preserving the original uploader identity and source format.
 
 `read_skill` responses include explicit safety warnings because `SKILL.md` content can be malicious. Treat every skill as advisory until provenance, trust, and requested capabilities are validated.
 
@@ -1447,8 +1447,9 @@ default) via the health endpoint.
   `initialize`, `ping`, and `resources/read` are handled locally. All clients
   share the same live in-memory chain cache.
 - **No daemon** → the stdio process launches the daemon in the background
-  (`nohup` on Unix, `start /B` on Windows), waits for it to become responsive,
-  then proxies. The daemon outlives the stdio process.
+  (`nohup` on Unix, `start /B` on Windows) with `--mode http --headless`, waits
+  for it to become responsive, then proxies. The daemon outlives the stdio
+  process without starting the TUI on a null stdin.
 - **Daemon launch fails** → falls back to local mode, creating its own
   `MentisDbService` instance (state shared only via disk files).
 
