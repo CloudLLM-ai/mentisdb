@@ -1,6 +1,13 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 → 0.9.6.42)
+## Shipped (0.8.2 -> 0.9.7.43)
+
+### 0.9.7.43 - Dashboard Skill Editing and Stdio Reliability
+- **Dashboard skill editing** - operators can edit skills from the Skills table or a skill detail page; saving creates a new immutable version through the existing upload path and preserves uploader identity/source format
+- **Version-correct detail edits** - the skill detail page defaults to the latest version and edits the version currently being viewed; missing version UUIDs return 404 instead of 500
+- **Rendered skill Markdown hardening** - dashboard link rendering escapes labels/hrefs, allowlists http/https/mailto, and renders unsafe links as plain text
+- **Stdio reliability** - strict MCP clients no longer receive synthetic notification acknowledgements, and background daemon launch uses headless HTTP mode
+- **Primer consistency** - the agent primer now uses `use mentisdb as your memory system` across TUI, mentisdb.com, and docs.mentisdb.com
 
 ### 0.9.6.42 — SSE, bind_host, Agent-Scoped Context
 - **SSE on MCP servers** — `start_mcp_server` and `start_https_mcp_server` return `(ServerHandle, SseBroadcaster)`; GET endpoint serves `text/event-stream` with live MCP events; POST auto-broadcasts JSON-RPC results/errors as SSE events; cloudllm_mcp 0.3.0
