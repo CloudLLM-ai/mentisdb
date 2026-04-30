@@ -1,4 +1,8 @@
 0.9.7.43 UNRELEASED
+  - fix(mcp): write valid JSON-RPC ack for notifications in stdio proxy so
+    Claude Desktop connects without 'Unexpected end of JSON input' error;
+    notifications now get {jsonrpc:2.0, id:'ack', result:{}} so the client's
+    parser always finds complete JSON on the pipe
   - fix(update): clean up TUI terminal before restart to prevent ANSI garbage;
     old code called cmd.spawn()+exit(0) which killed the TUI thread without
     running TerminalCleanup, so the new process inherited alternate screen +
