@@ -740,6 +740,21 @@
       .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
 
+  function safeMarkdownHref(rawHref) {
+    const href = String(rawHref || '').trim();
+    const normalized = href.replace(/[\u0000-\u001F\u007F\s]+/g, '').toLowerCase();
+    if (!href || normalized.startsWith('javascript:') || normalized.startsWith('data:') || normalized.startsWith('vbscript:')) {
+      return '';
+    }
+    try {
+      const url = new URL(href, window.location.origin);
+      if (!['http:', 'https:', 'mailto:'].includes(url.protocol.toLowerCase())) return '';
+    } catch (_) {
+      return '';
+    }
+    return esc(href);
+  }
+
   function fmtDate(str) {
     if (!str) return '—';
     const d = new Date(str);
@@ -2671,8 +2686,11 @@
       <a href="#skills" class="back-link">← Back to Skills</a>
       <div id="sd-body"><div class="spinner-wrap"><div class="spinner"></div></div></div>
     `;
+    const detailUrl = SD.versionId
+      ? `/dashboard/api/skills/${encodeURIComponent(skillId)}?version=${encodeURIComponent(SD.versionId)}`
+      : `/dashboard/api/skills/${encodeURIComponent(skillId)}`;
     Promise.all([
-      api(`/dashboard/api/skills/${encodeURIComponent(skillId)}`),
+      api(detailUrl),
       api(`/dashboard/api/skills/${encodeURIComponent(skillId)}/versions`)
     ])
     .then(([sd, versions]) => buildSkillDetail(skillId, sd, versions))
@@ -2683,7 +2701,7 @@
     const el      = document.getElementById('sd-body');
     const summary = sd.summary || {};
     let   markdown = sd.markdown || '';
-    if (!SD.versionId && versions && versions.length) SD.versionId = versions[0].version_id;
+    if (!SD.versionId && versions && versions.length) SD.versionId = versions[versions.length - 1].version_id;
 
     el.innerHTML = `
       <div class="page-header" style="margin-bottom:14px">
@@ -2875,14 +2893,20 @@
 
     function inlineProcess(text) {
       const codes = [];
+      const links = [];
       text = text.replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return '\x00IC'+(codes.length-1)+'\x00'; });
-      text = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+      text = text.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (_, label, href) => {
+        const safeHref = safeMarkdownHref(href);
+        links.push(safeHref ? `<a href="${safeHref}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>` : esc(label));
+        return '\x00IL'+(links.length-1)+'\x00';
+      });
+      text = esc(text);
       text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
       text = text.replace(/\*\*(.+?)\*\*/g,     '<strong>$1</strong>');
       text = text.replace(/\*(.+?)\*/g,          '<em>$1</em>');
       text = text.replace(/__(.+?)__/g,          '<strong>$1</strong>');
       text = text.replace(/_([^_\s][^_]*)_/g,   '<em>$1</em>');
+      text = text.replace(/\x00IL(\d+)\x00/g,   (_,i) => links[+i] || '');
       text = text.replace(/\x00IC(\d+)\x00/g,   (_,i) => `<code>${esc(codes[+i])}</code>`);
       return text;
     }

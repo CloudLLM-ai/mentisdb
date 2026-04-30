@@ -184,8 +184,14 @@ async fn dashboard_serves_skill_edit_controls() {
     ));
     assert!(html.contains("function(skillId, versionId)"));
     assert!(html.contains("?version=${encodeURIComponent(versionId)}"));
+    assert!(html.contains("const detailUrl = SD.versionId"));
+    assert!(html.contains("versions[versions.length - 1].version_id"));
     assert!(html.contains("skill_id: _editSkillId"));
     assert!(html.contains("api('/dashboard/api/skills'"));
+    assert!(html.contains("function safeMarkdownHref(rawHref)"));
+    assert!(html.contains("normalized.startsWith('javascript:')"));
+    assert!(html.contains("rel=\"noopener noreferrer\""));
+    assert!(!html.contains(r#"<a href="$2" target="_blank" rel="noopener">$1</a>"#));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -316,6 +322,7 @@ Second dashboard body.
         .contains("Second dashboard body."));
 
     let selected = router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(format!(
@@ -334,6 +341,19 @@ Second dashboard body.
     let selected_markdown = selected_json["markdown"].as_str().unwrap();
     assert!(selected_markdown.contains("First dashboard body."));
     assert!(!selected_markdown.contains("Second dashboard body."));
+
+    let missing_version = router
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/dashboard/api/skills/{skill_id}?version=00000000-0000-0000-0000-000000000000"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_version.status(), axum::http::StatusCode::NOT_FOUND);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -376,6 +376,18 @@ fn not_found(msg: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
     )
 }
 
+/// Map skill registry read failures to user-facing dashboard status codes.
+fn skill_read_error(err: std::io::Error) -> (StatusCode, Json<Value>) {
+    match err.kind() {
+        std::io::ErrorKind::NotFound => not_found(err),
+        std::io::ErrorKind::InvalidInput => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": err.to_string() })),
+        ),
+        _ => internal_error(err),
+    }
+}
+
 /// Return `true` when a cached chain has been deleted on disk and should no
 /// longer be served from the dashboard cache.
 async fn evict_deleted_cached_chain(
@@ -1768,7 +1780,7 @@ async fn api_get_skill(
 
     let output = skills
         .read_skill(&skill_id, version_id, SkillFormat::Markdown)
-        .map_err(internal_error)?;
+        .map_err(skill_read_error)?;
 
     Ok(Json(
         json!({ "summary": summary, "markdown": output.content, "warnings": output.warnings, "status": output.status }),
@@ -1820,11 +1832,11 @@ async fn api_skill_diff(
 
     let old_content = skills
         .read_skill(&skill_id, from_id, SkillFormat::Markdown)
-        .map_err(internal_error)?;
+        .map_err(skill_read_error)?;
 
     let new_content = skills
         .read_skill(&skill_id, to_id, SkillFormat::Markdown)
-        .map_err(internal_error)?;
+        .map_err(skill_read_error)?;
 
     let patch = diffy::create_patch(&old_content.content, &new_content.content);
     Ok(Json(json!({ "diff": patch.to_string() })))
