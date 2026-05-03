@@ -1,3 +1,15 @@
+0.9.8.44 UNRELEASED
+  - feat(tui): show chain file size in Storage Location column — prefixed with
+    human-readable size in brackets (e.g. [10 KB] /path/to/chain.tcbin); sizes
+    shown in B, KB, MB, or GB as appropriate
+  - feat(config): dotenvy support — mentisdbd now loads environment variables
+    from a `.env` file in the current working directory at startup; existing
+    shell environment variables take precedence over `.env` values; silently
+    ignored when no `.env` file is present; all `MENTISDB_*` env vars,
+    `RUST_LOG`, and `OPENAI_API_KEY` can now be managed via project-local
+    `.env` files for cleaner per-project configuration
+
+
 0.9.7.43 APR/30/2026
   - fix(dashboard): harden skill Markdown rendering — dashboard-rendered skill
     links now escape labels and href attributes, allow only http/https/mailto

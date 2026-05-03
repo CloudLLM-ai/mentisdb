@@ -57,6 +57,23 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 /// Embedded MentisDB skill markdown for proxy-mode resource reads.
 const MENTISDB_SKILL_MD: &str = include_str!("../../MENTISDB_SKILL.md");
 
+/// Format a byte count as a human-readable file size (KB, MB, GB).
+fn format_file_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let kb = bytes as f64 / 1024.0;
+    if kb < 1024.0 {
+        return format!("{:.0} KB", kb.ceil());
+    }
+    let mb = kb / 1024.0;
+    if mb < 1024.0 {
+        return format!("{:.1} MB", mb);
+    }
+    let gb = mb / 1024.0;
+    format!("{:.2} GB", gb)
+}
+
 type StartupData = (
     MentisDbServerConfig,
     UpdateConfig,
@@ -1403,7 +1420,17 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 adapter: reg.storage_adapter.to_string(),
                 thoughts: reg.thought_count as usize,
                 agents: reg.agent_count,
-                storage_path: reg.storage_location.clone(),
+                storage_path: {
+                let p = &reg.storage_location;
+                let size_str = std::fs::metadata(p)
+                    .map(|m| format_file_size(m.len()))
+                    .unwrap_or_default();
+                if size_str.is_empty() {
+                    p.clone()
+                } else {
+                    format!("[{size_str}] {p}")
+                }
+            },
             });
         }
 
@@ -1954,7 +1981,17 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
                 adapter: reg.storage_adapter.to_string(),
                 thoughts: reg.thought_count as usize,
                 agents: reg.agent_count,
-                storage_path: reg.storage_location.clone(),
+                storage_path: {
+                let p = &reg.storage_location;
+                let size_str = std::fs::metadata(p)
+                    .map(|m| format_file_size(m.len()))
+                    .unwrap_or_default();
+                if size_str.is_empty() {
+                    p.clone()
+                } else {
+                    format!("[{size_str}] {p}")
+                }
+            },
             });
         }
 
@@ -2410,6 +2447,10 @@ async fn run_update_standalone(force: bool) -> ExitCode {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Load .env from the current directory if present.
+    // Silently ignored when missing; existing env vars take precedence.
+    let _ = dotenvy::dotenv();
+
     match parse_daemon_args(std::env::args_os().skip(1)) {
         Ok(DaemonArgMode::Help) => {
             println!("{}", daemon_help_text());
