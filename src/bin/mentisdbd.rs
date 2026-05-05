@@ -1421,16 +1421,16 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 thoughts: reg.thought_count as usize,
                 agents: reg.agent_count,
                 storage_path: {
-                let p = &reg.storage_location;
-                let size_str = std::fs::metadata(p)
-                    .map(|m| format_file_size(m.len()))
-                    .unwrap_or_default();
-                if size_str.is_empty() {
-                    p.clone()
-                } else {
-                    format!("[{size_str}] {p}")
-                }
-            },
+                    let p = &reg.storage_location;
+                    let size_str = std::fs::metadata(p)
+                        .map(|m| format_file_size(m.len()))
+                        .unwrap_or_default();
+                    if size_str.is_empty() {
+                        p.clone()
+                    } else {
+                        format!("[{size_str}] {p}")
+                    }
+                },
             });
         }
 
@@ -1982,16 +1982,16 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
                 thoughts: reg.thought_count as usize,
                 agents: reg.agent_count,
                 storage_path: {
-                let p = &reg.storage_location;
-                let size_str = std::fs::metadata(p)
-                    .map(|m| format_file_size(m.len()))
-                    .unwrap_or_default();
-                if size_str.is_empty() {
-                    p.clone()
-                } else {
-                    format!("[{size_str}] {p}")
-                }
-            },
+                    let p = &reg.storage_location;
+                    let size_str = std::fs::metadata(p)
+                        .map(|m| format_file_size(m.len()))
+                        .unwrap_or_default();
+                    if size_str.is_empty() {
+                        p.clone()
+                    } else {
+                        format!("[{size_str}] {p}")
+                    }
+                },
             });
         }
 

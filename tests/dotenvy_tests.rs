@@ -34,7 +34,8 @@ fn temp_env_file(contents: &str) -> PathBuf {
     let name = format!("{}env-{}", TEST_VAR_PREFIX, uuid::Uuid::new_v4());
     let path = dir.join(&name);
     let mut file = std::fs::File::create(&path).expect("create temp .env");
-    file.write_all(contents.as_bytes()).expect("write temp .env");
+    file.write_all(contents.as_bytes())
+        .expect("write temp .env");
     path
 }
 
@@ -155,7 +156,8 @@ fn config_from_env_respects_shell_over_dotenv() {
 
     let config = MentisDbServerConfig::from_env();
     assert_eq!(
-        config.mcp_addr.port(), 7777,
+        config.mcp_addr.port(),
+        7777,
         "config should use shell value, not .env value"
     );
 
