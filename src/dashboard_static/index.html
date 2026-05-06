@@ -1500,23 +1500,33 @@
         const totalAgents = chains.reduce((s, c) => s + (c.agent_count || 0), 0);
         const avgThoughtSize = totalThoughts > 0 ? Math.round(totalSize / totalThoughts) : 0;
 
+        // Sidecar totals for the summary bar
+        const totalAgentsSize = chains.reduce((s, c) => s + (c.agents_size || 0), 0);
+        const totalEntitiesSize = chains.reduce((s, c) => s + (c.entities_size || 0), 0);
+        const totalVectorsSize = chains.reduce((s, c) => s + (c.vectors_size || 0), 0);
+
         el.innerHTML = `
           <div class="summary-bar" style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px;padding:12px 16px;background:#161b22;border:1px solid #30363d;border-radius:8px">
             <div><span style="color:#8b949e;font-size:0.78rem;text-transform:uppercase;letter-spacing:0.4px">Total Size</span><div style="color:#e6edf3;font-size:1.1rem;font-weight:600">${esc(formatBytes(totalSize))}</div></div>
             <div><span style="color:#8b949e;font-size:0.78rem;text-transform:uppercase;letter-spacing:0.4px">Total Thoughts</span><div style="color:#e6edf3;font-size:1.1rem;font-weight:600">${esc(String(totalThoughts))}</div></div>
             <div><span style="color:#8b949e;font-size:0.78rem;text-transform:uppercase;letter-spacing:0.4px">Total Agents</span><div style="color:#e6edf3;font-size:1.1rem;font-weight:600">${esc(String(totalAgents))}</div></div>
             <div><span style="color:#8b949e;font-size:0.78rem;text-transform:uppercase;letter-spacing:0.4px">Avg Thought Size</span><div style="color:#e6edf3;font-size:1.1rem;font-weight:600">${esc(formatBytes(avgThoughtSize))}</div></div>
+            <div><span style="color:#8b949e;font-size:0.78rem;text-transform:uppercase;letter-spacing:0.4px">Total Agent Index</span><div style="color:#e6edf3;font-size:1.1rem;font-weight:600">${esc(formatBytes(totalAgentsSize))}</div></div>
+            <div><span style="color:#8b949e;font-size:0.78rem;text-transform:uppercase;letter-spacing:0.4px">Total Entity Index</span><div style="color:#e6edf3;font-size:1.1rem;font-weight:600">${esc(formatBytes(totalEntitiesSize))}</div></div>
+            <div><span style="color:#8b949e;font-size:0.78rem;text-transform:uppercase;letter-spacing:0.4px">Total Vector Index</span><div style="color:#e6edf3;font-size:1.1rem;font-weight:600">${esc(formatBytes(totalVectorsSize))}</div></div>
           </div>
           <div class="table-wrap"><table>
-            <thead><tr><th>Chain Key</th><th>Thoughts</th><th>Agents</th><th>Head Hash</th><th>Size</th><th></th></tr></thead>
+            <thead><tr><th>Chain Key</th><th>Thoughts</th><th>Agents</th><th>Chain</th><th>Agent Idx</th><th>Entity Idx</th><th>Vector Idx</th><th></th></tr></thead>
             <tbody>
               ${chains.map(c => `
                 <tr class="clickable" onclick="location.hash='chains/${encodeURIComponent(c.chain_key)}'">
                   <td><span class="mono" style="color:#58a6ff">${esc(c.chain_key)}</span></td>
                   <td>${esc(String(c.thought_count ?? '—'))}</td>
                   <td onclick="event.stopPropagation()"><a href="${agentListHash(c.chain_key)}" class="mono" style="color:#58a6ff;text-decoration:none">${esc(String(c.agent_count  ?? '—'))}</a></td>
-                  <td class="mono" style="color:#8b949e">${c.head_hash ? esc(c.head_hash.slice(0,8)) : '—'}</td>
                   <td style="white-space:nowrap;color:#8b949e">${esc(c.storage_size_formatted ?? '—')}</td>
+                  <td style="white-space:nowrap;color:#8b949e">${esc(c.agents_size_formatted ?? '—')}</td>
+                  <td style="white-space:nowrap;color:#8b949e">${esc(c.entities_size_formatted ?? '—')}</td>
+                  <td style="white-space:nowrap;color:#8b949e">${esc(c.vectors_size_formatted ?? '—')}</td>
                   <td onclick="event.stopPropagation()" style="white-space:nowrap">
                     <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);margin-right:6px" onclick="window._openBranchChain('${esc(c.chain_key)}')">Branch…</button>
                     <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);margin-right:6px" onclick="window._openMergeChain('${esc(c.chain_key)}')">Merge into…</button>

@@ -870,6 +870,49 @@ struct SkillReadQuery {
 
 // ── API: chain listing ────────────────────────────────────────────────────────
 
+/// Compute the total byte size of every vector sidecar file that belongs to
+/// one chain by scanning the chain directory for files matching the stem prefix.
+fn vector_sidecars_size(chain_dir: &std::path::Path, stem: &str) -> u64 {
+    let prefix = format!("{stem}.vectors.");
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(chain_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(&prefix) && name.ends_with(".json") {
+                if let Ok(meta) = entry.metadata() {
+                    total += meta.len();
+                }
+            }
+        }
+    }
+    total
+}
+
+/// Build a JSON object describing the size of every per-chain sidecar file.
+fn chain_sidecar_sizes(storage_location: &str) -> (u64, u64, u64, u64) {
+    let path = std::path::PathBuf::from(storage_location);
+    let chain_dir = path.parent().unwrap_or(std::path::Path::new(""));
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    let agents_size = std::fs::metadata(chain_dir.join(format!("{stem}.agents.json")))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let entities_size = std::fs::metadata(chain_dir.join(format!("{stem}.entity-types.json")))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let vectors_size = vector_sidecars_size(chain_dir, stem);
+    let vector_config_size =
+        std::fs::metadata(chain_dir.join(format!("{stem}.vectors.managed.json")))
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+    (agents_size, entities_size, vectors_size, vector_config_size)
+}
+
 /// `GET /dashboard/api/chains`
 ///
 /// Returns a JSON array of chain summaries with live thought and agent counts.
@@ -884,7 +927,7 @@ async fn api_chains(
     let registry = load_registered_chains(&state.mentisdb_dir).map_err(internal_error)?;
 
     // Start with all registered chains, then overlay live (in-memory) counts
-    // for any chains that are already open in the DashMap cache.
+    // for any chains already open in the DashMap cache.
     let mut by_key: BTreeMap<String, Value> = registry
         .chains
         .into_iter()
@@ -892,13 +935,22 @@ async fn api_chains(
             let storage_size = std::fs::metadata(&reg.storage_location)
                 .map(|m| m.len())
                 .unwrap_or(0);
+            let (agents_size, entities_size, vectors_size, vector_config_size) =
+                chain_sidecar_sizes(&reg.storage_location);
             let v = json!({
-                "chain_key":              key.clone(),
-                "thought_count":          reg.thought_count,
-                "agent_count":            reg.agent_count,
-                "head_hash":              Value::Null,
-                "storage_size":           storage_size,
-                "storage_size_formatted": format_bytes(storage_size),
+                "chain_key":                    key.clone(),
+                "thought_count":                reg.thought_count,
+                "agent_count":                  reg.agent_count,
+                "storage_size":                 storage_size,
+                "storage_size_formatted":       format_bytes(storage_size),
+                "agents_size":                  agents_size,
+                "agents_size_formatted":        format_bytes(agents_size),
+                "entities_size":                entities_size,
+                "entities_size_formatted":      format_bytes(entities_size),
+                "vectors_size":                 vectors_size,
+                "vectors_size_formatted":       format_bytes(vectors_size),
+                "vector_config_size":           vector_config_size,
+                "vector_config_size_formatted": format_bytes(vector_config_size),
             });
             (key, v)
         })
@@ -912,13 +964,22 @@ async fn api_chains(
             let storage_size = std::fs::metadata(chain.storage_location())
                 .map(|m| m.len())
                 .unwrap_or(0);
+            let (agents_size, entities_size, vectors_size, vector_config_size) =
+                chain_sidecar_sizes(&chain.storage_location());
             let v = json!({
-                "chain_key":              key.clone(),
-                "thought_count":          chain.thoughts().len(),
-                "agent_count":            chain.agent_registry().agents.len(),
-                "head_hash":              chain.head_hash().map(ToString::to_string),
-                "storage_size":           storage_size,
-                "storage_size_formatted": format_bytes(storage_size),
+                "chain_key":                    key.clone(),
+                "thought_count":                chain.thoughts().len(),
+                "agent_count":                  chain.agent_registry().agents.len(),
+                "storage_size":                 storage_size,
+                "storage_size_formatted":       format_bytes(storage_size),
+                "agents_size":                  agents_size,
+                "agents_size_formatted":        format_bytes(agents_size),
+                "entities_size":                entities_size,
+                "entities_size_formatted":      format_bytes(entities_size),
+                "vectors_size":                 vectors_size,
+                "vectors_size_formatted":       format_bytes(vectors_size),
+                "vector_config_size":           vector_config_size,
+                "vector_config_size_formatted": format_bytes(vector_config_size),
             });
             by_key.insert(key, v);
         }
@@ -933,15 +994,24 @@ async fn api_chains(
                 let storage_size = std::fs::metadata(chain.storage_location())
                     .map(|m| m.len())
                     .unwrap_or(0);
+                let (agents_size, entities_size, vectors_size, vector_config_size) =
+                    chain_sidecar_sizes(&chain.storage_location());
                 by_key.insert(
                     key.clone(),
                     json!({
-                        "chain_key":              key,
-                        "thought_count":          chain.thoughts().len(),
-                        "agent_count":            chain.agent_registry().agents.len(),
-                        "head_hash":              chain.head_hash().map(ToString::to_string),
-                        "storage_size":           storage_size,
-                        "storage_size_formatted": format_bytes(storage_size),
+                        "chain_key":                    key,
+                        "thought_count":                chain.thoughts().len(),
+                        "agent_count":                  chain.agent_registry().agents.len(),
+                        "storage_size":                 storage_size,
+                        "storage_size_formatted":       format_bytes(storage_size),
+                        "agents_size":                  agents_size,
+                        "agents_size_formatted":        format_bytes(agents_size),
+                        "entities_size":                entities_size,
+                        "entities_size_formatted":      format_bytes(entities_size),
+                        "vectors_size":                 vectors_size,
+                        "vectors_size_formatted":       format_bytes(vectors_size),
+                        "vector_config_size":           vector_config_size,
+                        "vector_config_size_formatted": format_bytes(vector_config_size),
                     }),
                 );
             }
