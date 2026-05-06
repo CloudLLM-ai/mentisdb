@@ -1058,6 +1058,15 @@
   function spinner(el) { el.innerHTML = '<div class="spinner-wrap"><div class="spinner"></div></div>'; }
   function errBox(el, msg) { el.innerHTML = `<div class="error-state">⚠️ ${esc(msg)}</div>`; }
 
+  function formatBytes(bytes) {
+    if (bytes === 0 || bytes == null) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    const i = Math.min(Math.floor(Math.log10(bytes) / 3), units.length - 1);
+    const val = bytes / Math.pow(1000, i);
+    const decimals = i === 0 ? 0 : (val < 10 ? 2 : (val < 100 ? 1 : 0));
+    return `${val.toFixed(decimals)} ${units[i]}`;
+  }
+
   async function api(path, opts = {}) {
     const r = await fetch(path, { credentials: 'include', ...opts });
     if (!r.ok) {
@@ -1463,7 +1472,20 @@
       .then(chains => {
         if (!chains || !chains.length) { el.innerHTML = '<div class="empty-state">No chains found. Bootstrap one above!</div>'; return; }
         _chainListCache = chains;
+
+        // Summary stats
+        const totalSize = chains.reduce((s, c) => s + (c.storage_size || 0), 0);
+        const totalThoughts = chains.reduce((s, c) => s + (c.thought_count || 0), 0);
+        const totalAgents = chains.reduce((s, c) => s + (c.agent_count || 0), 0);
+        const avgThoughtSize = totalThoughts > 0 ? Math.round(totalSize / totalThoughts) : 0;
+
         el.innerHTML = `
+          <div class="summary-bar" style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px;padding:12px 16px;background:#161b22;border:1px solid #30363d;border-radius:8px">
+            <div><span style="color:#8b949e;font-size:0.78rem;text-transform:uppercase;letter-spacing:0.4px">Total Size</span><div style="color:#e6edf3;font-size:1.1rem;font-weight:600">${esc(formatBytes(totalSize))}</div></div>
+            <div><span style="color:#8b949e;font-size:0.78rem;text-transform:uppercase;letter-spacing:0.4px">Total Thoughts</span><div style="color:#e6edf3;font-size:1.1rem;font-weight:600">${esc(String(totalThoughts))}</div></div>
+            <div><span style="color:#8b949e;font-size:0.78rem;text-transform:uppercase;letter-spacing:0.4px">Total Agents</span><div style="color:#e6edf3;font-size:1.1rem;font-weight:600">${esc(String(totalAgents))}</div></div>
+            <div><span style="color:#8b949e;font-size:0.78rem;text-transform:uppercase;letter-spacing:0.4px">Avg Thought Size</span><div style="color:#e6edf3;font-size:1.1rem;font-weight:600">${esc(formatBytes(avgThoughtSize))}</div></div>
+          </div>
           <div class="table-wrap"><table>
             <thead><tr><th>Chain Key</th><th>Thoughts</th><th>Agents</th><th>Head Hash</th><th>Size</th><th></th></tr></thead>
             <tbody>
