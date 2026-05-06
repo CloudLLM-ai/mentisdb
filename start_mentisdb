@@ -10,4 +10,4 @@ cd "$(dirname "$0")"
 # export MENTISDB_BIND_HOST="127.0.0.1"
 # export MENTISDB_MCP_PORT="9471"
 # export MENTISDB_REST_PORT="9472"
-cargo run --bin mentisdbd
+cargo run --bin mentisdb

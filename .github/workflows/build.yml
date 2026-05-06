@@ -12,7 +12,7 @@ env:
 
 jobs:
   build:
-    name: mentisdbd (${{ matrix.target }})
+    name: mentisdb (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -23,24 +23,24 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            binary: mentisdbd
-            artifact: mentisdbd-linux-x86_64
+            binary: mentisdb
+            artifact: mentisdb-linux-x86_64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            binary: mentisdbd
-            artifact: mentisdbd-linux-arm64
+            binary: mentisdb
+            artifact: mentisdb-linux-arm64
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary: mentisdbd
-            artifact: mentisdbd-macos-arm64
+            binary: mentisdb
+            artifact: mentisdb-macos-arm64
           - os: macos-latest
             target: x86_64-apple-darwin
-            binary: mentisdbd
-            artifact: mentisdbd-macos-x86_64
+            binary: mentisdb
+            artifact: mentisdb-macos-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary: mentisdbd.exe
-            artifact: mentisdbd-windows-x86_64.exe
+            binary: mentisdb.exe
+            artifact: mentisdb-windows-x86_64.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -67,8 +67,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-build-
 
-      - name: Build mentisdbd (release)
-        run: cargo build --bin mentisdbd --release --target ${{ matrix.target }}
+      - name: Build mentisdb (release)
+        run: cargo build --bin mentisdb --release --target ${{ matrix.target }}
 
       - name: Stage target-specific binary
         shell: bash

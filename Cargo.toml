@@ -10,7 +10,7 @@ documentation = "https://docs.rs/mentisdb/latest/mentisdb/"
 readme = "README.md"
 keywords = ["agents", "memory", "event-sourcing", "llm", "orchestration"]
 categories = ["data-structures", "development-tools", "asynchronous"]
-exclude = ["data/", "docs/", "lme-benches/", ".fastembed_cache/", ".github/", "start_mentisdbd"]
+exclude = ["data/", "docs/", "lme-benches/", ".fastembed_cache/", ".github/", "start_mentisdb"]
 
 [features]
 default = ["server", "startup-sound", "llm-extraction"]
@@ -98,6 +98,6 @@ name = "search_ranked"
 harness = false
 
 [[bin]]
-name = "mentisdbd"
-path = "src/bin/mentisdbd.rs"
+name = "mentisdb"
+path = "src/bin/mentisdb.rs"
 required-features = ["server"]
