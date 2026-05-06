@@ -99,7 +99,7 @@
     <tr><td>Rust API</td><td>Built in</td><td><code>MentisDb::extract_memories(...)</code> returns <code>ExtractionResult</code></td></tr>
     <tr><td>REST</td><td>Built in</td><td><code>POST /v1/extract-memories</code></td></tr>
     <tr><td>MCP</td><td>Built in</td><td><code>mentisdb_extract_memories</code> for agentic workflows</td></tr>
-    <tr><td>CLI wrapper</td><td>Not yet</td><td>No dedicated <code>mentisdbd ingest</code> command today</td></tr>
+    <tr><td>CLI wrapper</td><td>Not yet</td><td>No dedicated <code>mentisdb ingest</code> command today</td></tr>
   </tbody>
 </table>
 
@@ -117,7 +117,7 @@
   <li>The chain remains unchanged until you explicitly append something.</li>
 </ol>
 
-<pre><code>cargo build --bin mentisdbd
+<pre><code>cargo build --bin mentisdb
 
 MENTISDB_DIR=/tmp/mentisdb-ingestion-live-2 \
 MENTISDB_REST_PORT=19722 \
@@ -125,7 +125,7 @@ MENTISDB_MCP_PORT=19721 \
 MENTISDB_HTTPS_MCP_PORT=0 \
 MENTISDB_HTTPS_REST_PORT=0 \
 MENTISDB_DASHBOARD_PORT=0 \
-target/debug/mentisdbd</code></pre>
+target/debug/mentisdb</code></pre>
 
 <p>
   Then we posted sample text to <code>/v1/extract-memories</code> and checked
@@ -152,7 +152,7 @@ target/debug/mentisdbd</code></pre>
 <pre><code>cargo install mentisdb
 
 # or from the repo
-cargo build --bin mentisdbd</code></pre>
+cargo build --bin mentisdb</code></pre>
 
 <h3>2. Configure an OpenAI-compatible provider</h3>
 
@@ -168,7 +168,7 @@ export LLM_MODEL="gpt-4o"</code></pre>
 
 <h3>3. Start the daemon</h3>
 
-<pre><code>mentisdbd</code></pre>
+<pre><code>mentisdb</code></pre>
 
 <p>
   The REST API defaults to <code>http://127.0.0.1:9472</code>. If you already use MentisDB through

@@ -376,11 +376,11 @@ Library API: `MentisDb::with_dedup_threshold`, `with_dedup_scan_window`. The sup
 
 ### 8.1 CLI
 
-The daemon `mentisdbd` exposes three subcommands that RPC over REST to a running daemon at `http://127.0.0.1:9472`: `add`, `search`, `agents`. They use synchronous HTTP (`ureq`) to avoid pulling in an async runtime for the client path.
+The daemon `mentisdb` exposes three subcommands that RPC over REST to a running daemon at `http://127.0.0.1:9472`: `add`, `search`, `agents`. They use synchronous HTTP (`ureq`) to avoid pulling in an async runtime for the client path.
 
 ### 8.2 MCP Server
 
-`mentisdbd` exposes a streamable HTTP MCP endpoint at `POST /` (port 9471) with 35 tools covering bootstrap, append, search, read, export/import, agent registry, chain management, and a skill registry. Legacy REST endpoints `POST /tools/list` and `POST /tools/execute` remain available for compatibility.
+`mentisdb` exposes a streamable HTTP MCP endpoint at `POST /` (port 9471) with 35 tools covering bootstrap, append, search, read, export/import, agent registry, chain management, and a skill registry. Legacy REST endpoints `POST /tools/list` and `POST /tools/execute` remain available for compatibility.
 
 ### 8.3 Skill Registry
 

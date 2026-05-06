@@ -29,10 +29,10 @@ pip3 install requests datasets
 The dataset is already checked in at `data/longmemeval_oracle.json` — no
 download needed.
 
-### 2. Start mentisdbd
+### 2. Start mentisdb
 
 ```bash
-mentisdbd &
+mentisdb &
 ```
 
 ### 3. Run the benchmark

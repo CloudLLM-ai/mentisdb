@@ -1,6 +1,6 @@
 //! HTTP concurrency benchmark for the MentisDB REST server.
 //!
-//! This harness-free benchmark starts a live `mentisdbd` HTTP server **in-process**
+//! This harness-free benchmark starts a live `mentisdb` HTTP server **in-process**
 //! on a dynamically assigned port (no external daemon required) and measures how
 //! many concurrent tokio tasks the server can serve for both write and read paths.
 //!
@@ -118,10 +118,10 @@ async fn main() {
 
     let handles = start_servers(config)
         .await
-        .expect("in-process mentisdbd failed to start — cannot run HTTP concurrency benchmark");
+        .expect("in-process mentisdb failed to start — cannot run HTTP concurrency benchmark");
 
     let rest_base = Arc::new(format!("http://{}", handles.rest.local_addr()));
-    eprintln!("mentisdbd REST listening at {rest_base}");
+    eprintln!("mentisdb REST listening at {rest_base}");
 
     let client = Arc::new(
         Client::builder()

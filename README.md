@@ -10,7 +10,7 @@ It stores semantically typed thoughts in an append-only, hash-chained memory log
 
 ## Why MentisDB
 
-**Harness Swapping** — the same durable memory works across every AI coding environment. Connect Claude Code, OpenAI Codex, GitHub Copilot CLI, Qwen Code, Cursor, VS Code, or any MCP-capable host to the same `mentisdbd` daemon and your agents share one brain, regardless of which tool you picked up today.
+**Harness Swapping** — the same durable memory works across every AI coding environment. Connect Claude Code, OpenAI Codex, GitHub Copilot CLI, Qwen Code, Cursor, VS Code, or any MCP-capable host to the same `mentisdb` daemon and your agents share one brain, regardless of which tool you picked up today.
 
 **Zero Knowledge Loss Across Context Boundaries** — when an agent's context window fills, it writes a `Summary` checkpoint to MentisDB, compacts, reloads `mentisdb_recent_context`, and continues without losing a single decision. Chat history is ephemeral. MentisDB is permanent.
 
@@ -39,27 +39,27 @@ cargo install mentisdb
 Connect your local AI tools the fast way:
 
 ```bash
-mentisdbd wizard
+mentisdb wizard
 ```
 
 Or target one integration explicitly:
 
 ```bash
-mentisdbd setup codex
-mentisdbd setup all --dry-run
-mentisdbd wizard
-mentisdbd add "The sky is blue"
-mentisdbd search "cache invalidation" --limit 5 --scope session
-mentisdbd agents
+mentisdb setup codex
+mentisdb setup all --dry-run
+mentisdb wizard
+mentisdb add "The sky is blue"
+mentisdb search "cache invalidation" --limit 5 --scope session
+mentisdb agents
 ```
 
 Then start the daemon:
 
 ```bash
-mentisdbd
+mentisdb
 ```
 
-When run in an interactive terminal, `mentisdbd` launches a **full TUI** with
+When run in an interactive terminal, `mentisdb` launches a **full TUI** with
 scrollable panes for configuration, chain/agent/skill tables, and a live event
 log. On an interactive first run with no configured client integrations, it
 offers to launch the setup wizard immediately after startup so you do not have
@@ -68,7 +68,7 @@ to guess the next command.
 Run persistently after closing your SSH session (no TUI in background mode):
 
 ```bash
-nohup mentisdbd &
+nohup mentisdb &
 ```
 
 Modern MCP clients bootstrap themselves from the MCP handshake:
@@ -101,7 +101,7 @@ qwen mcp add --transport http mentisdb http://127.0.0.1:9471
 
 - the standalone `mentisdb` library crate
 - server support for HTTP MCP and REST, enabled by default
-- the `mentisdbd` daemon binary
+- the `mentisdb` daemon binary
 - dedicated tests under `mentisdb/tests`
 
 ---
@@ -112,7 +112,7 @@ A `Makefile` is included at the repository root. All common workflows have a tar
 
 ```bash
 make build          # fmt + release build
-make build-mentisdbd # build only the daemon binary
+make build-mentisdb # build only the daemon binary
 make release        # fmt, check, clippy, build, test, doc in sequence
 make fmt            # cargo fmt
 make check          # cargo check (lib + binary)
@@ -197,7 +197,7 @@ Benchmark coverage:
 - `benches/search_baseline.rs` — 4 benchmarks: lexical/filter-first search baseline over content, registry text, indexed+text intersections, and newest-tail limits
 - `benches/search_ranked.rs` — 4 benchmarks: additive ranked retrieval over lexical content, filtered ranked queries, and heuristic fallback, plus a baseline append-order comparison
 - `benches/skill_registry.rs` — 12 benchmarks: skill upload, search, delta reconstruction, lifecycle
-- `benches/http_concurrency.rs` — starts `mentisdbd` in-process on a random port; measures write and read throughput at 100 / 1k / 10k concurrent Tokio tasks with p50/p95/p99 latency reporting
+- `benches/http_concurrency.rs` — starts `mentisdb` in-process on a random port; measures write and read throughput at 100 / 1k / 10k concurrent Tokio tasks with p50/p95/p99 latency reporting
 
 Baseline numbers from the `DashMap` concurrent chain lookup refactor: **750–930 read req/s at 10k concurrent tasks**, compared to a sequential bottleneck on the previous `RwLock<HashMap>` implementation.
 
@@ -225,12 +225,12 @@ cargo doc --no-deps --no-default-features
 
 ## Run The Daemon
 
-The standalone executable is `mentisdbd`.
+The standalone executable is `mentisdb`.
 
 Run it from source:
 
 ```bash
-cargo run --bin mentisdbd
+cargo run --bin mentisdb
 ```
 
 Install it from the crate directory:
@@ -241,16 +241,16 @@ make install
 cargo install --path . --locked
 ```
 
-`mentisdbd` now owns both daemon startup and local integration setup:
+`mentisdb` now owns both daemon startup and local integration setup:
 
 ```bash
-mentisdbd setup codex
-mentisdbd setup all --dry-run
-mentisdbd wizard
-mentisdbd add "The sky is blue"
-mentisdbd search "cache invalidation" --limit 5 --scope session
-mentisdbd agents
-mentisdbd
+mentisdb setup codex
+mentisdb setup all --dry-run
+mentisdb wizard
+mentisdb add "The sky is blue"
+mentisdb search "cache invalidation" --limit 5 --scope session
+mentisdb agents
+mentisdb
 ```
 
 When it starts, it serves:
@@ -276,7 +276,7 @@ Once startup completes, it prints:
 
 ## Daemon Configuration
 
-`mentisdbd` is configured with environment variables:
+`mentisdb` is configured with environment variables:
 
 - `MENTISDB_DIR`
   Directory where MentisDB storage adapters store chain files.
@@ -317,7 +317,7 @@ Once startup completes, it prints:
   Lower values = lower latency; higher values = better throughput.
   Default: `2`
 - `MENTISDB_UPDATE_CHECK`
-  Background GitHub release check for `mentisdbd`. Enabled by default; set `0`, `false`, `no`,
+  Background GitHub release check for `mentisdb`. Enabled by default; set `0`, `false`, `no`,
   or `off` to disable update checks after startup. Default: `true`
 - `MENTISDB_UPDATE_REPO`
   Optional GitHub `owner/repo` override used by the updater. Default: `CloudLLM-ai/mentisdb`
@@ -353,13 +353,13 @@ MENTISDB_DIR=/tmp/mentisdb \
 MENTISDB_DEFAULT_CHAIN_KEY=borganism-brain \
 MENTISDB_STORAGE_ADAPTER=binary \
 MENTISDB_VERBOSE=true \
-MENTISDB_LOG_FILE=/tmp/mentisdb/mentisdbd.log \
+MENTISDB_LOG_FILE=/tmp/mentisdb/mentisdb.log \
 MENTISDB_BIND_HOST=127.0.0.1 \
 MENTISDB_MCP_PORT=9471 \
 MENTISDB_REST_PORT=9472 \
 MENTISDB_DASHBOARD_PIN=change-me \
 MENTISDB_AUTO_FLUSH=true \
-cargo run --bin mentisdbd
+cargo run --bin mentisdb
 ```
 
 Example — high-throughput write mode (multi-agent hub):
@@ -368,12 +368,12 @@ Example — high-throughput write mode (multi-agent hub):
 MENTISDB_DIR=/var/lib/mentisdb \
 MENTISDB_AUTO_FLUSH=false \
 MENTISDB_BIND_HOST=0.0.0.0 \
-mentisdbd
+mentisdb
 ```
 
 ### Automatic Update Check
 
-`mentisdbd` checks GitHub releases in the background after startup and can offer
+`mentisdb` checks GitHub releases in the background after startup and can offer
 to update itself with `cargo install`.
 
 - checks are enabled by default
@@ -386,7 +386,7 @@ Disable the automatic check:
 
 ```bash
 MENTISDB_UPDATE_CHECK=0 \
-mentisdbd
+mentisdb
 ```
 
 ---
@@ -786,9 +786,9 @@ Operational flow:
 - load or query that sidecar later with the same embedding metadata
 - if the chain head changes, the sidecar becomes stale and results report that freshness state until the sidecar is rebuilt
 
-### `mentisdbd` Default Vector Sidecar
+### `mentisdb` Default Vector Sidecar
 
-`mentisdbd` now applies a persisted managed-vector setting every time it opens a chain.
+`mentisdb` now applies a persisted managed-vector setting every time it opens a chain.
 
 - by default each chain gets the built-in FastEmbed MiniLM embedding provider (`fastembed-minilm`), which runs locally via ONNX with no cloud dependencies. The legacy `local-text-v1` provider is also available.
 - the daemon keeps that sidecar synchronized on append unless the user disables auto-sync for that chain
@@ -947,42 +947,42 @@ outside localhost.
 
 ## Backup and Restore
 
-MentisDB includes built-in backup and restore commands in the `mentisdbd` CLI.
+MentisDB includes built-in backup and restore commands in the `mentisdb` CLI.
 
 ### Create a backup
 
 ```bash
 # Default: platform MENTISDB_DIR → ./mentisdb-YYYY-MM-DD-HH-MM-SS.mentis
-mentisdbd backup
+mentisdb backup
 
 # Custom output path
-mentisdbd backup -o /backups/mentisdb-2026-04-14.mentis
+mentisdb backup -o /backups/mentisdb-2026-04-14.mentis
 
 # Include TLS certificates
-mentisdbd backup --include-tls
+mentisdb backup --include-tls
 
 # Full example
-mentisdbd backup --dir ~/.cloudllm/mentisdb -o /backups/mentisdb-2026-04-14.mentis --include-tls
+mentisdb backup --dir ~/.cloudllm/mentisdb -o /backups/mentisdb-2026-04-14.mentis --include-tls
 ```
 
 When the daemon is running, `backup` calls `POST /v1/admin/flush` before reading files to ensure a consistent snapshot even with `MENTISDB_AUTO_FLUSH=false`. If the daemon is not running, files are captured as-is.
 
 ### Restore a backup
 
-The daemon must be stopped before restoring. If `mentisdbd` is detected running, the restore aborts with a message to stop the daemon first.
+The daemon must be stopped before restoring. If `mentisdb` is detected running, the restore aborts with a message to stop the daemon first.
 
 ```bash
 # Idempotent restore (preserves existing files)
-mentisdbd restore /backups/mentisdb-2026-04-14.mentis
+mentisdb restore /backups/mentisdb-2026-04-14.mentis
 
 # Restore to a specific directory
-mentisdbd restore /backups/mentisdb-2026-04-14.mentis --dir ~/.cloudllm/mentisdb
+mentisdb restore /backups/mentisdb-2026-04-14.mentis --dir ~/.cloudllm/mentisdb
 
 # Force overwrite of all files
-mentisdbd restore /backups/mentisdb-2026-04-14.mentis --overwrite
+mentisdb restore /backups/mentisdb-2026-04-14.mentis --overwrite
 
 # Skip interactive confirmation prompts
-mentisdbd restore /backups/mentisdb-2026-04-14.mentis --yes
+mentisdb restore /backups/mentisdb-2026-04-14.mentis --yes
 ```
 
 Restore is **idempotent by default** — existing files are preserved. If files in the archive already exist in the target directory and `--overwrite` is not passed, an interactive prompt asks for confirmation. Pass `--yes` to skip all prompts.
@@ -1197,27 +1197,27 @@ Upload flow for signing agents:
 
 ### Claude Desktop
 
-1. **Recommended (stdio mode)** — just run `mentisdbd setup claude-desktop` and
+1. **Recommended (stdio mode)** — just run `mentisdb setup claude-desktop` and
    it will write the stdio config. No daemon needed, no Node.js, no mcp-remote.
    The stdio process auto-detects and proxies to a running daemon, or launches
    one in the background if none is found.
 2. **Alternative (HTTP via mcp-remote)** — requires Node.js >= 20 and
-   `npm install -g mcp-remote`. Run `mentisdbd` as a daemon first, then
+   `npm install -g mcp-remote`. Run `mentisdb` as a daemon first, then
    configure Claude Desktop to use `mcp-remote` as a bridge to the HTTPS
    endpoint.
 
 ### Claude Code
 
-1. Start the server: `mentisdbd run`
+1. Start the server: `mentisdb run`
 2. Add the MCP server:
    ```bash
    claude mcp add --transport http mentisdb http://127.0.0.1:9471
    ```
-3. Or run `mentisdbd setup claude-code` to auto-configure
+3. Or run `mentisdb setup claude-code` to auto-configure
 
 ### OpenCode
 
-1. Start the server: `mentisdbd run`
+1. Start the server: `mentisdb run`
 2. Add the MCP server:
    ```bash
    opencode mcp add mentisdb http://127.0.0.1:9471
@@ -1239,7 +1239,7 @@ qwen mcp add --transport http mentisdb http://127.0.0.1:9471
 
 ## Using With MCP Clients
 
-`mentisdbd` exposes both:
+`mentisdb` exposes both:
 
 - a standard streamable HTTP MCP endpoint at `POST /`
 - a Server-Sent Events (SSE) endpoint at `GET /` returning `text/event-stream` with
@@ -1296,7 +1296,7 @@ Claude for Desktop supports two connection modes: **stdio** (recommended) and
 
 #### Option 1: Stdio mode (recommended)
 
-Claude Desktop spawns `mentisdbd --mode stdio` as a subprocess. The stdio
+Claude Desktop spawns `mentisdb --mode stdio` as a subprocess. The stdio
 process automatically detects if a daemon is already running — if so, it acts
 as a lightweight proxy to the live daemon; if not, it launches one in the
 background. This means all Claude Desktop sessions share the same live chain
@@ -1306,7 +1306,7 @@ cache with zero configuration.
 {
   "mcpServers": {
     "mentisdb": {
-      "command": "mentisdbd",
+      "command": "mentisdb",
       "args": ["--mode", "stdio"]
     }
   }
@@ -1314,7 +1314,7 @@ cache with zero configuration.
 ```
 
 This is the simplest setup — no Node.js, no mcp-remote, no TLS config. Just
-point Claude Desktop at the `mentisdbd` binary.
+point Claude Desktop at the `mentisdb` binary.
 
 #### Option 2: HTTP via mcp-remote
 
@@ -1325,7 +1325,7 @@ If you prefer the HTTP transport (e.g. for a remote daemon), use the
 The recommended setup path is automatic:
 
 ```bash
-mentisdbd setup claude-desktop
+mentisdb setup claude-desktop
 ```
 
 This command:
@@ -1434,7 +1434,7 @@ Restart Claude for Desktop after saving the config file.
 
 ### Stdio Mode — How It Works
 
-`mentisdbd --mode stdio` reads JSON-RPC 2.0 from stdin and writes responses to
+`mentisdb --mode stdio` reads JSON-RPC 2.0 from stdin and writes responses to
 stdout. It is designed for MCP clients that spawn subprocesses (Claude Desktop,
 Cursor, etc.).
 
@@ -1454,7 +1454,7 @@ default) via the health endpoint.
   `MentisDbService` instance (state shared only via disk files).
 
 This means you never need to manually start the daemon — Claude Desktop, Cursor,
-or any MCP client can just spawn `mentisdbd --mode stdio` and everything works.
+or any MCP client can just spawn `mentisdb --mode stdio` and everything works.
 
 The daemon address is configurable via `MENTISDB_BIND_HOST` and
 `MENTISDB_MCP_PORT` environment variables, so the stdio process will detect and
@@ -1477,7 +1477,7 @@ claude mcp list
 claude mcp get mentisdb
 ```
 
-`mentisdbd setup claude-code` merges the MCP server entry into
+`mentisdb setup claude-code` merges the MCP server entry into
 `~/.claude.json` (or `%USERPROFILE%\.claude.json` on Windows), preserving your
 existing Claude Code settings. The older `~/.claude/mcp/mentisdb.json` path is
 treated as a legacy companion file, not the canonical config target. The
@@ -1502,7 +1502,7 @@ Important:
 
 ### GitHub Copilot CLI
 
-GitHub Copilot CLI can also connect to `mentisdbd` as a remote HTTP MCP
+GitHub Copilot CLI can also connect to `mentisdb` as a remote HTTP MCP
 server.
 
 From interactive mode:

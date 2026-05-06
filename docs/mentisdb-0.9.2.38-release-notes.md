@@ -12,12 +12,12 @@ and the dashboard. Benchmarks are now reproducible bit-identical across full-sca
 - **Smart stdio MCP mode.** Zero pre-flight for Claude Desktop and other stdio MCP clients.
 - **Cross-surface state coherency.** One `MentisDbService` shared across every surface booted by `start_servers`.
 - **Reproducible benchmarks.** LoCoMo-10P R@10 = 71.9%, LongMemEval R@5 = 66.8%, R@10 = 72.2%, R@20 = 78.0%. Bit-identical across three full-scale runs.
-- **Backup and restore.** `mentisdbd backup` / `mentisdbd restore` with SHA-256 manifest, path-traversal rejection, and interactive conflict prompt.
+- **Backup and restore.** `mentisdb backup` / `mentisdb restore` with SHA-256 manifest, path-traversal rejection, and interactive conflict prompt.
 
 ## Smart Stdio MCP Mode
 
 When an MCP client (Claude Desktop, Cursor, or anything that spawns an stdio subprocess)
-starts `mentisdbd` in stdio mode, the process now:
+starts `mentisdb` in stdio mode, the process now:
 
 1. Probes the local daemon's health endpoint.
 2. If a daemon is already running, proxies stdio requests to the HTTP MCP surface so every client sees the same live chain cache.
@@ -25,7 +25,7 @@ starts `mentisdbd` in stdio mode, the process now:
 4. If launch fails, falls back to in-process stdio so the client still works.
 
 Claude Desktop users stop fighting MCP bootstrap: one entry in
-`claude_desktop_config.json` pointing at `mentisdbd` is the whole setup. Multiple stdio
+`claude_desktop_config.json` pointing at `mentisdb` is the whole setup. Multiple stdio
 clients observe each other's appends in real time because they share the daemon.
 
 Background: [Stdio MCP Mode with Smart Daemon Detection](https://mentisdb.com/blog/mentisdb-stdio-mcp-mode.html).
@@ -48,7 +48,7 @@ service, appends via REST, and asserts the MCP side immediately sees the new
 
 ## Backup and Restore
 
-Two new subcommands, `mentisdbd backup` and `mentisdbd restore`, create and restore
+Two new subcommands, `mentisdb backup` and `mentisdb restore`, create and restore
 `.mentis` archives of the full `MENTISDB_DIR`.
 
 - SHA-256 manifest for every file; verification before any file is written on restore.
@@ -82,10 +82,10 @@ before snapshotting the data directory with an external tool.
 
 ## Startup: Terminal-Close Warning
 
-`mentisdbd` prints a yellow warning at startup that closing the terminal stops the
+`mentisdb` prints a yellow warning at startup that closing the terminal stops the
 process, followed by OS-specific background-launch guidance:
 
-- **macOS:** `nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &`
+- **macOS:** `nohup mentisdb > ~/.cloudllm/mentisdb/mentisdb.log 2>&1 &`
 - **Linux:** systemd user service unit snippet or a `nohup` one-liner.
 - **Windows:** `schtasks /create` one-liner or `Start-Process -WindowStyle Hidden`.
 
@@ -122,7 +122,7 @@ are filled in.
 - README and Rust docs coverage gaps filled for `source_episode`, `entity_type`, `BranchesFrom`, `mentisdb_federated_search`, `mentisdb_extract_memories`, `mentisdb_list_entity_types`, `mentisdb_upsert_entity_type` (MCP catalog count 37 → 42).
 - `docs.mentisdb.com`: added Advanced Retrieval, Entity Types & Provenance, Webhook Callbacks, LLM-Extracted Memories, and pymentisdb Python Client sections to `user_docs.rs`; added LLM-based reranking and Operations & Admin sections to `developer_docs.rs`.
 - Daemon endpoint catalog and REST rustdocs now include the live router surface (`/v1/federated-search`, `/v1/import-markdown`, entity types, chain merge, webhooks, extract-memories, admin flush).
-- `mentisdbd --help` documents `MENTISDB_DASHBOARD_PIN`.
+- `mentisdb --help` documents `MENTISDB_DASHBOARD_PIN`.
 
 ## Upgrade
 
@@ -130,8 +130,8 @@ are filled in.
 cargo install mentisdb --locked --force
 ```
 
-**Claude Desktop users:** you no longer need to pre-launch `mentisdbd`. Point your MCP
-config at the `mentisdbd` binary in stdio mode and the process will find or start the
+**Claude Desktop users:** you no longer need to pre-launch `mentisdb`. Point your MCP
+config at the `mentisdb` binary in stdio mode and the process will find or start the
 daemon itself.
 
 No schema migration. Webhook registrations, backups, and existing chains from 0.9.1.x

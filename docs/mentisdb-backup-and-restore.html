@@ -49,7 +49,7 @@
 <h1>Backup and Restore</h1>
 
 <p>
-  MentisDB 0.9.2 adds backup and restore commands to the <code>mentisdbd</code> CLI.
+  MentisDB 0.9.2 adds backup and restore commands to the <code>mentisdb</code> CLI.
   You can now create compressed <code>.mbak</code> archives of your entire
   <code>MENTISDB_DIR</code> — all chains, agents, skills, and optionally TLS
   certificates — and restore them on any machine.
@@ -86,7 +86,7 @@
 <h3 id="backup-consistency">Consistency Model on Backup</h3>
 
 <p>
-  When you run <code>mentisdbd backup</code>, the CLI checks whether the daemon
+  When you run <code>mentisdb backup</code>, the CLI checks whether the daemon
   is running at <code>http://127.0.0.1:9472</code>. If it is, it calls
   <code>POST /v1/admin/flush</code> to durably flush all open chains before reading
   any files. This ensures the backup captures a consistent on-disk state even if
@@ -135,30 +135,30 @@
 <h3>Create a backup</h3>
 
 <pre><code># Default: platform MENTISDB_DIR → ./mentisdb-YYYY-MM-DD-HH-MM-SS.mbak
-mentisdbd backup
+mentisdb backup
 
 # Custom output path
-mentisdbd backup --output /backups/mentisdb-2026-04-14.mbak
+mentisdb backup --output /backups/mentisdb-2026-04-14.mbak
 
 # Include TLS certificates
-mentisdbd backup --include-tls
+mentisdb backup --include-tls
 
 # Explicit flush (automatic if daemon is running)
-mentisdbd backup --flush
+mentisdb backup --flush
 
 # Full example
-mentisdbd backup --dir ~/.cloudllm/mentisdb --output /backups/mentisdb-2026-04-14.mbak --include-tls</code></pre>
+mentisdb backup --dir ~/.cloudllm/mentisdb --output /backups/mentisdb-2026-04-14.mbak --include-tls</code></pre>
 
 <h3>Restore a backup</h3>
 
 <pre><code># Idempotent restore (preserves existing files)
-mentisdbd restore /backups/mentisdb-2026-04-14.mbak
+mentisdb restore /backups/mentisdb-2026-04-14.mbak
 
 # Idempotent restore to a specific directory
-mentisdbd restore /backups/mentisdb-2026-04-14.mbak --dir ~/.cloudllm/mentisdb
+mentisdb restore /backups/mentisdb-2026-04-14.mbak --dir ~/.cloudllm/mentisdb
 
 # Force overwrite of all files
-mentisdbd restore /backups/mentisdb-2026-04-14.mbak --overwrite</code></pre>
+mentisdb restore /backups/mentisdb-2026-04-14.mbak --overwrite</code></pre>
 
 <hr>
 

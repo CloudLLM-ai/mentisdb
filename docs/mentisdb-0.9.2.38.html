@@ -56,7 +56,7 @@
 <div class="highlight">
   <p>
     <strong>Headline:</strong> plug MentisDB into Claude Desktop with zero pre-flight steps.
-    No <code>mentisdbd &amp;</code>, no mcp-remote, no shell init. The stdio process
+    No <code>mentisdb &amp;</code>, no mcp-remote, no shell init. The stdio process
     finds or launches the daemon itself and proxies cleanly to it so every surface
     shares the same live chain cache.
   </p>
@@ -66,7 +66,7 @@
 
 <p>
   When an MCP client (Claude Desktop, Cursor, or anything that spawns an
-  stdio subprocess) starts <code>mentisdbd</code> in stdio mode, the process now:
+  stdio subprocess) starts <code>mentisdb</code> in stdio mode, the process now:
 </p>
 
 <ol>
@@ -80,7 +80,7 @@
 
 <p>
   The result is that Claude Desktop users stop fighting MCP bootstrap. One entry in
-  <code>claude_desktop_config.json</code> pointing at <code>mentisdbd</code> is the whole
+  <code>claude_desktop_config.json</code> pointing at <code>mentisdb</code> is the whole
   setup. Multiple stdio clients running side-by-side observe each other's appends in real
   time because they all talk to the same daemon process.
 </p>
@@ -118,7 +118,7 @@
 <h2 id="backup-restore">Backup and Restore</h2>
 
 <p>
-  Two new subcommands, <code>mentisdbd backup</code> and <code>mentisdbd restore</code>,
+  Two new subcommands, <code>mentisdb backup</code> and <code>mentisdb restore</code>,
   create and restore <code>.mbak</code> archives of the full <code>MENTISDB_DIR</code>.
 </p>
 
@@ -161,12 +161,12 @@
 <h2 id="startup-hint">Startup: Terminal-Close Warning</h2>
 
 <p>
-  <code>mentisdbd</code> now prints a yellow warning at daemon startup that closing the
+  <code>mentisdb</code> now prints a yellow warning at daemon startup that closing the
   terminal stops the process, followed by an OS-specific background-launch tip:
 </p>
 
 <ul>
-  <li><strong>macOS:</strong> <code>nohup mentisdbd > ~/.cloudllm/mentisdb/mentisdbd.log 2>&1 &amp;</code></li>
+  <li><strong>macOS:</strong> <code>nohup mentisdb > ~/.cloudllm/mentisdb/mentisdb.log 2>&1 &amp;</code></li>
   <li><strong>Linux:</strong> systemd user service unit snippet or a <code>nohup</code> one-liner.</li>
   <li><strong>Windows:</strong> <code>schtasks /create</code> one-liner or <code>Start-Process -WindowStyle Hidden</code>.</li>
 </ul>
@@ -214,7 +214,7 @@
 
 <p>
   <strong>Claude Desktop users:</strong> you no longer need to pre-launch
-  <code>mentisdbd</code>. Point your MCP config at the <code>mentisdbd</code> binary in
+  <code>mentisdb</code>. Point your MCP config at the <code>mentisdb</code> binary in
   stdio mode and the process will find or start the daemon itself. See the
   <a href="mentisdb-stdio-mcp-mode.html">stdio MCP walkthrough</a> for the exact config.
 </p>

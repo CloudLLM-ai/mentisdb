@@ -65,13 +65,13 @@ pip install pymentisdb
 # With LangChain integration
 pip install pymentisdb[langchain]</code></pre>
 
-<p>Requires Python 3.10+ and a running mentisdbd instance. Start one with:</p>
+<p>Requires Python 3.10+ and a running mentisdb instance. Start one with:</p>
 
-<pre><code>mentisdbd</code></pre>
+<pre><code>mentisdb</code></pre>
 
 <p>Or for production with TLS:</p>
 
-<pre><code>MENTISDB_DIR=/path/to/data mentisdbd --https --port 9473</code></pre>
+<pre><code>MENTISDB_DIR=/path/to/data mentisdb --https --port 9473</code></pre>
 
 <h2 id="basic-client">Basic Client Usage</h2>
 
@@ -82,7 +82,7 @@ authentication headers, and type conversion automatically.</p>
 
 <pre><code>from pymentisdb import MentisDbClient
 
-# Connect to local mentisdbd (default)
+# Connect to local mentisdb (default)
 client = MentisDbClient()
 
 # Connect to a remote instance
@@ -596,7 +596,7 @@ print(f"Imported indices: {result['imported_indices']}")</code></pre>
 <h2 id="full-example-2">Complete Working Example</h2>
 
 <p>Here's a full example showing the full loop — appending thoughts, searching, and
-using context bundles — against a running mentisdbd:</p>
+using context bundles — against a running mentisdb:</p>
 
 <pre><code>#!/usr/bin/env python3
 """Complete pymentisdb example — append, search, and retrieve."""

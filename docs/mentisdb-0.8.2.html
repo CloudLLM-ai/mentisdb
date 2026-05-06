@@ -191,20 +191,20 @@ let query = RankedSearchQuery::new()
 <h2 id="cli-subcommands">4. CLI Subcommands</h2>
 
 <p>
-  The <code>mentisdbd</code> binary already had <code>setup</code> and <code>wizard</code>
+  The <code>mentisdb</code> binary already had <code>setup</code> and <code>wizard</code>
   subcommands for integration configuration. 0.8.2 adds three more that talk to a running
   daemon via REST, giving operators a quick way to add, search, and inspect memories
   without opening the dashboard or writing an MCP client:
 </p>
 
 <pre><code># Add a thought
-mentisdbd add "The database uses schema V3" --type fact-learned --tag architecture
+mentisdb add "The database uses schema V3" --type fact-learned --tag architecture
 
 # Search
-mentisdbd search "schema version" --limit 5 --scope user
+mentisdb search "schema version" --limit 5 --scope user
 
 # List agents
-mentisdbd agents --chain my-project
+mentisdb agents --chain my-project
 </code></pre>
 
 <p>
@@ -218,7 +218,7 @@ mentisdbd agents --chain my-project
   <code>jq</code>, you can pipe search results into shell pipelines:
 </p>
 
-<pre><code>mentisdbd search "deployment" --limit 20 | jq '.hits[].thought.content'
+<pre><code>mentisdb search "deployment" --limit 20 | jq '.hits[].thought.content'
 </code></pre>
 
 <h2 id="migration-safety">Migration Safety</h2>
@@ -295,7 +295,7 @@ cargo install --path . --locked
   To enable dedup, set the environment variable before starting the daemon:
 </p>
 
-<pre><code>MENTISDB_DEDUP_THRESHOLD=0.85 mentisdbd
+<pre><code>MENTISDB_DEDUP_THRESHOLD=0.85 mentisdb
 </code></pre>
 
 <h2 id="whats-next">What's Next</h2>

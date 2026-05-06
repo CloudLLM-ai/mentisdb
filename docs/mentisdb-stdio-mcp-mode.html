@@ -59,7 +59,7 @@
 <h2 id="the-problem">The Problem</h2>
 
 <p>
-  Previously, <code>mentisdbd --mode stdio</code> created its own independent
+  Previously, <code>mentisdb --mode stdio</code> created its own independent
   <code>MentisDbService</code> instance every time it started. This worked fine
   as a standalone process, but meant:
 </p>
@@ -82,7 +82,7 @@
 <h2 id="how-it-works">How Stdio Mode Works Now</h2>
 
 <p>
-  When <code>mentisdbd --mode stdio</code> starts, it follows a three-step flow:
+  When <code>mentisdb --mode stdio</code> starts, it follows a three-step flow:
 </p>
 
 <h3>Step 1: Detect</h3>
@@ -99,8 +99,8 @@
 </p>
 
 <ul>
-  <li><strong>Unix:</strong> <code>nohup mentisdbd &amp;</code> — the daemon outlives the stdio process</li>
-  <li><strong>Windows:</strong> <code>start /B mentisdbd</code> — detached background process</li>
+  <li><strong>Unix:</strong> <code>nohup mentisdb &amp;</code> — the daemon outlives the stdio process</li>
+  <li><strong>Windows:</strong> <code>start /B mentisdb</code> — detached background process</li>
 </ul>
 
 <p>
@@ -152,7 +152,7 @@
 <pre><code>{
   "mcpServers": {
     "mentisdb": {
-      "command": "mentisdbd",
+      "command": "mentisdb",
       "args": ["--mode", "stdio"]
     }
   }
@@ -160,14 +160,14 @@
 
 <p>
   That's it. No Node.js. No mcp-remote. No TLS config. No daemon pre-start.
-  Just point Claude Desktop at the <code>mentisdbd</code> binary and go.
+  Just point Claude Desktop at the <code>mentisdb</code> binary and go.
 </p>
 
 <p>
   You can also run the setup wizard to write this automatically:
 </p>
 
-<pre><code>mentisdbd setup claude-desktop</code></pre>
+<pre><code>mentisdb setup claude-desktop</code></pre>
 
 <hr>
 
@@ -178,7 +178,7 @@
 </p>
 
 <ul>
-  <li><strong>Cursor</strong> — add <code>mentisdbd --mode stdio</code> as an MCP command</li>
+  <li><strong>Cursor</strong> — add <code>mentisdb --mode stdio</code> as an MCP command</li>
   <li><strong>VS Code Copilot</strong> — configure stdio transport in MCP settings</li>
   <li><strong>Any MCP host</strong> — if it can spawn a process and pipe JSON-RPC over stdin/stdout, it works</li>
 </ul>

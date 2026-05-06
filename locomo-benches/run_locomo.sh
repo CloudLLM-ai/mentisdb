@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the LoCoMo benchmark against a running mentisdbd instance.
+# Run the LoCoMo benchmark against a running mentisdb instance.
 #
 # All persona conversations are ingested into a single chain with
 # ContinuesFrom relations and importance weighting. Vector sidecar
@@ -42,15 +42,15 @@ python3 -c "import requests, json, concurrent.futures" 2>/dev/null || {
 }
 
 # ---------------------------------------------------------------------------
-# Step 2 — check mentisdbd is reachable
+# Step 2 — check mentisdb is reachable
 # ---------------------------------------------------------------------------
-echo "Checking mentisdbd at http://127.0.0.1:9472…"
+echo "Checking mentisdb at http://127.0.0.1:9472…"
 if ! curl -sf http://127.0.0.1:9472/health >/dev/null 2>&1; then
-    echo "ERROR: mentisdbd is not running on port 9472."
-    echo "Start it with:  mentisdbd &"
+    echo "ERROR: mentisdb is not running on port 9472."
+    echo "Start it with:  mentisdb &"
     exit 1
 fi
-echo "mentisdbd is up."
+echo "mentisdb is up."
 
 # ---------------------------------------------------------------------------
 # Step 3 — download dataset if not present

@@ -27,7 +27,7 @@ raw `env_logger` stderr output is eliminated by a custom TUI-aware logger.
   modal showing the current startup phase (checking updates, running
   migrations, starting servers, loading chains). No more blank screen while
   the daemon initializes.
-- **`--force-update` flag.** Run `mentisdbd --force-update` to force the
+- **`--force-update` flag.** Run `mentisdb --force-update` to force the
   update dialog to appear even if you're already at the latest release —
   useful for testing the update flow.
 - **Reversed log panel.** Newest log entries appear at the top so the most
@@ -35,7 +35,7 @@ raw `env_logger` stderr output is eliminated by a custom TUI-aware logger.
 
 ## Ratatui TUI
 
-When `mentisdbd` detects an interactive terminal (`stdin` and `stdout` are
+When `mentisdb` detects an interactive terminal (`stdin` and `stdout` are
 both TTYs), it renders a ratatui 0.30.0-based TUI instead of plain text.
 The layout has five zones:
 
@@ -43,7 +43,7 @@ The layout has five zones:
 ┌─────────────────────────────────┬──────────────────────┐
 │  ████  MENTISDB BANNER          │  Endpoints           │
 │  mentisdb v0.9.3                │  MCP  (HTTP)  ...    │
-│  mentisdbd running              │  REST (HTTP)  ...    │
+│  mentisdb running              │  REST (HTTP)  ...    │
 │                                 │  MCP  (TLS)   ...    │
 │  Configuration:                 │  REST (TLS)   ...    │
 │    MENTISDB_DIR=...             │  Dashboard    ...    │
@@ -60,8 +60,8 @@ The layout has five zones:
 │  └──────────────────────────────────────────────────┘  │
 ├────────────────────────────────────────────────────────┤
 │  Logs (142)                                            │
-│  [INF] mentisdbd: mentisdb v0.9.3 started             │
-│  [INF] mentisdbd: MCP (HTTP) http://127.0.0.1:9471    │
+│  [INF] mentisdb: mentisdb v0.9.3 started             │
+│  [INF] mentisdb: MCP (HTTP) http://127.0.0.1:9471    │
 │  ...                                                   │
 ├────────────────────────────────────────────────────────┤
 │ Server Info │ ↑↓ scroll │ Tab next pane │ Click focus │
@@ -128,14 +128,14 @@ The fix introduces a custom `TuiLogger` that implements `log::Log`:
 
 ## Update Dialog
 
-When a newer release is detected on GitHub, `mentisdbd` shows a centered
+When a newer release is detected on GitHub, `mentisdb` shows a centered
 modal dialog in the TUI before running migrations:
 
 ```
 ┌────────────────────────────────────────────┐
 │                Update                      │
 │                                            │
-│        mentisdbd update available          │
+│        mentisdb update available          │
 │                                            │
 │        Current core version: 0.9.3         │
 │        Latest release tag : 0.9.3.39       │
@@ -152,7 +152,7 @@ you can see startup progress even while the dialog is waiting for input.
 
 ## Startup Progress Overlay
 
-Previously, `mentisdbd` showed a blank screen for several seconds while it
+Previously, `mentisdb` showed a blank screen for several seconds while it
 checked for updates, ran migrations, and started servers. Now the TUI
 renders immediately with a centered modal overlay:
 
@@ -180,7 +180,7 @@ dashboard is revealed. Press `q` during startup to quit.
 
 ## `--force-update` Flag
 
-Run `mentisdbd --force-update` to force the update dialog to appear even
+Run `mentisdb --force-update` to force the update dialog to appear even
 if you're already at the latest release. This is useful for testing the
 update flow without waiting for an actual new release to be published.
 
@@ -233,11 +233,11 @@ panel getting a slight preference (`Min(14)` vs `Max(14)`).
 cargo install mentisdb --locked --force
 ```
 
-**Interactive terminal users:** `mentisdbd` now renders a TUI by default.
+**Interactive terminal users:** `mentisdb` now renders a TUI by default.
 Use `--mode stdio` for plain stdio mode (MCP client proxy).
 
 **Claude Desktop users:** stdio mode now uses Streamable HTTP passthrough.
-Point your MCP config at the `mentisdbd` binary and the full MCP protocol
+Point your MCP config at the `mentisdb` binary and the full MCP protocol
 works without pre-launching the daemon.
 
 No schema migration. Existing chains, skills, and webhook registrations

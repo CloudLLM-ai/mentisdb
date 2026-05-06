@@ -99,8 +99,8 @@
     It also added two new CLI subcommands:
   </p>
   <ul>
-    <li><code>mentisdbd update</code> — check for updates and prompt to install</li>
-    <li><code>mentisdbd force-update</code> — download and install the latest version
+    <li><code>mentisdb update</code> — check for updates and prompt to install</li>
+    <li><code>mentisdb force-update</code> — download and install the latest version
         without prompting</li>
   </ul>
   <p>
@@ -113,8 +113,8 @@
     0.8.4 introduced a new crash: <code>run_update_standalone()</code> created a
     <strong>nested Tokio runtime</strong> inside <code>#[tokio::main]</code>. Tokio
     panics with <em>"Cannot start a runtime from within a runtime"</em> when you try
-    this. The symptom was immediate: running <code>mentisdbd update</code> or
-    <code>mentisdbd force-update</code> would panic every time.
+    this. The symptom was immediate: running <code>mentisdb update</code> or
+    <code>mentisdb force-update</code> would panic every time.
   </p>
   <p>
     The fix: make <code>run_update_standalone()</code> async and let it ride on the

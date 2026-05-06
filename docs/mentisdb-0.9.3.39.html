@@ -45,7 +45,7 @@
 <h1>MentisDB 0.9.3.39 — Full TUI with Drag-to-Copy, Seamless Startup, and Live Log Streaming</h1>
 
 <p>
-  0.9.3.39 ships the ratatui terminal UI that was always planned for <code>mentisdbd</code>:
+  0.9.3.39 ships the ratatui terminal UI that was always planned for <code>mentisdb</code>:
   a live three-pane dashboard with real-time log streaming, a tabbed registry for all your
   chains, agents, and skills, and a one-click agent primer. Along the way, we fixed a
   collection of bugs that made the TUI unreliable — a silent startup crash, a flash on startup,
@@ -66,7 +66,7 @@
 <h2>The TUI at a Glance</h2>
 
 <p>
-  Run <code>mentisdbd</code> in an interactive terminal and you get a full alternate-screen
+  Run <code>mentisdb</code> in an interactive terminal and you get a full alternate-screen
   dashboard:
 </p>
 
@@ -88,7 +88,7 @@
 
 <p>
   All panes have scrollbars and respond to Tab/Shift-Tab for keyboard focus cycling.
-  Run in background (<code>nohup mentisdbd &amp;</code>) and you get the same daemon with
+  Run in background (<code>nohup mentisdb &amp;</code>) and you get the same daemon with
   no TUI overhead.
 </p>
 
@@ -170,7 +170,7 @@
     borders.</li>
   <li><strong>First-run wizard</strong> — the interactive setup wizard cannot run while
     the TUI owns the terminal in raw/alternate-screen mode. A note in the TUI now
-    directs first-time users to run <code>mentisdbd wizard</code> in a separate
+    directs first-time users to run <code>mentisdb wizard</code> in a separate
     terminal instead.</li>
   <li><strong>Render performance</strong> — <code>render_logs</code> no longer allocates
     an intermediate <code>Vec&lt;&amp;str&gt;</code> on every frame tick; a single
@@ -182,8 +182,8 @@
 <pre><code>cargo install mentisdb --force</code></pre>
 
 <p>
-  The daemon binary is <code>mentisdbd</code>. Run it directly in a terminal for the TUI,
-  or with <code>nohup mentisdbd &amp;</code> for background operation.
+  The daemon binary is <code>mentisdb</code>. Run it directly in a terminal for the TUI,
+  or with <code>nohup mentisdb &amp;</code> for background operation.
 </p>
 
 <hr>

@@ -13,8 +13,8 @@ from long social conversations (up to ~300 turns) spanning weeks of interaction.
 ## Quick start
 
 ```bash
-# Start mentisdbd
-mentisdbd &
+# Start mentisdb
+mentisdb &
 
 # Full run (~1,977 QA pairs)
 bash locomo-benches/run_locomo.sh

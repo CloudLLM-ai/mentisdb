@@ -84,17 +84,17 @@
 <h2 id="wizard">One-Command Setup with the Wizard</h2>
 
 <p>
-  The fastest path to any integration is <code>mentisdbd setup</code>:
+  The fastest path to any integration is <code>mentisdb setup</code>:
 </p>
 
 <pre><code># Interactive wizard — picks the right config for your platform
-mentisdbd setup claude-desktop
+mentisdb setup claude-desktop
 
 # Dry run to see what would be written
-mentisdbd setup claude-desktop --dry-run
+mentisdb setup claude-desktop --dry-run
 
 # Auto-accept everything (CI/CD friendly)
-mentisdbd setup claude-desktop --assume-yes</code></pre>
+mentisdb setup claude-desktop --assume-yes</code></pre>
 
 <p>
   The wizard detects your platform, checks for prerequisites (Node.js, mcp-remote, etc.),
@@ -122,13 +122,13 @@ mentisdbd setup claude-desktop --assume-yes</code></pre>
 <p>
   Claude Desktop uses MCP over stdio. Since MCP servers run locally and can't handle
   self-signed HTTPS certificates, MentisDB ships an <code>mcp-remote</code> bridge that
-  tunnels MCP stdio over HTTPS to your mentisdbd instance.
+  tunnels MCP stdio over HTTPS to your mentisdb instance.
 </p>
 
 <h3 id="claude-desktop-prereqs">Prerequisites</h3>
 
 <ul>
-  <li>Running mentisdbd with HTTPS (<code>--https --port 9473</code>)</li>
+  <li>Running mentisdb with HTTPS (<code>--https --port 9473</code>)</li>
   <li><code>mcp-remote</code> installed (via Homebrew or npm)</li>
   <li>Node.js >= 20 if using npm-installed mcp-remote</li>
 </ul>
@@ -187,7 +187,7 @@ connected and responding.</p>
   It uses MCP for tool integration. The wizard handles the setup:
 </p>
 
-<pre><code>mentisdbd setup opencode</code></pre>
+<pre><code>mentisdb setup opencode</code></pre>
 
 <p>This writes the OpenCode MCP config to the standard location. OpenCode's MCP block
 uses a slightly different format:</p>
@@ -206,7 +206,7 @@ uses a slightly different format:</p>
 
 <p>
   If there's no MCP integration available for your tool, the REST API works from any
-  language with HTTP support. mentisdbd exposes a full REST API on port 9472 (HTTP)
+  language with HTTP support. mentisdb exposes a full REST API on port 9472 (HTTP)
   or 9473 (HTTPS).
 </p>
 
@@ -659,18 +659,18 @@ interactive docs at <code>http://127.0.0.1:9472/docs</code> (if running with
 <table>
   <tr><th>Problem</th><th>Solution</th></tr>
   <tr><td>"Certificate verify failed" errors</td><td>Set <code>NODE_TLS_REJECT_UNAUTHORIZED=0</code> in your mcp-remote config env, or use a valid TLS certificate.</td></tr>
-  <tr><td>"Connection refused" on localhost:9473</td><td>Ensure mentisdbd is running with <code>--https --port 9473</code>. Check with <code>curl https://127.0.0.1:9473/health</code>.</td></tr>
+  <tr><td>"Connection refused" on localhost:9473</td><td>Ensure mentisdb is running with <code>--https --port 9473</code>. Check with <code>curl https://127.0.0.1:9473/health</code>.</td></tr>
   <tr><td>mcp-remote not found</td><td>Install via Homebrew: <code>brew install mcp-remote</code>, or npm: <code>npm install -g mcp-remote</code>. Requires Node.js >= 20 for npm.</td></tr>
   <tr><td>Claude Desktop doesn't see mentisdb tools</td><td>Restart Claude Desktop after config changes. Verify config at <code>~/Library/Application Support/Claude/claude_desktop_config.json</code>.</td></tr>
   <tr><td>Wrong mcp-remote path in config</td><td>Use <code>which mcp-remote</code> or <code>brew --prefix mcp-remote</code> to find the correct absolute path.</td></tr>
-  <tr><td>MCP server starts but tools return errors</td><td>Check mentisdbd logs. Ensure the chain exists and is accessible. Try <code>mentisdbd status</code>.</td></tr>
+  <tr><td>MCP server starts but tools return errors</td><td>Check mentisdb logs. Ensure the chain exists and is accessible. Try <code>mentisdb status</code>.</td></tr>
 </table>
 
 <h3>REST API Issues</h3>
 
 <table>
   <tr><th>Problem</th><th>Solution</th></tr>
-  <tr><td>404 on all endpoints</td><td>Ensure mentisdbd is running with <code>--enable-http</code> (default port 9472 for HTTP, 9473 for HTTPS).</td></tr>
+  <tr><td>404 on all endpoints</td><td>Ensure mentisdb is running with <code>--enable-http</code> (default port 9472 for HTTP, 9473 for HTTPS).</td></tr>
   <tr><td>400 Bad Request on POST</td><td>Verify Content-Type is <code>application/json</code> and body is valid JSON.</td></tr>
   <tr><td>401/403 auth errors</td><td>MentisDB currently does not require auth for local access. If using a reverse proxy, check its auth config.</td></tr>
 </table>
@@ -678,25 +678,25 @@ interactive docs at <code>http://127.0.0.1:9472/docs</code> (if running with
 <h2 id="custom-mcp">Building Custom MCP Clients</h2>
 
 <p>
-  mentisdbd ships a built-in MCP server — any MCP-compatible client can connect directly
-  via stdio. To use the MCP server, start mentisdbd and point your MCP client at it:
+  mentisdb ships a built-in MCP server — any MCP-compatible client can connect directly
+  via stdio. To use the MCP server, start mentisdb and point your MCP client at it:
 </p>
 
 <p>
-  mentisdbd exposes an MCP server on HTTP port 9471 (and HTTPS on 9473 when TLS is
+  mentisdb exposes an MCP server on HTTP port 9471 (and HTTPS on 9473 when TLS is
   enabled). MCP clients like Claude Desktop connect over HTTP/HTTPS — not stdio.
   The <code>mcp-remote</code> bridge is used when your MCP client speaks stdio but
-  mentisdbd speaks HTTP/HTTPS, or when you need TLS.
+  mentisdb speaks HTTP/HTTPS, or when you need TLS.
 </p>
 
-<pre><code># mentisdbd starts with MCP on port 9471 (HTTP) and 9473 (HTTPS)
-mentisdbd
+<pre><code># mentisdb starts with MCP on port 9471 (HTTP) and 9473 (HTTPS)
+mentisdb
 
 # Your MCP client connects over HTTP/HTTPS to port 9471 or 9473</code></pre>
 
 <div class="warning">
   <p><strong>mcp-remote vs direct HTTP:</strong> If your MCP client (Claude Desktop, etc.)
-  uses stdio-based MCP, use <code>mcp-remote</code> to bridge to mentisdbd's HTTP MCP
+  uses stdio-based MCP, use <code>mcp-remote</code> to bridge to mentisdb's HTTP MCP
   endpoint. If you have a client that speaks HTTP MCP directly, you can connect to
   port 9471 (HTTP) or 9473 (HTTPS/TLS) without mcp-remote.</p>
 </div>

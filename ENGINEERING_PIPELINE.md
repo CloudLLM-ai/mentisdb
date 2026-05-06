@@ -60,13 +60,13 @@ CI may catch issues that local runs miss (different platform, different Rust ver
 cargo build --release
 
 # Stop old daemon, start new one
-pkill mentisdbd
-MENTISDB_DIR=~/.cloudllm/mentisdb nohup target/release/mentisdbd > /tmp/mentisdbd.log 2>&1 &
+pkill mentisdb
+MENTISDB_DIR=~/.cloudllm/mentisdb nohup target/release/mentisdb > /tmp/mentisdb.log 2>&1 &
 sleep 2
 curl -sf http://localhost:9472/health || exit 1  # verify it's up
 ```
 
-**Always verify the running daemon is the correct binary** by checking the process start time or checking `/proc/$(pgrep mentisdbd)/exe`.
+**Always verify the running daemon is the correct binary** by checking the process start time or checking `/proc/$(pgrep mentisdb)/exe`.
 
 ### Benchmark execution — use subagents
 
@@ -221,7 +221,7 @@ Steps:
    ```
 3. Verify: `gh release view TAG --json isPrerelease` — must be `false`
 
-**Do NOT mark the release as pre-release** — the update checker uses the GitHub releases API which only returns non-prerelease releases as "latest", so pre-release tags silently break `mentisdbd update` for all users.
+**Do NOT mark the release as pre-release** — the update checker uses the GitHub releases API which only returns non-prerelease releases as "latest", so pre-release tags silently break `mentisdb update` for all users.
 
 ### 5k. crates.io publish
 **Do this AFTER step 5j** — once the GitHub release has the correct notes and is verified non-prerelease:

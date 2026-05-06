@@ -1,8 +1,20 @@
 0.9.8.44 UNRELEASED
+  - BREAKING: rename binary from `mentisdbd` to `mentisdb` — all CLI commands,
+    documentation, install scripts, CI artifact names, and TUI references updated;
+    `cargo install mentisdb` still installs the crate, but the resulting binary
+    is now `mentisdb` (no trailing `d`)
+  - feat(dashboard): chains table now shows a "Size" column with human-readable
+    storage size (B, KB, MB, GB, TB, PB) computed from each chain's on-disk file
+  - feat(dashboard): new Settings tab — view and edit all 18 `MENTISDB_*` env
+    vars in a table with type-aware controls (checkbox for booleans, number for
+    ports, text for strings); shows current value, default, and description per
+    setting; "Reset to Default" per row; "Apply Settings" persists changes to a
+    `.env` file and hot-reloads `auto_flush` immediately; restart-required flag
+    for network/storage changes that cannot be applied to a running daemon
   - feat(tui): show chain file size in Storage Location column — prefixed with
     human-readable size in brackets (e.g. [10 KB] /path/to/chain.tcbin); sizes
     shown in B, KB, MB, or GB as appropriate
-  - feat(config): dotenvy support — mentisdbd now loads environment variables
+  - feat(config): dotenvy support — mentisdb now loads environment variables
     from a `.env` file in the current working directory at startup; existing
     shell environment variables take precedence over `.env` values; silently
     ignored when no `.env` file is present; all `MENTISDB_*` env vars,
@@ -59,10 +71,10 @@
   - feat(tui): wider update dialog (80 cols) so GitHub release URL fits without
     wrapping; successful update now shows a green "Update Complete" overlay with
     the exact relaunch command and offers r to restart in-place or q to quit;
-    mentisdbd auto-restarts with the same CLI args when the user presses r
+    mentisdb auto-restarts with the same CLI args when the user presses r
   - feat(backup): rename backup format from .mbak to .mentis; backup CLI now
     uses -o shorthand for --output (both still accepted); restore aborts with
-    a clear error if mentisdbd is detected running, preventing the daemon's
+    a clear error if mentisdb is detected running, preventing the daemon's
     in-memory state from overwriting restored files on next flush
   - feat(mcp): SSE support on MCP servers — start_mcp_server and start_https_mcp_server
     now return (ServerHandle, SseBroadcaster) tuples; GET endpoint returns text/event-stream
@@ -80,7 +92,7 @@
     addresses for compatibility with tools that don't send Origin; protocol version
     negotiated during initialize is now "2025-11-25"
   - feat(ecosystem): Hermes agent by Nous Research ships a native MentisDB
-    MemoryProvider — Hermes can now connect directly to a running mentisdbd instance
+    MemoryProvider — Hermes can now connect directly to a running mentisdb instance
     for durable semantic memory without an intermediary MCP bridge; the Hermes team
     implemented their own memory plugin against the MentisDB API for deeper
     integration into the Hermes agent lifecycle
@@ -158,7 +170,7 @@
     preventing raw stderr from corrupting the ratatui alternate screen
   - fix(tui): first-run setup wizard deferred to a separate terminal — wizard cannot
     run while TUI owns the terminal in raw/alternate-screen mode; TUI shows a note
-    directing the user to run `mentisdbd wizard` in a separate terminal instead
+    directing the user to run `mentisdb wizard` in a separate terminal instead
   - perf(tui): render_logs no longer allocates an intermediate Vec<&str> on every
     frame; single .iter().rev() pass reduces allocations at 10 Hz render rate
   - refactor(tui): removed dead code left by a prior session — show_update_dialog(),
@@ -196,7 +208,7 @@
     `head_hash` / `thought_count` / `latest_thought.index`.
   - feat: POST /v1/admin/flush REST endpoint — iterates all open chains and calls
     flush() on each BinaryStorageAdapter; documented in server module header
-  - feat: backup/restore — new mentisdbd backup / mentisdbd restore subcommands create and
+  - feat: backup/restore — new mentisdb backup / mentisdb restore subcommands create and
     restore .mbak zip archives of the full MENTISDB_DIR; manifest with SHA-256 checksums for
     every file; verification before any file is written on restore; --flush, --include-tls,
     --overwrite flags; 33 integration tests in tests/test_backup.rs covering roundtrip, TLS
@@ -209,7 +221,7 @@
     --overwrite not passed, lists conflicting files and prompts user with boxed_yn_prompt;
     user decline exits gracefully with no changes; restore is fully idempotent without prompt
   - feat: terminal-close warning printed at daemon startup — yellow ⚠ notice that closing the
-    terminal stops mentisdbd, followed by OS-specific background-launch tip:
+    terminal stops mentisdb, followed by OS-specific background-launch tip:
       macOS: nohup one-liner
       Linux: systemd user service unit snippet or nohup one-liner
       Windows: schtasks /create one-liner or Start-Process -WindowStyle Hidden
@@ -291,7 +303,7 @@
     surface (`/v1/federated-search`, `/v1/import-markdown`, entity types, chain merge,
     webhooks, extract-memories, admin flush, and related endpoints); startup catalog
     generation now uses a shared helper to keep HTTP/HTTPS REST listings aligned
-  - docs: `mentisdbd --help` now documents `MENTISDB_DASHBOARD_PIN`, matching the daemon's
+  - docs: `mentisdb --help` now documents `MENTISDB_DASHBOARD_PIN`, matching the daemon's
     supported environment variables and startup output
   - docs: new content-ingestion tutorial blog post (`docs/mentisdb-content-ingestion.html`)
     covering setup, REST/MCP/Rust usage, live-tested behavior, review-before-append workflow,
@@ -508,11 +520,11 @@
       the update check ran AFTER migrations, which crashed on the old binary.
       Now the update check runs FIRST, giving users the fix before their
       chains are touched.
-    - If an update is found and accepted, mentisdbd exits with instructions
+    - If an update is found and accepted, mentisdb exits with instructions
       to restart. No automatic in-process restart — simpler and safer.
-  - feat(cli): add `mentisdbd update` and `mentisdbd force-update` subcommands
-    - `mentisdbd update` checks for a newer release and prompts y/N to install
-    - `mentisdbd force-update` installs the latest release unconditionally,
+  - feat(cli): add `mentisdb update` and `mentisdb force-update` subcommands
+    - `mentisdb update` checks for a newer release and prompts y/N to install
+    - `mentisdb force-update` installs the latest release unconditionally,
       even if the current version appears up to date — useful for repairing
       a corrupted binary or forcing a fresh install
     - Both use the same cargo install path as the startup update check
@@ -590,9 +602,9 @@
     - REST API: AppendThoughtRequest.scope and RankedSearchRequest.scope
     - MemoryScope::as_tag(), from_tag(), Display impl for round-tripping
   - feat(cli): add add, search, agents subcommands via daemon REST
-    - mentisdbd add <content> [--type] [--scope] [--tag] [--agent] [--chain] [--url]
-    - mentisdbd search <query> [--limit] [--scope] [--chain] [--url]
-    - mentisdbd agents [--chain] [--url]
+    - mentisdb add <content> [--type] [--scope] [--tag] [--agent] [--chain] [--url]
+    - mentisdb search <query> [--limit] [--scope] [--chain] [--url]
+    - mentisdb agents [--chain] [--url]
     - Default REST URL: http://127.0.0.1:9472
     - Uses ureq for synchronous HTTP (no async runtime needed)
     - AddCommand, SearchCommand, AgentsCommand structs in cli::args
@@ -708,7 +720,7 @@
   - remove(JsonlStorageAdapter): binary is the only supported format for new chains
     - JsonlStorageAdapter re-opened the file on every append (O(n) file handles per chain)
     - StorageAdapterKind::Jsonl retained for registry backward-compat and migration reads
-    - Legacy .jsonl chains still readable via mentisdbd migrate; write path removed
+    - Legacy .jsonl chains still readable via mentisdb migrate; write path removed
     - MentisDb::open_with_key_and_storage_kind returns Err if called with Jsonl
   - refactor(sidecar): ManagedSidecarEntry with auto_sync flag
     - Introduce ManagedSidecarEntry wrapping provider + auto_sync so FastEmbed
@@ -739,7 +751,7 @@
     - Increase graph max_visited from 50 to 200 for cross-session recall
     - Increase rebuild timeout from 300s to 600s for large chains
   - feat(bench): add full_bench.sh one-shot benchmark runner
-    - Starts mentisdbd, waits for health, creates a fresh chain, and runs
+    - Starts mentisdb, waits for health, creates a fresh chain, and runs
       the full LongMemEval pipeline (ingest + vector rebuild + eval)
   - refactor(server): extract HasOptionalQueryFields trait — build_query, build_markdown_query,
     and build_traversal_query now share apply_optional_query_fields() helper (~40 lines)
@@ -756,7 +768,7 @@
     ThoughtRelationKind::Corrects/Invalidates; remove broken link to private WriterState
   - docs(README): rewrite Claude Desktop setup section with node+mcp-remote
     config pattern, Node >= 20 requirement, nvm/Homebrew examples, and
-    shebang-issue explanation; recommend mentisdbd setup claude-desktop as
+    shebang-issue explanation; recommend mentisdb setup claude-desktop as
     primary setup path
   - docs(README): add MENTISDB_TLS_CERT, MENTISDB_TLS_KEY, MENTISDB_HTTPS_MCP_PORT,
     MENTISDB_HTTPS_REST_PORT environment variable documentation
@@ -851,8 +863,8 @@
      back to plain HTTP otherwise
    - my.mentisdb.com:<port> friendly alias now shown as an alternative
      address alongside the 127.0.0.1 local address
- - refactor(tests): move inline mentisdbd tests to tests/mentisdbd_tests.rs
-   - Removed the #[cfg(test)] mod tests block from src/bin/mentisdbd.rs;
+ - refactor(tests): move inline mentisdb tests to tests/mentisdb_tests.rs
+   - Removed the #[cfg(test)] mod tests block from src/bin/mentisdb.rs;
      all three agent-primer tests now live in the external test suite so
      the public API surface is exercised the same way third parties would
      use it and test parallelism is easier to manage
@@ -860,7 +872,7 @@
 0.7.3.21 MAR/30/2026
  - fix(skills): dashboard and service now refresh the skill registry without restart
    - The shared in-process `SkillRegistry` now reloads itself when `mentisdb-skills.bin` changes on disk, so newly uploaded or updated skills appear immediately
-   - Dashboard skill list/detail/diff/version views and skill lifecycle actions now read against the refreshed registry instead of requiring a full `mentisdbd` console restart
+   - Dashboard skill list/detail/diff/version views and skill lifecycle actions now read against the refreshed registry instead of requiring a full `mentisdb` console restart
    - MCP/REST skill reads and writes also refresh before use, keeping agent uploads and the dashboard in sync even when skills are added from another surface
  - feat(wizard): interactive checkbox TUI for integration selection
    - Replaced the confusing text prompt ("default", "all", "none") with a
@@ -876,7 +888,7 @@
  - fix(wizard): clippy implicit_saturating_sub lint in cursor navigation
    - Replaced guarded `cursor_idx -= 1` with `cursor_idx.saturating_sub(1)`
  - feat(daemon): agent primer notice printed at startup
-   - `mentisdbd` now prints a copy-paste primer prompt after the endpoint
+   - `mentisdb` now prints a copy-paste primer prompt after the endpoint
      addresses at startup so users can immediately hand their AI agent the
      exact one-liner needed to bootstrap memory for a project
    - The primer box shows the MCP address (and dashboard URL when TLS is
@@ -894,7 +906,7 @@
 
 0.7.2.20 MAR/29/2026
  - feat(search): managed vector sidecars and seamless hybrid ranked retrieval
-   - Added a built-in local text embedding provider plus persisted per-chain managed vector-sidecar settings for `mentisdbd`
+   - Added a built-in local text embedding provider plus persisted per-chain managed vector-sidecar settings for `mentisdb`
    - Managed sidecars now stay synchronized on append when enabled, and ranked search automatically blends lexical, graph, and vector signals through `hybrid` / `hybrid_graph` backends instead of requiring a separate semantic-search mode
    - Ranked result payloads now expose a `vector` score component across crate, REST, MCP, and dashboard surfaces, and strong semantic hits can surface even when lexical overlap is weak or absent
    - Vector sidecar writes now go through temp-file replacement, stale/corrupt sidecars degrade cleanly back to lexical+graph retrieval, and deleting a chain removes its sidecar/config artifacts
@@ -904,7 +916,7 @@
    - The `Vector Sidecars` panel is now collapsible and collapsed by default so it does not get in the way of the search form
    - Explorer search copy and ranked result metadata now reflect the fact that dashboard search transparently uses lexical, graph, and managed vector retrieval when available
  - feat(setup): refresh first-run and integration-setup behavior
-   - `mentisdbd` can now launch the interactive setup wizard directly from the first-run daemon notice
+   - `mentisdb` can now launch the interactive setup wizard directly from the first-run daemon notice
    - Claude Code setup now targets the global `~/.claude.json` / `%USERPROFILE%\\.claude.json` config (`mcpServers.mentisdb`), while the legacy `~/.claude/mcp/mentisdb.json` path remains detectable as a legacy companion file
    - GitHub Copilot CLI setup remains `~/.copilot/mcp-config.json` by default and respects `XDG_CONFIG_HOME/copilot/mcp-config.json` on XDG hosts
    - Expanded setup/apply/wizard regression coverage to lock the current path and detection behavior in place
@@ -984,11 +996,11 @@
    - Updated daemon regression tests and docs to reflect the new default-on behavior
 
 0.6.0.13 MAR/23/2026
- - feat(daemon): opt-in GitHub release update checks for `mentisdbd`
+ - feat(daemon): opt-in GitHub release update checks for `mentisdb`
    - New `MENTISDB_UPDATE_CHECK=1` enables a background check against the latest GitHub release for `CloudLLM-ai/mentisdb`
    - Version comparison intentionally uses only the first three numeric components, ignoring the fourth monotone release counter
-   - When a newer core version is found on an interactive terminal, `mentisdbd` shows an ASCII prompt window and accepts `Y`/`N`
-   - Accepting the prompt runs `cargo install --git ... --tag ... --locked --force --bin mentisdbd mentisdb`, then gracefully shuts down and restarts the daemon
+   - When a newer core version is found on an interactive terminal, `mentisdb` shows an ASCII prompt window and accepts `Y`/`N`
+   - Accepting the prompt runs `cargo install --git ... --tag ... --locked --force --bin mentisdb mentisdb`, then gracefully shuts down and restarts the daemon
    - Non-interactive sessions never block on stdin; they print the manual cargo command instead
    - New `MENTISDB_UPDATE_REPO` env var allows overriding the GitHub repository used for update checks
  - fix(dashboard): Agent detail description rendering and freshness
@@ -1000,7 +1012,7 @@
    - Case-only display-name corrections (for example `astro` -> `Astro`) no longer create alias churn
  - test: expand dashboard and daemon updater regression coverage
    - Added dashboard integration tests under `tests/dashboard_tests.rs` for agent detail hydration, copy-to-chain description preservation, and live thought refresh without daemon restart
-   - Added updater tests under `tests/mentisdbd_tests.rs` for release-tag parsing, version comparison, opt-in env configuration, cargo install command construction, and startup-sound scheduler spacing
+   - Added updater tests under `tests/mentisdb_tests.rs` for release-tag parsing, version comparison, opt-in env configuration, cargo install command construction, and startup-sound scheduler spacing
 
 0.5.3.12 MAR/23/2026
  - feat(branding): real MentisDB infinity-M logo
@@ -1025,7 +1037,7 @@
    - New `ThoughtType::Reframe` variant for reframing thoughts that were accurate but unhelpfully framed
    - Distinct from Correction (factually wrong) and Invalidates (correct but stale)
    - Added to Corrections section in `to_memory_markdown` output
-   - Sound signature: E5→D5→B4 gentle falling pattern in mentisdbd
+   - Sound signature: E5→D5→B4 gentle falling pattern in mentisdb
    - Added to dashboard TYPE_GROUPS (Correction/red group)
  - feat: Supersedes ThoughtRelationKind
    - New `ThoughtRelationKind::Supersedes` variant for typed semantic "this replaces that" edges
@@ -1079,7 +1091,7 @@
  - deprecate(config): rename MENTISDB_DEFAULT_KEY to MENTISDB_DEFAULT_CHAIN_KEY
    - New canonical env var is MENTISDB_DEFAULT_CHAIN_KEY
    - MENTISDB_DEFAULT_KEY remains fully functional as a deprecated alias (backwards compatible)
-   - Updated .env.example, start_mentisdbd, README.md, and rustdocs
+   - Updated .env.example, start_mentisdb, README.md, and rustdocs
  - feat(dashboard): agent thoughts explorer
    - Per-agent detail page now includes cross-chain links: "All <DisplayName>'s thoughts on <chain-key>" for every chain the agent participated in
    - Clicking the link opens a filterable thought explorer pre-filtered to that agent's contributions
@@ -1114,7 +1126,7 @@
    - `benches/http_concurrency.rs`: filled all missing `MentisDbServerConfig` fields in the struct literal
    - `tests/mentisdb_tests.rs`: replaced four `vec![…]` array literals that hold only stack types with plain `[…]` arrays (`clippy::useless_vec`)
  - chore: bump crate version to 0.5.0
- - feat: HTTPS/TLS support for mentisdbd
+ - feat: HTTPS/TLS support for mentisdb
    - Added HTTPS listeners for both MCP (port 9473) and REST (port 9474) alongside existing HTTP listeners
    - Auto-generates a self-signed TLS certificate on first startup via `rcgen`, saved to `~/.mentisdb/tls/cert.pem` and `~/.mentisdb/tls/key.pem`
    - Certificate includes SANs: `my.mentisdb.com`, `localhost`, `127.0.0.1`
@@ -1155,7 +1167,7 @@
    - New public function that opens each registered chain, reads live `thought_count` and `agent_count`, and rewrites the registry JSON only when at least one entry has drifted
    - Called at daemon startup after chain migrations so any counts corrupted by the previous off-by-one bug (or by chains appended outside the daemon) are corrected on first boot
  - chore: Add `.env.example` documenting all supported environment variables with comments
- - feat: Web dashboard — admin UI embedded in the mentisdbd binary
+ - feat: Web dashboard — admin UI embedded in the mentisdb binary
    - Self-contained HTML/CSS/vanilla-JS single-page app served at `http://<host>:9475/dashboard`; no npm, no Node.js, zero new crate dependencies
    - HTML/CSS/JS live as real tracked files in `src/dashboard_static/` and are compiled into the binary via `include_str!` — diffs and IDE tooling work normally
    - Chain Manager: lists all chains with live thought/agent counts; click any chain to open the Thought Explorer
@@ -1188,15 +1200,15 @@
 
 0.4.3.8 MAR/16/2026
  - chore: Add Makefile
-   - Added `Makefile` to the standalone repository root with targets: `build`, `build-mentisdbd`, `release`, `fmt`, `check`, `clippy`, `test`, `bench`, `doc`, `publish`, `publish-dry-run`, `install`, `clean`, and `help`
+   - Added `Makefile` to the standalone repository root with targets: `build`, `build-mentisdb`, `release`, `fmt`, `check`, `clippy`, `test`, `bench`, `doc`, `publish`, `publish-dry-run`, `install`, `clean`, and `help`
    - `bench` target pipes Criterion output through `tee` to `/tmp/mentisdb_bench_results.txt` so benchmark numbers are captured alongside the live terminal display
-   - `install` target installs the `mentisdbd` daemon binary via `cargo install --path .`
+   - `install` target installs the `mentisdb` daemon binary via `cargo install --path .`
 
 0.4.2.7 MAR/16/2026
  - repo: Move MentisDB into its own standalone Git repository
    - Split the `mentisdb/` subtree out of the former `cloudllm` monorepo and preserved the MentisDB commit history in the new repository
    - Updated crate metadata to point at the standalone `CloudLLM-ai/mentisdb` repository
-   - Replaced the old local `../mcp` path dependency with the published `cloudllm_mcp` crate so `mentisdbd` builds and runs from the standalone checkout
+   - Replaced the old local `../mcp` path dependency with the published `cloudllm_mcp` crate so `mentisdb` builds and runs from the standalone checkout
  - api: Make skill uploads warning-clean under strict Clippy
    - Replaced the long `SkillRegistry::upload_skill(...)` parameter list with a public `SkillUpload` request type
    - Updated server, tests, and benchmark call sites to use the new upload request builder methods
@@ -1227,7 +1239,7 @@
  - feat: Skill registry V1→V2 startup migration
    - `migrate_skill_registry(chain_dir)` migrates the persisted `mentisdb-skills.bin` from registry V1 (full document per version) to V2 (delta content model)
    - Migration is idempotent; returns `None` if the registry is already at the current version or does not exist
-   - `mentisdbd` runs skill registry migration at startup, after chain migration and before opening the skill registry
+   - `mentisdb` runs skill registry migration at startup, after chain migration and before opening the skill registry
    - Panics on unrecoverable migration failure to prevent serving stale data
  - feat: Add `SkillRegistryMigrationReport` public type reporting migration outcome
  - perf: Replace outer `RwLock<HashMap>` with `DashMap` for concurrent chain lookup
@@ -1247,7 +1259,7 @@
    - `benches/skill_registry.rs`: 12 benchmarks covering skill upload, search, delta reconstruction, and lifecycle operations
    - Baselines committed; run with `cargo bench`
  - bench: Add harness-free HTTP concurrency benchmark
-   - `benches/http_concurrency.rs`: starts `mentisdbd` in-process on a random port, measures write and read throughput at 100 / 1k / 10k concurrent Tokio tasks with p50/p95/p99 latency reporting
+   - `benches/http_concurrency.rs`: starts `mentisdb` in-process on a random port, measures write and read throughput at 100 / 1k / 10k concurrent Tokio tasks with p50/p95/p99 latency reporting
  - test: Expand skill registry coverage for delta versioning and signing
  - docs: Update MENTISDB_SKILL.md with Fleet Orchestration and multi-CLI sub-agent guide
    - Added 9-subsection Fleet Orchestration section: PM pattern, agent registration, parallel dispatch, context window protocol, anti-patterns, and self-improving fleet guidance
@@ -1292,7 +1304,7 @@
 0.3.0.4 MAR/12/2026
 Note: historical entries below use the original ThoughtChain / thoughtchaind
 names because they describe earlier releases. The project is now being
-rebranded to MentisDB / mentisdbd.
+rebranded to MentisDB / mentisdb.
 This release also records the project rename from ThoughtChain to MentisDB.
 
  - feat: Introduce ThoughtChain schema version `1`

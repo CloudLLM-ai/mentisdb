@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the LongMemEval benchmark against a running mentisdbd instance.
+# Run the LongMemEval benchmark against a running mentisdb instance.
 #
 # Smart chain selection: queries the daemon for all chains starting with "lme",
 # picks the one with the most thoughts (i.e. a full ingest), and skips
@@ -61,15 +61,15 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 3 — check mentisdbd is reachable
+# Step 3 — check mentisdb is reachable
 # ---------------------------------------------------------------------------
-echo "Checking mentisdbd at http://127.0.0.1:9472…"
+echo "Checking mentisdb at http://127.0.0.1:9472…"
 if ! curl -sf http://127.0.0.1:9472/health >/dev/null 2>&1; then
-    echo "ERROR: mentisdbd is not running on port 9472."
-    echo "Start it with:  mentisdbd &"
+    echo "ERROR: mentisdb is not running on port 9472."
+    echo "Start it with:  mentisdb &"
     exit 1
 fi
-echo "mentisdbd is up."
+echo "mentisdb is up."
 
 # ---------------------------------------------------------------------------
 # Step 4 — pick chain

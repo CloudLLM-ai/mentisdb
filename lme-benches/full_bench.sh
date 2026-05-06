@@ -3,10 +3,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-pkill -f mentisdbd 2>/dev/null || true
+pkill -f mentisdb 2>/dev/null || true
 sleep 1
 
-MENTISDB_VERBOSE=false MENTISDB_THOUGHT_SOUNDS=false ./target/release/mentisdbd </dev/null >/tmp/mentisdbd.log 2>&1 &
+MENTISDB_VERBOSE=false MENTISDB_THOUGHT_SOUNDS=false ./target/release/mentisdb </dev/null >/tmp/mentisdb.log 2>&1 &
 for i in $(seq 1 20); do
     if curl -sf http://127.0.0.1:9472/health >/dev/null 2>&1; then
         break
