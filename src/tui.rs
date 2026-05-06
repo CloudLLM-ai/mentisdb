@@ -1,4 +1,4 @@
-//! Terminal user interface for mentisdbd.
+//! Terminal user interface for mentisdb.
 //!
 //! Provides a live three-pane TUI with scrollable tables for chains, agents,
 //! and skills, plus an event log and agent primer. Uses the standard 8-color
@@ -568,14 +568,14 @@ fn render_top_left(frame: &mut Frame, state: &TuiState, area: Rect) {
 
     if state.started {
         lines.push(Line::from(Span::styled(
-            "mentisdbd running",
+            "mentisdb running",
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            "mentisdbd starting…",
+            "mentisdb starting…",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -1115,7 +1115,7 @@ fn render_update_dialog_overlay(frame: &mut Frame, state: &TuiState, full_area: 
 
     let lines = vec![
         Line::from(Span::styled(
-            "mentisdbd update available",
+            "mentisdb update available",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -1253,7 +1253,7 @@ fn render_toast(frame: &mut Frame, msg: &str, anchor: Rect) {
 fn render_crash_overlay(frame: &mut Frame, err: &str, full_area: Rect) {
     let lines = vec![
         Line::from(Span::styled(
-            "mentisdbd startup failed",
+            "mentisdb startup failed",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),

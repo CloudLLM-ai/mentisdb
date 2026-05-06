@@ -9,11 +9,11 @@ pub(super) fn build(
 ) -> IntegrationApplyPlan {
     let mut patch = JsonPatch::new();
 
-    let mentisdbd_path = detect_mentisdbd_path();
+    let mentisdb_path = detect_mentisdb_path();
 
     patch = patch.set_path(
         ["mcpServers", settings.server_name(), "command"],
-        json!(mentisdbd_path),
+        json!(mentisdb_path),
     );
 
     patch = patch.set_path(
@@ -40,11 +40,11 @@ fn is_executable(_path: &std::path::Path) -> bool {
     true
 }
 
-fn detect_mentisdbd_path() -> String {
+fn detect_mentisdb_path() -> String {
     let binary_name = if cfg!(target_os = "windows") {
-        "mentisdbd.exe"
+        "mentisdb.exe"
     } else {
-        "mentisdbd"
+        "mentisdb"
     };
 
     for entry in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {

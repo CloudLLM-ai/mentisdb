@@ -248,7 +248,7 @@ impl StorageAdapter for LegacyJsonlReadAdapter {
     fn append_thought(&self, _thought: &Thought) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "JSONL chains are read-only; run `mentisdbd migrate` to convert to binary.",
+            "JSONL chains are read-only; run `mentisdb migrate` to convert to binary.",
         ))
     }
 
@@ -3323,7 +3323,7 @@ const MANAGED_VECTOR_SIDECAR_CONFIG_VERSION: u32 = 1;
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "kebab-case")]
 pub enum ManagedVectorProviderKind {
-    /// Deterministic in-process hashed text embeddings used by `mentisdbd`.
+    /// Deterministic in-process hashed text embeddings used by `mentisdb`.
     LocalTextV1,
     /// Real semantic embeddings via the `fastembed` AllMiniLML6V2 ONNX model.
     ///
@@ -3841,7 +3841,7 @@ impl MentisDb {
     /// Open or create a chain using an explicit stable chain key and default adapter preference.
     ///
     /// Returns an error if `default_storage_kind` is [`StorageAdapterKind::Jsonl`]. JSONL chains
-    /// are no longer supported for active use; run `mentisdbd migrate` first to convert to binary.
+    /// are no longer supported for active use; run `mentisdb migrate` first to convert to binary.
     pub fn open_with_key_and_storage_kind<P: AsRef<Path>>(
         chain_dir: P,
         chain_key: &str,
@@ -3858,7 +3858,7 @@ impl MentisDb {
                 io::ErrorKind::Unsupported,
                 format!(
                     "JSONL chains are no longer supported for active use; \
-                     please run `mentisdbd migrate` first to convert chain '{chain_key}' to binary."
+                     please run `mentisdb migrate` first to convert chain '{chain_key}' to binary."
                 ),
             ));
         }
@@ -5709,7 +5709,7 @@ impl MentisDb {
     /// Load the persisted managed-vector settings for this chain and apply them
     /// to the current handle.
     ///
-    /// `mentisdbd` uses this when it opens a chain so vector sidecars remain
+    /// `mentisdb` uses this when it opens a chain so vector sidecars remain
     /// enabled across daemon restarts.
     pub fn apply_persisted_managed_vector_sidecars(&mut self) -> io::Result<()> {
         #[cfg(feature = "local-embeddings")]
@@ -7753,7 +7753,7 @@ fn resolve_storage_kind_for_chain(
                 io::ErrorKind::Unsupported,
                 format!(
                     "JSONL chains are no longer supported for active use; \
-                     please run `mentisdbd migrate` first to convert chain '{chain_key}' to binary."
+                     please run `mentisdb migrate` first to convert chain '{chain_key}' to binary."
                 ),
             ));
         }
@@ -7775,7 +7775,7 @@ fn resolve_storage_kind_for_chain(
             io::ErrorKind::Unsupported,
             format!(
                 "JSONL chains are no longer supported for active use; \
-                 please run `mentisdbd migrate` first to convert chain '{chain_key}' to binary."
+                 please run `mentisdb migrate` first to convert chain '{chain_key}' to binary."
             ),
         )),
         (false, true) => Ok(StorageAdapterKind::Binary),

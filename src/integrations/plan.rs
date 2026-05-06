@@ -155,7 +155,7 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
         }
         IntegrationKind::Qwen => Some(format!("qwen mcp add --transport http mentisdb {url}")),
         IntegrationKind::CopilotCli => Some(format!(
-            "Use `/mcp add` inside Copilot CLI or let `mentisdbd setup copilot` write {}.",
+            "Use `/mcp add` inside Copilot CLI or let `mentisdb setup copilot` write {}.",
             spec.config_target.path.display()
         )),
         _ => None,
@@ -166,7 +166,7 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
             "{{\n  \"mcpServers\": {{\n    \"mentisdb\": {{\n      \"type\": \"http\",\n      \"url\": \"{url}\"\n    }}\n  }}\n}}"
         )),
         IntegrationKind::ClaudeDesktop => Some(
-            "{\n  \"mcpServers\": {\n    \"mentisdb\": {\n      \"command\": \"mentisdbd\",\n      \"args\": [\"--mode\", \"stdio\"]\n    }\n  }\n}\n// mentisdbd communicates with Claude Desktop over stdio using the MCP protocol.".to_string()
+            "{\n  \"mcpServers\": {\n    \"mentisdb\": {\n      \"command\": \"mentisdb\",\n      \"args\": [\"--mode\", \"stdio\"]\n    }\n  }\n}\n// mentisdb communicates with Claude Desktop over stdio using the MCP protocol.".to_string()
         ),
         IntegrationKind::GeminiCli => Some(format!(
             "{{\n  \"mcpServers\": {{\n    \"mentisdb\": {{\n      \"type\": \"http\",\n      \"url\": \"{url}\",\n      \"httpUrl\": \"{url}\"\n    }}\n  }}\n}}"
@@ -186,7 +186,7 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
     match integration {
         IntegrationKind::ClaudeDesktop => {
             notes.push(
-                "Claude Desktop spawns mentisdbd as a subprocess and communicates over stdio using MCP JSON-RPC."
+                "Claude Desktop spawns mentisdb as a subprocess and communicates over stdio using MCP JSON-RPC."
                     .to_string(),
             );
             notes.push(
@@ -194,7 +194,7 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
                     .to_string(),
             );
             notes.push(
-                "Make sure mentisdbd is on your PATH, or use the full path to the binary."
+                "Make sure mentisdb is on your PATH, or use the full path to the binary."
                     .to_string(),
             );
         }

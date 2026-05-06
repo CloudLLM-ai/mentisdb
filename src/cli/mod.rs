@@ -1,4 +1,4 @@
-//! Shared CLI helpers for `mentisdbd` setup, wizard, and memory subcommands.
+//! Shared CLI helpers for `mentisdb` setup, wizard, and memory subcommands.
 //!
 //! The daemon binary delegates subcommand parsing plus wizard/setup behavior to
 //! this module so the command logic stays directly testable.
@@ -307,8 +307,8 @@ fn run_restore(
     match ureq::post("http://127.0.0.1:9472/v1/admin/flush").call() {
         Ok(resp) if resp.status() == 200 => {
             return Err(
-                "Restore aborted: mentisdbd is running. Stop the daemon first \
-                 (mentisdbd stop or kill the process), then restore."
+                "Restore aborted: mentisdb is running. Stop the daemon first \
+                 (mentisdb stop or kill the process), then restore."
                     .to_string(),
             );
         }
@@ -321,7 +321,7 @@ fn run_restore(
         Ok(_) => {
             // Unexpected response — treat as daemon running
             return Err(
-                "Restore aborted: mentisdbd appears to be running. Stop the daemon first, then restore."
+                "Restore aborted: mentisdb appears to be running. Stop the daemon first, then restore."
                     .to_string(),
             );
         }

@@ -1,4 +1,4 @@
-//! Web dashboard for the `mentisdbd` binary.
+//! Web dashboard for the `mentisdb` binary.
 //!
 //! This module exposes a self-contained HTML dashboard at `/dashboard` on a
 //! configurable port (default 9475).  All static HTML is embedded via
@@ -34,7 +34,9 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -70,8 +72,7 @@ pub(crate) struct DashboardState {
     /// Storage adapter kind used when opening chains from disk.
     pub default_storage_adapter: StorageAdapterKind,
     /// Whether newly opened chains should flush immediately on each append.
-    #[allow(dead_code)]
-    pub auto_flush: bool,
+    pub auto_flush: Arc<AtomicBool>,
 }
 
 // ── Router builder ────────────────────────────────────────────────────────────
@@ -178,7 +179,9 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
         .route("/skills/{skill_id}/revoke", post(api_revoke_skill))
         .route("/skills/{skill_id}/deprecate", post(api_deprecate_skill))
         // Version
-        .route("/version", get(api_version));
+        .route("/version", get(api_version))
+        // Settings
+        .route("/settings", get(api_settings).post(api_update_settings));
 
     // ── Protected surface (PIN-gated when pin is set) ─────────────────────
     let protected = Router::new()
@@ -420,10 +423,10 @@ async fn get_or_open_chain(
 
     // Try the live cache first (clone the Arc to avoid holding the DashMap shard lock across an await).
     if let Some(arc) = state.chains.get(chain_key).map(|r| r.value().clone()) {
-        if state.auto_flush {
+        if state.auto_flush.load(Ordering::Relaxed) {
             if let Some(storage) = registered_storage {
                 if let Ok(mut refreshed) = MentisDb::open_with_storage(storage) {
-                    if refreshed.set_auto_flush(state.auto_flush).is_ok()
+                    if refreshed.set_auto_flush(state.auto_flush.load(Ordering::Relaxed)).is_ok()
                         && refreshed.apply_persisted_managed_vector_sidecars().is_ok()
                     {
                         let refreshed = Arc::new(RwLock::new(refreshed));
@@ -448,7 +451,7 @@ async fn get_or_open_chain(
     let mut chain = MentisDb::open_with_storage(storage)
         .map_err(|e| not_found(format!("chain '{chain_key}': {e}")))?;
     chain
-        .set_auto_flush(state.auto_flush)
+        .set_auto_flush(state.auto_flush.load(Ordering::Relaxed))
         .map_err(internal_error)?;
     chain
         .apply_persisted_managed_vector_sidecars()
@@ -881,11 +884,16 @@ async fn api_chains(
         .chains
         .into_iter()
         .map(|(key, reg)| {
+            let storage_size = std::fs::metadata(&reg.storage_location)
+                .map(|m| m.len())
+                .unwrap_or(0);
             let v = json!({
-                "chain_key":     key.clone(),
-                "thought_count": reg.thought_count,
-                "agent_count":   reg.agent_count,
-                "head_hash":     Value::Null,
+                "chain_key":              key.clone(),
+                "thought_count":          reg.thought_count,
+                "agent_count":            reg.agent_count,
+                "head_hash":              Value::Null,
+                "storage_size":           storage_size,
+                "storage_size_formatted": format_bytes(storage_size),
             });
             (key, v)
         })
@@ -896,11 +904,16 @@ async fn api_chains(
     for entry in state.chains.iter() {
         let key = entry.key().clone();
         if let Ok(chain) = entry.value().try_read() {
+            let storage_size = std::fs::metadata(chain.storage_location())
+                .map(|m| m.len())
+                .unwrap_or(0);
             let v = json!({
-                "chain_key":     key.clone(),
-                "thought_count": chain.thoughts().len(),
-                "agent_count":   chain.agent_registry().agents.len(),
-                "head_hash":     chain.head_hash().map(ToString::to_string),
+                "chain_key":              key.clone(),
+                "thought_count":          chain.thoughts().len(),
+                "agent_count":            chain.agent_registry().agents.len(),
+                "head_hash":              chain.head_hash().map(ToString::to_string),
+                "storage_size":           storage_size,
+                "storage_size_formatted": format_bytes(storage_size),
             });
             by_key.insert(key, v);
         }
@@ -912,13 +925,18 @@ async fn api_chains(
         let key = entry.key().clone();
         if !by_key.contains_key(&key) {
             if let Ok(chain) = entry.value().try_read() {
+                let storage_size = std::fs::metadata(chain.storage_location())
+                    .map(|m| m.len())
+                    .unwrap_or(0);
                 by_key.insert(
                     key.clone(),
                     json!({
-                        "chain_key":     key,
-                        "thought_count": chain.thoughts().len(),
-                        "agent_count":   chain.agent_registry().agents.len(),
-                        "head_hash":     chain.head_hash().map(ToString::to_string),
+                        "chain_key":              key,
+                        "thought_count":          chain.thoughts().len(),
+                        "agent_count":            chain.agent_registry().agents.len(),
+                        "head_hash":              chain.head_hash().map(ToString::to_string),
+                        "storage_size":           storage_size,
+                        "storage_size_formatted": format_bytes(storage_size),
                     }),
                 );
             }
@@ -1074,7 +1092,7 @@ async fn api_bootstrap_chain(
             )
             .map_err(internal_error)?;
             chain
-                .set_auto_flush(state.auto_flush)
+                .set_auto_flush(state.auto_flush.load(Ordering::Relaxed))
                 .map_err(internal_error)?;
             chain
                 .apply_persisted_managed_vector_sidecars()
@@ -2127,7 +2145,7 @@ async fn api_copy_agent_to_chain(
         .map_err(|e| internal_error(format!("open target chain '{target_chain_key}': {e}")))?;
         let mut chain = chain;
         chain
-            .set_auto_flush(state.auto_flush)
+            .set_auto_flush(state.auto_flush.load(Ordering::Relaxed))
             .map_err(internal_error)?;
         chain
             .apply_persisted_managed_vector_sidecars()
@@ -2456,6 +2474,308 @@ async fn api_branch_chain(
         source_chain_key: body.source_chain_key,
         branch_thought_id: branch_thought_id.to_string(),
     }))
+}
+
+// ── Settings API ──────────────────────────────────────────────────────────────
+
+/// Metadata for one dashboard-exposed setting.
+#[derive(Serialize)]
+struct DashboardSetting {
+    name: String,
+    value: String,
+    default_value: String,
+    description: String,
+    kind: String,
+    hot_reload: bool,
+}
+
+/// `GET /dashboard/api/settings`
+///
+/// Returns all MENTISDB_ environment variables with their current values,
+/// defaults, types, and descriptions.
+async fn api_settings(
+    State(_state): State<DashboardState>,
+) -> Result<Json<Vec<DashboardSetting>>, (StatusCode, Json<Value>)> {
+    let settings = vec![
+        DashboardSetting {
+            name: "MENTISDB_DIR".to_string(),
+            value: std::env::var("MENTISDB_DIR").unwrap_or_default(),
+            default_value: "~/.cloudllm/mentisdb".to_string(),
+            description: "Directory where chain files and registry are stored.".to_string(),
+            kind: "string".to_string(),
+            hot_reload: false,
+        },
+        DashboardSetting {
+            name: "MENTISDB_DEFAULT_CHAIN_KEY".to_string(),
+            value: std::env::var("MENTISDB_DEFAULT_CHAIN_KEY")
+                .or_else(|_| std::env::var("MENTISDB_DEFAULT_KEY"))
+                .unwrap_or_default(),
+            default_value: "default".to_string(),
+            description: "Default chain key when none is specified.".to_string(),
+            kind: "string".to_string(),
+            hot_reload: false,
+        },
+        DashboardSetting {
+            name: "MENTISDB_STORAGE_ADAPTER".to_string(),
+            value: std::env::var("MENTISDB_STORAGE_ADAPTER").unwrap_or_default(),
+            default_value: "binary".to_string(),
+            description: "Storage adapter: binary or jsonl.".to_string(),
+            kind: "string".to_string(),
+            hot_reload: false,
+        },
+        DashboardSetting {
+            name: "MENTISDB_AUTO_FLUSH".to_string(),
+            value: std::env::var("MENTISDB_AUTO_FLUSH").unwrap_or_else(|_| "true".to_string()),
+            default_value: "true".to_string(),
+            description: "Flush immediately on each append (true) or use buffered writes (false).".to_string(),
+            kind: "boolean".to_string(),
+            hot_reload: true,
+        },
+        DashboardSetting {
+            name: "MENTISDB_VERBOSE".to_string(),
+            value: std::env::var("MENTISDB_VERBOSE").unwrap_or_else(|_| "true".to_string()),
+            default_value: "true".to_string(),
+            description: "Enable verbose logging.".to_string(),
+            kind: "boolean".to_string(),
+            hot_reload: true,
+        },
+        DashboardSetting {
+            name: "MENTISDB_LOG_FILE".to_string(),
+            value: std::env::var("MENTISDB_LOG_FILE").unwrap_or_default(),
+            default_value: "".to_string(),
+            description: "Path to log file (optional).".to_string(),
+            kind: "string".to_string(),
+            hot_reload: false,
+        },
+        DashboardSetting {
+            name: "MENTISDB_BIND_HOST".to_string(),
+            value: std::env::var("MENTISDB_BIND_HOST").unwrap_or_default(),
+            default_value: "127.0.0.1".to_string(),
+            description: "Host address to bind servers to.".to_string(),
+            kind: "string".to_string(),
+            hot_reload: false,
+        },
+        DashboardSetting {
+            name: "MENTISDB_MCP_PORT".to_string(),
+            value: std::env::var("MENTISDB_MCP_PORT").unwrap_or_default(),
+            default_value: "9471".to_string(),
+            description: "Port for the MCP server.".to_string(),
+            kind: "number".to_string(),
+            hot_reload: false,
+        },
+        DashboardSetting {
+            name: "MENTISDB_REST_PORT".to_string(),
+            value: std::env::var("MENTISDB_REST_PORT").unwrap_or_default(),
+            default_value: "9472".to_string(),
+            description: "Port for the REST server.".to_string(),
+            kind: "number".to_string(),
+            hot_reload: false,
+        },
+        DashboardSetting {
+            name: "MENTISDB_HTTPS_MCP_PORT".to_string(),
+            value: std::env::var("MENTISDB_HTTPS_MCP_PORT").unwrap_or_default(),
+            default_value: "9473".to_string(),
+            description: "Port for the HTTPS MCP server (0 to disable).".to_string(),
+            kind: "number".to_string(),
+            hot_reload: false,
+        },
+        DashboardSetting {
+            name: "MENTISDB_HTTPS_REST_PORT".to_string(),
+            value: std::env::var("MENTISDB_HTTPS_REST_PORT").unwrap_or_default(),
+            default_value: "9474".to_string(),
+            description: "Port for the HTTPS REST server (0 to disable).".to_string(),
+            kind: "number".to_string(),
+            hot_reload: false,
+        },
+        DashboardSetting {
+            name: "MENTISDB_TLS_CERT".to_string(),
+            value: std::env::var("MENTISDB_TLS_CERT").unwrap_or_default(),
+            default_value: "~/.cloudllm/mentisdb/tls/cert.pem".to_string(),
+            description: "Path to TLS certificate.".to_string(),
+            kind: "string".to_string(),
+            hot_reload: false,
+        },
+        DashboardSetting {
+            name: "MENTISDB_TLS_KEY".to_string(),
+            value: std::env::var("MENTISDB_TLS_KEY").unwrap_or_default(),
+            default_value: "~/.cloudllm/mentisdb/tls/key.pem".to_string(),
+            description: "Path to TLS private key.".to_string(),
+            kind: "string".to_string(),
+            hot_reload: false,
+        },
+        DashboardSetting {
+            name: "MENTISDB_DASHBOARD_PORT".to_string(),
+            value: std::env::var("MENTISDB_DASHBOARD_PORT").unwrap_or_default(),
+            default_value: "9475".to_string(),
+            description: "Port for the web dashboard (0 to disable).".to_string(),
+            kind: "number".to_string(),
+            hot_reload: false,
+        },
+        DashboardSetting {
+            name: "MENTISDB_DASHBOARD_PIN".to_string(),
+            value: std::env::var("MENTISDB_DASHBOARD_PIN").unwrap_or_default(),
+            default_value: "".to_string(),
+            description: "Optional PIN to protect dashboard access.".to_string(),
+            kind: "string".to_string(),
+            hot_reload: false,
+        },
+        DashboardSetting {
+            name: "MENTISDB_UPDATE_CHECK".to_string(),
+            value: std::env::var("MENTISDB_UPDATE_CHECK").unwrap_or_else(|_| "true".to_string()),
+            default_value: "true".to_string(),
+            description: "Enable background GitHub release checks.".to_string(),
+            kind: "boolean".to_string(),
+            hot_reload: true,
+        },
+        DashboardSetting {
+            name: "MENTISDB_UPDATE_REPO".to_string(),
+            value: std::env::var("MENTISDB_UPDATE_REPO")
+                .unwrap_or_else(|_| "CloudLLM-ai/mentisdb".to_string()),
+            default_value: "CloudLLM-ai/mentisdb".to_string(),
+            description: "GitHub repository for update checks.".to_string(),
+            kind: "string".to_string(),
+            hot_reload: true,
+        },
+        DashboardSetting {
+            name: "MENTISDB_STARTUP_SOUND".to_string(),
+            value: std::env::var("MENTISDB_STARTUP_SOUND").unwrap_or_else(|_| "true".to_string()),
+            default_value: "true".to_string(),
+            description: "Play a sound on daemon startup.".to_string(),
+            kind: "boolean".to_string(),
+            hot_reload: true,
+        },
+        DashboardSetting {
+            name: "MENTISDB_THOUGHT_SOUNDS".to_string(),
+            value: std::env::var("MENTISDB_THOUGHT_SOUNDS").unwrap_or_else(|_| "false".to_string()),
+            default_value: "false".to_string(),
+            description: "Play sounds on thought append and read.".to_string(),
+            kind: "boolean".to_string(),
+            hot_reload: true,
+        },
+    ];
+    Ok(Json(settings))
+}
+
+/// Request body for updating settings.
+#[derive(Deserialize)]
+struct SettingsUpdateRequest {
+    settings: HashMap<String, String>,
+}
+
+/// Response body for updating settings.
+#[derive(Serialize)]
+struct SettingsUpdateResponse {
+    success: bool,
+    message: String,
+    restart_required: bool,
+}
+
+/// `POST /dashboard/api/settings`
+///
+/// Accepts changed setting values, updates the environment, hot-reloads
+/// applicable fields in DashboardState, and persists the changes to a
+/// `.env` file in the mentisdb directory.
+async fn api_update_settings(
+    State(state): State<DashboardState>,
+    Json(body): Json<SettingsUpdateRequest>,
+) -> Result<Json<SettingsUpdateResponse>, (StatusCode, Json<Value>)> {
+    let mut restart_required = false;
+    let mut updated = Vec::new();
+
+    for (name, value) in &body.settings {
+        let old_value = std::env::var(name).unwrap_or_default();
+        if old_value == *value {
+            continue;
+        }
+
+        std::env::set_var(name, value);
+        updated.push(name.clone());
+
+        // Hot-reload applicable fields in DashboardState
+        match name.as_str() {
+            "MENTISDB_AUTO_FLUSH" => {
+                let new_bool = matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                );
+                state.auto_flush.store(new_bool, Ordering::Relaxed);
+            }
+            "MENTISDB_VERBOSE"
+            | "MENTISDB_UPDATE_CHECK"
+            | "MENTISDB_UPDATE_REPO"
+            | "MENTISDB_STARTUP_SOUND"
+            | "MENTISDB_THOUGHT_SOUNDS" => {
+                // These are read from env on demand
+            }
+            _ => {
+                restart_required = true;
+            }
+        }
+    }
+
+    // Persist changes to .env file
+    if !updated.is_empty() {
+        let env_path = state.mentisdb_dir.join(".env");
+        let mut lines: Vec<String> = Vec::new();
+        if let Ok(content) = std::fs::read_to_string(&env_path) {
+            lines = content.lines().map(|l| l.to_string()).collect();
+        }
+
+        for name in &updated {
+            let new_value = body.settings.get(name).cloned().unwrap_or_default();
+            let prefix_eq = format!("{}=", name);
+            let prefix_sp = format!("{} =", name);
+            let mut found = false;
+            for line in &mut lines {
+                if line.starts_with(&prefix_eq) || line.starts_with(&prefix_sp) {
+                    *line = format!("{}={}", name, new_value);
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                lines.push(format!("{}={}", name, new_value));
+            }
+        }
+
+        let mut file = std::fs::File::create(&env_path).map_err(internal_error)?;
+        for line in &lines {
+            writeln!(file, "{}", line).map_err(internal_error)?;
+        }
+    }
+
+    let message = if restart_required {
+        "Some changes require a daemon restart to take effect.".to_string()
+    } else {
+        "Settings saved.".to_string()
+    };
+
+    Ok(Json(SettingsUpdateResponse {
+        success: true,
+        message,
+        restart_required,
+    }))
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Format a byte count as human-readable units (B, KB, MB, GB, TB, PB).
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB", "PB"];
+    if bytes == 0 {
+        return "0 B".to_string();
+    }
+    let mut size = bytes as f64;
+    let mut unit_idx = 0;
+    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_idx += 1;
+    }
+    match unit_idx {
+        0 => format!("{:.0} {}", size, UNITS[unit_idx]),
+        1 => format!("{:.0} {}", size.ceil(), UNITS[unit_idx]),
+        _ => format!("{:.1} {}", size, UNITS[unit_idx]),
+    }
 }
 
 /// Compute Jaccard similarity between a pre-built character set for the source

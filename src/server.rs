@@ -95,6 +95,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use axum_server::tls_rustls::RustlsConfig;
 use rcgen::{date_time_ymd, CertificateParams, DistinguishedName, DnType, KeyPair, SanType};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, RwLock};
@@ -235,7 +236,7 @@ pub struct MentisDbServiceConfig {
     /// safe to perform blocking I/O (e.g. writing a sound file, updating a
     /// status LED, or sending a desktop notification).
     ///
-    /// This hook is used by `mentisdbd` to emit audio feedback on thought
+    /// This hook is used by `mentisdb` to emit audio feedback on thought
     /// commits. Library consumers can attach their own hook via
     /// [`with_on_thought_appended`](Self::with_on_thought_appended). Defaults
     /// to `None` (no callback).
@@ -246,7 +247,7 @@ pub struct MentisDbServiceConfig {
     /// and is invoked inside a `tokio::task::spawn_blocking` task, making it
     /// safe for blocking I/O such as audio playback.
     ///
-    /// Used by `mentisdbd` to emit audio feedback on read access. Defaults to
+    /// Used by `mentisdb` to emit audio feedback on read access. Defaults to
     /// `None`.
     pub on_read_logged: Option<Arc<dyn Fn(&str) + Send + Sync>>,
     /// Optional Jaccard similarity threshold for automatic deduplication on
@@ -427,7 +428,7 @@ impl MentisDbServiceConfig {
     /// safe to perform blocking I/O such as audio playback, writing to a
     /// status device, or sending a desktop notification.
     ///
-    /// This is the primary extension point used by `mentisdbd` to emit audio
+    /// This is the primary extension point used by `mentisdb` to emit audio
     /// feedback. Library consumers can attach any `Fn(ThoughtType) + Send +
     /// Sync` closure. To remove an existing callback, use
     /// `config.on_thought_appended = None` directly.
@@ -461,7 +462,7 @@ impl MentisDbServiceConfig {
     /// and is invoked inside a `tokio::task::spawn_blocking` task, making it
     /// safe for blocking I/O such as audio playback.
     ///
-    /// This is the extension point used by `mentisdbd` to emit audio feedback
+    /// This is the extension point used by `mentisdb` to emit audio feedback
     /// on read access commands.
     ///
     /// # Examples
@@ -506,7 +507,7 @@ impl MentisDbServiceConfig {
     }
 }
 
-/// Full runtime configuration for the standalone `mentisdbd` daemon process.
+/// Full runtime configuration for the standalone `mentisdb` daemon process.
 ///
 /// This is the *outer* configuration that combines a [`MentisDbServiceConfig`]
 /// (storage and behaviour) with the network topology: which ports the HTTP,
@@ -631,7 +632,7 @@ impl MentisDbServerConfig {
     /// Build a [`MentisDbServerConfig`] by reading `MENTISDB_*` environment
     /// variables and applying safe defaults for any that are absent.
     ///
-    /// This is the canonical entry-point for the `mentisdbd` binary. Library
+    /// This is the canonical entry-point for the `mentisdb` binary. Library
     /// consumers that need finer control can call this and then override
     /// individual fields before passing the config to [`start_servers`].
     ///
@@ -938,7 +939,7 @@ pub fn default_mentisdb_dir() -> PathBuf {
     crate::paths::default_mentisdb_dir()
 }
 
-/// Return the default on-disk TLS directory for `mentisdbd` self-signed certificates.
+/// Return the default on-disk TLS directory for `mentisdb` self-signed certificates.
 ///
 /// The default is `$HOME/.mentisdb/tls` when `HOME` is available,
 /// otherwise `./.mentisdb/tls`.
@@ -1326,7 +1327,7 @@ pub async fn start_https_rest_server(
 /// Start all servers described by a [`MentisDbServerConfig`] and return
 /// handles for each running server.
 ///
-/// This is the top-level entry point for the `mentisdbd` daemon. It:
+/// This is the top-level entry point for the `mentisdb` daemon. It:
 ///
 /// 1. Generates a self-signed TLS certificate (via `rcgen`) if the cert/key
 ///    files do not yet exist and at least one HTTPS server or the dashboard is
@@ -1438,7 +1439,7 @@ pub async fn start_servers(
             default_chain_key: config.service.default_chain_key.clone(),
             dashboard_pin: config.dashboard_pin.clone(),
             default_storage_adapter: config.service.default_storage_adapter,
-            auto_flush: config.service.auto_flush,
+            auto_flush: Arc::new(AtomicBool::new(config.service.auto_flush)),
         };
         Some(
             start_dashboard_server(
@@ -1659,7 +1660,7 @@ pub fn mcp_router(config: MentisDbServiceConfig) -> Router {
 /// This router exposes the modern MCP root endpoint (`POST /`) as defined by
 /// the MCP streamable-HTTP specification. It is the surface used by
 /// remote-capable MCP clients such as **Codex** and **Claude Code** when they
-/// connect to a running `mentisdbd` instance.
+/// connect to a running `mentisdb` instance.
 ///
 /// The router also adds:
 /// - `GET /health` — liveness probe.

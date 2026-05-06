@@ -93,7 +93,7 @@ pub struct RestoreCommand {
     pub yes: bool,
 }
 
-/// Supported top-level commands for `mentisdbd` CLI.
+/// Supported top-level commands for `mentisdb` CLI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
     /// Print CLI help.
@@ -114,7 +114,7 @@ pub enum CliCommand {
     Restore(RestoreCommand),
 }
 
-/// Parse command-line arguments for the embedded `mentisdbd` setup and wizard CLI.
+/// Parse command-line arguments for the embedded `mentisdb` setup and wizard CLI.
 pub fn parse_args<I, T>(args: I) -> Result<CliCommand, String>
 where
     I: IntoIterator<Item = T>,
@@ -148,21 +148,21 @@ where
 
 pub(crate) fn help_text() -> &'static str {
     "\
-mentisdbd CLI
+mentisdb CLI
 
 Usage:
-  mentisdbd --help
-  mentisdbd
-  mentisdbd --mode stdio
-  mentisdbd --mode http
-  mentisdbd --mode both
-  mentisdbd setup <agent|all> [--url <url>] [--dry-run] [--yes]
-  mentisdbd wizard [--url <url>] [--yes]
-  mentisdbd add <content> [--type <type>] [--scope <scope>] [--tag <tag>] [--agent <id>] [--chain <key>] [--url <url>]
-  mentisdbd search <query> [--limit <n>] [--scope <scope>] [--chain <key>] [--url <url>]
-  mentisdbd agents [--chain <key>] [--url <url>]
-  mentisdbd backup [-o <path>] [--dir <path>] [--flush] [--include-tls]
-  mentisdbd restore <archive.mentis> [--dir <path>] [--overwrite] [--yes]
+  mentisdb --help
+  mentisdb
+  mentisdb --mode stdio
+  mentisdb --mode http
+  mentisdb --mode both
+  mentisdb setup <agent|all> [--url <url>] [--dry-run] [--yes]
+  mentisdb wizard [--url <url>] [--yes]
+  mentisdb add <content> [--type <type>] [--scope <scope>] [--tag <tag>] [--agent <id>] [--chain <key>] [--url <url>]
+  mentisdb search <query> [--limit <n>] [--scope <scope>] [--chain <key>] [--url <url>]
+  mentisdb agents [--chain <key>] [--url <url>]
+  mentisdb backup [-o <path>] [--dir <path>] [--flush] [--include-tls]
+  mentisdb restore <archive.mentis> [--dir <path>] [--overwrite] [--yes]
 
 Daemon modes (start HTTP servers by default):
   --mode stdio     Start MCP server over stdio (for Claude Desktop subprocess)
@@ -186,11 +186,11 @@ Commands:
     or for every supported integration with `all`.
 
     Examples:
-      mentisdbd setup codex
-      mentisdbd setup claude-desktop
-      mentisdbd setup all --dry-run
-      mentisdbd setup all --yes
-      mentisdbd setup qwen --url http://127.0.0.1:9471
+      mentisdb setup codex
+      mentisdb setup claude-desktop
+      mentisdb setup all --dry-run
+      mentisdb setup all --yes
+      mentisdb setup qwen --url http://127.0.0.1:9471
 
     Options:
       --url <url>   Override the default MentisDB MCP endpoint for the selected target(s)
@@ -210,9 +210,9 @@ Commands:
       - For Claude Desktop, checks for npm and installs mcp-remote if needed
 
     Examples:
-      mentisdbd wizard
-      mentisdbd wizard --yes
-      mentisdbd wizard --url https://my.mentisdb.com:9473
+      mentisdb wizard
+      mentisdb wizard --yes
+      mentisdb wizard --url https://my.mentisdb.com:9473
 
     Options:
       --url <url>   Override the default URL for all selected integrations
@@ -223,9 +223,9 @@ Commands:
     Add a thought to a running MentisDB daemon via REST.
 
     Examples:
-      mentisdbd add \"The sky is blue\"
-      mentisdbd add \"Session fact\" --scope session --tag important
-      mentisdbd add \"Insight\" --type insight --agent my-agent
+      mentisdb add \"The sky is blue\"
+      mentisdb add \"Session fact\" --scope session --tag important
+      mentisdb add \"Insight\" --type insight --agent my-agent
 
     Options:
       --type <type>    Thought type (default: fact-learned)
@@ -240,8 +240,8 @@ Commands:
     Search thoughts on a running MentisDB daemon via ranked search.
 
     Examples:
-      mentisdbd search \"cache invalidation\"
-      mentisdbd search \"performance\" --limit 5 --scope session
+      mentisdb search \"cache invalidation\"
+      mentisdb search \"performance\" --limit 5 --scope session
 
     Options:
       --limit <n>      Maximum results (default: 10)
@@ -254,8 +254,8 @@ Commands:
     List registered agents on a running MentisDB daemon.
 
     Examples:
-      mentisdbd agents
-      mentisdbd agents --chain my-chain
+      mentisdb agents
+      mentisdb agents --chain my-chain
 
     Options:
       --chain <key>    Chain key (uses daemon default if omitted)
@@ -274,9 +274,9 @@ Commands:
     as-is.
 
     Examples:
-      mentisdbd backup
-      mentisdbd backup -o /backups/mentisdb-2026-04-14.mentis
-      mentisdbd backup --dir ~/.cloudllm/mentisdb --flush --include-tls
+      mentisdb backup
+      mentisdb backup -o /backups/mentisdb-2026-04-14.mentis
+      mentisdb backup --dir ~/.cloudllm/mentisdb --flush --include-tls
 
     Options:
       -o <path>          Path for the .mentis archive (default: ./mentisdb-YYYY-MM-DD-HH-MM-SS.mentis)
@@ -292,7 +292,7 @@ Commands:
     By default, existing files are preserved (idempotent). Pass --overwrite
     to replace all files with their backed-up versions.
 
-    The daemon must not be running during restore. If mentisdbd is detected,
+    The daemon must not be running during restore. If mentisdb is detected,
     the restore aborts with a message to stop the daemon first. This prevents
     the daemon's in-memory state from overwriting restored files.
 
@@ -300,9 +300,9 @@ Commands:
     passed, an interactive prompt asks for confirmation before overwriting.
 
     Examples:
-      mentisdbd restore mentisdb-2026-04-14.mentis
-      mentisdbd restore /backups/mentisdb-2026-04-14.mentis --dir ~/.cloudllm/mentisdb
-      mentisdbd restore /backups/mentisdb-2026-04-14.mentis --overwrite
+      mentisdb restore mentisdb-2026-04-14.mentis
+      mentisdb restore /backups/mentisdb-2026-04-14.mentis --dir ~/.cloudllm/mentisdb
+      mentisdb restore /backups/mentisdb-2026-04-14.mentis --overwrite
 
     Options:
       <archive.mentis>   Path to the .mentis backup archive (required)
@@ -312,8 +312,8 @@ Commands:
       --help             Show this help text
 
 Notes:
-  - `mentisdbd` with no subcommand starts the daemon.
-  - `mentisdbd --help` shows daemon help; subcommand --help shows subcommand help.
+  - `mentisdb` with no subcommand starts the daemon.
+  - `mentisdb --help` shows daemon help; subcommand --help shows subcommand help.
   - `setup` writes config files; it is not scaffold-only.
   - `add`, `search`, and `agents` require a running daemon.
   - `backup` and `restore` operate on the MENTISDB_DIR directly and do not require a running daemon.

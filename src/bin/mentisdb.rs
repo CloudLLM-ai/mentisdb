@@ -155,7 +155,7 @@ const RESET: &str = "\x1b[0m";
 pub(crate) const THOUGHT_SOUND_GAP_MS: u64 = 90;
 pub(crate) const DEFAULT_UPDATE_REPO: &str = "CloudLLM-ai/mentisdb";
 const GITHUB_API_BASE: &str = "https://api.github.com";
-const UPDATE_BINARY_NAME: &str = "mentisdbd";
+const UPDATE_BINARY_NAME: &str = "mentisdb";
 const UPDATE_CRATE_NAME: &str = "mentisdb";
 
 #[derive(Debug, Clone)]
@@ -637,9 +637,9 @@ pub(crate) fn should_show_first_run_setup_notice(status: &FirstRunSetupStatus) -
 pub(crate) fn build_first_run_setup_lines() -> Vec<String> {
     vec![
         "No configured MentisDB client integrations were detected.".to_string(),
-        "Run mentisdbd wizard to detect installed tools and configure them.".to_string(),
-        "Or preview everything with: mentisdbd setup all --dry-run".to_string(),
-        "Then apply one target with: mentisdbd setup <agent>".to_string(),
+        "Run mentisdb wizard to detect installed tools and configure them.".to_string(),
+        "Or preview everything with: mentisdb setup all --dry-run".to_string(),
+        "Then apply one target with: mentisdb setup <agent>".to_string(),
         String::new(),
         "Supported agents: codex, claude-code, claude-desktop, gemini,".to_string(),
         "opencode, qwen, copilot, vscode-copilot.".to_string(),
@@ -685,7 +685,7 @@ pub(crate) fn maybe_run_first_run_setup_with_io(
     write!(
         out,
         "{}",
-        build_ascii_notice_box("mentisdbd first-run setup", &build_first_run_setup_lines())
+        build_ascii_notice_box("mentisdb first-run setup", &build_first_run_setup_lines())
     )?;
     let response = mentisdb::cli::boxed_yn_prompt(
         out,
@@ -716,7 +716,7 @@ fn maybe_run_first_run_setup(status: &FirstRunSetupStatus) -> io::Result<bool> {
 
     maybe_run_first_run_setup_with_io(status, &mut input, &mut out, &mut err, |input, out, err| {
         run_cli_subcommand_with_io(
-            vec![OsString::from("mentisdbd"), OsString::from("wizard")],
+            vec![OsString::from("mentisdb"), OsString::from("wizard")],
             input,
             out,
             err,
@@ -855,7 +855,7 @@ async fn fetch_latest_release(
 ) -> Result<UpdateRelease, Box<dyn std::error::Error + Send + Sync>> {
     let client = reqwest::Client::builder()
         .user_agent(format!(
-            "mentisdbd/{} update-check",
+            "mentisdb/{} update-check",
             env!("CARGO_PKG_VERSION")
         ))
         .build()?;
@@ -1059,17 +1059,17 @@ async fn run_stdio_mode(
 
     // Step 1: Check if daemon is already running
     if is_daemon_running(&mcp_addr) {
-        eprintln!("[mentisdbd stdio] Daemon detected at {mcp_addr}, proxying to live instance.");
+        eprintln!("[mentisdb stdio] Daemon detected at {mcp_addr}, proxying to live instance.");
     } else {
         // Step 2: Launch daemon in background
-        eprintln!("[mentisdbd stdio] No daemon running, launching background daemon...");
+        eprintln!("[mentisdb stdio] No daemon running, launching background daemon...");
         launch_daemon().map_err(|e| format!("failed to launch daemon: {e}"))?;
 
         // Step 3: Wait for daemon to become responsive
         if wait_for_daemon(&mcp_addr, 50) {
-            eprintln!("[mentisdbd stdio] Daemon started at {mcp_addr}, proxying.");
+            eprintln!("[mentisdb stdio] Daemon started at {mcp_addr}, proxying.");
         } else {
-            eprintln!("[mentisdbd stdio] Daemon did not become responsive at {mcp_addr}, falling back to local mode.");
+            eprintln!("[mentisdb stdio] Daemon did not become responsive at {mcp_addr}, falling back to local mode.");
             run_stdio_mode_local(config).await?;
             return Ok(());
         }
@@ -1277,7 +1277,7 @@ async fn run_headless() -> Result<(), Box<dyn std::error::Error + Send + Sync>> 
     let handles = start_servers(config).await?;
 
     eprintln!(
-        "[mentisdbd headless] MCP http://{} REST http://{}",
+        "[mentisdb headless] MCP http://{} REST http://{}",
         handles.mcp.local_addr(),
         handles.rest.local_addr(),
     );
@@ -1360,7 +1360,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     {
         let mut s = tui_state.lock().unwrap();
         s.started = true;
-        s.startup_status = "mentisdbd running".to_string();
+        s.startup_status = "mentisdb running".to_string();
         s.chain_count = 0;
         s.primer_text = primer_paste_line.clone();
         s.config_lines = build_config_lines(&config, &update_config);
@@ -1525,7 +1525,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut s = tui_state.lock().unwrap();
         s.migration_lines.push(String::new());
         s.migration_lines
-            .push("First-run setup: run `mentisdbd wizard` in a separate terminal.".to_string());
+            .push("First-run setup: run `mentisdb wizard` in a separate terminal.".to_string());
         for line in build_first_run_setup_lines() {
             s.migration_lines.push(format!("  {line}"));
         }
@@ -1588,12 +1588,12 @@ async fn run_startup_sequence(
                                 Ok(path) => {
                                     let exe = std::env::current_exe()
                                         .map(|p| p.to_string_lossy().to_string())
-                                        .unwrap_or_else(|_| "mentisdbd".to_string());
+                                        .unwrap_or_else(|_| "mentisdb".to_string());
                                     let mut cmd_parts = vec![exe];
                                     cmd_parts.extend(original_args.iter().cloned());
                                     let relaunch_cmd = cmd_parts.join(" ");
 
-                                    log::info!("Installed mentisdbd to {}", path.display());
+                                    log::info!("Installed mentisdb to {}", path.display());
 
                                     let restart = tui::TuiState::request_update_success(
                                         tui_state,
@@ -1619,7 +1619,7 @@ async fn run_startup_sequence(
                         }
                     }
                 } else {
-                    eprintln!("mentisdbd update available: {current_version} -> {latest_display}",);
+                    eprintln!("mentisdb update available: {current_version} -> {latest_display}",);
                     eprintln!(
                         "Non-interactive terminal. Update manually:\n\
                          cargo install --git https://github.com/{} --tag {} --locked --force --bin {UPDATE_BINARY_NAME} {UPDATE_CRATE_NAME}",
@@ -1796,7 +1796,7 @@ async fn run_startup_sequence(
 }
 
 /// Like `run()` but forces the update dialog to appear even if already at the
-/// latest release. Used via `mentisdbd --force-update`.
+/// latest release. Used via `mentisdb --force-update`.
 async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     raise_fd_limit();
@@ -1849,13 +1849,13 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
                             Ok(path) => {
                                 let exe = std::env::current_exe()
                                     .map(|p| p.to_string_lossy().to_string())
-                                    .unwrap_or_else(|_| "mentisdbd".to_string());
+                                    .unwrap_or_else(|_| "mentisdb".to_string());
                                 let original_args: Vec<String> = std::env::args().skip(1).collect();
                                 let mut cmd_parts = vec![exe];
                                 cmd_parts.extend(original_args.iter().cloned());
                                 let relaunch_cmd = cmd_parts.join(" ");
 
-                                log::info!("Installed mentisdbd to {}", path.display());
+                                log::info!("Installed mentisdb to {}", path.display());
 
                                 let restart = tui::TuiState::request_update_success(
                                     &tui_state,
@@ -1921,7 +1921,7 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
     {
         let mut s = tui_state.lock().unwrap();
         s.started = true;
-        s.startup_status = "mentisdbd running".to_string();
+        s.startup_status = "mentisdb running".to_string();
         s.chain_count = 0;
         s.primer_text = primer_paste_line.clone();
         s.config_lines = build_config_lines(&config, &update_config);
@@ -2082,7 +2082,7 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
         let mut s = tui_state.lock().unwrap();
         s.migration_lines.push(String::new());
         s.migration_lines
-            .push("First-run setup: run `mentisdbd wizard` in a separate terminal.".to_string());
+            .push("First-run setup: run `mentisdb wizard` in a separate terminal.".to_string());
         for line in build_first_run_setup_lines() {
             s.migration_lines.push(format!("  {line}"));
         }
@@ -2099,24 +2099,24 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
 
 pub(crate) fn daemon_help_text() -> &'static str {
     "\
-mentisdbd daemon
+mentisdb daemon
 
 Usage:
-  mentisdbd
-  mentisdbd --force-update
-  mentisdbd --help
-  mentisdbd --mode stdio
-  mentisdbd --mode http
-  mentisdbd --mode both
-  mentisdbd update
-  mentisdbd force-update
-  mentisdbd setup <agent|all> [--url <url>] [--dry-run]
-  mentisdbd wizard [--url <url>] [--yes]
-  mentisdbd add <content> [--type <type>] [--scope <scope>] [--tag <tag>] [--agent <id>] [--chain <key>] [--url <url>]
-  mentisdbd search <query> [--limit <n>] [--scope <scope>] [--chain <key>] [--url <url>]
-  mentisdbd agents [--chain <key>] [--url <url>]
-  mentisdbd backup [--dir <path>] [--output <path>] [--flush] [--include-tls]
-  mentisdbd restore <archive.mbak> [--dir <path>] [--overwrite] [--yes]
+  mentisdb
+  mentisdb --force-update
+  mentisdb --help
+  mentisdb --mode stdio
+  mentisdb --mode http
+  mentisdb --mode both
+  mentisdb update
+  mentisdb force-update
+  mentisdb setup <agent|all> [--url <url>] [--dry-run]
+  mentisdb wizard [--url <url>] [--yes]
+  mentisdb add <content> [--type <type>] [--scope <scope>] [--tag <tag>] [--agent <id>] [--chain <key>] [--url <url>]
+  mentisdb search <query> [--limit <n>] [--scope <scope>] [--chain <key>] [--url <url>]
+  mentisdb agents [--chain <key>] [--url <url>]
+  mentisdb backup [--dir <path>] [--output <path>] [--flush] [--include-tls]
+  mentisdb restore <archive.mbak> [--dir <path>] [--overwrite] [--yes]
 
 Flags:
   --force-update
@@ -2137,9 +2137,9 @@ Backup subcommand:
     running, files are captured as-is.
 
     Examples:
-      mentisdbd backup
-      mentisdbd backup --output /backups/mentisdb-2026-04-14.mbak
-      mentisdbd backup --dir ~/.cloudllm/mentisdb --include-tls
+      mentisdb backup
+      mentisdb backup --output /backups/mentisdb-2026-04-14.mbak
+      mentisdb backup --dir ~/.cloudllm/mentisdb --include-tls
 
     Options:
       --dir <path>       Path to MENTISDB_DIR (default: platform default)
@@ -2160,9 +2160,9 @@ Backup subcommand:
     Pass --yes to skip all prompts and assume yes.
 
     Examples:
-      mentisdbd restore mentisdb-2026-04-14.mbak
-      mentisdbd restore /backups/mentisdb-2026-04-14.mbak --dir ~/.cloudllm/mentisdb
-      mentisdbd restore /backups/mentisdb-2026-04-14.mbak --overwrite
+      mentisdb restore mentisdb-2026-04-14.mbak
+      mentisdb restore /backups/mentisdb-2026-04-14.mbak --dir ~/.cloudllm/mentisdb
+      mentisdb restore /backups/mentisdb-2026-04-14.mbak --overwrite
 
     Options:
       <archive.mbak>     Path to the .mbak backup archive (required)
@@ -2171,7 +2171,7 @@ Backup subcommand:
       --yes              Assume yes to all prompts (skips interactive confirmation)
       --help             Show this help text
 
-  Valid values for `mentisdbd setup <agent>`:
+  Valid values for `mentisdb setup <agent>`:
     codex
     claude-code
     claude-desktop
@@ -2226,8 +2226,8 @@ Important environment variables:
     Startup, per-thought, and per-read audio controls
 
 Examples:
-  MENTISDB_DIR=~/.cloudllm/mentisdb mentisdbd
-  MENTISDB_MCP_PORT=9471 MENTISDB_REST_PORT=9472 mentisdbd
+  MENTISDB_DIR=~/.cloudllm/mentisdb mentisdb
+  MENTISDB_MCP_PORT=9471 MENTISDB_REST_PORT=9472 mentisdb
 "
 }
 
@@ -2264,7 +2264,7 @@ where
         first.as_ref(),
         "setup" | "wizard" | "add" | "search" | "agents" | "backup" | "restore"
     ) {
-        let mut command = vec![OsString::from("mentisdbd")];
+        let mut command = vec![OsString::from("mentisdb")];
         command.extend(args);
         return Ok(DaemonArgMode::CliSubcommand(command));
     }
@@ -2326,7 +2326,7 @@ where
     }
 
     Err(format!(
-        "Unexpected arguments for `mentisdbd`: {}",
+        "Unexpected arguments for `mentisdb`: {}",
         args.iter()
             .map(|arg| arg.to_string_lossy())
             .collect::<Vec<_>>()
@@ -2358,14 +2358,14 @@ async fn run_update_standalone(force: bool) -> ExitCode {
     let update_config = update_config_from_env();
     if !update_config.enabled && !force {
         eprintln!("Update checks are disabled (MENTISDB_UPDATE_CHECK=false).");
-        eprintln!("Use `mentisdbd force-update` to update regardless.");
+        eprintln!("Use `mentisdb force-update` to update regardless.");
         return ExitCode::from(1);
     }
 
     let current_version = env!("CARGO_PKG_VERSION");
 
     if force {
-        println!("Force-updating mentisdbd to the latest release…");
+        println!("Force-updating mentisdb to the latest release…");
         let latest = match fetch_latest_release(&update_config.repo).await {
             Ok(l) => l,
             Err(e) => {
@@ -2378,8 +2378,8 @@ async fn run_update_standalone(force: bool) -> ExitCode {
         println!("Installing release {latest_display} via cargo…");
         match install_latest_release(&latest.tag_name, &update_config.repo) {
             Ok(path) => {
-                println!("Installed mentisdbd to {}", path.display());
-                println!("Restart mentisdbd to use the new version.");
+                println!("Installed mentisdb to {}", path.display());
+                println!("Restart mentisdb to use the new version.");
                 ExitCode::SUCCESS
             }
             Err(e) => {
@@ -2399,7 +2399,7 @@ async fn run_update_standalone(force: bool) -> ExitCode {
 
         if !release_tag_is_newer(&latest.tag_name, current_version) {
             println!(
-                "mentisdbd is up to date (current {}, latest {}).",
+                "mentisdb is up to date (current {}, latest {}).",
                 current_version, latest_display
             );
             return ExitCode::SUCCESS;
@@ -2407,7 +2407,7 @@ async fn run_update_standalone(force: bool) -> ExitCode {
 
         let dialog_lines =
             build_update_available_lines(current_version, &latest_display, &latest.html_url);
-        ascii_notice_box("mentisdbd update available", &dialog_lines);
+        ascii_notice_box("mentisdb update available", &dialog_lines);
 
         if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
             eprintln!(
@@ -2433,8 +2433,8 @@ async fn run_update_standalone(force: bool) -> ExitCode {
         println!("Installing release {latest_display} via cargo…");
         match install_latest_release(&latest.tag_name, &update_config.repo) {
             Ok(path) => {
-                println!("Installed mentisdbd to {}", path.display());
-                println!("Restart mentisdbd to use the new version.");
+                println!("Installed mentisdb to {}", path.display());
+                println!("Restart mentisdb to use the new version.");
                 ExitCode::SUCCESS
             }
             Err(e) => {

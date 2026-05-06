@@ -97,7 +97,7 @@ impl fmt::Display for LocalTextEmbeddingError {
 
 impl Error for LocalTextEmbeddingError {}
 
-/// Deterministic in-process embedding provider used by `mentisdbd`.
+/// Deterministic in-process embedding provider used by `mentisdb`.
 ///
 /// This provider hashes normalized tokens and trigrams into a fixed dense
 /// vector. It is lightweight, fully local, and requires no network calls or
