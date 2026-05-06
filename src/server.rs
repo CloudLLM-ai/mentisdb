@@ -866,7 +866,7 @@ impl ServerHandle {
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 /// let config = MentisDbServerConfig::from_env();
-/// let mut handles = start_servers(config).await?;
+/// let mut handles = start_servers(config, None).await?;
 ///
 /// println!("HTTP  MCP  → {}", handles.mcp.local_addr());
 /// println!("HTTP  REST → {}", handles.rest.local_addr());
@@ -1360,7 +1360,7 @@ pub async fn start_https_rest_server(
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 /// let config = MentisDbServerConfig::from_env();
-/// let handles = start_servers(config).await?;
+/// let handles = start_servers(config, None).await?;
 ///
 /// println!("HTTP  MCP  → {}", handles.mcp.local_addr());
 /// println!("HTTP  REST → {}", handles.rest.local_addr());
@@ -1370,8 +1370,10 @@ pub async fn start_https_rest_server(
 /// # Ok(())
 /// # }
 /// ```
+#[allow(unused_variables)]
 pub async fn start_servers(
     config: MentisDbServerConfig,
+    tui_state: Option<Arc<std::sync::Mutex<crate::tui::TuiState>>>,
 ) -> Result<MentisDbServerHandles, Box<dyn Error + Send + Sync>> {
     use crate::dashboard::DashboardState;
 
@@ -1440,6 +1442,8 @@ pub async fn start_servers(
             dashboard_pin: config.dashboard_pin.clone(),
             default_storage_adapter: config.service.default_storage_adapter,
             auto_flush: Arc::new(AtomicBool::new(config.service.auto_flush)),
+            #[cfg(not(test))]
+            tui_state,
         };
         Some(
             start_dashboard_server(

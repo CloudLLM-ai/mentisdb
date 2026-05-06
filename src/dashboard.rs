@@ -22,6 +22,7 @@ use crate::{
     SkillUpload, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelationKind,
     ThoughtRole, ThoughtType,
 };
+
 use axum::{
     extract::{Path, Query, State},
     http::{header, StatusCode},
@@ -73,6 +74,10 @@ pub(crate) struct DashboardState {
     pub default_storage_adapter: StorageAdapterKind,
     /// Whether newly opened chains should flush immediately on each append.
     pub auto_flush: Arc<AtomicBool>,
+    /// Optional TUI state so the dashboard can push live config updates back
+    /// to the terminal UI when settings are edited from the web interface.
+    #[cfg(not(test))]
+    pub tui_state: Option<Arc<std::sync::Mutex<crate::tui::TuiState>>>,
 }
 
 // ── Router builder ────────────────────────────────────────────────────────────
@@ -2741,6 +2746,38 @@ async fn api_update_settings(
         let mut file = std::fs::File::create(&env_path).map_err(internal_error)?;
         for line in &lines {
             writeln!(file, "{}", line).map_err(internal_error)?;
+        }
+    }
+
+    // Push updated values back to the TUI config pane if it is active
+    #[cfg(not(test))]
+    {
+        if !updated.is_empty() {
+            if let Some(ref tui) = state.tui_state {
+                if let Ok(mut tui_guard) = tui.lock() {
+                    for name in &updated {
+                        let new_value = body.settings.get(name).cloned().unwrap_or_default();
+                        let prefix = format!("  {name}=");
+                        let mut found = false;
+                        for line in &mut tui_guard.config_lines {
+                            if (*line).starts_with(prefix.as_str()) {
+                                // Replace the value portion while keeping default hint
+                                if let Some(idx) = line.find(" (default:") {
+                                    let default_part = &(*line)[idx..];
+                                    *line = format!("  {name}={new_value}{default_part}");
+                                } else {
+                                    *line = format!("  {name}={new_value}");
+                                }
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            tui_guard.config_lines.push(format!("  {name}={new_value}"));
+                        }
+                    }
+                }
+            }
         }
     }
 

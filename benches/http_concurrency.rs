@@ -116,7 +116,7 @@ async fn main() {
         dashboard_pin: None,
     };
 
-    let handles = start_servers(config)
+    let handles = start_servers(config, None)
         .await
         .expect("in-process mentisdb failed to start — cannot run HTTP concurrency benchmark");
 

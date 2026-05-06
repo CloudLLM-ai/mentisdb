@@ -405,12 +405,12 @@
 </head>
 <body>
   <nav>
-    <div class="nav-brand"><img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 199.886248 128.469965' preserveAspectRatio='xMidYMid meet'%3E%3Cg transform='translate(-0.085383,128.826667) scale(0.100000,-0.100000)' fill='%23ffffff' stroke='none'%3E%3Cpath d='M305 1273 c-122 -44 -214 -127 -268 -241 l-32 -67 -3 -287 c-3 -236 -1 -298 12 -348 55 -214 268 -354 488 -322 130 20 158 40 563 412 l370 340 3 -203 2 -203 34 -33 c32 -31 36 -32 63 -19 l28 13 3 332 2 331 -32 11 c-36 13 -17 27 -213 -155 -71 -66 -222 -205 -335 -310 -113 -104 -244 -224 -290 -268 -111 -103 -150 -121 -260 -121 -68 0 -94 4 -131 23 -61 30 -121 90 -151 149 -23 47 -23 54 -23 343 0 290 0 296 23 340 30 57 75 105 131 137 52 31 166 43 234 23 58 -16 97 -48 343 -279 l205 -194 47 46 46 47 -79 72 c-44 40 -154 142 -244 227 -203 190 -246 214 -391 218 -72 3 -107 -1 -145 -14z'/%3E%3Cpath d='M1420 1268 c-81 -29 -79 -27 -243 -178 l-137 -125 42 -42 c23 -24 45 -43 48 -43 3 0 61 52 130 116 151 140 194 164 300 164 127 0 224 -62 279 -179 26 -55 26 -60 29 -308 3 -213 1 -262 -13 -310 -44 -149 -172 -242 -319 -231 -94 8 -139 34 -270 156 -66 62 -123 112 -128 112 -11 0 -88 -70 -88 -80 0 -4 57 -61 128 -125 89 -82 146 -127 189 -147 171 -81 363 -49 496 83 64 64 110 151 127 238 13 72 13 492 -1 566 -24 132 -119 254 -245 316 -60 30 -78 34 -163 37 -80 2 -107 -1 -161 -20z'/%3E%3Cpath d='M448 984 l-28 -15 0 -325 0 -325 36 -15 c36 -15 37 -15 65 12 l29 28 0 214 0 214 101 -93 c55 -52 125 -116 156 -143 l55 -49 44 44 44 45 -172 160 c-95 89 -198 184 -228 212 -30 28 -59 51 -65 51 -5 0 -22 -7 -37 -15z'/%3E%3C/g%3E%3C/svg%3E" width="40" height="26" alt="MentisDB" style="vertical-align:middle;margin-right:6px"> MentisDB <span id="nav-version" style="font-size:0.7rem;font-weight:400;color:#8b949e;margin-left:4px"></span></div>
+    <div class="nav-brand" id="nav-brand" style="cursor:pointer"><img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 199.886248 128.469965' preserveAspectRatio='xMidYMid meet'%3E%3Cg transform='translate(-0.085383,128.826667) scale(0.100000,-0.100000)' fill='%23ffffff' stroke='none'%3E%3Cpath d='M305 1273 c-122 -44 -214 -127 -268 -241 l-32 -67 -3 -287 c-3 -236 -1 -298 12 -348 55 -214 268 -354 488 -322 130 20 158 40 563 412 l370 340 3 -203 2 -203 34 -33 c32 -31 36 -32 63 -19 l28 13 3 332 2 331 -32 11 c-36 13 -17 27 -213 -155 -71 -66 -222 -205 -335 -310 -113 -104 -244 -224 -290 -268 -111 -103 -150 -121 -260 -121 -68 0 -94 4 -131 23 -61 30 -121 90 -151 149 -23 47 -23 54 -23 343 0 290 0 296 23 340 30 57 75 105 131 137 52 31 166 43 234 23 58 -16 97 -48 343 -279 l205 -194 47 46 46 47 -79 72 c-44 40 -154 142 -244 227 -203 190 -246 214 -391 218 -72 3 -107 -1 -145 -14z'/%3E%3Cpath d='M1420 1268 c-81 -29 -79 -27 -243 -178 l-137 -125 42 -42 c23 -24 45 -43 48 -43 3 0 61 52 130 116 151 140 194 164 300 164 127 0 224 -62 279 -179 26 -55 26 -60 29 -308 3 -213 1 -262 -13 -310 -44 -149 -172 -242 -319 -231 -94 8 -139 34 -270 156 -66 62 -123 112 -128 112 -11 0 -88 -70 -88 -80 0 -4 57 -61 128 -125 89 -82 146 -127 189 -147 171 -81 363 -49 496 83 64 64 110 151 127 238 13 72 13 492 -1 566 -24 132 -119 254 -245 316 -60 30 -78 34 -163 37 -80 2 -107 -1 -161 -20z'/%3E%3Cpath d='M448 984 l-28 -15 0 -325 0 -325 36 -15 c36 -15 37 -15 65 12 l29 28 0 214 0 214 101 -93 c55 -52 125 -116 156 -143 l55 -49 44 44 44 45 -172 160 c-95 89 -198 184 -228 212 -30 28 -59 51 -65 51 -5 0 -22 -7 -37 -15z'/%3E%3C/g%3E%3C/svg%3E" width="40" height="26" alt="MentisDB" style="vertical-align:middle;margin-right:6px"> MentisDB <span id="nav-version" style="font-size:0.7rem;font-weight:400;color:#8b949e;margin-left:4px"></span></div>
     <div class="nav-links">
       <a href="#chains"   id="nav-chains">Chains</a>
       <a href="#agents"   id="nav-agents">Agents</a>
       <a href="#skills"   id="nav-skills">Skills</a>
-      <a href="#settings" id="nav-settings">Settings</a>
+      <a href="#settings" id="nav-settings" style="color:#f0883e">Settings</a>
     </div>
   </nav>
   <main id="app"></main>
@@ -1276,8 +1276,10 @@
                     <td class="st-name">${esc(s.name)}</td>
                     <td>${control}</td>
                     <td class="st-default">
-                      <span style="color:#8b949e">${esc(s.default_value || '—')}</span>
-                      <button class="btn btn-sm" style="margin-left:6px" data-reset="${idx}">Reset</button>
+                      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+                        <span style="color:#8b949e">${esc(s.default_value || '—')}</span>
+                        <button class="btn btn-sm" data-reset="${idx}">Reset</button>
+                      </div>
                     </td>
                     <td class="st-desc">${esc(s.description)}${s.hot_reload ? ' <span style="color:#3fb950;font-size:0.78rem">(hot-reload)</span>' : ' <span style="color:#f0883e;font-size:0.78rem">(restart required)</span>'}</td>
                   </tr>
@@ -1338,15 +1340,17 @@
       applyBtn.addEventListener('click', () => {
         if (_settingsDirty.size === 0) return;
         const payload = {};
+        const changedNames = [];
         _settingsDirty.forEach(idx => {
           const s = settings[idx];
           const input = document.getElementById(`st-input-${idx}`);
           const val = input.type === 'checkbox' ? (input.checked ? 'true' : 'false') : input.value;
           payload[s.name] = val;
+          changedNames.push(`${s.name}=${val}`);
         });
         applyBtn.disabled = true;
         const msgEl = document.getElementById('st-msg');
-        msgEl.textContent = 'Saving…';
+        msgEl.innerHTML = `<span style="color:#8b949e">Applying ${changedNames.length} change${changedNames.length > 1 ? 's' : ''}:</span><br><code style="color:#e6edf3;font-size:0.82rem">${esc(changedNames.join(', '))}</code>`;
         msgEl.className = 'settings-msg';
         api('/dashboard/api/settings', {
           method: 'POST',
@@ -1354,8 +1358,24 @@
           body: JSON.stringify({ settings: payload })
         })
         .then(r => {
-          msgEl.textContent = r.message || 'Saved.';
-          msgEl.className = 'settings-msg ' + (r.restart_required ? 'err' : 'ok');
+          const hotReloaded = changedNames.filter(name => {
+            const s = settings.find(st => name.startsWith(st.name + '='));
+            return s && s.hot_reload;
+          }).map(name => name.split('=')[0]);
+          const restartNeeded = changedNames.filter(name => {
+            const s = settings.find(st => name.startsWith(st.name + '='));
+            return s && !s.hot_reload;
+          }).map(name => name.split('=')[0]);
+
+          let detail = '';
+          if (hotReloaded.length) {
+            detail += `<br><span style="color:#3fb950;font-size:0.82rem">✓ Hot-reloaded: ${esc(hotReloaded.join(', '))}</span>`;
+          }
+          if (restartNeeded.length) {
+            detail += `<br><span style="color:#f0883e;font-size:0.82rem">⚠ Restart required: ${esc(restartNeeded.join(', '))}</span>`;
+          }
+          msgEl.innerHTML = `<span style="color:#e6edf3">${esc(r.message || 'Saved.')}</span>${detail}`;
+          msgEl.className = 'settings-msg ok';
           _settingsDirty.clear();
           document.querySelectorAll('.settings-table input.changed').forEach(el => el.classList.remove('changed'));
           updateApplyButton();
@@ -1402,6 +1422,7 @@
   }
   window.addEventListener('hashchange', route);
   window.addEventListener('load', () => {
+    document.getElementById('nav-brand').addEventListener('click', () => { location.hash = 'chains'; });
     api('/dashboard/api/version')
       .then(d => {
         const el = document.getElementById('nav-version');

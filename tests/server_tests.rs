@@ -3431,7 +3431,7 @@ async fn start_servers_shares_state_across_mcp_and_rest() {
         dashboard_pin: None,
     };
 
-    let handles = start_servers(config).await.expect("start_servers");
+    let handles = start_servers(config, None).await.expect("start_servers");
     let mcp_url = format!("http://{}", handles.mcp.local_addr());
     let rest_url = format!("http://{}", handles.rest.local_addr());
 

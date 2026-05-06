@@ -1274,7 +1274,7 @@ async fn run_headless() -> Result<(), Box<dyn std::error::Error + Send + Sync>> 
     );
 
     // Start servers
-    let handles = start_servers(config).await?;
+    let handles = start_servers(config, None).await?;
 
     eprintln!(
         "[mentisdb headless] MCP http://{} REST http://{}",
@@ -1759,7 +1759,7 @@ async fn run_startup_sequence(
         s.startup_status = "Starting servers…".to_string();
     }
 
-    let handles = start_servers(config.clone()).await?;
+    let handles = start_servers(config.clone(), Some(tui_state.clone())).await?;
 
     let first_run_setup_status = detect_first_run_setup_status(&config.service.chain_dir);
     let is_first_run = should_show_first_run_setup_notice(&first_run_setup_status);
