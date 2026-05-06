@@ -385,15 +385,32 @@
     .kv { display: flex; gap: 8px; margin-bottom: 7px; align-items: flex-start; }
     .kv-k { color: #8b949e; font-size: 0.82rem; font-weight: 600; min-width: 90px; flex-shrink: 0; padding-top: 1px; }
     .kv-v { color: #e6edf3; font-size: 0.88rem; word-break: break-all; }
+
+    /* === Settings === */
+    .settings-table td { vertical-align: middle; }
+    .settings-table .st-name { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 0.85em; color: #58a6ff; }
+    .settings-table .st-desc { color: #8b949e; font-size: 0.84rem; line-height: 1.4; }
+    .settings-table .st-default { color: #8b949e; font-size: 0.82rem; }
+    .settings-table input[type="text"], .settings-table input[type="number"] {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+      padding: 5px 8px; font-size: 0.88rem; font-family: inherit; width: 100%; box-sizing: border-box;
+    }
+    .settings-table input[type="text"]:focus, .settings-table input[type="number"]:focus { outline: none; border-color: #58a6ff; }
+    .settings-table input.changed { border-color: #f0883e; }
+    .settings-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+    .settings-msg { font-size: 0.88rem; color: #8b949e; }
+    .settings-msg.ok { color: #3fb950; }
+    .settings-msg.err { color: #f85149; }
   </style>
 </head>
 <body>
   <nav>
     <div class="nav-brand"><img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 199.886248 128.469965' preserveAspectRatio='xMidYMid meet'%3E%3Cg transform='translate(-0.085383,128.826667) scale(0.100000,-0.100000)' fill='%23ffffff' stroke='none'%3E%3Cpath d='M305 1273 c-122 -44 -214 -127 -268 -241 l-32 -67 -3 -287 c-3 -236 -1 -298 12 -348 55 -214 268 -354 488 -322 130 20 158 40 563 412 l370 340 3 -203 2 -203 34 -33 c32 -31 36 -32 63 -19 l28 13 3 332 2 331 -32 11 c-36 13 -17 27 -213 -155 -71 -66 -222 -205 -335 -310 -113 -104 -244 -224 -290 -268 -111 -103 -150 -121 -260 -121 -68 0 -94 4 -131 23 -61 30 -121 90 -151 149 -23 47 -23 54 -23 343 0 290 0 296 23 340 30 57 75 105 131 137 52 31 166 43 234 23 58 -16 97 -48 343 -279 l205 -194 47 46 46 47 -79 72 c-44 40 -154 142 -244 227 -203 190 -246 214 -391 218 -72 3 -107 -1 -145 -14z'/%3E%3Cpath d='M1420 1268 c-81 -29 -79 -27 -243 -178 l-137 -125 42 -42 c23 -24 45 -43 48 -43 3 0 61 52 130 116 151 140 194 164 300 164 127 0 224 -62 279 -179 26 -55 26 -60 29 -308 3 -213 1 -262 -13 -310 -44 -149 -172 -242 -319 -231 -94 8 -139 34 -270 156 -66 62 -123 112 -128 112 -11 0 -88 -70 -88 -80 0 -4 57 -61 128 -125 89 -82 146 -127 189 -147 171 -81 363 -49 496 83 64 64 110 151 127 238 13 72 13 492 -1 566 -24 132 -119 254 -245 316 -60 30 -78 34 -163 37 -80 2 -107 -1 -161 -20z'/%3E%3Cpath d='M448 984 l-28 -15 0 -325 0 -325 36 -15 c36 -15 37 -15 65 12 l29 28 0 214 0 214 101 -93 c55 -52 125 -116 156 -143 l55 -49 44 44 44 45 -172 160 c-95 89 -198 184 -228 212 -30 28 -59 51 -65 51 -5 0 -22 -7 -37 -15z'/%3E%3C/g%3E%3C/svg%3E" width="40" height="26" alt="MentisDB" style="vertical-align:middle;margin-right:6px"> MentisDB <span id="nav-version" style="font-size:0.7rem;font-weight:400;color:#8b949e;margin-left:4px"></span></div>
     <div class="nav-links">
-      <a href="#chains"  id="nav-chains">Chains</a>
-      <a href="#agents"  id="nav-agents">Agents</a>
-      <a href="#skills"  id="nav-skills">Skills</a>
+      <a href="#chains"   id="nav-chains">Chains</a>
+      <a href="#agents"   id="nav-agents">Agents</a>
+      <a href="#skills"   id="nav-skills">Skills</a>
+      <a href="#settings" id="nav-settings">Settings</a>
     </div>
   </nav>
   <main id="app"></main>
@@ -1209,6 +1226,151 @@
   document.getElementById('modal-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
 
   // =====================================================================
+  // SETTINGS
+  // =====================================================================
+  let _settingsCache = null;
+  let _settingsDirty = new Set();
+
+  function renderSettingsList() {
+    const app = document.getElementById('app');
+    app.innerHTML = `
+      <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+        <h1>Settings</h1>
+      </div>
+      <div class="card"><div id="st-body"></div></div>
+    `;
+    const el = document.getElementById('st-body');
+    spinner(el);
+    api('/dashboard/api/settings')
+      .then(settings => {
+        _settingsCache = settings;
+        _settingsDirty.clear();
+        if (!settings || !settings.length) { el.innerHTML = '<div class="empty-state">No settings available.</div>'; return; }
+        el.innerHTML = `
+          <div class="table-wrap"><table class="settings-table">
+            <thead><tr><th>Variable</th><th>Current Value</th><th>Default / Reset</th><th>Description</th></tr></thead>
+            <tbody>
+              ${settings.map((s, idx) => {
+                const inputId = `st-input-${idx}`;
+                let control = '';
+                if (s.kind === 'boolean') {
+                  const checked = (s.value || s.default_value).toLowerCase();
+                  const isChecked = ['1','true','yes','on'].includes(checked);
+                  control = `<input type="checkbox" id="${inputId}" data-idx="${idx}" ${isChecked ? 'checked' : ''} style="width:auto;margin:0;accent-color:#58a6ff">`;
+                } else if (s.kind === 'number') {
+                  control = `<input type="number" id="${inputId}" data-idx="${idx}" value="${esc(s.value || s.default_value)}" placeholder="${esc(s.default_value)}">`;
+                } else {
+                  control = `<input type="text" id="${inputId}" data-idx="${idx}" value="${esc(s.value)}" placeholder="${esc(s.default_value)}">`;
+                }
+                return `
+                  <tr>
+                    <td class="st-name">${esc(s.name)}</td>
+                    <td>${control}</td>
+                    <td class="st-default">
+                      <span style="color:#8b949e">${esc(s.default_value || '—')}</span>
+                      <button class="btn btn-sm" style="margin-left:6px" data-reset="${idx}">Reset</button>
+                    </td>
+                    <td class="st-desc">${esc(s.description)}${s.hot_reload ? ' <span style="color:#3fb950;font-size:0.78rem">(hot-reload)</span>' : ' <span style="color:#f0883e;font-size:0.78rem">(restart required)</span>'}</td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table></div>
+          <div class="settings-actions">
+            <button class="btn btn-primary btn-sm" id="st-apply" disabled>Apply Settings</button>
+            <span id="st-msg" class="settings-msg"></span>
+          </div>
+        `;
+        wireSettingsControls(settings);
+      })
+      .catch(err => errBox(el, err.message));
+  }
+
+  function wireSettingsControls(settings) {
+    settings.forEach((s, idx) => {
+      const input = document.getElementById(`st-input-${idx}`);
+      if (!input) return;
+      input.addEventListener('change', () => {
+        const currentVal = input.type === 'checkbox' ? (input.checked ? 'true' : 'false') : input.value;
+        const originalVal = s.value || (s.kind === 'boolean' ? s.default_value : '');
+        if (currentVal !== originalVal) {
+          _settingsDirty.add(idx);
+          input.classList.add('changed');
+        } else {
+          _settingsDirty.delete(idx);
+          input.classList.remove('changed');
+        }
+        updateApplyButton();
+      });
+      if (input.type !== 'checkbox') {
+        input.addEventListener('input', () => {
+          input.dispatchEvent(new Event('change'));
+        });
+      }
+    });
+
+    document.querySelectorAll('[data-reset]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.getAttribute('data-reset'), 10);
+        const s = settings[idx];
+        const input = document.getElementById(`st-input-${idx}`);
+        if (!input || !s) return;
+        if (input.type === 'checkbox') {
+          input.checked = ['1','true','yes','on'].includes((s.default_value || '').toLowerCase());
+        } else {
+          input.value = s.default_value || '';
+        }
+        input.dispatchEvent(new Event('change'));
+      });
+    });
+
+    const applyBtn = document.getElementById('st-apply');
+    if (applyBtn) {
+      applyBtn.addEventListener('click', () => {
+        if (_settingsDirty.size === 0) return;
+        const payload = {};
+        _settingsDirty.forEach(idx => {
+          const s = settings[idx];
+          const input = document.getElementById(`st-input-${idx}`);
+          const val = input.type === 'checkbox' ? (input.checked ? 'true' : 'false') : input.value;
+          payload[s.name] = val;
+        });
+        applyBtn.disabled = true;
+        const msgEl = document.getElementById('st-msg');
+        msgEl.textContent = 'Saving…';
+        msgEl.className = 'settings-msg';
+        api('/dashboard/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: payload })
+        })
+        .then(r => {
+          msgEl.textContent = r.message || 'Saved.';
+          msgEl.className = 'settings-msg ' + (r.restart_required ? 'err' : 'ok');
+          _settingsDirty.clear();
+          document.querySelectorAll('.settings-table input.changed').forEach(el => el.classList.remove('changed'));
+          updateApplyButton();
+          // Refresh cache values so subsequent changes compare against new values
+          Object.entries(payload).forEach(([name, val]) => {
+            const st = settings.find(s => s.name === name);
+            if (st) st.value = val;
+          });
+        })
+        .catch(err => {
+          msgEl.textContent = err.message || 'Save failed.';
+          msgEl.className = 'settings-msg err';
+          applyBtn.disabled = false;
+        });
+      });
+    }
+  }
+
+  function updateApplyButton() {
+    const btn = document.getElementById('st-apply');
+    if (btn) btn.disabled = _settingsDirty.size === 0;
+  }
+
+  // =====================================================================
   // ROUTER
   // =====================================================================
   let _ddCloseH = null;
@@ -1226,6 +1388,7 @@
     else if (parts[0] === 'agents')                          renderAgentList();
     else if (parts[0] === 'skills' && parts[1])              renderSkillDetail(decodeURIComponent(parts[1]));
     else if (parts[0] === 'skills')                          renderSkillList();
+    else if (parts[0] === 'settings')                       renderSettingsList();
     else                                                     renderChainList();
   }
   window.addEventListener('hashchange', route);
@@ -1302,7 +1465,7 @@
         _chainListCache = chains;
         el.innerHTML = `
           <div class="table-wrap"><table>
-            <thead><tr><th>Chain Key</th><th>Thoughts</th><th>Agents</th><th>Head Hash</th><th></th></tr></thead>
+            <thead><tr><th>Chain Key</th><th>Thoughts</th><th>Agents</th><th>Head Hash</th><th>Size</th><th></th></tr></thead>
             <tbody>
               ${chains.map(c => `
                 <tr class="clickable" onclick="location.hash='chains/${encodeURIComponent(c.chain_key)}'">
@@ -1310,6 +1473,7 @@
                   <td>${esc(String(c.thought_count ?? '—'))}</td>
                   <td onclick="event.stopPropagation()"><a href="${agentListHash(c.chain_key)}" class="mono" style="color:#58a6ff;text-decoration:none">${esc(String(c.agent_count  ?? '—'))}</a></td>
                   <td class="mono" style="color:#8b949e">${c.head_hash ? esc(c.head_hash.slice(0,8)) : '—'}</td>
+                  <td style="white-space:nowrap;color:#8b949e">${esc(c.storage_size_formatted ?? '—')}</td>
                   <td onclick="event.stopPropagation()" style="white-space:nowrap">
                     <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);margin-right:6px" onclick="window._openBranchChain('${esc(c.chain_key)}')">Branch…</button>
                     <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);margin-right:6px" onclick="window._openMergeChain('${esc(c.chain_key)}')">Merge into…</button>
