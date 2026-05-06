@@ -19,7 +19,7 @@ fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 #[test]
 fn parse_setup_command_accepts_supported_agent_and_url_override() {
     let parsed = parse_args([
-        "mentisdbd",
+        "mentisdb",
         "setup",
         "codex",
         "--url",
@@ -40,13 +40,13 @@ fn parse_setup_command_accepts_supported_agent_and_url_override() {
 
 #[test]
 fn parse_setup_help_returns_help_command() {
-    let parsed = parse_args(["mentisdbd", "setup", "--help"]).unwrap();
+    let parsed = parse_args(["mentisdb", "setup", "--help"]).unwrap();
     assert_eq!(parsed, CliCommand::Help);
 }
 
 #[test]
 fn parse_setup_command_keeps_per_integration_defaults_when_url_is_omitted() {
-    let parsed = parse_args(["mentisdbd", "setup", "claude-desktop"]).unwrap();
+    let parsed = parse_args(["mentisdb", "setup", "claude-desktop"]).unwrap();
 
     assert_eq!(
         parsed,
@@ -61,7 +61,7 @@ fn parse_setup_command_keeps_per_integration_defaults_when_url_is_omitted() {
 
 #[test]
 fn parse_setup_command_accepts_yes_flag() {
-    let parsed = parse_args(["mentisdbd", "setup", "codex", "--yes"]).unwrap();
+    let parsed = parse_args(["mentisdb", "setup", "codex", "--yes"]).unwrap();
 
     assert_eq!(
         parsed,
@@ -121,7 +121,7 @@ fn rendered_setup_plan_includes_status_and_action() {
 
 #[test]
 fn help_text_lists_all_supported_agents_and_commands() {
-    let help = mentisdb::cli::parse_args(["mentisdbd", "--help"]);
+    let help = mentisdb::cli::parse_args(["mentisdb", "--help"]);
     assert!(help.is_ok());
 
     let text = {
@@ -131,7 +131,7 @@ fn help_text_lists_all_supported_agents_and_commands() {
         let mut output = Vec::new();
         let mut errors = Vec::new();
         let _ = run_with_io(
-            ["mentisdbd", "--help"],
+            ["mentisdb", "--help"],
             &mut input,
             &mut output,
             &mut errors,
@@ -151,8 +151,8 @@ fn help_text_lists_all_supported_agents_and_commands() {
     ] {
         assert!(text.contains(agent), "missing {agent} in help text");
     }
-    assert!(text.contains("mentisdbd setup <agent|all>"));
-    assert!(text.contains("mentisdbd wizard"));
+    assert!(text.contains("mentisdb setup <agent|all>"));
+    assert!(text.contains("mentisdb wizard"));
     assert!(text
         .contains("--yes         Apply the rendered plan without the final confirmation prompt"));
 }
@@ -172,7 +172,7 @@ fn setup_prompts_before_writing_and_can_cancel() {
     let mut errors = Vec::new();
 
     let code = run_with_io(
-        ["mentisdbd", "setup", "codex"],
+        ["mentisdb", "setup", "codex"],
         &mut input,
         &mut output,
         &mut errors,
@@ -207,7 +207,7 @@ fn setup_can_apply_after_confirmation() {
     let mut errors = Vec::new();
 
     let code = run_with_io(
-        ["mentisdbd", "setup", "codex"],
+        ["mentisdb", "setup", "codex"],
         &mut input,
         &mut output,
         &mut errors,
@@ -243,7 +243,7 @@ fn setup_yes_applies_without_confirmation_prompt() {
     let mut errors = Vec::new();
 
     let code = run_with_io(
-        ["mentisdbd", "setup", "codex", "--yes"],
+        ["mentisdb", "setup", "codex", "--yes"],
         &mut input,
         &mut output,
         &mut errors,

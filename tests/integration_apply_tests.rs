@@ -294,12 +294,12 @@ fn apply_claude_desktop_uses_stdio_mode() {
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
-    let mentisdbd = bin_dir.join("mentisdbd");
-    std::fs::write(&mentisdbd, "#!/bin/sh\n").unwrap();
+    let mentisdb = bin_dir.join("mentisdb");
+    std::fs::write(&mentisdb, "#!/bin/sh\n").unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&mentisdbd, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&mentisdb, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     let previous_path = std::env::var_os("PATH");
@@ -333,11 +333,11 @@ fn apply_claude_desktop_uses_stdio_mode() {
     let parsed: Value =
         serde_json::from_str(&std::fs::read_to_string(config_path).unwrap()).unwrap();
 
-    // mentisdbd is used directly as the command with --mode stdio
+    // mentisdb is used directly as the command with --mode stdio
     assert_eq!(
         parsed["mcpServers"]["mentisdb"]["command"],
-        mentisdbd.display().to_string(),
-        "command should be the mentisdbd path"
+        mentisdb.display().to_string(),
+        "command should be the mentisdb path"
     );
     assert_eq!(
         parsed["mcpServers"]["mentisdb"]["args"][0], "--mode",
@@ -370,8 +370,8 @@ fn claude_desktop_plan_snippet_uses_stdio_mode() {
 
     let snippet = plan.snippet.as_deref().unwrap();
     assert!(
-        snippet.contains("\"command\": \"mentisdbd\""),
-        "snippet should use mentisdbd as command, got: {snippet}"
+        snippet.contains("\"command\": \"mentisdb\""),
+        "snippet should use mentisdb as command, got: {snippet}"
     );
     assert!(
         snippet.contains("\"--mode\"") && snippet.contains("\"stdio\""),

@@ -6,7 +6,7 @@ fn readme_marks_phase3_as_complete_and_optional() {
     assert!(readme.contains("embeddings remain optional"));
     assert!(readme.contains("vector state lives in a rebuildable sidecar"));
     assert!(readme.contains("managed vector sidecar"));
-    assert!(readme.contains("`mentisdbd` now applies a persisted managed-vector setting"));
+    assert!(readme.contains("`mentisdb` now applies a persisted managed-vector setting"));
     assert!(readme.contains("local-text-v1"));
     assert!(
         readme.contains("vector hits surface whether they came from a `Fresh` or stale sidecar")

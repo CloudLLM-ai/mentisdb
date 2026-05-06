@@ -1,7 +1,7 @@
 #![cfg(feature = "server")]
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::{body::Body, http::Request};
@@ -45,7 +45,7 @@ fn dashboard_router_with_chains(
         default_chain_key: "source".to_string(),
         dashboard_pin: None,
         default_storage_adapter: StorageAdapterKind::Binary,
-        auto_flush: true,
+        auto_flush: Arc::new(AtomicBool::new(true)),
     })
 }
 
@@ -788,7 +788,7 @@ async fn deleting_a_cached_chain_does_not_reregister_it_on_last_drop() {
         default_chain_key: "source".to_string(),
         dashboard_pin: None,
         default_storage_adapter: StorageAdapterKind::Binary,
-        auto_flush: true,
+        auto_flush: Arc::new(AtomicBool::new(true)),
     };
     state.chains.insert("source".to_string(), live);
     let router = dashboard_impl::dashboard_router(state.clone());
@@ -846,7 +846,7 @@ async fn dashboard_skips_deleted_cached_chains_after_external_removal() {
         default_chain_key: "source".to_string(),
         dashboard_pin: None,
         default_storage_adapter: StorageAdapterKind::Binary,
-        auto_flush: true,
+        auto_flush: Arc::new(AtomicBool::new(true)),
     };
     state.chains.insert("source".to_string(), Arc::clone(&live));
     let router = dashboard_impl::dashboard_router(state.clone());

@@ -27,7 +27,7 @@ fn wizard_can_apply_default_detected_codex_setup_in_temp_home() {
     let mut errors = Vec::new();
 
     let code = run_with_io(
-        ["mentisdbd", "wizard"],
+        ["mentisdb", "wizard"],
         &mut input,
         &mut output,
         &mut errors,
@@ -73,7 +73,7 @@ fn wizard_can_skip_existing_configured_entry() {
     let mut errors = Vec::new();
 
     let code = run_with_io(
-        ["mentisdbd", "wizard"],
+        ["mentisdb", "wizard"],
         &mut input,
         &mut output,
         &mut errors,
@@ -119,7 +119,7 @@ fn wizard_can_configure_claude_code_from_existing_settings_fixture() {
     let mut errors = Vec::new();
 
     let code = run_with_io(
-        ["mentisdbd", "wizard"],
+        ["mentisdb", "wizard"],
         &mut input,
         &mut output,
         &mut errors,
@@ -165,7 +165,7 @@ fn wizard_does_not_write_unused_state_file() {
     let mut errors = Vec::new();
 
     let code = run_with_io(
-        ["mentisdbd", "wizard"],
+        ["mentisdb", "wizard"],
         &mut input,
         &mut output,
         &mut errors,
@@ -207,7 +207,7 @@ fn wizard_yes_does_not_overwrite_existing_configured_entry() {
     let mut errors = Vec::new();
 
     let code = run_with_io(
-        ["mentisdbd", "wizard", "--yes"],
+        ["mentisdb", "wizard", "--yes"],
         &mut input,
         &mut output,
         &mut errors,
@@ -252,7 +252,7 @@ fn wizard_continues_when_claude_desktop_node_check_warns() {
     let mut errors = Vec::new();
 
     let code = run_with_io(
-        ["mentisdbd", "setup", "codex"],
+        ["mentisdb", "setup", "codex"],
         &mut input,
         &mut output,
         &mut errors,
