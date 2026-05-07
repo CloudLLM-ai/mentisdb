@@ -1,6 +1,13 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 -> 0.9.7.43)
+## Shipped (0.8.2 -> 0.9.8.44)
+
+### 0.9.8.44 - Binary Rename, Dashboard Settings, and Dotenvy
+- **Binary rename** — `mentisdbd` → `mentisdb`; all docs, tests, CI, install scripts, and TUI references updated
+- **Dashboard chain sizes** — chains table shows human-readable on-disk size per chain; summary bar shows total size, thoughts, agents, and per-index totals
+- **Dashboard Settings tab** — edit all 18 `MENTISDB_*` env vars with type-aware controls, reset-to-default per row, apply with `.env` persistence and hot-reload for `auto_flush`; restart-required flag for network/storage changes
+- **Dotenvy support** — loads environment variables from `.env` in the working directory at startup; shell env takes precedence; silently ignored when absent
+- **TUI improvements** — Storage Location column shows chain file size in brackets; running status includes daemon PID
 
 ### 0.9.7.43 - Dashboard Skill Editing and Stdio Reliability
 - **Dashboard skill editing** - operators can edit skills from the Skills table or a skill detail page; saving creates a new immutable version through the existing upload path and preserves uploader identity/source format
