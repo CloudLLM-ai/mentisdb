@@ -16,3 +16,7 @@ pymentisdb/pymentisdb.egg-info/
 # Backup archives produced by `mentisdbd backup`
 *.mbak
 *.mentis
+
+# Local environment overrides written by dashboard settings
+.env
+.env~
