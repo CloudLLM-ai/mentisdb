@@ -7342,6 +7342,15 @@ impl MentisDb {
     ) -> Result<ExtractionResult, LlmExtractionError> {
         crate::llm::extract_memories_from_text(text, config, None).await
     }
+
+    /// Return an estimate of the in-memory lexical index size in bytes.
+    ///
+    /// The lexical index is rebuilt from the durable chain file at open time
+    /// and lives only in RAM. This value is useful for dashboard operators
+    /// who want to understand the memory footprint of each loaded chain.
+    pub fn estimated_lexical_index_bytes(&self) -> u64 {
+        self.lexical_index.estimated_memory_bytes()
+    }
 }
 
 impl Drop for MentisDb {
