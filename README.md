@@ -346,6 +346,11 @@ Once startup completes, it prints:
 - `MENTISDB_DEDUP_SCAN_WINDOW`
   Number of recent thoughts to scan for dedup comparison. Default: `64`.
 
+MentisDB loads environment variables from a `.env` file in the current working directory
+at startup. Existing shell environment variables take precedence over `.env` values. The
+file is silently ignored when absent, so it is safe to commit a template `.env.example`
+while keeping your actual `.env` in `.gitignore`.
+
 Example — full durability (production default):
 
 ```bash
@@ -928,7 +933,7 @@ the HTTPS MCP and REST surfaces.
 
 Dashboard capabilities:
 
-- live chain listing with thought and agent counts
+- live chain listing with thought, agent, and storage-size counts
 - thought exploration with grouped ThoughtType filters, refs, and typed relations
 - chain-scoped ranked search with text and live-agent filters
 - grouped context bundles for seed-anchored supporting search context
@@ -939,6 +944,7 @@ Dashboard capabilities:
 - chain import from `MEMORY.md`
 - cross-chain agent-memory copy with agent metadata preserved on the target chain
 - skill browsing, diffing, editing into new immutable versions, deprecation, and revocation
+- Settings tab to view and edit all `MENTISDB_*` environment variables with live apply, reset-to-default, and `.env` persistence
 
 Protect the dashboard with `MENTISDB_DASHBOARD_PIN` whenever the daemon is reachable
 outside localhost.
