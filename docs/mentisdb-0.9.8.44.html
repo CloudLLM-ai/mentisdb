@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.9.8.44 - Binary Rename, Dashboard Settings, and Dotenvy</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    ul { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.95rem; }
+    th, td { border: 1px solid #e0e0e0; padding: 0.55rem 0.7rem; text-align: left; vertical-align: top; }
+    th { background: #f0f0f0; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">May 7, 2026</div>
+
+<h1>MentisDB 0.9.8.44 - Binary Rename, Dashboard Settings, and Dotenvy</h1>
+
+<p>
+  0.9.8.44 is a user-experience release: the binary drops its trailing <code>d</code>,
+  the dashboard gains a Settings tab and per-chain storage visibility, and
+  mentisdb now loads configuration from <code>.env</code> files so you can keep
+  project-local settings out of your shell profile.
+</p>
+
+<div class="highlight">
+  <p>
+    <strong>Breaking change:</strong> the installed binary is now <code>mentisdb</code>,
+    not <code>mentisdbd</code>. All documentation, CI artifacts, install scripts,
+    and TUI references have been updated. If you have scripts or aliases that
+    call <code>mentisdbd</code>, update them to <code>mentisdb</code>.
+  </p>
+</div>
+
+<h2>What Changed</h2>
+
+<ul>
+  <li><strong>Binary rename.</strong> <code>mentisdbd</code> → <code>mentisdb</code>. Every reference in docs, tests, CI, install scripts, and the TUI has been updated. <code>cargo install mentisdb</code> produces <code>mentisdb</code>.</li>
+  <li><strong>Dashboard chain sizes.</strong> The Chains table now shows a "Size" column with human-readable on-disk storage (B, KB, MB, GB, TB, PB). A summary bar above the table shows total size, thoughts, agents, and per-index totals across all chains.</li>
+  <li><strong>Dashboard Settings tab.</strong> A new Settings page lists all 18 <code>MENTISDB_*</code> environment variables in a table with type-aware controls (checkbox for booleans, number input for ports, text for strings). Each row shows current value, default, and description. "Reset to Default" per row. "Apply Settings" persists changes to a <code>.env</code> file and hot-reloads <code>auto_flush</code> immediately. Network and storage changes show a restart-required flag.</li>
+  <li><strong>Dotenvy support.</strong> mentisdb loads environment variables from a <code>.env</code> file in the current working directory at startup. Shell env vars take precedence. The file is silently ignored when absent, so you can commit a template <code>.env.example</code> and keep real values in <code>.gitignore</code>-d <code>.env</code> files.</li>
+  <li><strong>TUI improvements.</strong> The Storage Location column now shows chain file size in brackets (e.g. <code>[10 KB] /path/to/chain.tcbin</code>). The running status line now includes the daemon PID so you can identify the process when multiple instances are running.</li>
+</ul>
+
+<h2>Verification</h2>
+
+<table>
+  <thead>
+    <tr><th>Gate</th><th>Result</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>cargo fmt -- --check</code></td><td>Passed</td></tr>
+    <tr><td><code>cargo clippy --all-features -- -D warnings</code></td><td>Passed</td></tr>
+    <tr><td><code>cargo test --all-features</code></td><td>Passed (257 tests, 80 doc-tests)</td></tr>
+    <tr><td>GitHub CI</td><td>Passed (x86_64/aarch64 macOS, x86_64/aarch64 Linux, Windows)</td></tr>
+    <tr><td>LoCoMo benchmark</td><td>R@10 = 71.80% (single 75.80%, multi 57.20%)</td></tr>
+  </tbody>
+</table>
+
+<h2>Upgrade</h2>
+
+<pre><code>cargo install mentisdb --force</code></pre>
+
+<p>
+  No manual migration is required. Existing chain files, skill registries, and
+  agent identities continue to work unchanged. Scripts that reference
+  <code>mentisdbd</code> should be updated to <code>mentisdb</code>.
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb/releases/tag/0.9.8.44">GitHub release</a> &middot;
+  <a href="https://crates.io/crates/mentisdb">crates.io</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>
