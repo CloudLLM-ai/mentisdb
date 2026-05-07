@@ -1,10 +1,11 @@
-0.9.8.44 UNRELEASED
+0.9.8.44 MAY/07/2026
   - BREAKING: rename binary from `mentisdbd` to `mentisdb` — all CLI commands,
     documentation, install scripts, CI artifact names, and TUI references updated;
     `cargo install mentisdb` still installs the crate, but the resulting binary
     is now `mentisdb` (no trailing `d`)
   - feat(dashboard): chains table now shows a "Size" column with human-readable
-    storage size (B, KB, MB, GB, TB, PB) computed from each chain's on-disk file
+    storage size (B, KB, MB, GB, TB, PB) computed from each chain's on-disk file;
+    summary bar shows total size, thoughts, agents, and per-index size totals
   - feat(dashboard): new Settings tab — view and edit all 18 `MENTISDB_*` env
     vars in a table with type-aware controls (checkbox for booleans, number for
     ports, text for strings); shows current value, default, and description per
@@ -13,13 +14,17 @@
     for network/storage changes that cannot be applied to a running daemon
   - feat(tui): show chain file size in Storage Location column — prefixed with
     human-readable size in brackets (e.g. [10 KB] /path/to/chain.tcbin); sizes
-    shown in B, KB, MB, or GB as appropriate
+    shown in B, KB, MB, or GB as appropriate; running status now includes PID
   - feat(config): dotenvy support — mentisdb now loads environment variables
     from a `.env` file in the current working directory at startup; existing
     shell environment variables take precedence over `.env` values; silently
     ignored when no `.env` file is present; all `MENTISDB_*` env vars,
     `RUST_LOG`, and `OPENAI_API_KEY` can now be managed via project-local
     `.env` files for cleaner per-project configuration
+  - test: add `start_servers_headless_without_tui_state` regression test for the
+    headless daemon startup path used by stdio proxy auto-launch and
+    `--mode http --headless`
+  - bench: LoCoMo R@10 = 71.80% (single 75.80%, multi 57.20%)
 
 
 0.9.7.43 APR/30/2026
