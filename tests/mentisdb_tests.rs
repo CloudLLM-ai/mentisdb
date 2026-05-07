@@ -452,8 +452,7 @@ fn scheduler_spaces_bursts_without_overlap() {
     assert_eq!(second, 180 + mentisdb_impl::THOUGHT_SOUND_GAP_MS);
     assert_eq!(
         third,
-        180 + mentisdb_impl::THOUGHT_SOUND_GAP_MS + 120 + mentisdb_impl::THOUGHT_SOUND_GAP_MS
-            - 75
+        180 + mentisdb_impl::THOUGHT_SOUND_GAP_MS + 120 + mentisdb_impl::THOUGHT_SOUND_GAP_MS - 75
     );
 }
 

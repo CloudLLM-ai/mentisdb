@@ -130,12 +130,7 @@ fn help_text_lists_all_supported_agents_and_commands() {
         let mut input = Cursor::new(Vec::<u8>::new());
         let mut output = Vec::new();
         let mut errors = Vec::new();
-        let _ = run_with_io(
-            ["mentisdb", "--help"],
-            &mut input,
-            &mut output,
-            &mut errors,
-        );
+        let _ = run_with_io(["mentisdb", "--help"], &mut input, &mut output, &mut errors);
         String::from_utf8(output).unwrap()
     };
 

@@ -431,7 +431,9 @@ async fn get_or_open_chain(
         if state.auto_flush.load(Ordering::Relaxed) {
             if let Some(storage) = registered_storage {
                 if let Ok(mut refreshed) = MentisDb::open_with_storage(storage) {
-                    if refreshed.set_auto_flush(state.auto_flush.load(Ordering::Relaxed)).is_ok()
+                    if refreshed
+                        .set_auto_flush(state.auto_flush.load(Ordering::Relaxed))
+                        .is_ok()
                         && refreshed.apply_persisted_managed_vector_sidecars().is_ok()
                     {
                         let refreshed = Arc::new(RwLock::new(refreshed));
@@ -893,10 +895,7 @@ fn vector_sidecars_size(chain_dir: &std::path::Path, stem: &str) -> u64 {
 fn chain_sidecar_sizes(storage_location: &str) -> (u64, u64, u64, u64) {
     let path = std::path::PathBuf::from(storage_location);
     let chain_dir = path.parent().unwrap_or(std::path::Path::new(""));
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
     let agents_size = std::fs::metadata(chain_dir.join(format!("{stem}.agents.json")))
         .map(|m| m.len())
@@ -2602,7 +2601,8 @@ async fn api_settings(
             name: "MENTISDB_AUTO_FLUSH".to_string(),
             value: std::env::var("MENTISDB_AUTO_FLUSH").unwrap_or_else(|_| "true".to_string()),
             default_value: "true".to_string(),
-            description: "Flush immediately on each append (true) or use buffered writes (false).".to_string(),
+            description: "Flush immediately on each append (true) or use buffered writes (false)."
+                .to_string(),
             kind: "boolean".to_string(),
             hot_reload: true,
         },

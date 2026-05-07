@@ -10,8 +10,8 @@ use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use chrono::DateTime;
 use mentisdb::server::{
-    adopt_legacy_default_mentisdb_dir, mcp_router, rest_router, standard_mcp_router,
-    start_servers, MentisDbServerConfig, MentisDbServiceConfig,
+    adopt_legacy_default_mentisdb_dir, mcp_router, rest_router, standard_mcp_router, start_servers,
+    MentisDbServerConfig, MentisDbServiceConfig,
 };
 use mentisdb::{MentisDb, StorageAdapterKind, MENTISDB_CURRENT_VERSION};
 use serde_json::json;
@@ -3705,7 +3705,9 @@ async fn start_servers_headless_without_tui_state() {
         service: MentisDbServiceConfig::new(dir.clone(), chain_key, StorageAdapterKind::Binary),
     };
 
-    let mut handles = start_servers(config, None).await.expect("headless start_servers should succeed");
+    let mut handles = start_servers(config, None)
+        .await
+        .expect("headless start_servers should succeed");
 
     // Health check on REST
     let rest_base = format!("http://{}", handles.rest.local_addr());
@@ -3715,7 +3717,10 @@ async fn start_servers_headless_without_tui_state() {
         .timeout(Duration::from_secs(5))
         .send()
         .await;
-    assert!(health.is_ok(), "REST health endpoint should respond in headless mode");
+    assert!(
+        health.is_ok(),
+        "REST health endpoint should respond in headless mode"
+    );
     let health = health.unwrap();
     assert_eq!(health.status(), 200);
 
