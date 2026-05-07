@@ -14,6 +14,10 @@
   - refactor(dashboard): rename `chain_sidecar_sizes` → `vector_index_size` and
     simplify `api_chains` JSON to expose only the three meaningful index sizes
     (chain file, semantic sidecars, lexical RAM estimate) per chain
+  - feat(dashboard): comprehensive tooltips across the entire UI — every nav link,
+    summary stat, table header, action button, form field, filter control, and
+    modal now has a friendly HTML title attribute explaining what it does and what
+    data it represents; uses native browser tooltips for zero-dependency compatibility
 
 0.9.8.44 MAY/07/2026
   - BREAKING: rename binary from `mentisdbd` to `mentisdb` — all CLI commands,
