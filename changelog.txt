@@ -1,3 +1,20 @@
+0.9.9.45 UNRELEASED
+  - feat(dashboard): chains table redesign — replaced "Agent Idx", "Entity Idx",
+    and "Vector Idx" columns with "Chain" (on-disk file), "Semantic" (vector
+    embeddings sidecars), and "Lexical (RAM)" (in-memory BM25 index); the Lexical
+    column shows `—` for unloaded chains and an estimated size (e.g. `53 KB`) once
+    the chain is accessed and its index is built; Lexical header and values are
+    styled in amber to indicate in-memory-only state
+  - feat(search): add `LexicalIndex::estimated_memory_bytes()` to approximate the
+    RAM footprint of the in-memory BM25 postings map, document-stats vector, and
+    metadata; lower-bound estimate — real heap may be 1.2–1.5× larger
+  - feat(api): add `MentisDb::estimated_lexical_index_bytes()` public method so
+    dashboard and other callers can surface the lexical index size without accessing
+    private fields
+  - refactor(dashboard): rename `chain_sidecar_sizes` → `vector_index_size` and
+    simplify `api_chains` JSON to expose only the three meaningful index sizes
+    (chain file, semantic sidecars, lexical RAM estimate) per chain
+
 0.9.8.44 MAY/07/2026
   - BREAKING: rename binary from `mentisdbd` to `mentisdb` — all CLI commands,
     documentation, install scripts, CI artifact names, and TUI references updated;
