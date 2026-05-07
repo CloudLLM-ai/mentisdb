@@ -576,6 +576,35 @@ impl LexicalIndex {
         self.postings.len()
     }
 
+    /// Estimate the RAM footprint of this in-memory lexical index in bytes.
+    ///
+    /// This is a lower-bound approximation that counts the data stored in the
+    /// postings map, document-stats vector, and metadata. HashMap and Vec
+    /// capacity overhead are not fully accounted for, so the real heap size
+    /// may be 1.2–1.5× larger.
+    pub fn estimated_memory_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        // Metadata is tiny.
+        let metadata = 64u64;
+
+        // One stat block per indexed thought.
+        let doc_stats = (self.document_stats.len() as u64)
+            * (size_of::<LexicalDocumentStats>() as u64);
+
+        // Postings: term string + HashMap entry overhead + Vec overhead + postings.
+        let mut postings = 0u64;
+        for (term, list) in &self.postings {
+            postings += term.len() as u64;           // string bytes
+            postings += 32;                           // HashMap entry overhead estimate
+            postings += 24;                           // Vec header/capacity estimate
+            postings += (list.len() as u64)
+                * (size_of::<LexicalPosting>() as u64);
+        }
+
+        metadata + doc_stats + postings
+    }
+
     /// Return per-document statistics in slice order.
     pub fn document_stats(&self) -> &[LexicalDocumentStats] {
         &self.document_stats
