@@ -892,24 +892,19 @@ fn vector_sidecars_size(chain_dir: &std::path::Path, stem: &str) -> u64 {
 }
 
 /// Build a JSON object describing the size of every per-chain sidecar file.
-fn chain_sidecar_sizes(storage_location: &str) -> (u64, u64, u64, u64) {
+/// Return the on-disk size of the vector (semantic) index sidecars for a chain.
+fn vector_index_size(storage_location: &str) -> (u64, u64) {
     let path = std::path::PathBuf::from(storage_location);
     let chain_dir = path.parent().unwrap_or(std::path::Path::new(""));
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
-    let agents_size = std::fs::metadata(chain_dir.join(format!("{stem}.agents.json")))
-        .map(|m| m.len())
-        .unwrap_or(0);
-    let entities_size = std::fs::metadata(chain_dir.join(format!("{stem}.entity-types.json")))
-        .map(|m| m.len())
-        .unwrap_or(0);
     let vectors_size = vector_sidecars_size(chain_dir, stem);
     let vector_config_size =
         std::fs::metadata(chain_dir.join(format!("{stem}.vectors.managed.json")))
             .map(|m| m.len())
             .unwrap_or(0);
 
-    (agents_size, entities_size, vectors_size, vector_config_size)
+    (vectors_size, vector_config_size)
 }
 
 /// `GET /dashboard/api/chains`
@@ -934,22 +929,20 @@ async fn api_chains(
             let storage_size = std::fs::metadata(&reg.storage_location)
                 .map(|m| m.len())
                 .unwrap_or(0);
-            let (agents_size, entities_size, vectors_size, vector_config_size) =
-                chain_sidecar_sizes(&reg.storage_location);
+            let (vectors_size, vector_config_size) =
+                vector_index_size(&reg.storage_location);
             let v = json!({
                 "chain_key":                    key.clone(),
                 "thought_count":                reg.thought_count,
                 "agent_count":                  reg.agent_count,
                 "storage_size":                 storage_size,
                 "storage_size_formatted":       format_bytes(storage_size),
-                "agents_size":                  agents_size,
-                "agents_size_formatted":        format_bytes(agents_size),
-                "entities_size":                entities_size,
-                "entities_size_formatted":      format_bytes(entities_size),
                 "vectors_size":                 vectors_size,
                 "vectors_size_formatted":       format_bytes(vectors_size),
                 "vector_config_size":           vector_config_size,
                 "vector_config_size_formatted": format_bytes(vector_config_size),
+                "lexical_size":                 0,
+                "lexical_size_formatted":       format_bytes(0),
             });
             (key, v)
         })
@@ -963,22 +956,21 @@ async fn api_chains(
             let storage_size = std::fs::metadata(chain.storage_location())
                 .map(|m| m.len())
                 .unwrap_or(0);
-            let (agents_size, entities_size, vectors_size, vector_config_size) =
-                chain_sidecar_sizes(&chain.storage_location());
+            let (vectors_size, vector_config_size) =
+                vector_index_size(&chain.storage_location());
+            let lexical_size = chain.estimated_lexical_index_bytes();
             let v = json!({
                 "chain_key":                    key.clone(),
                 "thought_count":                chain.thoughts().len(),
                 "agent_count":                  chain.agent_registry().agents.len(),
                 "storage_size":                 storage_size,
                 "storage_size_formatted":       format_bytes(storage_size),
-                "agents_size":                  agents_size,
-                "agents_size_formatted":        format_bytes(agents_size),
-                "entities_size":                entities_size,
-                "entities_size_formatted":      format_bytes(entities_size),
                 "vectors_size":                 vectors_size,
                 "vectors_size_formatted":       format_bytes(vectors_size),
                 "vector_config_size":           vector_config_size,
                 "vector_config_size_formatted": format_bytes(vector_config_size),
+                "lexical_size":                 lexical_size,
+                "lexical_size_formatted":       format_bytes(lexical_size),
             });
             by_key.insert(key, v);
         }
@@ -993,8 +985,9 @@ async fn api_chains(
                 let storage_size = std::fs::metadata(chain.storage_location())
                     .map(|m| m.len())
                     .unwrap_or(0);
-                let (agents_size, entities_size, vectors_size, vector_config_size) =
-                    chain_sidecar_sizes(&chain.storage_location());
+                let (vectors_size, vector_config_size) =
+                    vector_index_size(&chain.storage_location());
+                let lexical_size = chain.estimated_lexical_index_bytes();
                 by_key.insert(
                     key.clone(),
                     json!({
@@ -1003,14 +996,12 @@ async fn api_chains(
                         "agent_count":                  chain.agent_registry().agents.len(),
                         "storage_size":                 storage_size,
                         "storage_size_formatted":       format_bytes(storage_size),
-                        "agents_size":                  agents_size,
-                        "agents_size_formatted":        format_bytes(agents_size),
-                        "entities_size":                entities_size,
-                        "entities_size_formatted":      format_bytes(entities_size),
                         "vectors_size":                 vectors_size,
                         "vectors_size_formatted":       format_bytes(vectors_size),
                         "vector_config_size":           vector_config_size,
                         "vector_config_size_formatted": format_bytes(vector_config_size),
+                        "lexical_size":                 lexical_size,
+                        "lexical_size_formatted":       format_bytes(lexical_size),
                     }),
                 );
             }
