@@ -1921,7 +1921,8 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
     {
         let mut s = tui_state.lock().unwrap();
         s.started = true;
-        s.startup_status = "mentisdb running".to_string();
+        let pid = std::process::id();
+        s.startup_status = format!("mentisdb running (PID: {pid})");
         s.chain_count = 0;
         s.primer_text = primer_paste_line.clone();
         s.config_lines = build_config_lines(&config, &update_config);

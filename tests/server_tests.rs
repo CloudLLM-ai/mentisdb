@@ -11,7 +11,7 @@ use axum::http::{Request, StatusCode};
 use chrono::DateTime;
 use mentisdb::server::{
     adopt_legacy_default_mentisdb_dir, mcp_router, rest_router, standard_mcp_router,
-    MentisDbServerConfig, MentisDbServiceConfig,
+    start_servers, MentisDbServerConfig, MentisDbServiceConfig,
 };
 use mentisdb::{MentisDb, StorageAdapterKind, MENTISDB_CURRENT_VERSION};
 use serde_json::json;
@@ -3680,6 +3680,48 @@ async fn recent_context_with_agent_id_filter() {
         prompt_all.contains("Beta fact one"),
         "beta present in unfiltered"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Verify that `start_servers` works in headless mode (no TUI state).
+/// This is the path used when the stdio proxy auto-launches a background daemon
+/// or when `--mode http --headless` is used. Regression test for the
+/// `tui_state` parameter added to `start_servers`.
+#[tokio::test]
+async fn start_servers_headless_without_tui_state() {
+    let dir = unique_chain_dir();
+    let chain_key = "headless-test";
+
+    let config = MentisDbServerConfig {
+        mcp_addr: "127.0.0.1:0".parse().unwrap(),
+        rest_addr: "127.0.0.1:0".parse().unwrap(),
+        https_mcp_addr: None,
+        https_rest_addr: None,
+        tls_cert_path: dir.join("tls").join("cert.pem"),
+        tls_key_path: dir.join("tls").join("key.pem"),
+        dashboard_addr: None,
+        dashboard_pin: None,
+        service: MentisDbServiceConfig::new(dir.clone(), chain_key, StorageAdapterKind::Binary),
+    };
+
+    let mut handles = start_servers(config, None).await.expect("headless start_servers should succeed");
+
+    // Health check on REST
+    let rest_base = format!("http://{}", handles.rest.local_addr());
+    let client = reqwest::Client::new();
+    let health = client
+        .get(format!("{}/health", rest_base))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await;
+    assert!(health.is_ok(), "REST health endpoint should respond in headless mode");
+    let health = health.unwrap();
+    assert_eq!(health.status(), 200);
+
+    // Graceful shutdown
+    handles.mcp.shutdown().unwrap();
+    handles.rest.shutdown().unwrap();
 
     let _ = std::fs::remove_dir_all(&dir);
 }
