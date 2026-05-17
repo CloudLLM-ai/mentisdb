@@ -8,6 +8,8 @@ pub mod bundle;
 /// Deterministic breadth-first expansion helpers built on top of the adjacency
 /// layer.
 pub mod expansion;
+/// Vector-similarity implicit edge overlay for augmenting graph expansion.
+pub mod implicit_edges;
 /// Graph adjacency and edge-provenance structures derived from committed
 /// thoughts.
 pub mod graph;
@@ -39,6 +41,7 @@ pub use expansion::{
 pub use graph::{
     AdjacencyDirection, GraphEdge, GraphEdgeProvenance, ThoughtAdjacencyIndex, ThoughtLocator,
 };
+pub use implicit_edges::{ImplicitEdgeOverlay, ImplicitNeighbor};
 pub use provenance::{GraphExpansionHop, GraphExpansionPath, GraphExpansionPathError};
 pub use sidecar::{
     VectorSidecar, VectorSidecarEntry, VectorSidecarFreshness, VectorSidecarIntegrity,
