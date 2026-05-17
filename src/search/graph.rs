@@ -235,6 +235,11 @@ impl ThoughtAdjacencyIndex {
         self.local_by_id.get(&thought_id)
     }
 
+    /// Return a reference to the underlying id→locator map.
+    pub fn locator_map(&self) -> &HashMap<Uuid, ThoughtLocator> {
+        &self.local_by_id
+    }
+
     /// Return the local locator for an append-order index in this snapshot.
     pub fn local_locator_for_index(&self, thought_index: u64) -> Option<&ThoughtLocator> {
         self.local_by_index.get(&thought_index)
