@@ -1,4 +1,28 @@
 0.9.9.45 UNRELEASED
+  - feat(search): auto-infer implicit RelatedTo edges from vector cosine
+    similarity — the vector sidecar and graph adjacency index were previously
+    disconnected signals; chains where agents never author explicit refs or
+    relations now have a dense implicit graph populated automatically;
+    edges with cosine >= threshold (default 0.85, env MENTISDB_AUTO_EDGE_THRESHOLD)
+    are kept, top-K per thought (default 5, env MENTISDB_AUTO_EDGE_K);
+    the overlay is persisted to <chain>.auto_edges.bin with atomic rename and
+    reloaded on chain open; threshold or K mismatch triggers a full rebuild;
+    chains > 50 000 thoughts skip the O(N²) open-time build and grow the
+    overlay incrementally; targets the 25.8% near-miss bucket (R@20 hits not
+    in R@10) identified in whitepaper §9.3
+  - feat(search): VectorIndex::get_vector — retrieve one stored vector by
+    document id from the in-memory cosine index
+  - feat(search): ThoughtAdjacencyIndex::locator_map — expose id→locator map
+    for callers that need to convert Uuid values to ThoughtLocator
+  - feat(core): cache VectorIndex in-memory on ManagedSidecarEntry —
+    rank_candidates_semantically no longer loads the vector sidecar from disk
+    on every search call; the in-memory index is kept in sync on every append
+    and full sidecar rebuild
+  - fix(core): remove redundant load_or_rebuild_implicit_edge_overlay calls
+    in apply_persisted_managed_vector_sidecars — the inner manage_vector_sidecar
+    and register_vector_sidecar_for_search calls already trigger the overlay
+    load/rebuild; the duplicate calls at the end of each cfg branch caused an
+    unnecessary extra disk read on every daemon startup
   - feat(dashboard): chains table redesign — replaced "Agent Idx", "Entity Idx",
     and "Vector Idx" columns with "Chain" (on-disk file), "Semantic" (vector
     embeddings sidecars), and "Lexical (RAM)" (in-memory BM25 index); the Lexical
