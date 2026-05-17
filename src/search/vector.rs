@@ -393,6 +393,11 @@ impl VectorIndex {
         self.documents.remove(document_id).is_some()
     }
 
+    /// Return a clone of the stored vector for one document id, if present.
+    pub fn get_vector(&self, document_id: &str) -> Option<Vec<f32>> {
+        self.documents.get(document_id).cloned()
+    }
+
     /// Rank indexed vectors by cosine similarity to the query vector.
     pub fn search(&self, query: &VectorQuery) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
         validate_vector(&query.vector, self.metadata.dimension, None, "query")?;
