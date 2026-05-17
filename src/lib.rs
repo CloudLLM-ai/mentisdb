@@ -3294,6 +3294,9 @@ trait ManagedEmbeddingProvider: Send + Sync {
 struct ManagedSidecarEntry {
     provider: Box<dyn ManagedEmbeddingProvider>,
     auto_sync: bool,
+    // In-memory index rebuilt after each successful sidecar sync.
+    // None until the first sidecar load/rebuild completes.
+    cached_index: Option<crate::search::VectorIndex>,
 }
 
 struct RegisteredEmbeddingProvider<P> {
@@ -3318,6 +3321,10 @@ where
 }
 
 const MANAGED_VECTOR_SIDECAR_CONFIG_VERSION: u32 = 1;
+
+const AUTO_EDGE_DEFAULT_THRESHOLD: f32 = 0.85;
+const AUTO_EDGE_DEFAULT_K: usize = 5;
+const AUTO_EDGE_MAX_CHAIN_FOR_FULL_BUILD: usize = 50_000;
 
 /// Built-in provider kinds that MentisDB can manage persistently per chain.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -3640,6 +3647,12 @@ pub struct MentisDb {
     /// Maximum number of recent thoughts to scan during dedup checking.
     /// Limits the cost of the similarity comparison on large chains.
     dedup_scan_window: usize,
+    /// In-memory overlay of vector-inferred semantic edges.
+    implicit_edge_overlay: Option<crate::search::ImplicitEdgeOverlay>,
+    /// Cosine similarity threshold for auto-inferred edges.
+    auto_edge_threshold: f32,
+    /// Max neighbors per thought for auto-inferred edges.
+    auto_edge_k: usize,
     #[cfg(feature = "server")]
     webhook_manager: Option<crate::webhooks::WebhookManager>,
 }
@@ -3758,6 +3771,15 @@ impl MentisDb {
             invalidated_thought_ids: HashSet::new(),
             dedup_threshold: None,
             dedup_scan_window: 64,
+            implicit_edge_overlay: None,
+            auto_edge_threshold: std::env::var("MENTISDB_AUTO_EDGE_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(AUTO_EDGE_DEFAULT_THRESHOLD),
+            auto_edge_k: std::env::var("MENTISDB_AUTO_EDGE_K")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(AUTO_EDGE_DEFAULT_K),
             #[cfg(feature = "server")]
             webhook_manager: None,
         };
@@ -4237,7 +4259,9 @@ impl MentisDb {
             }
         }
 
-        self.sync_managed_vector_sidecars_for_append(self.thoughts.last().unwrap())?;
+        let last_thought = self.thoughts.last().unwrap().clone();
+        self.sync_managed_vector_sidecars_for_append(&last_thought)?;
+        self.sync_implicit_edge_overlay_for_append(&last_thought);
         self.mark_agent_registry_dirty();
         self.maybe_flush_agent_registry(
             self.auto_flush || self.thoughts.len() == 1 || agent_count_changed,
@@ -5658,13 +5682,28 @@ impl MentisDb {
             }
             _ => self.rebuild_vector_sidecar(&provider)?,
         };
+        let cached_index = {
+            let documents: Vec<crate::search::VectorDocument> = sidecar
+                .entries
+                .iter()
+                .map(|entry| {
+                    crate::search::VectorDocument::new(
+                        entry.thought_id.to_string(),
+                        entry.vector.clone(),
+                    )
+                })
+                .collect();
+            crate::search::VectorIndex::from_documents(provider.metadata().clone(), documents).ok()
+        };
         self.managed_vector_sidecars.insert(
             provider.metadata().clone(),
             ManagedSidecarEntry {
                 provider: Box::new(RegisteredEmbeddingProvider { provider }),
                 auto_sync: true,
+                cached_index,
             },
         );
+        self.load_or_rebuild_implicit_edge_overlay();
         Ok(sidecar)
     }
 
@@ -5679,13 +5718,32 @@ impl MentisDb {
         &mut self,
         provider: P,
     ) {
+        let cached_index = self
+            .load_vector_sidecar(provider.metadata())
+            .ok()
+            .flatten()
+            .and_then(|sidecar| {
+                let documents: Vec<crate::search::VectorDocument> = sidecar
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        crate::search::VectorDocument::new(
+                            entry.thought_id.to_string(),
+                            entry.vector.clone(),
+                        )
+                    })
+                    .collect();
+                crate::search::VectorIndex::from_documents(provider.metadata().clone(), documents).ok()
+            });
         self.managed_vector_sidecars.insert(
             provider.metadata().clone(),
             ManagedSidecarEntry {
                 provider: Box::new(RegisteredEmbeddingProvider { provider }),
                 auto_sync: false,
+                cached_index,
             },
         );
+        self.load_or_rebuild_implicit_edge_overlay();
     }
 
     /// Stop append-time synchronization for one managed vector sidecar.
@@ -5865,14 +5923,28 @@ impl MentisDb {
             ManagedVectorProviderKind::LocalTextV1 => {
                 let provider = crate::search::LocalTextEmbeddingProvider::new();
                 let metadata = crate::search::EmbeddingProvider::metadata(&provider).clone();
-                self.rebuild_vector_sidecar(&provider)
+                let sidecar = self
+                    .rebuild_vector_sidecar(&provider)
                     .map_err(vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>)?;
+                let documents: Vec<crate::search::VectorDocument> = sidecar
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        crate::search::VectorDocument::new(
+                            entry.thought_id.to_string(),
+                            entry.vector.clone(),
+                        )
+                    })
+                    .collect();
+                let cached_index =
+                    crate::search::VectorIndex::from_documents(metadata.clone(), documents).ok();
                 if enabled {
                     self.managed_vector_sidecars.insert(
                         metadata,
                         ManagedSidecarEntry {
                             provider: Box::new(RegisteredEmbeddingProvider { provider }),
                             auto_sync: true,
+                            cached_index,
                         },
                     );
                 } else {
@@ -5884,14 +5956,28 @@ impl MentisDb {
                 let provider = crate::search::FastEmbedProvider::try_new()
                     .map_err(|e| io::Error::other(format!("FastEmbed init failed: {e}")))?;
                 let metadata = crate::search::EmbeddingProvider::metadata(&provider).clone();
-                self.rebuild_vector_sidecar(&provider)
+                let sidecar = self
+                    .rebuild_vector_sidecar(&provider)
                     .map_err(|e| io::Error::other(format!("fastembed sidecar rebuild: {e}")))?;
+                let documents: Vec<crate::search::VectorDocument> = sidecar
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        crate::search::VectorDocument::new(
+                            entry.thought_id.to_string(),
+                            entry.vector.clone(),
+                        )
+                    })
+                    .collect();
+                let cached_index =
+                    crate::search::VectorIndex::from_documents(metadata.clone(), documents).ok();
                 if enabled {
                     self.managed_vector_sidecars.insert(
                         metadata,
                         ManagedSidecarEntry {
                             provider: Box::new(RegisteredEmbeddingProvider { provider }),
                             auto_sync: true,
+                            cached_index,
                         },
                     );
                 } else {
@@ -5899,6 +5985,7 @@ impl MentisDb {
                 }
             }
         }
+        self.load_or_rebuild_implicit_edge_overlay();
         self.managed_vector_sidecar_status(provider_kind, enabled)
     }
 
@@ -6016,7 +6103,111 @@ impl MentisDb {
         })
     }
 
-    fn sync_managed_vector_sidecars_for_append(&self, thought: &Thought) -> io::Result<()> {
+    fn sync_implicit_edge_overlay_for_append(&mut self, thought: &Thought) {
+        let Some(ref mut overlay) = self.implicit_edge_overlay else {
+            return;
+        };
+        let Some(persistence) = &self.persistence else {
+            return;
+        };
+
+        // Find a provider whose cached_index has the new thought's vector.
+        let metadata = self
+            .managed_vector_sidecars
+            .iter()
+            .find(|(_, entry)| {
+                entry
+                    .cached_index
+                    .as_ref()
+                    .and_then(|idx| idx.get_vector(&thought.id.to_string()))
+                    .is_some()
+            })
+            .map(|(metadata, _)| metadata.clone());
+
+        let Some(metadata) = metadata else {
+            return;
+        };
+
+        let sidecar_path = chain_vector_sidecar_path(
+            &persistence.chain_dir,
+            &persistence.chain_key,
+            persistence.storage_kind,
+            &metadata,
+        );
+        let Ok(sidecar) = crate::search::VectorSidecar::load_from_path(&sidecar_path) else {
+            return;
+        };
+
+        let new_vector = self
+            .managed_vector_sidecars
+            .values()
+            .find_map(|entry| entry.cached_index.as_ref())
+            .and_then(|idx| idx.get_vector(&thought.id.to_string()));
+
+        if let Some(vec) = new_vector {
+            overlay.add_thought(thought.id, &vec, &sidecar);
+            let overlay_path = chain_auto_edges_path(
+                &persistence.chain_dir,
+                &persistence.chain_key,
+                persistence.storage_kind,
+            );
+            let _ = overlay.save_to_path(&overlay_path);
+        }
+    }
+
+    fn load_or_rebuild_implicit_edge_overlay(&mut self) {
+        let Some(persistence) = &self.persistence else {
+            return;
+        };
+
+        let Some((metadata, _)) = self
+            .managed_vector_sidecars
+            .iter()
+            .find(|(_, entry)| entry.cached_index.is_some())
+        else {
+            return;
+        };
+
+        let sidecar_path = chain_vector_sidecar_path(
+            &persistence.chain_dir,
+            &persistence.chain_key,
+            persistence.storage_kind,
+            metadata,
+        );
+        let Ok(loaded_sidecar) = crate::search::VectorSidecar::load_from_path(&sidecar_path) else {
+            return;
+        };
+
+        let overlay_path = chain_auto_edges_path(
+            &persistence.chain_dir,
+            &persistence.chain_key,
+            persistence.storage_kind,
+        );
+
+        self.implicit_edge_overlay = match crate::search::ImplicitEdgeOverlay::load_from_path(&overlay_path) {
+            Ok(overlay) if overlay.threshold == self.auto_edge_threshold && overlay.k == self.auto_edge_k => {
+                Some(overlay)
+            }
+            _ => {
+                if self.thoughts.len() > AUTO_EDGE_MAX_CHAIN_FOR_FULL_BUILD {
+                    Some(crate::search::ImplicitEdgeOverlay::new(
+                        self.auto_edge_threshold,
+                        self.auto_edge_k,
+                    ))
+                } else {
+                    let overlay = crate::search::ImplicitEdgeOverlay::build_from_sidecar(
+                        &loaded_sidecar,
+                        self.auto_edge_k,
+                        self.auto_edge_threshold,
+                    );
+                    let _ = overlay.save_to_path(&overlay_path);
+                    Some(overlay)
+                }
+            }
+        };
+    }
+
+    fn sync_managed_vector_sidecars_for_append(&mut self, thought: &Thought) -> io::Result<()> {
         let Some(persistence) = &self.persistence else {
             return Ok(());
         };
@@ -6031,11 +6222,15 @@ impl MentisDb {
             Some(thought.prev_hash.as_str())
         };
 
-        for entry in self.managed_vector_sidecars.values() {
-            if !entry.auto_sync {
-                continue;
+        let metadata_keys: Vec<crate::search::EmbeddingMetadata> =
+            self.managed_vector_sidecars.keys().cloned().collect();
+        for metadata in metadata_keys {
+            {
+                let entry = self.managed_vector_sidecars.get(&metadata).unwrap();
+                if !entry.auto_sync {
+                    continue;
+                }
             }
-            let metadata = entry.provider.metadata().clone();
             let path = chain_vector_sidecar_path(
                 &persistence.chain_dir,
                 &persistence.chain_key,
@@ -6054,9 +6249,40 @@ impl MentisDb {
                         crate::search::VectorSidecarFreshness::Fresh
                     ) =>
                 {
-                    self.extend_fresh_vector_sidecar(entry.provider.as_ref(), sidecar, thought)?
+                    let provider = self.managed_vector_sidecars.get(&metadata).unwrap().provider.as_ref();
+                    let new_sidecar =
+                        self.extend_fresh_vector_sidecar(provider, sidecar, thought)?;
+                    {
+                        let entry = self.managed_vector_sidecars.get_mut(&metadata).unwrap();
+                        if let Some(ref mut cached) = entry.cached_index {
+                            if let Some(last_entry) = new_sidecar.entries.last() {
+                                let document = crate::search::VectorDocument::new(
+                                    last_entry.thought_id.to_string(),
+                                    last_entry.vector.clone(),
+                                );
+                                let _ = cached.upsert_document(document);
+                            }
+                        }
+                    }
+                    new_sidecar
                 }
-                Ok(_) | Err(_) => self.rebuild_managed_vector_sidecar(entry.provider.as_ref())?,
+                Ok(_) | Err(_) => {
+                    let provider = self.managed_vector_sidecars.get(&metadata).unwrap().provider.as_ref();
+                    let new_sidecar = self.rebuild_managed_vector_sidecar(provider)?;
+                    let documents: Vec<crate::search::VectorDocument> = new_sidecar
+                        .entries
+                        .iter()
+                        .map(|e| {
+                            crate::search::VectorDocument::new(e.thought_id.to_string(), e.vector.clone())
+                        })
+                        .collect();
+                    {
+                        let entry = self.managed_vector_sidecars.get_mut(&metadata).unwrap();
+                        entry.cached_index =
+                            crate::search::VectorIndex::from_documents(metadata.clone(), documents).ok();
+                    }
+                    new_sidecar
+                }
             };
             sidecar.save_to_path(&path)?;
         }
@@ -6374,7 +6600,6 @@ impl MentisDb {
         text: &str,
     ) -> HashMap<usize, f32> {
         const FRESH_VECTOR_WEIGHT: f32 = 0.5;
-        const STALE_VECTOR_WEIGHT: f32 = 0.3;
         const MIN_VECTOR_COSINE: f32 = 0.04;
         const MAX_VECTOR_HITS: usize = 256;
 
@@ -6390,17 +6615,8 @@ impl MentisDb {
 
         for entry in self.managed_vector_sidecars.values() {
             let metadata = entry.provider.metadata().clone();
-            let sidecar = match self.load_vector_sidecar(&metadata) {
-                Ok(Some(sidecar)) => sidecar,
-                Ok(None) | Err(_) => continue,
-            };
-            let freshness_weight = match self.vector_sidecar_freshness(&sidecar, &metadata) {
-                Ok(crate::search::VectorSidecarFreshness::Fresh) => FRESH_VECTOR_WEIGHT,
-                Ok(
-                    crate::search::VectorSidecarFreshness::StaleThoughtCount { .. }
-                    | crate::search::VectorSidecarFreshness::StaleHeadHash { .. },
-                ) => STALE_VECTOR_WEIGHT,
-                Ok(_) | Err(_) => continue,
+            let Some(ref cached) = entry.cached_index else {
+                continue;
             };
 
             let mut query_documents = match entry
@@ -6414,17 +6630,13 @@ impl MentisDb {
                 continue;
             };
 
-            let documents: Vec<crate::search::VectorDocument> = sidecar
-                .entries
-                .iter()
-                .filter(|entry| candidate_positions.contains_key(&entry.thought_id.to_string()))
-                .map(|entry| {
-                    crate::search::VectorDocument::new(
-                        entry.thought_id.to_string(),
-                        entry.vector.clone(),
-                    )
-                })
-                .collect();
+            let candidate_ids: Vec<String> = candidate_positions.keys().cloned().collect();
+            let mut documents: Vec<crate::search::VectorDocument> = Vec::new();
+            for id in candidate_ids {
+                if let Some(vector) = cached.get_vector(&id) {
+                    documents.push(crate::search::VectorDocument::new(id, vector));
+                }
+            }
             if documents.is_empty() {
                 continue;
             }
@@ -6446,7 +6658,7 @@ impl MentisDb {
                     break;
                 }
                 if let Some(position) = candidate_positions.get(&hit.document_id) {
-                    let weighted_score = hit.score * freshness_weight;
+                    let weighted_score = hit.score * FRESH_VECTOR_WEIGHT;
                     scores
                         .entry(*position)
                         .and_modify(|existing: &mut f32| *existing = existing.max(weighted_score))
@@ -6557,16 +6769,19 @@ impl MentisDb {
             .filter_map(|seed| seed.thought_index.map(|index| index as usize))
             .collect();
 
+        let id_lookup = adjacency.locator_map().clone();
         let mut hits = Vec::new();
         for seed in seeds {
             let seed_position = seed.thought_index.map(|index| index as usize);
-            let seed_result = crate::search::GraphExpansionResult::expand(
+            let seed_result = crate::search::GraphExpansionResult::expand_with_overlay(
                 &adjacency,
                 &crate::search::GraphExpansionQuery::new(vec![seed])
                     .with_max_depth(graph.max_depth)
                     .with_max_visited(graph.max_visited)
                     .with_include_seeds(graph.include_seeds)
                     .with_mode(graph.mode),
+                self.implicit_edge_overlay.as_ref(),
+                &id_lookup,
             );
 
             hits.extend(seed_result.hits.into_iter().filter(|hit| {
@@ -7077,6 +7292,22 @@ impl MentisDb {
         self.head_thought().map(|thought| thought.hash.as_str())
     }
 
+    /// Total number of implicit edges in the auto-inferred overlay.
+    pub fn implicit_edge_count(&self) -> usize {
+        self.implicit_edge_overlay
+            .as_ref()
+            .map(|o| o.edges.values().map(|v| v.len()).sum())
+            .unwrap_or(0)
+    }
+
+    /// Number of thoughts that have at least one implicit edge.
+    pub fn implicit_edge_thought_coverage(&self) -> usize {
+        self.implicit_edge_overlay
+            .as_ref()
+            .map(|o| o.edges.len())
+            .unwrap_or(0)
+    }
+
     /// Return a human-readable description of the underlying storage location.
     pub fn storage_location(&self) -> String {
         self.storage.storage_location()
@@ -7128,6 +7359,22 @@ impl MentisDb {
     /// per append on long chains.
     pub fn with_dedup_scan_window(&mut self, window: usize) -> &mut Self {
         self.dedup_scan_window = window.max(1);
+        self
+    }
+
+    /// Set the cosine similarity threshold for auto-inferred semantic edges.
+    ///
+    /// Defaults to 0.85. Values are clamped to [0.5, 1.0].
+    pub fn with_auto_edge_threshold(&mut self, threshold: f32) -> &mut Self {
+        self.auto_edge_threshold = threshold.clamp(0.5, 1.0);
+        self
+    }
+
+    /// Set the maximum number of implicit neighbors per thought.
+    ///
+    /// Defaults to 5. Values are clamped to [1, 20].
+    pub fn with_auto_edge_k(&mut self, k: usize) -> &mut Self {
+        self.auto_edge_k = k.clamp(1, 20);
         self
     }
 
@@ -7540,6 +7787,18 @@ fn chain_vector_sidecar_config_path(
         .strip_suffix(&format!(".{}", storage_kind.file_extension()))
         .unwrap_or(&storage_file);
     chain_dir.join(format!("{stem}.vectors.managed.json"))
+}
+
+fn chain_auto_edges_path(
+    chain_dir: &Path,
+    chain_key: &str,
+    storage_kind: StorageAdapterKind,
+) -> PathBuf {
+    let storage_file = chain_storage_filename(chain_key, storage_kind);
+    let stem = storage_file
+        .strip_suffix(&format!(".{}", storage_kind.file_extension()))
+        .unwrap_or(&storage_file);
+    chain_dir.join(format!("{stem}.auto_edges.bin"))
 }
 
 fn sanitize_sidecar_component(value: &str) -> String {

@@ -268,3 +268,98 @@ fn corruption_does_not_break_plain_chain_queries() {
         "Invoice reconciliation for vendor payments."
     );
 }
+
+#[test]
+fn test_auto_edge_overlay_built_after_append() {
+    let tempdir = TempDir::new().unwrap();
+    let chain_dir = PathBuf::from(tempdir.path());
+    let mut chain = MentisDb::open_with_key(&chain_dir, "auto-edge-test").unwrap();
+
+    chain
+        .append(
+            "planner",
+            ThoughtType::Decision,
+            "Performance budget for the Europe rollout.",
+        )
+        .unwrap();
+    chain
+        .append(
+            "planner",
+            ThoughtType::Decision,
+            "Latency budget for the Asia rollout.",
+        )
+        .unwrap();
+
+    let provider = TestSemanticProvider::new("local-test", "v1");
+    chain.manage_vector_sidecar(provider).unwrap();
+
+    assert!(
+        chain.implicit_edge_count() > 0,
+        "expected implicit edges between semantically similar thoughts"
+    );
+    assert_eq!(
+        chain.implicit_edge_thought_coverage(),
+        2,
+        "expected both thoughts to have implicit edges"
+    );
+}
+
+#[test]
+fn test_auto_edge_overlay_persists_across_reopen() {
+    let tempdir = TempDir::new().unwrap();
+    let chain_dir = PathBuf::from(tempdir.path());
+    {
+        let mut chain = MentisDb::open_with_key(&chain_dir, "auto-edge-reopen-test").unwrap();
+        chain
+            .append(
+                "planner",
+                ThoughtType::Decision,
+                "Performance budget for the Europe rollout.",
+            )
+            .unwrap();
+        chain
+            .append(
+                "planner",
+                ThoughtType::Decision,
+                "Latency budget for the Asia rollout.",
+            )
+            .unwrap();
+
+        let provider = TestSemanticProvider::new("local-test", "v1");
+        chain.manage_vector_sidecar(provider).unwrap();
+
+        assert!(chain.implicit_edge_count() > 0);
+    }
+
+    let mut chain = MentisDb::open_with_key(&chain_dir, "auto-edge-reopen-test").unwrap();
+    chain.apply_persisted_managed_vector_sidecars().unwrap();
+    assert!(
+        chain.implicit_edge_count() > 0,
+        "expected implicit edges to persist across reopen"
+    );
+}
+
+#[test]
+fn test_no_overlay_without_vector_sidecar() {
+    let tempdir = TempDir::new().unwrap();
+    let chain_dir = PathBuf::from(tempdir.path());
+    let mut chain = MentisDb::open_with_key(&chain_dir, "auto-edge-none-test").unwrap();
+
+    chain
+        .append(
+            "planner",
+            ThoughtType::Decision,
+            "Performance budget for the Europe rollout.",
+        )
+        .unwrap();
+    chain
+        .append(
+            "planner",
+            ThoughtType::Decision,
+            "Latency budget for the Asia rollout.",
+        )
+        .unwrap();
+
+    assert_eq!(chain.implicit_edge_count(), 0);
+    assert_eq!(chain.implicit_edge_thought_coverage(), 0);
+}
