@@ -1,5 +1,10 @@
-use super::{AdjacencyDirection, GraphExpansionPath, ThoughtAdjacencyIndex, ThoughtLocator};
-use std::collections::{HashSet, VecDeque};
+use super::{
+    AdjacencyDirection, GraphEdge, GraphEdgeProvenance, GraphExpansionPath,
+    ThoughtAdjacencyIndex, ThoughtLocator,
+};
+use crate::ThoughtRelationKind;
+use std::collections::{HashMap, HashSet, VecDeque};
+use uuid::Uuid;
 
 /// Direction policy for graph expansion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -115,6 +120,16 @@ pub struct GraphExpansionResult {
 impl GraphExpansionResult {
     /// Expand a set of seed nodes over a prebuilt adjacency snapshot.
     pub fn expand(index: &ThoughtAdjacencyIndex, query: &GraphExpansionQuery) -> Self {
+        Self::expand_with_overlay(index, query, None, &HashMap::new())
+    }
+
+    /// Expand with an optional implicit-edge overlay supplementing explicit relations.
+    pub fn expand_with_overlay(
+        index: &ThoughtAdjacencyIndex,
+        query: &GraphExpansionQuery,
+        overlay: Option<&crate::search::ImplicitEdgeOverlay>,
+        id_lookup: &HashMap<Uuid, ThoughtLocator>,
+    ) -> Self {
         let mut queue = VecDeque::new();
         let mut seen = HashSet::new();
         let mut hits = Vec::new();
@@ -168,6 +183,45 @@ impl GraphExpansionResult {
                     queue.push_back(next_path);
                 }
             }
+
+            // Implicit edges from overlay (treated as bidirectional RelatedTo)
+            if let Some(overlay) = overlay {
+                if let Some(neighbors) = overlay.edges.get(&path.current().thought_id) {
+                    for neighbor in neighbors {
+                        let Some(neighbor_locator) = id_lookup.get(&neighbor.thought_id) else {
+                            continue;
+                        };
+                        if seen.contains(neighbor_locator) {
+                            continue;
+                        }
+                        if seen.len() >= query.max_visited {
+                            stats.truncated = true;
+                            break 'outer;
+                        }
+
+                        let synthetic_edge = GraphEdge {
+                            source: path.current().clone(),
+                            target: neighbor_locator.clone(),
+                            provenances: vec![GraphEdgeProvenance::Relation {
+                                relation_position: 0,
+                                kind: ThoughtRelationKind::RelatedTo,
+                                chain_key: None,
+                            }],
+                        };
+                        let Ok(next_path) = path.extend(AdjacencyDirection::Outgoing, &synthetic_edge)
+                        else {
+                            continue;
+                        };
+                        seen.insert(neighbor_locator.clone());
+                        hits.push(GraphExpansionHit {
+                            locator: neighbor_locator.clone(),
+                            depth: next_path.depth(),
+                            path: next_path.clone(),
+                        });
+                        queue.push_back(next_path);
+                    }
+                }
+            }
         }
 
         stats.visited_count = seen.len();
@@ -185,4 +239,150 @@ fn dedupe_seed_order(seeds: &[ThoughtLocator]) -> Vec<ThoughtLocator> {
         }
     }
     deduped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::{ImplicitEdgeOverlay, ImplicitNeighbor};
+    use uuid::Uuid;
+
+    fn make_locator(id: Uuid, index: u64) -> ThoughtLocator {
+        ThoughtLocator {
+            chain_key: None,
+            thought_id: id,
+            thought_index: Some(index),
+        }
+    }
+
+    #[test]
+    fn test_expand_with_overlay_no_explicit_edges() {
+        let id_a = Uuid::new_v4();
+        let id_b = Uuid::new_v4();
+        let loc_a = make_locator(id_a, 0);
+        let loc_b = make_locator(id_b, 1);
+
+        let adjacency = ThoughtAdjacencyIndex::from_thoughts(&[]);
+        let mut overlay = ImplicitEdgeOverlay::new(0.5, 5);
+        overlay.edges.insert(id_a, vec![ImplicitNeighbor {
+            thought_id: id_b,
+            cosine_score: 0.9,
+        }]);
+
+        let mut id_lookup = HashMap::new();
+        id_lookup.insert(id_a, loc_a.clone());
+        id_lookup.insert(id_b, loc_b.clone());
+
+        let result = GraphExpansionResult::expand_with_overlay(
+            &adjacency,
+            &GraphExpansionQuery::new(vec![loc_a.clone()]),
+            Some(&overlay),
+            &id_lookup,
+        );
+
+        let hit_ids: Vec<Uuid> = result.hits.iter().map(|h| h.locator.thought_id).collect();
+        assert!(hit_ids.contains(&id_b));
+    }
+
+    #[test]
+    fn test_expand_overlay_does_not_revisit() {
+        let id_a = Uuid::new_v4();
+        let id_b = Uuid::new_v4();
+        let loc_a = make_locator(id_a, 0);
+        let loc_b = make_locator(id_b, 1);
+
+        let adjacency = ThoughtAdjacencyIndex::from_thoughts(&[]);
+        let mut overlay = ImplicitEdgeOverlay::new(0.5, 5);
+        overlay.edges.insert(id_a, vec![ImplicitNeighbor {
+            thought_id: id_b,
+            cosine_score: 0.9,
+        }]);
+        overlay.edges.insert(id_b, vec![ImplicitNeighbor {
+            thought_id: id_a,
+            cosine_score: 0.9,
+        }]);
+
+        let mut id_lookup = HashMap::new();
+        id_lookup.insert(id_a, loc_a.clone());
+        id_lookup.insert(id_b, loc_b.clone());
+
+        let result = GraphExpansionResult::expand_with_overlay(
+            &adjacency,
+            &GraphExpansionQuery::new(vec![loc_a.clone()]),
+            Some(&overlay),
+            &id_lookup,
+        );
+
+        let hit_ids: Vec<Uuid> = result.hits.iter().map(|h| h.locator.thought_id).collect();
+        assert_eq!(hit_ids.iter().filter(|&&id| id == id_b).count(), 1);
+    }
+
+    #[test]
+    fn test_expand_overlay_respects_max_visited() {
+        let id_a = Uuid::new_v4();
+        let id_b = Uuid::new_v4();
+        let id_c = Uuid::new_v4();
+        let loc_a = make_locator(id_a, 0);
+        let loc_b = make_locator(id_b, 1);
+        let loc_c = make_locator(id_c, 2);
+
+        let adjacency = ThoughtAdjacencyIndex::from_thoughts(&[]);
+        let mut overlay = ImplicitEdgeOverlay::new(0.5, 5);
+        overlay.edges.insert(id_a, vec![
+            ImplicitNeighbor { thought_id: id_b, cosine_score: 0.9 },
+            ImplicitNeighbor { thought_id: id_c, cosine_score: 0.8 },
+        ]);
+
+        let mut id_lookup = HashMap::new();
+        id_lookup.insert(id_a, loc_a.clone());
+        id_lookup.insert(id_b, loc_b.clone());
+        id_lookup.insert(id_c, loc_c.clone());
+
+        let result = GraphExpansionResult::expand_with_overlay(
+            &adjacency,
+            &GraphExpansionQuery::new(vec![loc_a.clone()])
+                .with_max_visited(2)
+                .with_include_seeds(false),
+            Some(&overlay),
+            &id_lookup,
+        );
+
+        assert!(result.stats.truncated);
+        assert_eq!(result.stats.visited_count, 2);
+    }
+
+    #[test]
+    fn test_expand_overlay_adds_hit_beyond_explicit_edges() {
+        let id_a = Uuid::new_v4();
+        let id_b = Uuid::new_v4();
+        let loc_a = make_locator(id_a, 0);
+        let loc_b = make_locator(id_b, 1);
+
+        let adjacency = ThoughtAdjacencyIndex::from_thoughts(&[]);
+        let mut overlay = ImplicitEdgeOverlay::new(0.5, 5);
+        overlay.edges.insert(id_a, vec![ImplicitNeighbor {
+            thought_id: id_b,
+            cosine_score: 0.9,
+        }]);
+
+        let mut id_lookup = HashMap::new();
+        id_lookup.insert(id_a, loc_a.clone());
+        id_lookup.insert(id_b, loc_b.clone());
+
+        let with_overlay = GraphExpansionResult::expand_with_overlay(
+            &adjacency,
+            &GraphExpansionQuery::new(vec![loc_a.clone()]),
+            Some(&overlay),
+            &id_lookup,
+        );
+
+        let without_overlay = GraphExpansionResult::expand_with_overlay(
+            &adjacency,
+            &GraphExpansionQuery::new(vec![loc_a.clone()]),
+            None,
+            &id_lookup,
+        );
+
+        assert_eq!(with_overlay.hits.len(), without_overlay.hits.len() + 1);
+    }
 }
