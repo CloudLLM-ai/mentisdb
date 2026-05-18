@@ -42,6 +42,15 @@
     summary stat, table header, action button, form field, filter control, and
     modal now has a friendly HTML title attribute explaining what it does and what
     data it represents; uses native browser tooltips for zero-dependency compatibility
+  - feat(backup): include .auto_edges.bin in backup archives — implicit edge overlay
+    files are now packed alongside vector sidecars in .mentis archives and cleaned
+    up on chain deregister/deletion
+  - fix(core): daemon no longer silently fails to recreate .auto_edges.bin on restart
+    after deletion — load_or_rebuild_implicit_edge_overlay now prints a diagnostic
+    eprintln! when the sidecar load fails, the > 50 000 thought branch now saves the
+    empty overlay to disk (was never saved, causing repeated rebuild attempts on every
+    restart), and save_to_path errors are surfaced instead of silently swallowed
+  - fix(dashboard): escape backtick in Lexical column tooltip title attribute
 
 0.9.8.44 MAY/07/2026
   - BREAKING: rename binary from `mentisdbd` to `mentisdb` — all CLI commands,
