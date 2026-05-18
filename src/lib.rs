@@ -6175,6 +6175,10 @@ impl MentisDb {
             metadata,
         );
         let Ok(loaded_sidecar) = crate::search::VectorSidecar::load_from_path(&sidecar_path) else {
+            eprintln!(
+                "[mentisdb] load_or_rebuild_implicit_edge_overlay: failed to load sidecar at {}",
+                sidecar_path.display()
+            );
             return;
         };
 
@@ -6190,17 +6194,27 @@ impl MentisDb {
             }
             _ => {
                 if self.thoughts.len() > AUTO_EDGE_MAX_CHAIN_FOR_FULL_BUILD {
-                    Some(crate::search::ImplicitEdgeOverlay::new(
+                    let empty = crate::search::ImplicitEdgeOverlay::new(
                         self.auto_edge_threshold,
                         self.auto_edge_k,
-                    ))
+                    );
+                    if let Err(e) = empty.save_to_path(&overlay_path) {
+                        eprintln!(
+                            "[mentisdb] load_or_rebuild_implicit_edge_overlay: failed to save empty overlay: {e}"
+                        );
+                    }
+                    Some(empty)
                 } else {
                     let overlay = crate::search::ImplicitEdgeOverlay::build_from_sidecar(
                         &loaded_sidecar,
                         self.auto_edge_k,
                         self.auto_edge_threshold,
                     );
-                    let _ = overlay.save_to_path(&overlay_path);
+                    if let Err(e) = overlay.save_to_path(&overlay_path) {
+                        eprintln!(
+                            "[mentisdb] load_or_rebuild_implicit_edge_overlay: failed to save overlay: {e}"
+                        );
+                    }
                     Some(overlay)
                 }
             }
@@ -8100,6 +8114,12 @@ pub fn deregister_chain<P: AsRef<Path>>(chain_dir: P, chain_key: &str) -> io::Re
             let file_name = entry.file_name();
             let file_name = file_name.to_string_lossy();
             if file_name.starts_with(&vector_prefix) && file_name.ends_with(".json") {
+                let path = entry.path();
+                if path.is_file() {
+                    fs::remove_file(path)?;
+                }
+            }
+            if file_name == format!("{stem}.auto_edges.bin") {
                 let path = entry.path();
                 if path.is_file() {
                     fs::remove_file(path)?;
