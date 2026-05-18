@@ -47,9 +47,10 @@
     up on chain deregister/deletion
   - fix(core): daemon no longer silently fails to recreate .auto_edges.bin on restart
     after deletion — load_or_rebuild_implicit_edge_overlay now prints a diagnostic
-    eprintln! when the sidecar load fails, the > 50 000 thought branch now saves the
-    empty overlay to disk (was never saved, causing repeated rebuild attempts on every
-    restart), and save_to_path errors are surfaced instead of silently swallowed
+    eprintln! when the sidecar load fails, when all managed sidecars lack a cached
+    index (VectorIndex build failure), when the > 50 000 thought branch saves an
+    empty overlay (was never saved — caused rebuild on every restart), and when
+    save_to_path itself fails; all silent early-return paths are now observable
   - fix(dashboard): escape backtick in Lexical column tooltip title attribute
 
 0.9.8.44 MAY/07/2026
