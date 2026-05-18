@@ -9,7 +9,7 @@
 //! A backup is a ZIP archive named `mentisdb-YYYY-MM-DD-HH-MM-SS.mentis` containing:
 //!
 //! - `mentisdb.manifest.json` — metadata and file清单
-//! - All chain data files (`.tcbin`, `.agents.json`, `.entity-types.json`, vector sidecars)
+//! - All chain data files (`.tcbin`, `.agents.json`, `.entity-types.json`, vector sidecars, auto-edge overlays)
 //! - `mentisdb-registry.json` — global chain registry
 //! - `mentisdb-skills.bin` — skill registry (if present)
 //! - `mentisdb-webhooks.json` — webhook registrations (if present)
@@ -296,6 +296,7 @@ fn sha256_file(path: &Path) -> io::Result<(String, u64)> {
 /// - All `*.agents.json` files
 /// - All `*.entity-types.json` files
 /// - All `*.vectors.*.json` vector sidecar files
+/// - All `*.auto_edges.bin` implicit edge overlay files
 /// - `mentisdb-skills.bin` (if present)
 /// - `mentisdb-webhooks.json` (if present)
 /// - `tls/` directory contents (if `options.include_tls` is true and the directory exists)
@@ -419,11 +420,12 @@ pub fn create_backup(options: &BackupOptions) -> io::Result<BackupManifest> {
             continue;
         }
 
-        // Chain data files (tcbin, agents, entity-types, vector sidecars)
+        // Chain data files (tcbin, agents, entity-types, vector sidecars, auto-edge overlays)
         let is_chain_file = rel_str.ends_with(".tcbin")
             || rel_str.ends_with(".agents.json")
             || rel_str.ends_with(".entity-types.json")
-            || rel_str.contains(".vectors.");
+            || rel_str.contains(".vectors.")
+            || rel_str.ends_with(".auto_edges.bin");
 
         if is_chain_file {
             if rel_str.ends_with(".tcbin") {
