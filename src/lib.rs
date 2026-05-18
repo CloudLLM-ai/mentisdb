@@ -6165,6 +6165,13 @@ impl MentisDb {
             .iter()
             .find(|(_, entry)| entry.cached_index.is_some())
         else {
+            if !self.managed_vector_sidecars.is_empty() {
+                eprintln!(
+                    "[mentisdb] load_or_rebuild_implicit_edge_overlay: \
+                     skipped — {} managed sidecar(s) present but none has a cached index",
+                    self.managed_vector_sidecars.len()
+                );
+            }
             return;
         };
 
