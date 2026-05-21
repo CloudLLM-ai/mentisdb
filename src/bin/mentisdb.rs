@@ -74,6 +74,44 @@ fn format_file_size(bytes: u64) -> String {
     format!("{:.2} GB", gb)
 }
 
+/// Sum the on-disk size of a chain file and all its sidecar indices.
+fn total_chain_storage_bytes(storage_location: &str) -> u64 {
+    let mut total = std::fs::metadata(storage_location)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let path = std::path::PathBuf::from(storage_location);
+    let chain_dir = path.parent().unwrap_or(std::path::Path::new(""));
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+
+    // Agent registry
+    total += std::fs::metadata(chain_dir.join(format!("{stem}.agents.json")))
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    // Entity-types registry
+    total += std::fs::metadata(chain_dir.join(format!("{stem}.entity-types.json")))
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    // Vector sidecars and managed config
+    if let Ok(entries) = std::fs::read_dir(chain_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with(&format!("{stem}.vectors.")) && name_str.ends_with(".json") {
+                total += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            }
+        }
+    }
+
+    // Auto-edge overlay
+    total += std::fs::metadata(chain_dir.join(format!("{stem}.auto_edges.bin")))
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    total
+}
+
 type StartupData = (
     MentisDbServerConfig,
     UpdateConfig,
@@ -1420,17 +1458,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 adapter: reg.storage_adapter.to_string(),
                 thoughts: reg.thought_count as usize,
                 agents: reg.agent_count,
-                storage_path: {
-                    let p = &reg.storage_location;
-                    let size_str = std::fs::metadata(p)
-                        .map(|m| format_file_size(m.len()))
-                        .unwrap_or_default();
-                    if size_str.is_empty() {
-                        p.clone()
-                    } else {
-                        format!("[{size_str}] {p}")
-                    }
-                },
+                total_storage: format_file_size(total_chain_storage_bytes(&reg.storage_location)),
+                storage_path: reg.storage_location.clone(),
             });
         }
 
@@ -1982,17 +2011,8 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
                 adapter: reg.storage_adapter.to_string(),
                 thoughts: reg.thought_count as usize,
                 agents: reg.agent_count,
-                storage_path: {
-                    let p = &reg.storage_location;
-                    let size_str = std::fs::metadata(p)
-                        .map(|m| format_file_size(m.len()))
-                        .unwrap_or_default();
-                    if size_str.is_empty() {
-                        p.clone()
-                    } else {
-                        format!("[{size_str}] {p}")
-                    }
-                },
+                total_storage: format_file_size(total_chain_storage_bytes(&reg.storage_location)),
+                storage_path: reg.storage_location.clone(),
             });
         }
 

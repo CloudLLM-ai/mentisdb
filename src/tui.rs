@@ -90,6 +90,7 @@ pub struct ChainInfo {
     pub adapter: String,
     pub thoughts: usize,
     pub agents: usize,
+    pub total_storage: String,
     pub storage_path: String,
 }
 
@@ -725,7 +726,8 @@ fn render_chain_table(frame: &mut Frame, state: &mut TuiState, area: Rect) {
         "Adapter",
         "Thoughts",
         "Agents",
-        "Storage Location",
+        "Storage",
+        "Location",
     ])
     .style(
         Style::default()
@@ -743,6 +745,7 @@ fn render_chain_table(frame: &mut Frame, state: &mut TuiState, area: Rect) {
                 c.adapter.clone(),
                 c.thoughts.to_string(),
                 c.agents.to_string(),
+                c.total_storage.clone(),
                 c.storage_path.clone(),
             ])
         })
@@ -764,6 +767,7 @@ fn render_chain_table(frame: &mut Frame, state: &mut TuiState, area: Rect) {
         Constraint::Length(10),
         Constraint::Length(10),
         Constraint::Length(8),
+        Constraint::Length(14),
         Constraint::Percentage(100),
     ];
 
