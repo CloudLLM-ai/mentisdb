@@ -891,7 +891,6 @@ fn vector_sidecars_size(chain_dir: &std::path::Path, stem: &str) -> u64 {
     total
 }
 
-/// Build a JSON object describing the size of every per-chain sidecar file.
 /// Return the on-disk size of the vector (semantic) index sidecars for a chain.
 fn vector_index_size(storage_location: &str) -> (u64, u64) {
     let path = std::path::PathBuf::from(storage_location);
@@ -905,6 +904,16 @@ fn vector_index_size(storage_location: &str) -> (u64, u64) {
             .unwrap_or(0);
 
     (vectors_size, vector_config_size)
+}
+
+/// Return the on-disk size of the implicit-edge overlay sidecar (`*.auto_edges.bin`).
+fn auto_edges_index_size(storage_location: &str) -> u64 {
+    let path = std::path::PathBuf::from(storage_location);
+    let chain_dir = path.parent().unwrap_or(std::path::Path::new(""));
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    std::fs::metadata(chain_dir.join(format!("{stem}.auto_edges.bin")))
+        .map(|m| m.len())
+        .unwrap_or(0)
 }
 
 /// `GET /dashboard/api/chains`
@@ -931,6 +940,7 @@ async fn api_chains(
                 .unwrap_or(0);
             let (vectors_size, vector_config_size) =
                 vector_index_size(&reg.storage_location);
+            let auto_edges_size = auto_edges_index_size(&reg.storage_location);
             let v = json!({
                 "chain_key":                    key.clone(),
                 "thought_count":                reg.thought_count,
@@ -943,6 +953,8 @@ async fn api_chains(
                 "vector_config_size_formatted": format_bytes(vector_config_size),
                 "lexical_size":                 0,
                 "lexical_size_formatted":       format_bytes(0),
+                "auto_edges_size":              auto_edges_size,
+                "auto_edges_size_formatted":    format_bytes(auto_edges_size),
             });
             (key, v)
         })
@@ -959,6 +971,7 @@ async fn api_chains(
             let (vectors_size, vector_config_size) =
                 vector_index_size(&chain.storage_location());
             let lexical_size = chain.estimated_lexical_index_bytes();
+            let auto_edges_size = auto_edges_index_size(&chain.storage_location());
             let v = json!({
                 "chain_key":                    key.clone(),
                 "thought_count":                chain.thoughts().len(),
@@ -971,6 +984,8 @@ async fn api_chains(
                 "vector_config_size_formatted": format_bytes(vector_config_size),
                 "lexical_size":                 lexical_size,
                 "lexical_size_formatted":       format_bytes(lexical_size),
+                "auto_edges_size":              auto_edges_size,
+                "auto_edges_size_formatted":    format_bytes(auto_edges_size),
             });
             by_key.insert(key, v);
         }
@@ -988,6 +1003,7 @@ async fn api_chains(
                 let (vectors_size, vector_config_size) =
                     vector_index_size(&chain.storage_location());
                 let lexical_size = chain.estimated_lexical_index_bytes();
+                let auto_edges_size = auto_edges_index_size(&chain.storage_location());
                 by_key.insert(
                     key.clone(),
                     json!({
@@ -1002,6 +1018,8 @@ async fn api_chains(
                         "vector_config_size_formatted": format_bytes(vector_config_size),
                         "lexical_size":                 lexical_size,
                         "lexical_size_formatted":       format_bytes(lexical_size),
+                        "auto_edges_size":              auto_edges_size,
+                        "auto_edges_size_formatted":    format_bytes(auto_edges_size),
                     }),
                 );
             }
