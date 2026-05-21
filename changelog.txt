@@ -52,6 +52,21 @@
     empty overlay (was never saved — caused rebuild on every restart), and when
     save_to_path itself fails; all silent early-return paths are now observable
   - fix(dashboard): escape backtick in Lexical column tooltip title attribute
+  - feat(dashboard): expose auto_edges_size in chains API and UI — chains table
+    gains an "Edges" column showing the on-disk size of the implicit-edge overlay
+    sidecar (.auto_edges.bin), plus a "Total Edges" summary stat in the header bar;
+    the API response includes auto_edges_size and auto_edges_size_formatted for
+    registered, live, and unregistered chains
+  - docs(whitepaper): update to v0.9.8 with implicit edge overlay — document
+    ImplicitEdgeOverlay in abstract, contributions, file layout, and retrieval
+    sections; update benchmark scores, keywords, and file layout diagram to include
+    .auto_edges.bin and entity-types.json
+  - feat(tui): show total chain + index size and storage path in chains table —
+    the "Storage" column now shows the total on-disk size of the chain file plus
+    all sidecar indices (agents.json, entity-types.json, vector sidecars,
+    auto_edges.bin); a new "Location" column shows the chain file path; replaces
+    the previous single column that showed only the chain file size prefixed to
+    the path
 
 0.9.8.44 MAY/07/2026
   - BREAKING: rename binary from `mentisdbd` to `mentisdb` — all CLI commands,
