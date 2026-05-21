@@ -2,18 +2,18 @@
 
 **Author:** Angel Leon
 Universidad Católica Andrés Bello, Venezuela
-**Version:** 0.8.9
-**Date:** 2026-04-17
+**Version:** 0.9.8
+**Date:** 2026-05-20
 
 ## Abstract
 
 Contemporary agent frameworks treat long-term memory as an afterthought, relying on ad hoc prompt stuffing, unstructured Markdown files, or proprietary session state that is opaque, non-transferable, and easily lost. We introduce **MentisDB**, a durable, semantically typed memory engine that formalizes agent memory as an append-only, hash-chained ledger of structured *thoughts*.
 
-Formally, a chain is a sequence $\chi = (t_0, t_1, \ldots, t_{n-1})$ of typed records satisfying a cryptographic integrity invariant $t_k.h = H(\sigma(t_k \setminus \{h\}))$ and $t_k.h_{\mathrm{prev}} = t_{k-1}.h$, where $H$ is SHA-256 and $\sigma$ is canonical bincode serialization. On top of $\chi$ we define a retrieval function $R: (\chi, Q) \to \mathcal{P}(\chi)$ that composes BM25 lexical scoring with per-field document-frequency gating, smooth exponential vector-lexical fusion, bidirectional graph expansion over typed relation edges, temporal edge validity predicates, session cohesion, and rank-based fusion via Reciprocal Rank Fusion (RRF). Deduplication is implemented as a Jaccard-similarity test over normalized token sets, emitting $\mathsf{Supersedes}$ edges that are consulted in constant time via a precomputed invalidation set.
+Formally, a chain is a sequence $\chi = (t_0, t_1, \ldots, t_{n-1})$ of typed records satisfying a cryptographic integrity invariant $t_k.h = H(\sigma(t_k \setminus \{h\}))$ and $t_k.h_{\mathrm{prev}} = t_{k-1}.h$, where $H$ is SHA-256 and $\sigma$ is canonical bincode serialization. On top of $\chi$ we define a retrieval function $R: (\chi, Q) \to \mathcal{P}(\chi)$ that composes BM25 lexical scoring with per-field document-frequency gating, smooth exponential vector-lexical fusion, bidirectional graph expansion over typed relation edges augmented by vector-cosine-inferred implicit edges, temporal edge validity predicates, session cohesion, and rank-based fusion via Reciprocal Rank Fusion (RRF). Deduplication is implemented as a Jaccard-similarity test over normalized token sets, emitting $\mathsf{Supersedes}$ edges that are consulted in constant time via a precomputed invalidation set.
 
 On canonical long-term memory benchmarks, MentisDB attains $R@10 = 88.7\%$ on LoCoMo-2P, $R@10 = 71.9\%$ on LoCoMo-10P, and $R@5 = 66.8\%$ / $R@10 = 72.2\%$ / $R@20 = 78.0\%$ on LongMemEval (v0.8.9, fresh chain, default retrieval settings). Results are deterministic and reproducible across independent runs. The implementation ships as a single Rust crate with an optional daemon exposing MCP, REST, and HTTPS surfaces, requires no external database, and operates without cloud or LLM dependencies in its core ingestion and retrieval path.
 
-**Keywords:** agent memory, hash-chained ledger, BM25, reciprocal rank fusion, graph expansion, temporal knowledge graphs, retrieval-augmented generation.
+**Keywords:** agent memory, hash-chained ledger, BM25, reciprocal rank fusion, graph expansion, implicit edge inference, temporal knowledge graphs, retrieval-augmented generation.
 
 ---
 
@@ -30,7 +30,8 @@ This paper makes the following contributions:
 3. **Temporal edges.** We extend typed graph relations with a validity interval $[\mathtt{valid\_at}, \mathtt{invalid\_at}]$ enabling point-in-time queries via a predicate $\pi_\tau$ (Section 4.4).
 4. **Hybrid retrieval.** We describe a composable retrieval pipeline — per-field BM25 with DF gating, smooth exponential vector-lexical fusion, bounded graph BFS with typed edge weights, session cohesion, importance weighting, and RRF — and characterize each signal mathematically (Section 6).
 5. **Deduplication.** We give a Jaccard-threshold algorithm that auto-emits $\mathsf{Supersedes}$ edges, with constant-time consultation via a precomputed invalidation set $\mathcal{I}(\chi)$ (Section 7).
-6. **Empirical evaluation.** We report results on LoCoMo and LongMemEval, and provide a near-miss analysis characterizing the residual lexical ceiling (Section 9).
+6. **Empirical evaluation.** We report results on LoCoMo and LongMemEval, and provide near-miss analyses for both benchmarks characterizing the residual lexical ceiling (Section 9).
+7. **Implicit edge overlay.** We introduce the $\mathsf{ImplicitEdgeOverlay}$, a rebuildable per-chain sidecar that derives $\mathsf{RelatedTo}$ edges from vector cosine similarity above a configurable threshold $\theta$, enriching graph expansion for chains where agents author few explicit relations (Section 6.12).
 
 ### 1.2 Paper Organization
 
@@ -211,15 +212,23 @@ Two durability modes are supported:
 
 ### 5.4 File Layout
 
+Each chain's storage files share a common stem derived from the chain key and a hash of its genesis thought, preventing accidental cross-chain file sharing:
+
 ```
-~/.mentisdb/
+~/.cloudllm/mentisdb/
   mentisdb-registry.json
   mentisdb-skills.bin
-  <chain-key>.tcbin
-  <chain-key>.agents.json
-  <chain-key>.vectors.bin
+  mentisdb-webhooks.json
+  <chain-key>-<hash8>.tcbin
+  <chain-key>-<hash8>.agents.json
+  <chain-key>-<hash8>.entity-types.json
+  <chain-key>-<hash8>.vectors.<model>-<dim>-<ver>.bin
+  <chain-key>-<hash8>.vectors.managed.json
+  <chain-key>-<hash8>.auto_edges.bin
   tls/{cert.pem, key.pem}
 ```
+
+The `.auto_edges.bin` file is a bincode-serialized $\mathsf{ImplicitEdgeOverlay}$ (§6.12) and is rebuildable from the vector sidecar at any time; it is not part of the hash chain and carries no integrity invariant of its own. Backups include it alongside the vector sidecar.
 
 ---
 
@@ -276,13 +285,15 @@ S_\mathrm{fuse}(d, Q) = s_v(d, Q) \cdot \Bigl(1 + \alpha \exp\!\bigl(-S_\ell(d, 
 $$
 with $\alpha = 35$ and $\beta = 3$. This yields $\sim 36\times$ amplification for pure-semantic matches ($S_\ell = 0$), decays to $\sim 12\times$ at $S_\ell = 3$, and approaches additive composition for $S_\ell \ge 6$. The smooth exponential eliminates the discontinuities that step-function boost tiers introduce at bin boundaries.
 
+The managed vector sidecar is loaded once at chain open and held in an in-memory $\mathsf{VectorIndex}$ (a $\mathsf{HashMap}$ from thought UUID to normalized embedding vector). This eliminates per-query disk I/O and keeps search latency proportional to $N$ rather than to storage throughput.
+
 ### 6.5 Graph-Aware Expansion
 
-**Definition 9 (Bounded BFS Expansion).** Given seed set $\Sigma_0 \subseteq \chi$ with $|\Sigma_0| \le 20$, adjacency index $A(\chi)$, and traversal mode $M \in \{\mathsf{Out}, \mathsf{In}, \mathsf{Bi}\}$, graph expansion is the BFS
+**Definition 9 (Bounded BFS Expansion).** Given seed set $\Sigma_0 \subseteq \chi$ with $|\Sigma_0| \le 20$, adjacency index $A(\chi)$, implicit edge overlay $\mathcal{O}$ (Definition 13), and traversal mode $M \in \{\mathsf{Out}, \mathsf{In}, \mathsf{Bi}\}$, graph expansion is the BFS
 $$
-\mathrm{Expand}_{d_\max, V_\max, M}(\Sigma_0) = \bigl\{(v, d, \pi) : v \in \chi,\; d \le d_\max,\; \mathrm{path}(\pi) \subseteq \chi\bigr\}
+\mathrm{Expand}_{d_\max, V_\max, M}(\Sigma_0, \mathcal{O}) = \bigl\{(v, d, \pi) : v \in \chi,\; d \le d_\max,\; \mathrm{path}(\pi) \subseteq \chi\bigr\}
 $$
-bounded by maximum depth $d_\max$ and visit budget $V_\max$, with edges optionally filtered by $\pi_\tau$ (Definition 4).
+bounded by maximum depth $d_\max$ and visit budget $V_\max$, with edges drawn from $A(\chi)$ (explicit typed relations, optionally filtered by $\pi_\tau$) and from $\mathcal{O}$ (implicit cosine-inferred $\mathsf{RelatedTo}$ edges). Both sources share the seen-set, so a node reached via an explicit edge is not revisited via an implicit one and vice versa.
 
 **Edge weights.** For traversals along a typed relation of kind $\kappa$, the edge contributes $b_\mathrm{rel}(\kappa)$:
 
@@ -293,6 +304,8 @@ bounded by maximum depth $d_\max$ and visit budget $V_\max$, with edges optional
 | $\mathsf{Corrects}, \mathsf{Invalidates}$ | 0.50 | $\mathsf{Supports}, \mathsf{Contradicts}$ | 0.15 |
 | $\mathsf{Supersedes}$ | 0.45 | $\mathsf{RelatedTo}$ | 0.08 |
 | $\mathsf{DerivedFrom}$ | 0.40 | $\mathsf{References}$ | 0.06 |
+
+Implicit edges synthesized from $\mathcal{O}$ are presented as $\mathsf{RelatedTo}$ and receive $b_\mathrm{rel} = 0.08$.
 
 **Graph proximity.** For a hit at depth $d \ge 1$, $S_\mathrm{graph}(d) = 1/d$.
 
@@ -333,9 +346,25 @@ $\mathrm{Bundle}(\chi, Q) = \{(\sigma, N^\pm(\sigma) \cap R_\mathrm{rank}(\chi, 
 
 ### 6.11 Vector Sidecars
 
-Vector state lives in rebuildable per-chain sidecars, partitioned by $(\chi, \mathrm{id}, h, \mathrm{model\_id}, \dim, \mathrm{version})$. Model or version changes invalidate old sidecars rather than silently mixing incompatible embeddings. Managed sidecars remain synchronized on append; the daemon defaults to local ONNX inference via `fastembed-minilm`.
+Vector state lives in rebuildable per-chain sidecars, partitioned by $(\chi, \mathrm{id}, h, \mathrm{model\_id}, \dim, \mathrm{version})$. Model or version changes invalidate old sidecars rather than silently mixing incompatible embeddings. Managed sidecars remain synchronized on append; the daemon defaults to local ONNX inference via `fastembed-minilm`. At chain open the sidecar is deserialized once into an in-memory $\mathsf{VectorIndex}$; all subsequent ranked-search calls read from this structure without touching disk.
 
-### 6.12 Decomposed Scores
+### 6.12 Implicit Edge Overlay
+
+In practice, most agents append thoughts without authoring explicit $\mathbf{E}$ relations. For such chains the $A(\chi)$ adjacency graph is sparse or empty, and graph expansion contributes nothing. The $\mathsf{ImplicitEdgeOverlay}$ closes this gap by deriving $\mathsf{RelatedTo}$ edges automatically from the vector sidecar.
+
+**Definition 13 (Implicit Edge Overlay).** Given a vector sidecar $\mathcal{S} = \{(u_k, \vec{v}_k)\}_{k=0}^{n-1}$ with $\vec{v}_k \in \mathbb{R}^d$ normalized, threshold $\theta \in [0, 1]$, and budget $K \in \mathbb{N}$, the overlay is
+$$
+\mathcal{O} = \Bigl\{ (u_i, u_j, \cos(\vec{v}_i, \vec{v}_j)) : i \neq j,\; \cos(\vec{v}_i, \vec{v}_j) \ge \theta \Bigr\}
+$$
+restricted so that each source node $u_i$ retains at most $K$ neighbors sorted by descending cosine score. The overlay is represented as $\mathsf{HashMap}\langle\mathsf{UUID}, \mathsf{Vec}\langle\mathsf{ImplicitNeighbor}\rangle\rangle$ and persisted to `<chain>.auto_edges.bin` via bincode with atomic rename.
+
+**Build complexity.** The full build is $O(N^2 d)$ (all pairwise cosines) and is performed once at chain open for $N \le 50{,}000$. Chains above this threshold defer to incremental-only mode. On each append, the $O(Nd)$ incremental update computes cosines between the new thought's vector and all existing entries, adds forward edges from the new node and back-edges from its above-threshold neighbors, and re-sorts and truncates each affected neighbor list to $K$.
+
+**Invalidation.** If the loaded overlay's $(\theta, K)$ parameters differ from the current configuration (set via environment variables `MENTISDB_AUTO_EDGE_THRESHOLD` and `MENTISDB_AUTO_EDGE_K`, or the builder API), the stored file is discarded and a full rebuild is triggered. Defaults: $\theta = 0.85$, $K = 5$.
+
+**Integration with BFS.** $\mathrm{Expand}$ (Definition 9) checks the overlay after exhausting each node's explicit adjacency list. Implicit neighbors are synthesized as $\mathsf{RelatedTo}$ graph edges and participate in the same seen-set, depth budget, and visit budget as explicit relations.
+
+### 6.13 Decomposed Scores
 
 Each ranked hit exposes a score vector
 $$
@@ -433,6 +462,9 @@ The v0.8.5 LoCoMo-10P improvement derives from three changes:
 | 0.8.1 + cohesion + smooth fusion + DF cutoff | retrieval quality | 67.6% | 74.2% |
 | 0.8.5 + cohesion tuning + $b_\mathrm{rel}\times 2$ + fastembed | session/graph boost | — | 74.6% |
 | 0.8.9 + irregular lemmas + webhooks | lemma expansion + events | 66.8% | 71.9% |
+| 0.9.8 + ImplicitEdgeOverlay + in-memory VectorIndex | graph density + latency | 66.8% | — |
+
+The 0.9.8 column for LongMemEval is unchanged: the overlay fires (graph signal increases 3.5× at $\theta = 0.70$) but does not improve recall because LME's miss structure is dominated by lexical gaps (§9.4). LoCoMo-10P has not been re-run against v0.9.8; the multi-hop gap (§9.3) remains the intended validation target.
 
 ### 9.3 Near-Miss Analysis (LoCoMo-10P, v0.8.5)
 
@@ -444,9 +476,21 @@ Of 503 misses (gold answer absent from top-10):
 | $R@50$ hit | 285 | 56.7% | moderate signal gap |
 | $R > 50$ | 218 | 43.3% | lexical gap (query terms absent from evidence) |
 
-The 43.3% figure represents a hard ceiling for BM25-only retrieval on this benchmark. Closing it requires larger embedding models, LLM-driven query expansion, or external knowledge retrieval — mechanisms orthogonal to the scoring pipeline formalized here.
+The 43.3% figure represents a hard ceiling for BM25-only retrieval on this benchmark. Closing it requires larger embedding models, LLM-driven query expansion, or external knowledge retrieval. The 25.8% ranking-error bucket is the target for graph-density improvements; the implicit edge overlay is designed to address it by surfacing thoughts that are semantically adjacent to lexical seeds but not directly related by explicit authored edges.
 
-### 9.4 Micro-Benchmarks
+### 9.4 Near-Miss Analysis (LongMemEval, v0.9.8)
+
+Running v0.9.8 against the LongMemEval 500-question evaluation set (10,866-thought chain, `fastembed-minilm`, default settings, $\theta = 0.85$) produces R@5 = 66.8%, R@10 ≈ 72.0%, R@20 ≈ 77.8% — statistically identical to v0.8.9. Of 166 misses:
+
+| Bucket | Count | Fraction | Interpretation |
+|---|---|---|---|
+| $R@10$ hit | 27 | 16.3% | close ranking error |
+| $R@20$ hit | 57 | 34.3% | moderate signal gap |
+| not in $R@20$ | 109 | 65.7% | lexical gap |
+
+By question type, the weakest categories are `single-session-preference` (13.3% R@5) and `multi-session` (64.7% R@5). The dominant miss signal is lexical (avg top-1 lexical score 21.3 vs graph 0.006 at $\theta = 0.85$; graph increases to 0.021 at $\theta = 0.70$ but R@5 declines 0.2% due to noise from spurious neighbor promotions). LME's near-miss structure is qualitatively different from LoCoMo's: 65.7% of misses are not recoverable at R@20 regardless of graph topology, because the evidence thoughts share no vocabulary with the query. Graph expansion is the correct tool for LoCoMo multi-hop; query expansion or a larger encoder is the correct tool for LME's lexical gap.
+
+### 9.5 Micro-Benchmarks
 
 Criterion micro-benchmarks span five domains: append throughput (`thought_chain`), baseline search (`search_baseline`), ranked retrieval (`search_ranked`), skill registry lifecycle (`skill_registry`), and HTTP concurrency at $\{100, 10^3, 10^4\}$ concurrent Tokio tasks with $p_{50}/p_{95}/p_{99}$ reporting (`http_concurrency`). A `DashMap`-based concurrent chain lookup delivers 750–930 read req/s at $10^4$ concurrent tasks, versus the previous $\mathsf{RwLock}\langle\mathsf{HashMap}\rangle$ bottleneck.
 
@@ -461,12 +505,13 @@ Criterion micro-benchmarks span five domains: append throughput (`thought_chain`
 | LLM required for core | **No** | Yes | Yes | Yes |
 | Cryptographic integrity | **SHA-256 hash chain** | — | — | — |
 | Hybrid retrieval | BM25 + vector + graph | vector + keyword | semantic + keyword + graph | — |
+| Implicit graph inference | **cosine-inferred edges** | — | LLM-extracted | — |
 | Temporal facts | $[\mathtt{v}_\ast, \mathtt{v}^\ast]$ (0.8.2+) | update-only | $[\mathtt{v}_\ast, \mathtt{v}^\ast]$ | — |
 | Deduplication | **Jaccard + $\mathsf{Supersedes}$** | LLM-based | merge | — |
 | Agent registry | Yes | — | — | Yes |
 | MCP server | **Built-in** | — | Yes | — |
 
-MentisDB is, to our knowledge, the only system combining (i) embedded storage, (ii) zero LLM dependency in the core path, (iii) cryptographic chain integrity, and (iv) hybrid BM25 + vector + graph retrieval in a single static binary. Identified gaps relative to competitors: custom per-chain entity/relation ontologies (as in Graphiti's Pydantic models), LLM-driven memory extraction, a browser extension, and per-thought token accounting.
+MentisDB is, to our knowledge, the only system combining (i) embedded storage, (ii) zero LLM dependency in the core path, (iii) cryptographic chain integrity, (iv) hybrid BM25 + vector + graph retrieval with cosine-inferred implicit edges, and (v) a built-in MCP server — all in a single static binary. Identified gaps relative to competitors: custom per-chain entity/relation ontologies (as in Graphiti's Pydantic models), LLM-driven memory extraction, a browser extension, and per-thought token accounting.
 
 ---
 
@@ -474,12 +519,15 @@ MentisDB is, to our knowledge, the only system combining (i) embedded storage, (
 
 ### 11.1 Limitations
 
-- **Ceiling of sparse retrieval.** The near-miss analysis quantifies an irreducible 43% lexical gap on LoCoMo-10P for BM25-only retrieval. Dense embeddings mitigate but do not eliminate this.
+- **Ceiling of sparse retrieval.** The near-miss analyses quantify irreducible lexical gaps on both benchmarks: 43.3% on LoCoMo-10P and 65.7% on LongMemEval for BM25-only retrieval. Dense embeddings and implicit graph edges mitigate ranking errors but cannot recover evidence thoughts that share no vocabulary with the query.
+- **Implicit edge quality depends on encoder.** The $\mathsf{ImplicitEdgeOverlay}$ is only as good as the underlying embedding model. With `fastembed-minilm` (384-dim) and the default threshold $\theta = 0.85$, LME produces a sparse overlay (~5 K edges for 10 K thoughts) because MiniLM cosine similarities between topically diverse conversations rarely exceed 0.85. Lowering $\theta$ increases edge density but introduces noise at the graph-score level.
 - **Local-only integrity model.** The hash chain provides tamper evidence, not Byzantine fault tolerance or distributed consensus; cross-chain consistency is not enforced cryptographically.
 - **Schema churn discipline.** Because bincode tags enum variants by ordinal, schema evolution is append-only at the enum level — reordering or renaming variants would silently corrupt persisted data.
 
 ### 11.2 Future Work
 
+- **LoCoMo multi-hop validation of ImplicitEdgeOverlay.** The 21-point single-hop / multi-hop gap on LoCoMo-10P (79.0% vs 57.4% R@10 at v0.8.9) is the primary target for graph-density improvements. A full re-run against v0.9.8 with the overlay active is needed to quantify the gain.
+- **Threshold sweep.** A sweep across $\theta \in \{0.75, 0.80, 0.85, 0.90\}$ and $K \in \{3, 5, 10\}$ on LoCoMo multi-hop would identify the optimal operating point for the overlay.
 - **Per-chain entity / relation ontologies** enabling typed domain-specific facts beyond the fixed $\mathsf{ThoughtRelationKind}$.
 - **Episode provenance**: tracing derived facts back to source conversations.
 - **Cross-chain federated retrieval** with result reconciliation across distributed ledgers.
@@ -488,7 +536,7 @@ MentisDB is, to our knowledge, the only system combining (i) embedded storage, (
 
 ### 11.3 Conclusion
 
-MentisDB formalizes agent memory as an append-only, hash-chained ledger of semantically typed thoughts, and couples that ledger with a composable retrieval pipeline — BM25 with per-field DF gating, smooth vector-lexical fusion, bounded typed-edge graph expansion, RRF, session cohesion, and Jaccard-based deduplication — in a single embedded Rust substrate. Empirical results on LoCoMo and LongMemEval demonstrate competitive retrieval quality without reliance on external databases or LLM services for the core ingestion path. The system is released as open source and exposes MCP, REST, and HTTPS surfaces for interoperation with contemporary agentic harnesses.
+MentisDB formalizes agent memory as an append-only, hash-chained ledger of semantically typed thoughts, and couples that ledger with a composable retrieval pipeline — BM25 with per-field DF gating, smooth vector-lexical fusion, bounded typed-edge graph expansion augmented by cosine-inferred implicit edges, RRF, session cohesion, and Jaccard-based deduplication — in a single embedded Rust substrate. The $\mathsf{ImplicitEdgeOverlay}$ extends graph-based retrieval to chains where agents author few explicit relations, deriving a dense implicit graph from vector cosine proximity at $O(N)$ incremental cost per append. Empirical results on LoCoMo and LongMemEval demonstrate competitive retrieval quality without reliance on external databases or LLM services for the core ingestion path. The system is released as open source and exposes MCP, REST, and HTTPS surfaces for interoperation with contemporary agentic harnesses.
 
 ---
 
