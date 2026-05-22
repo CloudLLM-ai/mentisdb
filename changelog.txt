@@ -90,6 +90,10 @@
     neighborhoods over explicit relations plus implicit auto-edge overlay links;
     BFS remains the default graph algorithm, while PPR contributes separately as
     `score.ppr` for transport visibility and future tuning
+  - feat(search): integrate opt-in query-aware route planning — ranked-search
+    requests can pass `query_routing: true` to classify the query with deterministic
+    heuristics and auto-enable useful PRF/PPR routes; default routing remains off
+    so existing ranked-search behavior is unchanged unless explicitly requested
 
 0.9.8.44 MAY/07/2026
   - BREAKING: rename binary from `mentisdbd` to `mentisdb` — all CLI commands,
