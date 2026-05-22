@@ -3288,6 +3288,80 @@ async fn rest_ranked_search_supports_query_routing_prf() {
 }
 
 #[tokio::test]
+async fn rest_summary_candidates_returns_filtered_windows() {
+    let dir = unique_chain_dir();
+    let chain_key = "server-summary-candidates";
+    let router = rest_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+
+    append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "planner",
+        "Decision",
+        None,
+        "Project alpha rollout decision.",
+    )
+    .await;
+    append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "planner",
+        "Decision",
+        None,
+        "Project beta rollout decision.",
+    )
+    .await;
+    append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "planner",
+        "Insight",
+        None,
+        "Unrelated accounting note.",
+    )
+    .await;
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/summary-candidates")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": chain_key,
+                        "text": "project",
+                        "thought_types": ["Decision"],
+                        "config": {
+                            "window_size": 2,
+                            "by_session": false,
+                            "by_agent": false,
+                            "by_entity_type": false
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(parsed["chain_key"], chain_key);
+    assert_eq!(parsed["total"], 1);
+    assert_eq!(parsed["candidates"][0]["source_indices"], json!([0, 1]));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn mcp_ranked_search_and_context_bundles_are_executable() {
     let dir = unique_chain_dir();
     let chain_key = "mcp-ranked";

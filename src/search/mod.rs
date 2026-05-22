@@ -55,6 +55,10 @@ pub use sidecar::{
     VectorSidecar, VectorSidecarEntry, VectorSidecarFreshness, VectorSidecarIntegrity,
     VECTOR_SIDECAR_SCHEMA_VERSION,
 };
+pub use summary_index::{
+    build_summary_candidates, SummaryBuildConfig, SummaryCandidate, SummaryCoverage, SummaryGroup,
+    SummarySourceThought,
+};
 pub use vector::{
     cosine_similarity, embed_batch_to_documents, EmbeddingBuildError, EmbeddingInput,
     EmbeddingMetadata, EmbeddingProvider, EmbeddingVector, LocalTextEmbeddingError,

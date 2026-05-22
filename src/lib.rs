@@ -5406,6 +5406,80 @@ impl MentisDb {
         )
     }
 
+    /// Build read-only append-order summary candidates for the current chain.
+    ///
+    /// This does not generate summary text and does not append thoughts. It only
+    /// selects source windows that callers may summarize later using normal
+    /// append-only [`ThoughtType::Summary`] records with `Summarizes` relations.
+    pub fn summary_candidates(
+        &self,
+        config: crate::search::SummaryBuildConfig,
+    ) -> Vec<crate::search::SummaryCandidate> {
+        let thoughts = self.thoughts.iter().collect::<Vec<_>>();
+        self.summary_candidates_from_thoughts(&thoughts, config)
+    }
+
+    /// Build read-only summary candidates after applying a [`ThoughtQuery`] filter.
+    ///
+    /// The filter has the same semantics as [`MentisDb::query`]. This method is
+    /// useful when callers want summary candidates for a subset of a chain such
+    /// as one agent, entity type, tag, or time window.
+    pub fn summary_candidates_matching(
+        &self,
+        query: &ThoughtQuery,
+        config: crate::search::SummaryBuildConfig,
+    ) -> Vec<crate::search::SummaryCandidate> {
+        let thoughts = self.query(query);
+        self.summary_candidates_from_thoughts(&thoughts, config)
+    }
+
+    fn summary_candidates_from_thoughts(
+        &self,
+        thoughts: &[&Thought],
+        config: crate::search::SummaryBuildConfig,
+    ) -> Vec<crate::search::SummaryCandidate> {
+        let thought_ids = thoughts
+            .iter()
+            .map(|thought| thought.id.to_string())
+            .collect::<Vec<_>>();
+        let session_ids = thoughts
+            .iter()
+            .map(|thought| thought.session_id.map(|session_id| session_id.to_string()))
+            .collect::<Vec<_>>();
+        let sources = thoughts
+            .iter()
+            .zip(thought_ids.iter())
+            .zip(session_ids.iter())
+            .map(
+                |((thought, thought_id), session_id)| crate::search::SummarySourceThought {
+                    index: thought.index,
+                    thought_id: thought_id.as_str(),
+                    session_id: session_id.as_deref(),
+                    agent_id: thought.agent_id.as_str(),
+                    entity_type: thought.entity_type.as_deref(),
+                },
+            )
+            .collect::<Vec<_>>();
+        let coverage = self.summary_coverage();
+        crate::search::build_summary_candidates(&sources, config, &coverage)
+    }
+
+    fn summary_coverage(&self) -> Vec<crate::search::SummaryCoverage> {
+        let summarized_ids = self
+            .thoughts
+            .iter()
+            .flat_map(|thought| thought.relations.iter())
+            .filter(|relation| {
+                relation.kind == ThoughtRelationKind::Summarizes && relation.chain_key.is_none()
+            })
+            .map(|relation| relation.target_id.to_string())
+            .collect::<Vec<_>>();
+        vec![crate::search::SummaryCoverage {
+            summarized_indices: Vec::new(),
+            summarized_ids,
+        }]
+    }
+
     /// Run federated ranked search over this chain and a set of other chains.
     ///
     /// This method takes a slice of `(chain_key, &MentisDb)` tuples representing

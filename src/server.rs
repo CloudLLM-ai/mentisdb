@@ -1560,6 +1560,10 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         .route("/v1/ranked-search", post(rest_ranked_search_handler))
         .route("/v1/federated-search", post(rest_federated_search_handler))
         .route("/v1/context-bundles", post(rest_context_bundles_handler))
+        .route(
+            "/v1/summary-candidates",
+            post(rest_summary_candidates_handler),
+        )
         .route("/v1/recent-context", post(rest_recent_context_handler))
         .route("/v1/memory-markdown", post(rest_memory_markdown_handler))
         .route("/v1/import-markdown", post(rest_import_markdown_handler))
@@ -1826,6 +1830,10 @@ pub fn rest_router(config: MentisDbServiceConfig) -> Router {
         .route("/v1/ranked-search", post(rest_ranked_search_handler))
         .route("/v1/federated-search", post(rest_federated_search_handler))
         .route("/v1/context-bundles", post(rest_context_bundles_handler))
+        .route(
+            "/v1/summary-candidates",
+            post(rest_summary_candidates_handler),
+        )
         .route("/v1/recent-context", post(rest_recent_context_handler))
         .route("/v1/memory-markdown", post(rest_memory_markdown_handler))
         .route("/v1/import-markdown", post(rest_import_markdown_handler))
@@ -2036,6 +2044,12 @@ impl ToolProtocol for MentisDbMcpProtocol {
             }
             "mentisdb_context_bundles" => {
                 parse_and_call(parameters, |request| self.service.context_bundles(request)).await
+            }
+            "mentisdb_summary_candidates" => {
+                parse_and_call(parameters, |request| {
+                    self.service.summary_candidates(request)
+                })
+                .await
             }
             "mentisdb_list_chains" => self.service.list_chains_json().await,
             "mentisdb_list_agents" => {
@@ -3189,6 +3203,37 @@ impl MentisDbService {
             total_bundles,
             consumed_hits,
             bundles,
+        })
+    }
+
+    async fn summary_candidates(
+        &self,
+        request: SummaryCandidatesRequest,
+    ) -> Result<SummaryCandidatesResponse, Box<dyn Error + Send + Sync>> {
+        let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
+        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let chain = chain.read().await;
+        let config = parse_summary_build_config(request.config.as_ref());
+        let candidates = if summary_candidates_has_filter(&request) {
+            let filter = build_summary_candidates_filter_query(&request)?;
+            chain.summary_candidates_matching(&filter, config)
+        } else {
+            chain.summary_candidates(config)
+        };
+        let total = candidates.len();
+        let offset = request.offset.unwrap_or(0).min(total);
+        let limit = request.limit.unwrap_or(100).max(1);
+        let candidates = candidates
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .map(summary_candidate_response)
+            .collect();
+
+        Ok(SummaryCandidatesResponse {
+            chain_key,
+            total,
+            candidates,
         })
     }
 
@@ -4768,6 +4813,59 @@ struct RankedSearchResponse {
     results: Vec<RankedSearchHitResponse>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct SummaryBuildConfigRequest {
+    window_size: Option<usize>,
+    overlap: Option<usize>,
+    by_session: Option<bool>,
+    by_agent: Option<bool>,
+    by_entity_type: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SummaryCandidatesRequest {
+    chain_key: Option<String>,
+    config: Option<SummaryBuildConfigRequest>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    text: Option<String>,
+    thought_types: Option<Vec<String>>,
+    roles: Option<Vec<String>>,
+    tags_any: Option<Vec<String>>,
+    concepts_any: Option<Vec<String>>,
+    agent_ids: Option<Vec<String>>,
+    agent_names: Option<Vec<String>>,
+    agent_owners: Option<Vec<String>>,
+    min_importance: Option<f32>,
+    min_confidence: Option<f32>,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
+    entity_type: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryGroupResponse {
+    session_id: Option<String>,
+    agent_id: Option<String>,
+    entity_type: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryCandidateResponse {
+    source_indices: Vec<u64>,
+    source_ids: Vec<String>,
+    group: SummaryGroupResponse,
+    start_index: u64,
+    end_index: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryCandidatesResponse {
+    chain_key: String,
+    total: usize,
+    candidates: Vec<SummaryCandidateResponse>,
+}
+
 /// Request for cross-chain federated ranked search.
 #[derive(Debug, Deserialize)]
 struct FederatedSearchRequest {
@@ -5580,6 +5678,29 @@ fn ranked_search_filter_arrays_exceed_limit_federated(request: &FederatedSearchR
             .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
 }
 
+fn summary_candidates_filter_arrays_exceed_limit(request: &SummaryCandidatesRequest) -> bool {
+    request
+        .thought_types
+        .as_deref()
+        .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
+        || request
+            .roles
+            .as_deref()
+            .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
+        || request
+            .tags_any
+            .as_deref()
+            .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
+        || request
+            .concepts_any
+            .as_deref()
+            .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
+        || request
+            .agent_ids
+            .as_deref()
+            .is_some_and(|v| v.len() > MAX_FILTER_ARRAY_LEN)
+}
+
 async fn rest_lexical_search_handler(
     State(service): State<Arc<MentisDbService>>,
     Json(request): Json<LexicalSearchRequest>,
@@ -5630,6 +5751,19 @@ async fn rest_context_bundles_handler(
         ));
     }
     service_call(service.context_bundles(request).await)
+}
+
+async fn rest_summary_candidates_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<SummaryCandidatesRequest>,
+) -> Result<Json<SummaryCandidatesResponse>, (StatusCode, Json<Value>)> {
+    if summary_candidates_filter_arrays_exceed_limit(&request) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "filter array exceeds maximum length of 100"})),
+        ));
+    }
+    service_call(service.summary_candidates(request).await)
 }
 
 async fn rest_list_chains_handler(
@@ -6193,6 +6327,21 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
         .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by.")),
         ToolMetadata::new(
+            "mentisdb_summary_candidates",
+            "Return deterministic append-only summary source candidates. This only selects source windows; it does not generate or append summary thoughts.",
+        )
+        .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
+        .with_parameter(ToolParameter::new("config", ToolParameterType::Object).with_description("Optional summary build config: window_size, overlap, by_session, by_agent, by_entity_type."))
+        .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Candidate offset for paging."))
+        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of candidates to return."))
+        .with_parameter(ToolParameter::new("text", ToolParameterType::String).with_description("Optional text filter before candidate selection."))
+        .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("roles", ToolParameterType::Array).with_description("Optional list of ThoughtRole names.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("tags_any", ToolParameterType::Array).with_description("Optional tags to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("concepts_any", ToolParameterType::Array).with_description("Optional concepts to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("agent_ids", ToolParameterType::Array).with_description("Optional producing agent ids to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by.")),
+        ToolMetadata::new(
             "mentisdb_list_chains",
             "List the durable chain keys currently available in MentisDb storage, together with the server default chain key.",
         ),
@@ -6645,6 +6794,71 @@ impl HasOptionalQueryFields for RankedSearchRequest {
     }
 }
 
+impl HasOptionalQueryFields for SummaryCandidatesRequest {
+    fn text(&self) -> Option<String> {
+        self.text.clone()
+    }
+    fn thought_types(&self) -> Result<Option<Vec<ThoughtType>>, Box<dyn Error + Send + Sync>> {
+        Ok(Some(
+            self.thought_types
+                .as_ref()
+                .map(|v| {
+                    v.iter()
+                        .map(|s| parse_thought_type(s))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
+        )
+        .flatten())
+    }
+    fn roles(&self) -> Result<Option<Vec<ThoughtRole>>, Box<dyn Error + Send + Sync>> {
+        Ok(Some(
+            self.roles
+                .as_ref()
+                .map(|v| {
+                    v.iter()
+                        .map(|s| parse_thought_role(s))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
+        )
+        .flatten())
+    }
+    fn tags_any(&self) -> Option<Vec<String>> {
+        self.tags_any.clone()
+    }
+    fn concepts_any(&self) -> Option<Vec<String>> {
+        self.concepts_any.clone()
+    }
+    fn agent_ids(&self) -> Option<Vec<String>> {
+        self.agent_ids.clone()
+    }
+    fn agent_names(&self) -> Option<Vec<String>> {
+        self.agent_names.clone()
+    }
+    fn agent_owners(&self) -> Option<Vec<String>> {
+        self.agent_owners.clone()
+    }
+    fn min_importance(&self) -> Option<f32> {
+        self.min_importance
+    }
+    fn min_confidence(&self) -> Option<f32> {
+        self.min_confidence
+    }
+    fn since(&self) -> Option<DateTime<Utc>> {
+        self.since
+    }
+    fn until(&self) -> Option<DateTime<Utc>> {
+        self.until
+    }
+    fn limit(&self) -> Option<usize> {
+        None
+    }
+    fn entity_type(&self) -> Option<String> {
+        self.entity_type.clone()
+    }
+}
+
 impl HasOptionalQueryFields for MemoryMarkdownRequest {
     fn text(&self) -> Option<String> {
         self.text.clone()
@@ -6785,6 +6999,68 @@ fn build_ranked_filter_query(
         limit: None,
         entity_type: request.entity_type.clone(),
     })
+}
+
+fn build_summary_candidates_filter_query(
+    request: &SummaryCandidatesRequest,
+) -> Result<ThoughtQuery, Box<dyn Error + Send + Sync>> {
+    apply_optional_query_fields(ThoughtQuery::new(), request)
+}
+
+fn summary_candidates_has_filter(request: &SummaryCandidatesRequest) -> bool {
+    request.text.is_some()
+        || request.thought_types.is_some()
+        || request.roles.is_some()
+        || request.tags_any.is_some()
+        || request.concepts_any.is_some()
+        || request.agent_ids.is_some()
+        || request.agent_names.is_some()
+        || request.agent_owners.is_some()
+        || request.min_importance.is_some()
+        || request.min_confidence.is_some()
+        || request.since.is_some()
+        || request.until.is_some()
+        || request.entity_type.is_some()
+}
+
+fn parse_summary_build_config(
+    request: Option<&SummaryBuildConfigRequest>,
+) -> crate::search::SummaryBuildConfig {
+    let mut config = crate::search::SummaryBuildConfig::default();
+    if let Some(request) = request {
+        if let Some(window_size) = request.window_size {
+            config.window_size = window_size;
+        }
+        if let Some(overlap) = request.overlap {
+            config.overlap = overlap;
+        }
+        if let Some(by_session) = request.by_session {
+            config.by_session = by_session;
+        }
+        if let Some(by_agent) = request.by_agent {
+            config.by_agent = by_agent;
+        }
+        if let Some(by_entity_type) = request.by_entity_type {
+            config.by_entity_type = by_entity_type;
+        }
+    }
+    config
+}
+
+fn summary_candidate_response(
+    candidate: crate::search::SummaryCandidate,
+) -> SummaryCandidateResponse {
+    SummaryCandidateResponse {
+        source_indices: candidate.source_indices,
+        source_ids: candidate.source_ids,
+        group: SummaryGroupResponse {
+            session_id: candidate.group.session_id,
+            agent_id: candidate.group.agent_id,
+            entity_type: candidate.group.entity_type,
+        },
+        start_index: candidate.start_index,
+        end_index: candidate.end_index,
+    }
 }
 
 fn parse_ranked_graph_request(
