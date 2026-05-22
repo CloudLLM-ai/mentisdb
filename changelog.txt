@@ -99,8 +99,12 @@
     thoughts using `mentisdb_summary_candidates` / `/v1/summary-candidates`;
     the API only selects candidate ranges and never generates text, rewrites
     memory, or appends summary thoughts
+  - bench: extend LongMemEval, LoCoMo, and ConvoMem harnesses with
+    --enable-prf / --use-ppr / --enable-query-routing flags (plus wiring for
+    existing --reranking in LoCoMo) so comparative sweeps of the new retrieval
+    routes can be run on the same ingested chains without code changes
 
-0.9.8.44 MAY/07/2026
+ 0.9.8.44 MAY/07/2026
   - BREAKING: rename binary from `mentisdbd` to `mentisdb` — all CLI commands,
     documentation, install scripts, CI artifact names, and TUI references updated;
     `cargo install mentisdb` still installs the crate, but the resulting binary

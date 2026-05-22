@@ -26,6 +26,10 @@ Usage:
 
     # Force re-ingest:
     python3 locomo-benches/locomo_bench.py --top-k 10 --force-reingest
+
+    # With retrieval improvements (skip ingest on existing chain):
+    python3 locomo-benches/locomo_bench.py --top-k 10 --limit 20 --skip-vectors \\
+        --enable-prf --use-ppr --enable-query-routing
 """
 
 import argparse
@@ -183,8 +187,17 @@ def rebuild_vectors(base_url: str, chain_key: str) -> None:
             print(f"  WARNING: vector rebuild failed ({provider_key}): {e}", flush=True)
 
 
-def ranked_search(base_url: str, chain_key: str, query: str, limit: int,
-                   enable_reranking: bool = False, rerank_k: int = 50) -> list[dict]:
+def ranked_search(
+    base_url: str,
+    chain_key: str,
+    query: str,
+    limit: int,
+    enable_reranking: bool = False,
+    rerank_k: int = 50,
+    enable_prf: bool = False,
+    use_ppr: bool = False,
+    enable_routing: bool = False,
+) -> list[dict]:
     payload: dict = {
         "chain_key": chain_key,
         "text": query,
@@ -193,11 +206,20 @@ def ranked_search(base_url: str, chain_key: str, query: str, limit: int,
             "max_depth": 3,
             "max_visited": 200,
             "include_seeds": False,
+            "algorithm": "ppr" if use_ppr else "bfs",
         },
     }
     if enable_reranking:
         payload["enable_reranking"] = True
         payload["rerank_k"] = rerank_k
+    if enable_prf:
+        payload["query_expansion"] = {
+            "mode": "prf",
+            "feedback_docs": 5,
+            "expansion_terms": 8,
+        }
+    if enable_routing:
+        payload["query_routing"] = True
     resp = _post(base_url, "/v1/ranked-search", payload)
     return resp.get("results", [])
 
@@ -308,10 +330,19 @@ def _hit(evidence_texts: list[str], results: list[dict], k: int) -> bool:
 # Evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate(base_url: str, chain_key: str, queries: list[dict],
-             item_map: dict[str, str],
-             session_map: dict[str, list[tuple[int, str]]],
-             top_k: int) -> tuple[float, dict, list[dict]]:
+def evaluate(
+    base_url: str,
+    chain_key: str,
+    queries: list[dict],
+    item_map: dict[str, str],
+    session_map: dict[str, list[tuple[int, str]]],
+    top_k: int,
+    enable_reranking: bool = False,
+    rerank_k: int = 50,
+    enable_prf: bool = False,
+    use_ppr: bool = False,
+    enable_routing: bool = False,
+) -> tuple[float, dict, list[dict]]:
     by_type: dict[str, dict] = {}
     misses: list[dict] = []
     fetch_k = max(top_k, NEAR_MISS_K)
@@ -329,7 +360,17 @@ def evaluate(base_url: str, chain_key: str, queries: list[dict],
             evidence_texts = [item_map.get(tid, "") for tid in q["target_ids"]]
             evidence_texts = [e for e in evidence_texts if e]
 
-        raw = ranked_search(base_url, chain_key, question, fetch_k)
+        raw = ranked_search(
+            base_url,
+            chain_key,
+            question,
+            fetch_k,
+            enable_reranking=enable_reranking,
+            rerank_k=rerank_k,
+            enable_prf=enable_prf,
+            use_ppr=use_ppr,
+            enable_routing=enable_routing,
+        )
 
         hit_k  = _hit(evidence_texts, raw, top_k)
         hit_10 = _hit(evidence_texts, raw, 10)
@@ -469,7 +510,10 @@ def main():
     ap.add_argument("--reranking", action="store_true",
                     help="Enable RRF reranking in ranked search")
     ap.add_argument("--rerank-k", type=int, default=50,
-                    help="Number of candidates to rerank (default 50)")
+                     help="Number of candidates to rerank (default 50)")
+    ap.add_argument("--enable-prf", action="store_true", help="Enable PRF query expansion (opt-in)")
+    ap.add_argument("--use-ppr", action="store_true", help="Use Personalized PageRank graph algorithm (opt-in)")
+    ap.add_argument("--enable-query-routing", action="store_true", help="Enable deterministic query-aware routing (opt-in)")
     ap.add_argument("--output", help="Write per-type JSON results here")
     args = ap.parse_args()
 
@@ -478,7 +522,8 @@ def main():
     print(f"  limit        : {args.limit or 'full'}")
     print(f"  chain        : {args.chain}")
     print(f"  data-dir     : {args.data_dir}")
-    print(f"  endpoint     : {args.base_url}\n")
+    print(f"  endpoint     : {args.base_url}")
+    print(f"  retrieval    : rerank={args.reranking} prf={args.enable_prf} ppr={args.use_ppr} routing={args.enable_query_routing}\n")
 
     items, item_map, session_map, queries = load_locomo(args.data_dir, args.limit)
     print(f"  Loaded {len(items)} conversation turns, {len(queries)} test queries\n")
@@ -507,7 +552,17 @@ def main():
     # Evaluate
     t0 = time.monotonic()
     overall, by_type, misses = evaluate(
-        args.base_url, args.chain, queries, item_map, session_map, args.top_k
+        args.base_url,
+        args.chain,
+        queries,
+        item_map,
+        session_map,
+        args.top_k,
+        enable_reranking=args.reranking,
+        rerank_k=args.rerank_k,
+        enable_prf=args.enable_prf,
+        use_ppr=args.use_ppr,
+        enable_routing=args.enable_query_routing,
     )
     elapsed = time.monotonic() - t0
 

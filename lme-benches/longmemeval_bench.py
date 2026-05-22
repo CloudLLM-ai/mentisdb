@@ -23,6 +23,14 @@ Usage:
         --data data/longmemeval_oracle.json \\
         --chain lme-1234567890 \\
         --force-reingest
+
+    # Smoke with retrieval features enabled (same chain, skip ingest):
+    python lme-benches/longmemeval_bench.py \\
+        --data data/longmemeval_oracle.json \\
+        --chain lme-1234567890 \\
+        --skip-ingest \\
+        --limit 50 \\
+        --enable-prf --use-ppr --enable-query-routing
 """
 
 import argparse
@@ -129,8 +137,16 @@ def rebuild_vectors(base_url: str, chain_key: str, provider_key: str = "fastembe
         print(f"  WARNING: vector rebuild failed ({provider_key}): {e}", flush=True)
 
 
-def ranked_search(base_url: str, chain_key: str, query: str, limit: int) -> list[dict]:
-    resp = _post(base_url, "/v1/ranked-search", {
+def ranked_search(
+    base_url: str,
+    chain_key: str,
+    query: str,
+    limit: int,
+    enable_prf: bool = False,
+    use_ppr: bool = False,
+    enable_routing: bool = False,
+) -> list[dict]:
+    payload: dict = {
         "chain_key": chain_key,
         "text": query,
         "limit": limit,
@@ -138,9 +154,19 @@ def ranked_search(base_url: str, chain_key: str, query: str, limit: int) -> list
             "max_depth": 3,
             "max_visited": 200,
             "include_seeds": False,
+            "algorithm": "ppr" if use_ppr else "bfs",
         },
-    })
-    # Each element: {"thought": {...}, "score": {lexical, vector, graph, ...}}
+    }
+    if enable_prf:
+        payload["query_expansion"] = {
+            "mode": "prf",
+            "feedback_docs": 5,
+            "expansion_terms": 8,
+        }
+    if enable_routing:
+        payload["query_routing"] = True
+    resp = _post(base_url, "/v1/ranked-search", payload)
+    # Each element: {"thought": {...}, "score": {lexical, vector, graph, ppr, prf, ...}}
     return resp.get("results", [])
 
 
@@ -234,9 +260,15 @@ def evaluate(
     instances: list[dict],
     top_k: int,
     eval_workers: int,
+    enable_prf: bool = False,
+    use_ppr: bool = False,
+    enable_routing: bool = False,
 ) -> tuple[float, dict, list[dict], list]:
     """
     Evaluate retrieval recall in parallel.
+
+    The three retrieval flags control opt-in features (PRF, PPR, query routing)
+    and are threaded through to every ranked-search call.
 
     Returns:
         overall    — R@top_k as a percentage
@@ -252,7 +284,15 @@ def evaluate(
 
     def _eval_one(idx: int, inst: dict):
         evidence = _collect_evidence(inst)
-        raw = ranked_search(base_url, chain_key, inst["question"], fetch_k)
+        raw = ranked_search(
+            base_url,
+            chain_key,
+            inst["question"],
+            fetch_k,
+            enable_prf=enable_prf,
+            use_ppr=use_ppr,
+            enable_routing=enable_routing,
+        )
         hit_k  = _hit(evidence, raw, top_k)
         hit_10 = _hit(evidence, raw, 10)
         hit_20 = _hit(evidence, raw, NEAR_MISS_K)
@@ -409,6 +449,9 @@ def main():
     ap.add_argument("--rebuild-vectors", action="store_true",
                     help="Rebuild fastembed vector sidecar even when skipping ingestion")
     ap.add_argument("--output", help="Write per-instance JSONL results to this path")
+    ap.add_argument("--enable-prf", action="store_true", help="Enable PRF query expansion (opt-in)")
+    ap.add_argument("--use-ppr", action="store_true", help="Use Personalized PageRank graph algorithm (opt-in)")
+    ap.add_argument("--enable-query-routing", action="store_true", help="Enable deterministic query-aware routing (opt-in)")
     args = ap.parse_args()
 
     with open(args.data) as f:
@@ -421,7 +464,8 @@ def main():
     print(f"  top-k        : {args.top_k}  (also computing R@10, R@{NEAR_MISS_K})")
     print(f"  chain        : {args.chain}")
     print(f"  endpoint     : {args.base_url}")
-    print(f"  eval-workers : {args.eval_workers}\n")
+    print(f"  eval-workers : {args.eval_workers}")
+    print(f"  retrieval    : prf={args.enable_prf}  ppr={args.use_ppr}  routing={args.enable_query_routing}\n")
 
     if args.force_reingest:
         args.chain = f"lme-{int(time.time())}"
@@ -449,7 +493,14 @@ def main():
 
     t0 = time.monotonic()
     overall, by_type, misses, all_results = evaluate(
-        args.base_url, args.chain, instances, args.top_k, args.eval_workers
+        args.base_url,
+        args.chain,
+        instances,
+        args.top_k,
+        args.eval_workers,
+        enable_prf=args.enable_prf,
+        use_ppr=args.use_ppr,
+        enable_routing=args.enable_query_routing,
     )
     elapsed = time.monotonic() - t0
 
