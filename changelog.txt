@@ -67,6 +67,12 @@
     auto_edges.bin); a new "Location" column shows the chain file path; replaces
     the previous single column that showed only the chain file size prefixed to
     the path
+  - fix(core): repair missing .auto_edges.bin for already-open daemon chains —
+    cached server and dashboard chain accesses now opportunistically call
+    ensure_implicit_edge_overlay() when no writer holds the chain lock, so deleting
+    the overlay sidecar while the daemon is running no longer leaves the file absent
+    until a full process restart; added regression coverage for both cached-chain
+    repair and reopen-time rebuild
 
 0.9.8.44 MAY/07/2026
   - BREAKING: rename binary from `mentisdbd` to `mentisdb` — all CLI commands,
