@@ -3210,6 +3210,84 @@ async fn rest_ranked_search_supports_prf_query_expansion() {
 }
 
 #[tokio::test]
+async fn rest_ranked_search_supports_query_routing_prf() {
+    let dir = unique_chain_dir();
+    let chain_key = "server-query-routing-prf";
+    let router = rest_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+
+    append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "planner",
+        "Insight",
+        None,
+        "Trip cost discussion mentioned invoice vendor payment reconciliation.",
+    )
+    .await;
+    append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "planner",
+        "Insight",
+        None,
+        "Invoice vendor payment receipt requires accounting follow-up.",
+    )
+    .await;
+    for index in 0..4 {
+        append_thought_via_rest(
+            router.clone(),
+            chain_key,
+            "planner",
+            "Insight",
+            None,
+            &format!("Unrelated filler memory number {index}."),
+        )
+        .await;
+    }
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ranked-search")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": chain_key,
+                        "text": "trip cost",
+                        "limit": 10,
+                        "query_routing": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let results = parsed["results"].as_array().unwrap();
+    let recovered = results
+        .iter()
+        .find(|result| {
+            result["thought"]["content"]
+                .as_str()
+                .is_some_and(|content| content.starts_with("Invoice vendor payment receipt"))
+        })
+        .expect("query routing should recover the vocabulary-mismatch hit through REST");
+    assert!(recovered["score"]["prf"].as_f64().unwrap_or(0.0) > 0.0);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn mcp_ranked_search_and_context_bundles_are_executable() {
     let dir = unique_chain_dir();
     let chain_key = "mcp-ranked";

@@ -168,6 +168,104 @@ fn ranked_query_expansion_recovers_vocabulary_mismatch_hits() {
 }
 
 #[test]
+fn ranked_query_routing_can_auto_enable_prf() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "ranked-query-routing-prf").unwrap();
+
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(
+                ThoughtType::Insight,
+                "Trip cost discussion mentioned invoice vendor payment reconciliation.",
+            ),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(
+                ThoughtType::Insight,
+                "Invoice vendor payment receipt requires accounting follow-up.",
+            ),
+        )
+        .unwrap();
+    for index in 0..4 {
+        chain
+            .append_thought(
+                "planner",
+                ThoughtInput::new(
+                    ThoughtType::Insight,
+                    format!("Unrelated filler memory number {index}."),
+                ),
+            )
+            .unwrap();
+    }
+
+    let with_routing = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text("trip cost")
+            .with_query_routing(true)
+            .with_limit(10),
+    );
+    let recovered = with_routing
+        .hits
+        .iter()
+        .find(|hit| {
+            hit.thought
+                .content
+                .starts_with("Invoice vendor payment receipt")
+        })
+        .expect("query routing should auto-enable PRF for semantic/entity-like queries");
+    assert_eq!(recovered.score.lexical, 0.0);
+    assert!(recovered.score.prf > 0.0);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ranked_query_routing_can_auto_enable_ppr_for_causal_queries() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "ranked-query-routing-ppr").unwrap();
+
+    let seed_id = chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Decision, "Why alpha ranking changed."),
+        )
+        .unwrap()
+        .id;
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(
+                ThoughtType::Summary,
+                "Supporting causal context reachable through routing.",
+            )
+            .with_relations(vec![ThoughtRelation::new(
+                ThoughtRelationKind::CausedBy,
+                seed_id,
+            )]),
+        )
+        .unwrap();
+
+    let with_routing = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text("why alpha ranking")
+            .with_query_routing(true)
+            .with_limit(10),
+    );
+    let supporting = with_routing
+        .hits
+        .iter()
+        .find(|hit| hit.thought.content.starts_with("Supporting causal context"))
+        .expect("query routing should auto-enable PPR for causal queries");
+    assert!(supporting.score.ppr > 0.0);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn ranked_query_without_text_falls_back_to_heuristic_ordering() {
     let dir = unique_chain_dir();
     let mut chain = MentisDb::open_with_key(&dir, "ranked-query-heuristic").unwrap();

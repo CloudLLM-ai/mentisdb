@@ -2668,6 +2668,9 @@ impl MentisDbService {
                 ranked_query = ranked_query
                     .with_query_expansion(parse_ranked_query_expansion_request(query_expansion)?);
             }
+            if let Some(true) = request.query_routing {
+                ranked_query = ranked_query.with_query_routing(true);
+            }
             if let Some(as_of) = request.as_of {
                 ranked_query = ranked_query.with_as_of(as_of);
             }
@@ -2797,6 +2800,7 @@ impl MentisDbService {
             offset: None,
             graph: request.graph.clone(),
             query_expansion: request.query_expansion.clone(),
+            query_routing: request.query_routing,
             thought_types: request.thought_types.clone(),
             roles: request.roles.clone(),
             tags_any: request.tags_any.clone(),
@@ -2832,6 +2836,9 @@ impl MentisDbService {
         if let Some(query_expansion) = &request.query_expansion {
             ranked_query = ranked_query
                 .with_query_expansion(parse_ranked_query_expansion_request(query_expansion)?);
+        }
+        if let Some(true) = request.query_routing {
+            ranked_query = ranked_query.with_query_routing(true);
         }
         if let Some(as_of) = request.as_of {
             ranked_query = ranked_query.with_as_of(as_of);
@@ -3113,6 +3120,9 @@ impl MentisDbService {
         if let Some(query_expansion) = &request.query_expansion {
             ranked_query = ranked_query
                 .with_query_expansion(parse_ranked_query_expansion_request(query_expansion)?);
+        }
+        if let Some(true) = request.query_routing {
+            ranked_query = ranked_query.with_query_routing(true);
         }
         if let Some(as_of) = request.as_of {
             ranked_query = ranked_query.with_as_of(as_of);
@@ -4657,6 +4667,7 @@ struct RankedSearchRequest {
     offset: Option<usize>,
     graph: Option<RankedSearchGraphRequest>,
     query_expansion: Option<RankedSearchQueryExpansionRequest>,
+    query_routing: Option<bool>,
     thought_types: Option<Vec<String>>,
     roles: Option<Vec<String>>,
     tags_any: Option<Vec<String>>,
@@ -4773,6 +4784,7 @@ struct FederatedSearchRequest {
     /// Optional graph expansion config.
     graph: Option<RankedSearchGraphRequest>,
     query_expansion: Option<RankedSearchQueryExpansionRequest>,
+    query_routing: Option<bool>,
     /// Optional ThoughtType filter.
     thought_types: Option<Vec<String>>,
     /// Optional ThoughtRole filter.
@@ -6119,6 +6131,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Result offset for paging."))
         .with_parameter(ToolParameter::new("graph", ToolParameterType::Object).with_description("Optional graph expansion config object: max_depth, max_visited, include_seeds, mode, algorithm (bfs or ppr)."))
         .with_parameter(ToolParameter::new("query_expansion", ToolParameterType::Object).with_description("Optional query expansion config object: mode (none or prf), feedback_docs, expansion_terms, min_idf, original_weight, expansion_weight."))
+        .with_parameter(ToolParameter::new("query_routing", ToolParameterType::Boolean).with_description("Enable deterministic query-aware route planning that can auto-enable PRF/PPR routes."))
         .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("roles", ToolParameterType::Array).with_description("Optional list of ThoughtRole names.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("tags_any", ToolParameterType::Array).with_description("Optional tags to match.").with_items(ToolParameterType::String))
@@ -6141,6 +6154,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Result offset for paging."))
         .with_parameter(ToolParameter::new("graph", ToolParameterType::Object).with_description("Optional graph expansion config object: max_depth, max_visited, include_seeds, mode, algorithm (bfs or ppr)."))
         .with_parameter(ToolParameter::new("query_expansion", ToolParameterType::Object).with_description("Optional query expansion config object: mode (none or prf), feedback_docs, expansion_terms, min_idf, original_weight, expansion_weight."))
+        .with_parameter(ToolParameter::new("query_routing", ToolParameterType::Boolean).with_description("Enable deterministic query-aware route planning that can auto-enable PRF/PPR routes."))
         .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("roles", ToolParameterType::Array).with_description("Optional list of ThoughtRole names.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("tags_any", ToolParameterType::Array).with_description("Optional tags to match.").with_items(ToolParameterType::String))

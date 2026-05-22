@@ -2683,6 +2683,9 @@ pub struct RankedSearchQuery {
     /// runs a second expanded lexical route, and adds that score separately as
     /// [`RankedSearchScore::prf`].
     pub query_expansion: Option<crate::search::query_expansion::PrfConfig>,
+    /// When true, derive a deterministic query-intent routing plan that can
+    /// enable PRF and PPR routes automatically. Disabled by default.
+    pub query_routing: bool,
     /// Maximum number of ranked hits to return.
     pub limit: usize,
     /// Optional point-in-time query: only consider relations and thoughts
@@ -2770,6 +2773,12 @@ impl RankedSearchQuery {
         self
     }
 
+    /// Enable or disable deterministic query-aware route planning.
+    pub fn with_query_routing(mut self, enabled: bool) -> Self {
+        self.query_routing = enabled;
+        self
+    }
+
     /// Limit the number of ranked hits returned.
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = limit.max(1);
@@ -2824,6 +2833,7 @@ impl Default for RankedSearchQuery {
             text: None,
             graph: None,
             query_expansion: None,
+            query_routing: false,
             limit: 10,
             as_of: None,
             scope: None,
@@ -5096,11 +5106,38 @@ impl MentisDb {
             .as_deref()
             .map(str::trim)
             .filter(|text| !text.is_empty());
+        let routing_plan = ranked_text.and_then(|text| {
+            request.query_routing.then(|| {
+                let known_entities = self.query_routing_entities();
+                let known_entities = known_entities
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                crate::search::query_intent::QueryRoutingPlan::for_query(
+                    text,
+                    &known_entities,
+                    true,
+                )
+            })
+        });
+        let effective_query_expansion = request.query_expansion.clone().or_else(|| {
+            routing_plan.filter(|plan| plan.enable_prf).map(|_| {
+                crate::search::query_expansion::PrfConfig {
+                    enabled: true,
+                    ..crate::search::query_expansion::PrfConfig::default()
+                }
+            })
+        });
+        let effective_graph = request.graph.or_else(|| {
+            routing_plan
+                .filter(|plan| plan.ppr_weight > 0.0)
+                .map(|_| RankedSearchGraph::new().with_algorithm(RankedSearchGraphAlgorithm::Ppr))
+        });
         let lexical_scores = ranked_text
             .map(|text| self.rank_candidates_lexically(&candidates, text))
             .unwrap_or_default();
         let prf_scores = ranked_text
-            .zip(request.query_expansion.as_ref())
+            .zip(effective_query_expansion.as_ref())
             .map(|(text, config)| {
                 self.rank_candidates_with_query_expansion(
                     &candidates,
@@ -5114,19 +5151,19 @@ impl MentisDb {
             .map(|text| self.rank_candidates_semantically(&candidates, text))
             .unwrap_or_default();
         let graph_scores = ranked_text
-            .and(request.graph.as_ref())
+            .and(effective_graph.as_ref())
             .filter(|graph| graph.algorithm == RankedSearchGraphAlgorithm::Bfs)
             .map(|graph| self.expand_ranked_candidates(&candidates, graph, &lexical_scores))
             .unwrap_or_default();
         let ppr_scores = ranked_text
-            .and(request.graph.as_ref())
+            .and(effective_graph.as_ref())
             .filter(|graph| graph.algorithm == RankedSearchGraphAlgorithm::Ppr)
             .map(|graph| self.rank_candidates_with_ppr(&candidates, graph, &lexical_scores))
             .unwrap_or_default();
         let backend =
-            if ranked_text.is_some() && request.graph.is_some() && !vector_scores.is_empty() {
+            if ranked_text.is_some() && effective_graph.is_some() && !vector_scores.is_empty() {
                 RankedSearchBackend::HybridGraph
-            } else if ranked_text.is_some() && request.graph.is_some() {
+            } else if ranked_text.is_some() && effective_graph.is_some() {
                 RankedSearchBackend::LexicalGraph
             } else if ranked_text.is_some() && !vector_scores.is_empty() {
                 RankedSearchBackend::Hybrid
@@ -6824,6 +6861,17 @@ impl MentisDb {
             hit.score *= config.expansion_weight.max(0.0);
         }
         hits
+    }
+
+    fn query_routing_entities(&self) -> Vec<String> {
+        let mut entities = self
+            .entity_type_registry
+            .entity_types
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        entities.sort();
+        entities
     }
 
     fn rank_candidates_semantically(
