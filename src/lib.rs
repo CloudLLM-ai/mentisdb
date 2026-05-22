@@ -5733,7 +5733,8 @@ impl MentisDb {
                         )
                     })
                     .collect();
-                crate::search::VectorIndex::from_documents(provider.metadata().clone(), documents).ok()
+                crate::search::VectorIndex::from_documents(provider.metadata().clone(), documents)
+                    .ok()
             });
         self.managed_vector_sidecars.insert(
             provider.metadata().clone(),
@@ -6195,8 +6196,13 @@ impl MentisDb {
             persistence.storage_kind,
         );
 
-        self.implicit_edge_overlay = match crate::search::ImplicitEdgeOverlay::load_from_path(&overlay_path) {
-            Ok(overlay) if overlay.threshold == self.auto_edge_threshold && overlay.k == self.auto_edge_k => {
+        self.implicit_edge_overlay = match crate::search::ImplicitEdgeOverlay::load_from_path(
+            &overlay_path,
+        ) {
+            Ok(overlay)
+                if overlay.threshold == self.auto_edge_threshold
+                    && overlay.k == self.auto_edge_k =>
+            {
                 Some(overlay)
             }
             _ => {
@@ -6226,6 +6232,15 @@ impl MentisDb {
                 }
             }
         };
+    }
+
+    /// Ensure the implicit edge overlay is loaded and persisted for this chain.
+    ///
+    /// This is normally called automatically when managed vector sidecars are
+    /// applied, but long-running services can call it to repair a missing
+    /// `.auto_edges.bin` sidecar for an already-open chain.
+    pub fn ensure_implicit_edge_overlay(&mut self) {
+        self.load_or_rebuild_implicit_edge_overlay();
     }
 
     fn sync_managed_vector_sidecars_for_append(&mut self, thought: &Thought) -> io::Result<()> {
@@ -6270,7 +6285,12 @@ impl MentisDb {
                         crate::search::VectorSidecarFreshness::Fresh
                     ) =>
                 {
-                    let provider = self.managed_vector_sidecars.get(&metadata).unwrap().provider.as_ref();
+                    let provider = self
+                        .managed_vector_sidecars
+                        .get(&metadata)
+                        .unwrap()
+                        .provider
+                        .as_ref();
                     let new_sidecar =
                         self.extend_fresh_vector_sidecar(provider, sidecar, thought)?;
                     {
@@ -6288,19 +6308,28 @@ impl MentisDb {
                     new_sidecar
                 }
                 Ok(_) | Err(_) => {
-                    let provider = self.managed_vector_sidecars.get(&metadata).unwrap().provider.as_ref();
+                    let provider = self
+                        .managed_vector_sidecars
+                        .get(&metadata)
+                        .unwrap()
+                        .provider
+                        .as_ref();
                     let new_sidecar = self.rebuild_managed_vector_sidecar(provider)?;
                     let documents: Vec<crate::search::VectorDocument> = new_sidecar
                         .entries
                         .iter()
                         .map(|e| {
-                            crate::search::VectorDocument::new(e.thought_id.to_string(), e.vector.clone())
+                            crate::search::VectorDocument::new(
+                                e.thought_id.to_string(),
+                                e.vector.clone(),
+                            )
                         })
                         .collect();
                     {
                         let entry = self.managed_vector_sidecars.get_mut(&metadata).unwrap();
                         entry.cached_index =
-                            crate::search::VectorIndex::from_documents(metadata.clone(), documents).ok();
+                            crate::search::VectorIndex::from_documents(metadata.clone(), documents)
+                                .ok();
                     }
                     new_sidecar
                 }

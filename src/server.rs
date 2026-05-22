@@ -2248,9 +2248,14 @@ impl MentisDbService {
             .unwrap_or(&self.config.default_chain_key)
             .to_string();
 
-        // Fast path: chain already open — no write lock, no I/O.
+        // Fast path: chain already open. Opportunistically repair a missing
+        // implicit-edge sidecar if no other request is currently writing.
         if let Some(existing) = self.chains.get(&chain_key) {
-            return Ok(existing.clone());
+            let existing = existing.clone();
+            if let Ok(mut chain) = existing.try_write() {
+                chain.ensure_implicit_edge_overlay();
+            }
+            return Ok(existing);
         }
 
         // Slow path: open the chain from disk and insert it.

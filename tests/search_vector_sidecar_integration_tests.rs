@@ -1,6 +1,7 @@
 use mentisdb::search::{EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector};
 use mentisdb::{
-    MentisDb, RankedSearchBackend, RankedSearchQuery, ThoughtQuery, ThoughtType, VectorSearchQuery,
+    chain_storage_filename, MentisDb, RankedSearchBackend, RankedSearchQuery, StorageAdapterKind,
+    ThoughtQuery, ThoughtType, VectorSearchQuery,
 };
 use std::error::Error;
 use std::fmt;
@@ -336,6 +337,51 @@ fn test_auto_edge_overlay_persists_across_reopen() {
     assert!(
         chain.implicit_edge_count() > 0,
         "expected implicit edges to persist across reopen"
+    );
+}
+
+#[test]
+fn test_missing_auto_edge_overlay_rebuilds_across_reopen() {
+    let tempdir = TempDir::new().unwrap();
+    let chain_dir = PathBuf::from(tempdir.path());
+    let chain_key = "auto-edge-rebuild-test";
+    let overlay_path = {
+        let storage_file = chain_storage_filename(chain_key, StorageAdapterKind::Binary);
+        let stem = storage_file.strip_suffix(".tcbin").unwrap();
+        chain_dir.join(format!("{stem}.auto_edges.bin"))
+    };
+
+    {
+        let mut chain = MentisDb::open_with_key(&chain_dir, chain_key).unwrap();
+        chain
+            .append(
+                "planner",
+                ThoughtType::Decision,
+                "Performance budget for the Europe rollout.",
+            )
+            .unwrap();
+        chain
+            .append(
+                "planner",
+                ThoughtType::Decision,
+                "Latency budget for the Asia rollout.",
+            )
+            .unwrap();
+
+        let provider = TestSemanticProvider::new("local-test", "v1");
+        chain.manage_vector_sidecar(provider).unwrap();
+        assert!(overlay_path.exists());
+    }
+
+    std::fs::remove_file(&overlay_path).unwrap();
+    assert!(!overlay_path.exists());
+
+    let mut chain = MentisDb::open_with_key(&chain_dir, chain_key).unwrap();
+    chain.apply_persisted_managed_vector_sidecars().unwrap();
+
+    assert!(
+        overlay_path.exists(),
+        "expected missing .auto_edges.bin to be rebuilt on reopen"
     );
 }
 

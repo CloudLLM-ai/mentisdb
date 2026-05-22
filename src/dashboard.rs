@@ -448,6 +448,9 @@ async fn get_or_open_chain(
         if evict_deleted_cached_chain(state, chain_key, &arc).await? {
             return Err(not_found(format!("chain '{chain_key}' not found")));
         }
+        if let Ok(mut chain) = arc.try_write() {
+            chain.ensure_implicit_edge_overlay();
+        }
         return Ok(arc);
     }
 
@@ -938,8 +941,7 @@ async fn api_chains(
             let storage_size = std::fs::metadata(&reg.storage_location)
                 .map(|m| m.len())
                 .unwrap_or(0);
-            let (vectors_size, vector_config_size) =
-                vector_index_size(&reg.storage_location);
+            let (vectors_size, vector_config_size) = vector_index_size(&reg.storage_location);
             let auto_edges_size = auto_edges_index_size(&reg.storage_location);
             let v = json!({
                 "chain_key":                    key.clone(),
@@ -968,8 +970,7 @@ async fn api_chains(
             let storage_size = std::fs::metadata(chain.storage_location())
                 .map(|m| m.len())
                 .unwrap_or(0);
-            let (vectors_size, vector_config_size) =
-                vector_index_size(&chain.storage_location());
+            let (vectors_size, vector_config_size) = vector_index_size(&chain.storage_location());
             let lexical_size = chain.estimated_lexical_index_bytes();
             let auto_edges_size = auto_edges_index_size(&chain.storage_location());
             let v = json!({

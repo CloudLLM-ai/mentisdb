@@ -13,7 +13,7 @@ use mentisdb::server::{
     adopt_legacy_default_mentisdb_dir, mcp_router, rest_router, standard_mcp_router, start_servers,
     MentisDbServerConfig, MentisDbServiceConfig,
 };
-use mentisdb::{MentisDb, StorageAdapterKind, MENTISDB_CURRENT_VERSION};
+use mentisdb::{chain_storage_filename, MentisDb, StorageAdapterKind, MENTISDB_CURRENT_VERSION};
 use serde_json::json;
 use tower::util::ServiceExt;
 
@@ -119,6 +119,72 @@ async fn rest_router_loads_default_managed_vector_sidecar() {
             .vector_sidecar_freshness(&sidecar, &active.metadata)
             .unwrap(),
         mentisdb::search::VectorSidecarFreshness::Fresh
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn rest_router_recreates_deleted_auto_edge_overlay_for_cached_chain() {
+    let dir = unique_chain_dir();
+    let chain_key = "cached-auto-edge-rebuild";
+    let router = rest_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+    let storage_file = chain_storage_filename(chain_key, StorageAdapterKind::Binary);
+    let stem = storage_file.strip_suffix(".tcbin").unwrap();
+    let overlay_path = dir.join(format!("{stem}.auto_edges.bin"));
+
+    append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "astro",
+        "Insight",
+        None,
+        "Latency budget for the Europe rollout",
+    )
+    .await;
+    append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "astro",
+        "Insight",
+        None,
+        "Performance budget for the Asia rollout",
+    )
+    .await;
+    assert!(overlay_path.exists());
+
+    std::fs::remove_file(&overlay_path).unwrap();
+    assert!(!overlay_path.exists());
+
+    let payload = json!({
+        "chain_key": chain_key,
+        "text": "latency budget",
+        "limit": 5,
+        "graph": {
+            "mode": "bidirectional",
+            "max_depth": 1
+        }
+    });
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ranked-search")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    assert!(
+        overlay_path.exists(),
+        "cached chain access should recreate deleted .auto_edges.bin"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
