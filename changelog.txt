@@ -79,6 +79,12 @@
     candidate selection, and heuristic query-intent route planning; modules are
     exported for testing and future integration but do not change default ranked
     search behavior yet
+  - feat(search): integrate opt-in pseudo-relevance feedback query expansion into
+    ranked search — REST/MCP ranked-search requests can pass `query_expansion`
+    with `mode: "prf"`; the original lexical route remains unchanged by default,
+    while enabled PRF adds a separate `score.prf` contribution and can surface
+    vocabulary-mismatch hits recovered from high-IDF terms in top lexical feedback
+    documents
 
 0.9.8.44 MAY/07/2026
   - BREAKING: rename binary from `mentisdbd` to `mentisdb` — all CLI commands,
