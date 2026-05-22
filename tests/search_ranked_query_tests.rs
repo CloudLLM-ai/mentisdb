@@ -5,8 +5,9 @@ use mentisdb::search::{
     lexical::LexicalMatchSource, query_expansion::PrfConfig, GraphExpansionMode, ThoughtLocator,
 };
 use mentisdb::{
-    MentisDb, RankedSearchBackend, RankedSearchGraph, RankedSearchQuery, ThoughtInput,
-    ThoughtQuery, ThoughtRelation, ThoughtRelationKind, ThoughtType,
+    MentisDb, RankedSearchBackend, RankedSearchGraph, RankedSearchGraphAlgorithm,
+    RankedSearchQuery, ThoughtInput, ThoughtQuery, ThoughtRelation, ThoughtRelationKind,
+    ThoughtType,
 };
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -526,6 +527,60 @@ fn ranked_query_graph_expansion_prefers_closer_supporting_context() {
         .map(|locator| locator.thought_index)
         .collect::<Vec<_>>();
     assert_eq!(visited, vec![Some(0), Some(1), Some(2)]);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ranked_query_with_ppr_graph_surfaces_supporting_context() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "ranked-query-ppr").unwrap();
+
+    let seed_id = chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Decision, "Alpha ranking seed for PPR."),
+        )
+        .unwrap()
+        .id;
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(
+                ThoughtType::Summary,
+                "Supporting context reachable by graph.",
+            )
+            .with_relations(vec![ThoughtRelation::new(
+                ThoughtRelationKind::References,
+                seed_id,
+            )]),
+        )
+        .unwrap();
+
+    let without_graph = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text("alpha ranking")
+            .with_limit(10),
+    );
+    assert_eq!(without_graph.hits.len(), 1);
+
+    let with_ppr = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text("alpha ranking")
+            .with_graph(
+                RankedSearchGraph::new()
+                    .with_algorithm(RankedSearchGraphAlgorithm::Ppr)
+                    .with_max_visited(10),
+            )
+            .with_limit(10),
+    );
+    assert_eq!(with_ppr.hits.len(), 2);
+    let supporting = with_ppr
+        .hits
+        .iter()
+        .find(|hit| hit.thought.content.starts_with("Supporting context"))
+        .expect("PPR should recover graph-supporting context");
+    assert!(supporting.score.ppr > 0.0);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

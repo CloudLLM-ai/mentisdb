@@ -2569,6 +2569,15 @@ pub enum RankedSearchBackend {
     Heuristic,
 }
 
+/// Graph scoring algorithm used by ranked search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RankedSearchGraphAlgorithm {
+    /// Existing bounded breadth-first expansion.
+    Bfs,
+    /// Personalized PageRank over the local thought graph.
+    Ppr,
+}
+
 impl RankedSearchBackend {
     /// Return the stable lowercase name of this backend.
     pub fn as_str(self) -> &'static str {
@@ -2597,6 +2606,8 @@ pub struct RankedSearchGraph {
     pub include_seeds: bool,
     /// Direction policy used while traversing the thought graph.
     pub mode: crate::search::GraphExpansionMode,
+    /// Graph scoring algorithm. Defaults to bounded BFS for compatibility.
+    pub algorithm: RankedSearchGraphAlgorithm,
 }
 
 impl RankedSearchGraph {
@@ -2628,6 +2639,12 @@ impl RankedSearchGraph {
         self.mode = mode;
         self
     }
+
+    /// Replace the graph scoring algorithm.
+    pub fn with_algorithm(mut self, algorithm: RankedSearchGraphAlgorithm) -> Self {
+        self.algorithm = algorithm;
+        self
+    }
 }
 
 impl Default for RankedSearchGraph {
@@ -2637,6 +2654,7 @@ impl Default for RankedSearchGraph {
             max_visited: 128,
             include_seeds: true,
             mode: crate::search::GraphExpansionMode::Bidirectional,
+            algorithm: RankedSearchGraphAlgorithm::Bfs,
         }
     }
 }
@@ -2827,6 +2845,8 @@ pub struct RankedSearchScore {
     pub vector: f32,
     /// Score contributed by pseudo-relevance feedback query expansion.
     pub prf: f32,
+    /// Score contributed by Personalized PageRank graph routing.
+    pub ppr: f32,
     /// Score contributed by graph proximity to a lexical seed.
     pub graph: f32,
     /// Score contributed by semantic relation kinds along the chosen graph path.
@@ -3042,6 +3062,14 @@ struct RankedGraphHit {
     seed_paths: usize,
     relation_kinds: Vec<ThoughtRelationKind>,
     relation_score: f32,
+}
+
+struct RankedSignalMaps<'a> {
+    lexical_hits: &'a HashMap<usize, crate::search::lexical::LexicalHit>,
+    prf_hits: &'a HashMap<usize, crate::search::lexical::LexicalHit>,
+    vector_scores: &'a HashMap<usize, f32>,
+    graph_hits: &'a HashMap<usize, RankedGraphHit>,
+    ppr_scores: &'a HashMap<usize, f32>,
 }
 
 /// Direction for append-order thought traversal.
@@ -5087,7 +5115,13 @@ impl MentisDb {
             .unwrap_or_default();
         let graph_scores = ranked_text
             .and(request.graph.as_ref())
+            .filter(|graph| graph.algorithm == RankedSearchGraphAlgorithm::Bfs)
             .map(|graph| self.expand_ranked_candidates(&candidates, graph, &lexical_scores))
+            .unwrap_or_default();
+        let ppr_scores = ranked_text
+            .and(request.graph.as_ref())
+            .filter(|graph| graph.algorithm == RankedSearchGraphAlgorithm::Ppr)
+            .map(|graph| self.rank_candidates_with_ppr(&candidates, graph, &lexical_scores))
             .unwrap_or_default();
         let backend =
             if ranked_text.is_some() && request.graph.is_some() && !vector_scores.is_empty() {
@@ -5107,10 +5141,13 @@ impl MentisDb {
                 self.rank_search_hit(
                     thought,
                     ranked_text,
-                    &lexical_scores,
-                    &prf_scores,
-                    &vector_scores,
-                    &graph_scores,
+                    RankedSignalMaps {
+                        lexical_hits: &lexical_scores,
+                        prf_hits: &prf_scores,
+                        vector_scores: &vector_scores,
+                        graph_hits: &graph_scores,
+                        ppr_scores: &ppr_scores,
+                    },
                 )
             })
             .collect();
@@ -5188,6 +5225,13 @@ impl MentisDb {
                     .total_cmp(&a_graph)
                     .then_with(|| a.thought.index.cmp(&b.thought.index))
             });
+            let mut by_ppr = hits.clone();
+            by_ppr.sort_by(|a, b| {
+                b.score
+                    .ppr
+                    .total_cmp(&a.score.ppr)
+                    .then_with(|| a.thought.index.cmp(&b.thought.index))
+            });
 
             let lexical_ids: Vec<u64> = by_lexical
                 .iter()
@@ -5210,9 +5254,15 @@ impl MentisDb {
                 .take(rerank_k)
                 .map(|h| h.thought.index)
                 .collect();
+            let ppr_ids: Vec<u64> = by_ppr
+                .iter()
+                .take(rerank_k)
+                .filter(|h| h.score.ppr > 0.0)
+                .map(|h| h.thought.index)
+                .collect();
 
             let merged = crate::search::ranked::rrf_merge(
-                &[&lexical_ids, &vector_ids, &prf_ids, &graph_ids],
+                &[&lexical_ids, &vector_ids, &prf_ids, &graph_ids, &ppr_ids],
                 crate::search::ranked::RRF_K,
             );
             let rrf_scores: HashMap<u64, f64> = merged.into_iter().collect();
@@ -5225,6 +5275,7 @@ impl MentisDb {
                         + hit.score.relation
                         + hit.score.seed_support
                         + hit.score.prf
+                        + hit.score.ppr
                         + hit.score.importance
                         + hit.score.confidence
                         + hit.score.recency
@@ -5244,6 +5295,7 @@ impl MentisDb {
                 .then_with(|| right.score.lexical.total_cmp(&left.score.lexical))
                 .then_with(|| right.score.prf.total_cmp(&left.score.prf))
                 .then_with(|| right.score.vector.total_cmp(&left.score.vector))
+                .then_with(|| right.score.ppr.total_cmp(&left.score.ppr))
                 .then_with(|| right.score.graph.total_cmp(&left.score.graph))
                 .then_with(|| right.score.relation.total_cmp(&left.score.relation))
                 .then_with(|| right.score.seed_support.total_cmp(&left.score.seed_support))
@@ -6555,15 +6607,13 @@ impl MentisDb {
         &'a self,
         thought: &'a Thought,
         ranked_text: Option<&str>,
-        lexical_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
-        prf_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
-        vector_scores: &HashMap<usize, f32>,
-        graph_hits: &HashMap<usize, RankedGraphHit>,
+        signals: RankedSignalMaps<'_>,
     ) -> Option<RankedSearchHit<'a>> {
         let (
             lexical,
             prf,
             vector,
+            ppr,
             graph,
             relation,
             seed_support,
@@ -6574,19 +6624,32 @@ impl MentisDb {
             matched_terms,
             match_sources,
         ) = if ranked_text.is_some() {
-            let lexical_hit = lexical_hits
+            let lexical_hit = signals
+                .lexical_hits
                 .get(&(thought.index as usize))
                 .filter(|hit| hit.score > 0.0);
-            let prf_hit = prf_hits
+            let prf_hit = signals
+                .prf_hits
                 .get(&(thought.index as usize))
                 .filter(|hit| hit.score > 0.0);
-            let graph_hit = graph_hits.get(&(thought.index as usize));
-            let vector = vector_scores
+            let graph_hit = signals.graph_hits.get(&(thought.index as usize));
+            let ppr = signals
+                .ppr_scores
+                .get(&(thought.index as usize))
+                .copied()
+                .unwrap_or_default();
+            let vector = signals
+                .vector_scores
                 .get(&(thought.index as usize))
                 .copied()
                 .unwrap_or_default();
 
-            if lexical_hit.is_none() && prf_hit.is_none() && graph_hit.is_none() && vector <= 0.0 {
+            if lexical_hit.is_none()
+                && prf_hit.is_none()
+                && graph_hit.is_none()
+                && vector <= 0.0
+                && ppr <= 0.0
+            {
                 return None;
             }
 
@@ -6594,6 +6657,7 @@ impl MentisDb {
                 lexical_hit.map(|hit| hit.score).unwrap_or_default(),
                 prf_hit.map(|hit| hit.score).unwrap_or_default(),
                 vector,
+                ppr,
                 graph_hit
                     .map(|hit| self.graph_proximity_score(hit.best_hit.depth))
                     .unwrap_or_default(),
@@ -6618,6 +6682,7 @@ impl MentisDb {
             )
         } else {
             (
+                0.0,
                 0.0,
                 0.0,
                 0.0,
@@ -6661,6 +6726,7 @@ impl MentisDb {
         let total = lexical
             + prf
             + vector_contribution
+            + ppr
             + graph
             + relation
             + seed_support
@@ -6674,6 +6740,7 @@ impl MentisDb {
                 lexical,
                 prf,
                 vector,
+                ppr,
                 graph,
                 relation,
                 seed_support,
@@ -6898,6 +6965,178 @@ impl MentisDb {
         }
 
         aggregates
+    }
+
+    fn rank_candidates_with_ppr(
+        &self,
+        candidates: &[&Thought],
+        graph: &RankedSearchGraph,
+        lexical_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
+    ) -> HashMap<usize, f32> {
+        if lexical_hits.is_empty() || candidates.is_empty() {
+            return HashMap::new();
+        }
+
+        const MAX_GRAPH_SEEDS: usize = 20;
+        const PPR_SCORE_WEIGHT: f32 = 2.0;
+        let adjacency = crate::search::ThoughtAdjacencyIndex::from_thoughts(&self.thoughts);
+        let candidate_positions: HashSet<usize> = candidates
+            .iter()
+            .map(|thought| thought.index as usize)
+            .collect();
+        let seeds = self
+            .sorted_lexical_seed_hits(lexical_hits)
+            .into_iter()
+            .take(MAX_GRAPH_SEEDS)
+            .filter_map(|hit| {
+                adjacency
+                    .local_locator_for_index(hit.doc_position as u64)
+                    .cloned()
+                    .map(|locator| (locator, hit.score.max(0.0)))
+            })
+            .collect::<Vec<_>>();
+        if seeds.is_empty() {
+            return HashMap::new();
+        }
+
+        let seed_positions = seeds
+            .iter()
+            .filter_map(|(seed, _)| seed.thought_index.map(|index| index as usize))
+            .collect::<HashSet<_>>();
+        let ppr_graph = self.build_ranked_ppr_graph(&adjacency, graph.mode);
+        let result = crate::search::ppr::personalized_pagerank(
+            &ppr_graph,
+            &seeds,
+            crate::search::ppr::PprConfig {
+                max_nodes: graph.max_visited,
+                include_implicit_edges: true,
+                ..crate::search::ppr::PprConfig::default()
+            },
+        );
+
+        result
+            .scores
+            .into_iter()
+            .filter_map(|(locator, score)| {
+                let position = locator.thought_index? as usize;
+                if !candidate_positions.contains(&position) {
+                    return None;
+                }
+                if !graph.include_seeds && seed_positions.contains(&position) {
+                    return None;
+                }
+                Some((position, score * PPR_SCORE_WEIGHT))
+            })
+            .collect()
+    }
+
+    fn build_ranked_ppr_graph(
+        &self,
+        adjacency: &crate::search::ThoughtAdjacencyIndex,
+        mode: crate::search::GraphExpansionMode,
+    ) -> crate::search::ppr::PprGraph {
+        let mut graph = crate::search::ppr::PprGraph::new();
+        for thought in &self.thoughts {
+            let Some(locator) = adjacency.local_locator_for_index(thought.index).cloned() else {
+                continue;
+            };
+            graph.add_node(locator.clone());
+
+            if matches!(
+                mode,
+                crate::search::GraphExpansionMode::OutgoingOnly
+                    | crate::search::GraphExpansionMode::Bidirectional
+            ) {
+                for edge in adjacency.outgoing(&locator) {
+                    graph.add_edge(
+                        locator.clone(),
+                        crate::search::ppr::PprEdge::explicit(
+                            edge.target.clone(),
+                            self.ppr_explicit_edge_weight(edge),
+                        ),
+                    );
+                }
+            }
+            if matches!(
+                mode,
+                crate::search::GraphExpansionMode::IncomingOnly
+                    | crate::search::GraphExpansionMode::Bidirectional
+            ) {
+                for edge in adjacency.incoming(&locator) {
+                    graph.add_edge(
+                        locator.clone(),
+                        crate::search::ppr::PprEdge::explicit(
+                            edge.source.clone(),
+                            self.ppr_explicit_edge_weight(edge),
+                        ),
+                    );
+                }
+            }
+        }
+
+        self.add_implicit_ppr_edges(&mut graph, adjacency, mode);
+        graph
+    }
+
+    fn add_implicit_ppr_edges(
+        &self,
+        graph: &mut crate::search::ppr::PprGraph,
+        adjacency: &crate::search::ThoughtAdjacencyIndex,
+        mode: crate::search::GraphExpansionMode,
+    ) {
+        let Some(overlay) = self.implicit_edge_overlay.as_ref() else {
+            return;
+        };
+        for (source_id, neighbors) in &overlay.edges {
+            let Some(source) = adjacency.local_locator_for_id(*source_id).cloned() else {
+                continue;
+            };
+            for neighbor in neighbors {
+                let Some(target) = adjacency.local_locator_for_id(neighbor.thought_id).cloned()
+                else {
+                    continue;
+                };
+                if matches!(
+                    mode,
+                    crate::search::GraphExpansionMode::OutgoingOnly
+                        | crate::search::GraphExpansionMode::Bidirectional
+                ) {
+                    graph.add_edge(
+                        source.clone(),
+                        crate::search::ppr::PprEdge::implicit(
+                            target.clone(),
+                            neighbor.cosine_score,
+                        ),
+                    );
+                }
+                if matches!(
+                    mode,
+                    crate::search::GraphExpansionMode::IncomingOnly
+                        | crate::search::GraphExpansionMode::Bidirectional
+                ) {
+                    graph.add_edge(
+                        target,
+                        crate::search::ppr::PprEdge::implicit(
+                            source.clone(),
+                            neighbor.cosine_score,
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    fn ppr_explicit_edge_weight(&self, edge: &crate::search::GraphEdge) -> f32 {
+        1.0 + edge
+            .provenances
+            .iter()
+            .filter_map(|provenance| match provenance {
+                crate::search::GraphEdgeProvenance::Relation { kind, .. } => {
+                    Some(self.graph_relation_kind_boost(*kind))
+                }
+                crate::search::GraphEdgeProvenance::Ref { .. } => None,
+            })
+            .fold(0.0_f32, f32::max)
     }
 
     fn expand_ranked_candidate_paths(

@@ -63,12 +63,13 @@ use crate::webhooks::{WebhookManager, WebhookRegistration};
 use crate::{
     deregister_chain, load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus,
     EntityTypeRecord, LlmExtractionConfig, ManagedVectorProviderKind, MemoryScope, MentisDb,
-    PublicKeyAlgorithm, RankedSearchBackend, RankedSearchGraph, RankedSearchQuery,
-    RankedSearchScore, SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus,
-    SkillSummary, SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput,
-    ThoughtQuery, ThoughtRelation, ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow,
-    ThoughtTraversalAnchor, ThoughtTraversalCursor, ThoughtTraversalDirection,
-    ThoughtTraversalRequest, ThoughtType, TimeWindowUnit, TokenUsage, MENTISDB_CURRENT_VERSION,
+    PublicKeyAlgorithm, RankedSearchBackend, RankedSearchGraph, RankedSearchGraphAlgorithm,
+    RankedSearchQuery, RankedSearchScore, SkillFormat, SkillQuery, SkillRegistry,
+    SkillRegistryManifest, SkillStatus, SkillSummary, SkillUpload, SkillVersionSummary,
+    StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelation, ThoughtRelationKind,
+    ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor, ThoughtTraversalCursor,
+    ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType, TimeWindowUnit, TokenUsage,
+    MENTISDB_CURRENT_VERSION,
 };
 use async_trait::async_trait;
 use axum::extract::{Path as AxumPath, Query, State};
@@ -2697,6 +2698,7 @@ impl MentisDbService {
                         score: RankedSearchScoreResponse {
                             lexical: hit.score.lexical,
                             prf: hit.score.prf,
+                            ppr: hit.score.ppr,
                             vector: hit.score.vector,
                             graph: hit.score.graph,
                             relation: hit.score.relation,
@@ -3046,6 +3048,7 @@ impl MentisDbService {
                         score: RankedSearchScoreResponse {
                             lexical: score.lexical,
                             prf: score.prf,
+                            ppr: score.ppr,
                             vector: score.vector,
                             graph: score.graph,
                             relation: score.relation,
@@ -4678,6 +4681,7 @@ struct RankedSearchGraphRequest {
     max_visited: Option<usize>,
     include_seeds: Option<bool>,
     mode: Option<String>,
+    algorithm: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -4694,6 +4698,7 @@ struct RankedSearchQueryExpansionRequest {
 struct RankedSearchScoreResponse {
     lexical: f32,
     prf: f32,
+    ppr: f32,
     vector: f32,
     graph: f32,
     relation: f32,
@@ -6112,7 +6117,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("text", ToolParameterType::String).with_description("Optional lexical query text used for ranking."))
         .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of results to return."))
         .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Result offset for paging."))
-        .with_parameter(ToolParameter::new("graph", ToolParameterType::Object).with_description("Optional graph expansion config object: max_depth, max_visited, include_seeds, mode."))
+        .with_parameter(ToolParameter::new("graph", ToolParameterType::Object).with_description("Optional graph expansion config object: max_depth, max_visited, include_seeds, mode, algorithm (bfs or ppr)."))
         .with_parameter(ToolParameter::new("query_expansion", ToolParameterType::Object).with_description("Optional query expansion config object: mode (none or prf), feedback_docs, expansion_terms, min_idf, original_weight, expansion_weight."))
         .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("roles", ToolParameterType::Array).with_description("Optional list of ThoughtRole names.").with_items(ToolParameterType::String))
@@ -6134,7 +6139,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("text", ToolParameterType::String).with_description("Optional lexical query text."))
         .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of results to return."))
         .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Result offset for paging."))
-        .with_parameter(ToolParameter::new("graph", ToolParameterType::Object).with_description("Optional graph expansion config object: max_depth, max_visited, include_seeds, mode."))
+        .with_parameter(ToolParameter::new("graph", ToolParameterType::Object).with_description("Optional graph expansion config object: max_depth, max_visited, include_seeds, mode, algorithm (bfs or ppr)."))
         .with_parameter(ToolParameter::new("query_expansion", ToolParameterType::Object).with_description("Optional query expansion config object: mode (none or prf), feedback_docs, expansion_terms, min_idf, original_weight, expansion_weight."))
         .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("roles", ToolParameterType::Array).with_description("Optional list of ThoughtRole names.").with_items(ToolParameterType::String))
@@ -6784,7 +6789,25 @@ fn parse_ranked_graph_request(
     if let Some(mode) = graph.mode.as_deref() {
         parsed = parsed.with_mode(parse_graph_expansion_mode(mode)?);
     }
+    if let Some(algorithm) = graph.algorithm.as_deref() {
+        parsed = parsed.with_algorithm(parse_ranked_graph_algorithm(algorithm)?);
+    }
     Ok(parsed)
+}
+
+fn parse_ranked_graph_algorithm(
+    input: &str,
+) -> Result<RankedSearchGraphAlgorithm, Box<dyn Error + Send + Sync>> {
+    let normalized = normalize_label(input);
+    match normalized.as_str() {
+        "bfs" => Ok(RankedSearchGraphAlgorithm::Bfs),
+        "ppr" | "personalizedpagerank" | "pagerank" => Ok(RankedSearchGraphAlgorithm::Ppr),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Unsupported graph algorithm '{input}'. Expected bfs or ppr."),
+        )
+        .into()),
+    }
 }
 
 fn parse_ranked_query_expansion_request(

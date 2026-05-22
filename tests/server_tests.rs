@@ -3052,6 +3052,90 @@ async fn rest_context_bundles_returns_seed_anchored_groups() {
 }
 
 #[tokio::test]
+async fn rest_ranked_search_supports_ppr_graph_algorithm() {
+    let dir = unique_chain_dir();
+    let chain_key = "server-ppr-graph";
+    let router = rest_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+    let _seed = append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "graph-bot",
+        "Decision",
+        None,
+        "Alpha ranking seed for PPR transport.",
+    )
+    .await;
+
+    let support_append = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/thoughts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": chain_key,
+                        "agent_id": "graph-bot",
+                        "thought_type": "Summary",
+                        "content": "Supporting context reachable through PPR.",
+                        "refs": [0]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(support_append.status(), StatusCode::OK);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ranked-search")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": chain_key,
+                        "text": "alpha ranking",
+                        "limit": 10,
+                        "graph": {
+                            "algorithm": "ppr",
+                            "mode": "bidirectional",
+                            "max_visited": 10
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let results = parsed["results"].as_array().unwrap();
+    let supporting = results
+        .iter()
+        .find(|result| {
+            result["thought"]["content"]
+                .as_str()
+                .is_some_and(|content| content.starts_with("Supporting context"))
+        })
+        .expect("PPR should recover graph-supporting context through REST");
+    assert!(supporting["score"]["ppr"].as_f64().unwrap_or(0.0) > 0.0);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn rest_ranked_search_supports_prf_query_expansion() {
     let dir = unique_chain_dir();
     let chain_key = "server-prf-query-expansion";
