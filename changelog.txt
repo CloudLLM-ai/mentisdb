@@ -94,6 +94,11 @@
     requests can pass `query_routing: true` to classify the query with deterministic
     heuristics and auto-enable useful PRF/PPR routes; default routing remains off
     so existing ranked-search behavior is unchanged unless explicitly requested
+  - feat(memory): expose read-only append-only summary candidates — core, REST,
+    and MCP callers can request deterministic source windows for future Summary
+    thoughts using `mentisdb_summary_candidates` / `/v1/summary-candidates`;
+    the API only selects candidate ranges and never generates text, rewrites
+    memory, or appends summary thoughts
 
 0.9.8.44 MAY/07/2026
   - BREAKING: rename binary from `mentisdbd` to `mentisdb` — all CLI commands,
