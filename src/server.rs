@@ -2663,6 +2663,10 @@ impl MentisDbService {
             if let Some(graph) = &request.graph {
                 ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
             }
+            if let Some(query_expansion) = &request.query_expansion {
+                ranked_query = ranked_query
+                    .with_query_expansion(parse_ranked_query_expansion_request(query_expansion)?);
+            }
             if let Some(as_of) = request.as_of {
                 ranked_query = ranked_query.with_as_of(as_of);
             }
@@ -2692,6 +2696,7 @@ impl MentisDbService {
                         thought: thought_to_json(&chain, hit.thought),
                         score: RankedSearchScoreResponse {
                             lexical: hit.score.lexical,
+                            prf: hit.score.prf,
                             vector: hit.score.vector,
                             graph: hit.score.graph,
                             relation: hit.score.relation,
@@ -2789,6 +2794,7 @@ impl MentisDbService {
             limit: None,
             offset: None,
             graph: request.graph.clone(),
+            query_expansion: request.query_expansion.clone(),
             thought_types: request.thought_types.clone(),
             roles: request.roles.clone(),
             tags_any: request.tags_any.clone(),
@@ -2820,6 +2826,10 @@ impl MentisDbService {
         }
         if let Some(graph) = &request.graph {
             ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
+        }
+        if let Some(query_expansion) = &request.query_expansion {
+            ranked_query = ranked_query
+                .with_query_expansion(parse_ranked_query_expansion_request(query_expansion)?);
         }
         if let Some(as_of) = request.as_of {
             ranked_query = ranked_query.with_as_of(as_of);
@@ -3035,6 +3045,7 @@ impl MentisDbService {
                         thought,
                         score: RankedSearchScoreResponse {
                             lexical: score.lexical,
+                            prf: score.prf,
                             vector: score.vector,
                             graph: score.graph,
                             relation: score.relation,
@@ -3095,6 +3106,10 @@ impl MentisDbService {
         }
         if let Some(graph) = &request.graph {
             ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
+        }
+        if let Some(query_expansion) = &request.query_expansion {
+            ranked_query = ranked_query
+                .with_query_expansion(parse_ranked_query_expansion_request(query_expansion)?);
         }
         if let Some(as_of) = request.as_of {
             ranked_query = ranked_query.with_as_of(as_of);
@@ -4638,6 +4653,7 @@ struct RankedSearchRequest {
     limit: Option<usize>,
     offset: Option<usize>,
     graph: Option<RankedSearchGraphRequest>,
+    query_expansion: Option<RankedSearchQueryExpansionRequest>,
     thought_types: Option<Vec<String>>,
     roles: Option<Vec<String>>,
     tags_any: Option<Vec<String>>,
@@ -4664,9 +4680,20 @@ struct RankedSearchGraphRequest {
     mode: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+struct RankedSearchQueryExpansionRequest {
+    mode: Option<String>,
+    feedback_docs: Option<usize>,
+    expansion_terms: Option<usize>,
+    min_idf: Option<f32>,
+    original_weight: Option<f32>,
+    expansion_weight: Option<f32>,
+}
+
 #[derive(Debug, Serialize)]
 struct RankedSearchScoreResponse {
     lexical: f32,
+    prf: f32,
     vector: f32,
     graph: f32,
     relation: f32,
@@ -4740,6 +4767,7 @@ struct FederatedSearchRequest {
     offset: Option<usize>,
     /// Optional graph expansion config.
     graph: Option<RankedSearchGraphRequest>,
+    query_expansion: Option<RankedSearchQueryExpansionRequest>,
     /// Optional ThoughtType filter.
     thought_types: Option<Vec<String>>,
     /// Optional ThoughtRole filter.
@@ -6085,6 +6113,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of results to return."))
         .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Result offset for paging."))
         .with_parameter(ToolParameter::new("graph", ToolParameterType::Object).with_description("Optional graph expansion config object: max_depth, max_visited, include_seeds, mode."))
+        .with_parameter(ToolParameter::new("query_expansion", ToolParameterType::Object).with_description("Optional query expansion config object: mode (none or prf), feedback_docs, expansion_terms, min_idf, original_weight, expansion_weight."))
         .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("roles", ToolParameterType::Array).with_description("Optional list of ThoughtRole names.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("tags_any", ToolParameterType::Array).with_description("Optional tags to match.").with_items(ToolParameterType::String))
@@ -6106,6 +6135,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of results to return."))
         .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Result offset for paging."))
         .with_parameter(ToolParameter::new("graph", ToolParameterType::Object).with_description("Optional graph expansion config object: max_depth, max_visited, include_seeds, mode."))
+        .with_parameter(ToolParameter::new("query_expansion", ToolParameterType::Object).with_description("Optional query expansion config object: mode (none or prf), feedback_docs, expansion_terms, min_idf, original_weight, expansion_weight."))
         .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("roles", ToolParameterType::Array).with_description("Optional list of ThoughtRole names.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("tags_any", ToolParameterType::Array).with_description("Optional tags to match.").with_items(ToolParameterType::String))
@@ -6755,6 +6785,43 @@ fn parse_ranked_graph_request(
         parsed = parsed.with_mode(parse_graph_expansion_mode(mode)?);
     }
     Ok(parsed)
+}
+
+fn parse_ranked_query_expansion_request(
+    request: &RankedSearchQueryExpansionRequest,
+) -> Result<crate::search::query_expansion::PrfConfig, Box<dyn Error + Send + Sync>> {
+    let enabled = match request.mode.as_deref().map(normalize_label).as_deref() {
+        None | Some("none") | Some("off") | Some("disabled") => false,
+        Some("prf") | Some("pseudorelevancefeedback") => true,
+        Some(other) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Unsupported query expansion mode '{other}'. Expected none or prf."),
+            )
+            .into());
+        }
+    };
+
+    let mut config = crate::search::query_expansion::PrfConfig {
+        enabled,
+        ..crate::search::query_expansion::PrfConfig::default()
+    };
+    if let Some(feedback_docs) = request.feedback_docs {
+        config.feedback_docs = feedback_docs;
+    }
+    if let Some(expansion_terms) = request.expansion_terms {
+        config.expansion_terms = expansion_terms;
+    }
+    if let Some(min_idf) = request.min_idf {
+        config.min_idf = min_idf.max(0.0);
+    }
+    if let Some(original_weight) = request.original_weight {
+        config.original_weight = original_weight.max(0.0);
+    }
+    if let Some(expansion_weight) = request.expansion_weight {
+        config.expansion_weight = expansion_weight.max(0.0);
+    }
+    Ok(config)
 }
 
 fn parse_graph_expansion_mode(

@@ -2658,6 +2658,13 @@ pub struct RankedSearchQuery {
     /// lexical query. When `text` is absent or blank, ranked search falls back
     /// to metadata heuristics and graph expansion is ignored.
     pub graph: Option<RankedSearchGraph>,
+    /// Optional pseudo-relevance feedback query expansion route.
+    ///
+    /// Disabled by default. When enabled, ranked search runs the original
+    /// lexical query first, extracts expansion terms from the top lexical hits,
+    /// runs a second expanded lexical route, and adds that score separately as
+    /// [`RankedSearchScore::prf`].
+    pub query_expansion: Option<crate::search::query_expansion::PrfConfig>,
     /// Maximum number of ranked hits to return.
     pub limit: usize,
     /// Optional point-in-time query: only consider relations and thoughts
@@ -2736,6 +2743,15 @@ impl RankedSearchQuery {
         self
     }
 
+    /// Enable pseudo-relevance feedback query expansion for ranked search.
+    pub fn with_query_expansion(
+        mut self,
+        config: crate::search::query_expansion::PrfConfig,
+    ) -> Self {
+        self.query_expansion = Some(config);
+        self
+    }
+
     /// Limit the number of ranked hits returned.
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = limit.max(1);
@@ -2789,6 +2805,7 @@ impl Default for RankedSearchQuery {
             filter: ThoughtQuery::new(),
             text: None,
             graph: None,
+            query_expansion: None,
             limit: 10,
             as_of: None,
             scope: None,
@@ -2808,6 +2825,8 @@ pub struct RankedSearchScore {
     pub lexical: f32,
     /// Score contributed by vector-sidecar similarity.
     pub vector: f32,
+    /// Score contributed by pseudo-relevance feedback query expansion.
+    pub prf: f32,
     /// Score contributed by graph proximity to a lexical seed.
     pub graph: f32,
     /// Score contributed by semantic relation kinds along the chosen graph path.
@@ -3510,6 +3529,17 @@ fn merge_relation_kinds(
             existing.push(*kind);
         }
     }
+}
+
+fn prf_feedback_text(thought: &Thought) -> String {
+    let mut parts = Vec::new();
+    parts.push(thought.content.as_str());
+    parts.extend(thought.tags.iter().map(String::as_str));
+    parts.extend(thought.concepts.iter().map(String::as_str));
+    if let Some(entity_type) = &thought.entity_type {
+        parts.push(entity_type.as_str());
+    }
+    parts.join(" ")
 }
 
 /// Mirrors the `Thought` binary layout written by the 0.5.1 (schema-V1) daemon.
@@ -5041,6 +5071,17 @@ impl MentisDb {
         let lexical_scores = ranked_text
             .map(|text| self.rank_candidates_lexically(&candidates, text))
             .unwrap_or_default();
+        let prf_scores = ranked_text
+            .zip(request.query_expansion.as_ref())
+            .map(|(text, config)| {
+                self.rank_candidates_with_query_expansion(
+                    &candidates,
+                    text,
+                    &lexical_scores,
+                    config,
+                )
+            })
+            .unwrap_or_default();
         let vector_scores = ranked_text
             .map(|text| self.rank_candidates_semantically(&candidates, text))
             .unwrap_or_default();
@@ -5067,6 +5108,7 @@ impl MentisDb {
                     thought,
                     ranked_text,
                     &lexical_scores,
+                    &prf_scores,
                     &vector_scores,
                     &graph_scores,
                 )
@@ -5131,6 +5173,13 @@ impl MentisDb {
                     .total_cmp(&a.score.vector)
                     .then_with(|| a.thought.index.cmp(&b.thought.index))
             });
+            let mut by_prf = hits.clone();
+            by_prf.sort_by(|a, b| {
+                b.score
+                    .prf
+                    .total_cmp(&a.score.prf)
+                    .then_with(|| a.thought.index.cmp(&b.thought.index))
+            });
             let mut by_graph = hits.clone();
             by_graph.sort_by(|a, b| {
                 let a_graph = a.score.graph + a.score.relation + a.score.seed_support;
@@ -5150,16 +5199,20 @@ impl MentisDb {
                 .take(rerank_k)
                 .map(|h| h.thought.index)
                 .collect();
+            let prf_ids: Vec<u64> = by_prf
+                .iter()
+                .take(rerank_k)
+                .filter(|h| h.score.prf > 0.0)
+                .map(|h| h.thought.index)
+                .collect();
             let graph_ids: Vec<u64> = by_graph
                 .iter()
                 .take(rerank_k)
                 .map(|h| h.thought.index)
                 .collect();
 
-            let merged = crate::search::ranked::rrf_merge_three(
-                &lexical_ids,
-                &vector_ids,
-                &graph_ids,
+            let merged = crate::search::ranked::rrf_merge(
+                &[&lexical_ids, &vector_ids, &prf_ids, &graph_ids],
                 crate::search::ranked::RRF_K,
             );
             let rrf_scores: HashMap<u64, f64> = merged.into_iter().collect();
@@ -5171,6 +5224,7 @@ impl MentisDb {
                     let additive = hit.score.graph
                         + hit.score.relation
                         + hit.score.seed_support
+                        + hit.score.prf
                         + hit.score.importance
                         + hit.score.confidence
                         + hit.score.recency
@@ -5188,6 +5242,7 @@ impl MentisDb {
                 .total
                 .total_cmp(&left.score.total)
                 .then_with(|| right.score.lexical.total_cmp(&left.score.lexical))
+                .then_with(|| right.score.prf.total_cmp(&left.score.prf))
                 .then_with(|| right.score.vector.total_cmp(&left.score.vector))
                 .then_with(|| right.score.graph.total_cmp(&left.score.graph))
                 .then_with(|| right.score.relation.total_cmp(&left.score.relation))
@@ -6501,11 +6556,13 @@ impl MentisDb {
         thought: &'a Thought,
         ranked_text: Option<&str>,
         lexical_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
+        prf_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
         vector_scores: &HashMap<usize, f32>,
         graph_hits: &HashMap<usize, RankedGraphHit>,
     ) -> Option<RankedSearchHit<'a>> {
         let (
             lexical,
+            prf,
             vector,
             graph,
             relation,
@@ -6520,18 +6577,22 @@ impl MentisDb {
             let lexical_hit = lexical_hits
                 .get(&(thought.index as usize))
                 .filter(|hit| hit.score > 0.0);
+            let prf_hit = prf_hits
+                .get(&(thought.index as usize))
+                .filter(|hit| hit.score > 0.0);
             let graph_hit = graph_hits.get(&(thought.index as usize));
             let vector = vector_scores
                 .get(&(thought.index as usize))
                 .copied()
                 .unwrap_or_default();
 
-            if lexical_hit.is_none() && graph_hit.is_none() && vector <= 0.0 {
+            if lexical_hit.is_none() && prf_hit.is_none() && graph_hit.is_none() && vector <= 0.0 {
                 return None;
             }
 
             (
                 lexical_hit.map(|hit| hit.score).unwrap_or_default(),
+                prf_hit.map(|hit| hit.score).unwrap_or_default(),
                 vector,
                 graph_hit
                     .map(|hit| self.graph_proximity_score(hit.best_hit.depth))
@@ -6547,14 +6608,17 @@ impl MentisDb {
                     .unwrap_or_default(),
                 graph_hit.map(|hit| hit.best_hit.path.clone()),
                 lexical_hit
+                    .or(prf_hit)
                     .map(|hit| hit.matched_terms.clone())
                     .unwrap_or_default(),
                 lexical_hit
+                    .or(prf_hit)
                     .map(|hit| hit.match_sources.clone())
                     .unwrap_or_default(),
             )
         } else {
             (
+                0.0,
                 0.0,
                 0.0,
                 0.0,
@@ -6595,6 +6659,7 @@ impl MentisDb {
             0.0
         };
         let total = lexical
+            + prf
             + vector_contribution
             + graph
             + relation
@@ -6607,6 +6672,7 @@ impl MentisDb {
             thought,
             score: RankedSearchScore {
                 lexical,
+                prf,
                 vector,
                 graph,
                 relation,
@@ -6642,6 +6708,55 @@ impl MentisDb {
             .into_iter()
             .map(|hit| (hit.doc_position, hit))
             .collect()
+    }
+
+    fn rank_candidates_with_query_expansion(
+        &self,
+        candidates: &[&Thought],
+        text: &str,
+        lexical_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
+        config: &crate::search::query_expansion::PrfConfig,
+    ) -> HashMap<usize, crate::search::lexical::LexicalHit> {
+        if !config.enabled || lexical_hits.is_empty() {
+            return HashMap::new();
+        }
+
+        let mut feedback_hits = lexical_hits.values().collect::<Vec<_>>();
+        feedback_hits.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.doc_position.cmp(&right.doc_position))
+        });
+
+        let feedback_docs = feedback_hits
+            .into_iter()
+            .take(config.feedback_docs)
+            .filter_map(|hit| {
+                let thought = self.thoughts.get(hit.doc_position)?;
+                Some(crate::search::query_expansion::PrfFeedbackDocument {
+                    rank: hit.doc_position,
+                    score: hit.score,
+                    text: prf_feedback_text(thought),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let expansion = crate::search::query_expansion::expand_query_from_feedback_docs(
+            text,
+            &feedback_docs,
+            candidates.len().max(1),
+            config,
+        );
+        if expansion.expansion_terms.is_empty() {
+            return HashMap::new();
+        }
+
+        let mut hits = self.rank_candidates_lexically(candidates, &expansion.expanded_query);
+        for hit in hits.values_mut() {
+            hit.score *= config.expansion_weight.max(0.0);
+        }
+        hits
     }
 
     fn rank_candidates_semantically(

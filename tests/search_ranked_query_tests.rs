@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use mentisdb::search::{lexical::LexicalMatchSource, GraphExpansionMode, ThoughtLocator};
+use mentisdb::search::{
+    lexical::LexicalMatchSource, query_expansion::PrfConfig, GraphExpansionMode, ThoughtLocator,
+};
 use mentisdb::{
     MentisDb, RankedSearchBackend, RankedSearchGraph, RankedSearchQuery, ThoughtInput,
     ThoughtQuery, ThoughtRelation, ThoughtRelationKind, ThoughtType,
@@ -100,6 +102,66 @@ fn ranked_query_respects_exact_filters_before_lexical_ordering() {
         "Vector search must remain optional."
     );
     assert!(ranked.hits[0].score.lexical > 0.0);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ranked_query_expansion_recovers_vocabulary_mismatch_hits() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "ranked-query-prf").unwrap();
+
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(
+                ThoughtType::Insight,
+                "Trip cost discussion mentioned invoice vendor payment reconciliation.",
+            ),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(
+                ThoughtType::Insight,
+                "Invoice vendor payment receipt requires accounting follow-up.",
+            ),
+        )
+        .unwrap();
+
+    let without_expansion = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text("trip cost")
+            .with_limit(10),
+    );
+    assert_eq!(without_expansion.hits.len(), 1);
+
+    let with_expansion = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text("trip cost")
+            .with_query_expansion(PrfConfig {
+                enabled: true,
+                feedback_docs: 1,
+                expansion_terms: 3,
+                min_idf: 0.0,
+                original_weight: 1.0,
+                expansion_weight: 0.4,
+            })
+            .with_limit(10),
+    );
+    assert_eq!(with_expansion.hits.len(), 2);
+    let expanded_hit = with_expansion
+        .hits
+        .iter()
+        .find(|hit| {
+            hit.thought
+                .content
+                .starts_with("Invoice vendor payment receipt")
+        })
+        .expect("PRF should recover the vocabulary-mismatch hit");
+    assert_eq!(expanded_hit.score.lexical, 0.0);
+    assert!(expanded_hit.score.prf > 0.0);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
