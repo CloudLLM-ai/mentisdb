@@ -17,12 +17,20 @@ pub mod implicit_edges;
 pub mod lemmas;
 /// BM25-style lexical indexing and ranking over committed thoughts.
 pub mod lexical;
+/// Personalized PageRank graph expansion primitives.
+pub mod ppr;
 /// Provenance path structures for graph expansion starting from lexical seeds.
 pub mod provenance;
+/// Pseudo-relevance feedback query expansion primitives.
+pub mod query_expansion;
+/// Deterministic query intent classification and route weighting.
+pub mod query_intent;
 /// Reciprocal Rank Fusion (RRF) reranking for hybrid search results.
 pub mod ranked;
 /// Rebuildable vector sidecar persistence for one durable chain.
 pub mod sidecar;
+/// Append-only hierarchical summary candidate selection.
+pub mod summary_index;
 /// Provider-agnostic vector and embedding helpers for deterministic ranking.
 pub mod vector;
 
