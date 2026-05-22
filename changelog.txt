@@ -85,6 +85,11 @@
     while enabled PRF adds a separate `score.prf` contribution and can surface
     vocabulary-mismatch hits recovered from high-IDF terms in top lexical feedback
     documents
+  - feat(search): integrate opt-in Personalized PageRank graph scoring into ranked
+    search — graph config can pass `algorithm: "ppr"` to score lexical-seeded
+    neighborhoods over explicit relations plus implicit auto-edge overlay links;
+    BFS remains the default graph algorithm, while PPR contributes separately as
+    `score.ppr` for transport visibility and future tuning
 
 0.9.8.44 MAY/07/2026
   - BREAKING: rename binary from `mentisdbd` to `mentisdb` — all CLI commands,
