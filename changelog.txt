@@ -73,6 +73,12 @@
     the overlay sidecar while the daemon is running no longer leaves the file absent
     until a full process restart; added regression coverage for both cached-chain
     repair and reopen-time rebuild
+  - feat(search): add retrieval improvement primitives for the next search pipeline
+    iteration — new isolated modules provide deterministic Personalized PageRank
+    graph scoring, pseudo-relevance feedback query expansion, append-only summary
+    candidate selection, and heuristic query-intent route planning; modules are
+    exported for testing and future integration but do not change default ranked
+    search behavior yet
 
 0.9.8.44 MAY/07/2026
   - BREAKING: rename binary from `mentisdbd` to `mentisdb` — all CLI commands,
