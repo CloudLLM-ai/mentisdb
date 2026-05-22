@@ -8,11 +8,11 @@ pub mod bundle;
 /// Deterministic breadth-first expansion helpers built on top of the adjacency
 /// layer.
 pub mod expansion;
-/// Vector-similarity implicit edge overlay for augmenting graph expansion.
-pub mod implicit_edges;
 /// Graph adjacency and edge-provenance structures derived from committed
 /// thoughts.
 pub mod graph;
+/// Vector-similarity implicit edge overlay for augmenting graph expansion.
+pub mod implicit_edges;
 /// Irregular verb lemma expansion for lexical search queries.
 pub mod lemmas;
 /// BM25-style lexical indexing and ranking over committed thoughts.

@@ -1,6 +1,6 @@
 use super::{
-    AdjacencyDirection, GraphEdge, GraphEdgeProvenance, GraphExpansionPath,
-    ThoughtAdjacencyIndex, ThoughtLocator,
+    AdjacencyDirection, GraphEdge, GraphEdgeProvenance, GraphExpansionPath, ThoughtAdjacencyIndex,
+    ThoughtLocator,
 };
 use crate::ThoughtRelationKind;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -208,7 +208,8 @@ impl GraphExpansionResult {
                                 chain_key: None,
                             }],
                         };
-                        let Ok(next_path) = path.extend(AdjacencyDirection::Outgoing, &synthetic_edge)
+                        let Ok(next_path) =
+                            path.extend(AdjacencyDirection::Outgoing, &synthetic_edge)
                         else {
                             continue;
                         };
@@ -264,10 +265,13 @@ mod tests {
 
         let adjacency = ThoughtAdjacencyIndex::from_thoughts(&[]);
         let mut overlay = ImplicitEdgeOverlay::new(0.5, 5);
-        overlay.edges.insert(id_a, vec![ImplicitNeighbor {
-            thought_id: id_b,
-            cosine_score: 0.9,
-        }]);
+        overlay.edges.insert(
+            id_a,
+            vec![ImplicitNeighbor {
+                thought_id: id_b,
+                cosine_score: 0.9,
+            }],
+        );
 
         let mut id_lookup = HashMap::new();
         id_lookup.insert(id_a, loc_a.clone());
@@ -293,14 +297,20 @@ mod tests {
 
         let adjacency = ThoughtAdjacencyIndex::from_thoughts(&[]);
         let mut overlay = ImplicitEdgeOverlay::new(0.5, 5);
-        overlay.edges.insert(id_a, vec![ImplicitNeighbor {
-            thought_id: id_b,
-            cosine_score: 0.9,
-        }]);
-        overlay.edges.insert(id_b, vec![ImplicitNeighbor {
-            thought_id: id_a,
-            cosine_score: 0.9,
-        }]);
+        overlay.edges.insert(
+            id_a,
+            vec![ImplicitNeighbor {
+                thought_id: id_b,
+                cosine_score: 0.9,
+            }],
+        );
+        overlay.edges.insert(
+            id_b,
+            vec![ImplicitNeighbor {
+                thought_id: id_a,
+                cosine_score: 0.9,
+            }],
+        );
 
         let mut id_lookup = HashMap::new();
         id_lookup.insert(id_a, loc_a.clone());
@@ -328,10 +338,19 @@ mod tests {
 
         let adjacency = ThoughtAdjacencyIndex::from_thoughts(&[]);
         let mut overlay = ImplicitEdgeOverlay::new(0.5, 5);
-        overlay.edges.insert(id_a, vec![
-            ImplicitNeighbor { thought_id: id_b, cosine_score: 0.9 },
-            ImplicitNeighbor { thought_id: id_c, cosine_score: 0.8 },
-        ]);
+        overlay.edges.insert(
+            id_a,
+            vec![
+                ImplicitNeighbor {
+                    thought_id: id_b,
+                    cosine_score: 0.9,
+                },
+                ImplicitNeighbor {
+                    thought_id: id_c,
+                    cosine_score: 0.8,
+                },
+            ],
+        );
 
         let mut id_lookup = HashMap::new();
         id_lookup.insert(id_a, loc_a.clone());
@@ -360,10 +379,13 @@ mod tests {
 
         let adjacency = ThoughtAdjacencyIndex::from_thoughts(&[]);
         let mut overlay = ImplicitEdgeOverlay::new(0.5, 5);
-        overlay.edges.insert(id_a, vec![ImplicitNeighbor {
-            thought_id: id_b,
-            cosine_score: 0.9,
-        }]);
+        overlay.edges.insert(
+            id_a,
+            vec![ImplicitNeighbor {
+                thought_id: id_b,
+                cosine_score: 0.9,
+            }],
+        );
 
         let mut id_lookup = HashMap::new();
         id_lookup.insert(id_a, loc_a.clone());

@@ -589,17 +589,16 @@ impl LexicalIndex {
         let metadata = 64u64;
 
         // One stat block per indexed thought.
-        let doc_stats = (self.document_stats.len() as u64)
-            * (size_of::<LexicalDocumentStats>() as u64);
+        let doc_stats =
+            (self.document_stats.len() as u64) * (size_of::<LexicalDocumentStats>() as u64);
 
         // Postings: term string + HashMap entry overhead + Vec overhead + postings.
         let mut postings = 0u64;
         for (term, list) in &self.postings {
-            postings += term.len() as u64;           // string bytes
-            postings += 32;                           // HashMap entry overhead estimate
-            postings += 24;                           // Vec header/capacity estimate
-            postings += (list.len() as u64)
-                * (size_of::<LexicalPosting>() as u64);
+            postings += term.len() as u64; // string bytes
+            postings += 32; // HashMap entry overhead estimate
+            postings += 24; // Vec header/capacity estimate
+            postings += (list.len() as u64) * (size_of::<LexicalPosting>() as u64);
         }
 
         metadata + doc_stats + postings

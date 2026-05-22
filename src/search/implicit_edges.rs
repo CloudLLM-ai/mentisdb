@@ -142,11 +142,11 @@ impl ImplicitEdgeOverlay {
         let bytes = std::fs::read(path)?;
         let (overlay, _) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
             .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Failed to decode implicit edge overlay: {e}"),
-                )
-            })?;
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to decode implicit edge overlay: {e}"),
+            )
+        })?;
         Ok(overlay)
     }
 }
@@ -186,10 +186,7 @@ mod tests {
     fn test_build_identical_thoughts() {
         let id_a = Uuid::new_v4();
         let id_b = Uuid::new_v4();
-        let sidecar = make_sidecar(vec![
-            (id_a, vec![1.0, 0.0]),
-            (id_b, vec![1.0, 0.0]),
-        ]);
+        let sidecar = make_sidecar(vec![(id_a, vec![1.0, 0.0]), (id_b, vec![1.0, 0.0])]);
         let overlay = ImplicitEdgeOverlay::build_from_sidecar(&sidecar, 5, 0.99);
         assert_eq!(overlay.edges.len(), 2);
         let a_neighbors = overlay.edges.get(&id_a).unwrap();
@@ -202,10 +199,7 @@ mod tests {
     fn test_threshold_gate() {
         let id_a = Uuid::new_v4();
         let id_b = Uuid::new_v4();
-        let sidecar = make_sidecar(vec![
-            (id_a, vec![1.0, 0.0]),
-            (id_b, vec![0.5, 0.5]),
-        ]);
+        let sidecar = make_sidecar(vec![(id_a, vec![1.0, 0.0]), (id_b, vec![0.5, 0.5])]);
         let overlay = ImplicitEdgeOverlay::build_from_sidecar(&sidecar, 5, 0.1);
         assert!(!overlay.edges.is_empty());
 
@@ -232,10 +226,7 @@ mod tests {
     #[test]
     fn test_add_thought_incremental() {
         let ids: Vec<Uuid> = (0..3).map(|_| Uuid::new_v4()).collect();
-        let sidecar = make_sidecar(vec![
-            (ids[0], vec![1.0, 0.0]),
-            (ids[1], vec![0.99, 0.01]),
-        ]);
+        let sidecar = make_sidecar(vec![(ids[0], vec![1.0, 0.0]), (ids[1], vec![0.99, 0.01])]);
         let mut overlay = ImplicitEdgeOverlay::build_from_sidecar(&sidecar, 5, 0.5);
 
         let extended_sidecar = make_sidecar(vec![
@@ -243,7 +234,7 @@ mod tests {
             (ids[1], vec![0.99, 0.01]),
             (ids[2], vec![0.98, 0.02]),
         ]);
-        overlay.add_thought(ids[2], &vec![0.98, 0.02], &extended_sidecar);
+        overlay.add_thought(ids[2], &[0.98, 0.02], &extended_sidecar);
 
         let from_scratch = ImplicitEdgeOverlay::build_from_sidecar(&extended_sidecar, 5, 0.5);
         assert_eq!(overlay.edges, from_scratch.edges);
@@ -253,15 +244,10 @@ mod tests {
     fn test_back_edges() {
         let id_a = Uuid::new_v4();
         let id_b = Uuid::new_v4();
-        let sidecar = make_sidecar(vec![
-            (id_a, vec![1.0, 0.0]),
-        ]);
+        let sidecar = make_sidecar(vec![(id_a, vec![1.0, 0.0])]);
         let mut overlay = ImplicitEdgeOverlay::build_from_sidecar(&sidecar, 5, 0.5);
-        let extended_sidecar = make_sidecar(vec![
-            (id_a, vec![1.0, 0.0]),
-            (id_b, vec![0.99, 0.01]),
-        ]);
-        overlay.add_thought(id_b, &vec![0.99, 0.01], &extended_sidecar);
+        let extended_sidecar = make_sidecar(vec![(id_a, vec![1.0, 0.0]), (id_b, vec![0.99, 0.01])]);
+        overlay.add_thought(id_b, &[0.99, 0.01], &extended_sidecar);
 
         let a_neighbors = overlay.edges.get(&id_a).unwrap();
         assert_eq!(a_neighbors.len(), 1);
@@ -272,10 +258,7 @@ mod tests {
     fn test_roundtrip_persistence() {
         let id_a = Uuid::new_v4();
         let id_b = Uuid::new_v4();
-        let sidecar = make_sidecar(vec![
-            (id_a, vec![1.0, 0.0]),
-            (id_b, vec![0.99, 0.01]),
-        ]);
+        let sidecar = make_sidecar(vec![(id_a, vec![1.0, 0.0]), (id_b, vec![0.99, 0.01])]);
         let overlay = ImplicitEdgeOverlay::build_from_sidecar(&sidecar, 5, 0.5);
 
         let tmp_dir = std::env::temp_dir();
