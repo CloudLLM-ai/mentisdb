@@ -1,13 +1,10 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use mentisdb::search::{
-    lexical::LexicalMatchSource, query_expansion::PrfConfig, GraphExpansionMode, ThoughtLocator,
-};
+use mentisdb::search::{lexical::LexicalMatchSource, GraphExpansionMode, ThoughtLocator};
 use mentisdb::{
-    MentisDb, RankedSearchBackend, RankedSearchGraph, RankedSearchGraphAlgorithm,
-    RankedSearchQuery, ThoughtInput, ThoughtQuery, ThoughtRelation, ThoughtRelationKind,
-    ThoughtType,
+    MentisDb, RankedSearchBackend, RankedSearchGraph, RankedSearchQuery, ThoughtInput,
+    ThoughtQuery, ThoughtRelation, ThoughtRelationKind, ThoughtType,
 };
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -103,164 +100,6 @@ fn ranked_query_respects_exact_filters_before_lexical_ordering() {
         "Vector search must remain optional."
     );
     assert!(ranked.hits[0].score.lexical > 0.0);
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn ranked_query_expansion_recovers_vocabulary_mismatch_hits() {
-    let dir = unique_chain_dir();
-    let mut chain = MentisDb::open_with_key(&dir, "ranked-query-prf").unwrap();
-
-    chain
-        .append_thought(
-            "planner",
-            ThoughtInput::new(
-                ThoughtType::Insight,
-                "Trip cost discussion mentioned invoice vendor payment reconciliation.",
-            ),
-        )
-        .unwrap();
-    chain
-        .append_thought(
-            "planner",
-            ThoughtInput::new(
-                ThoughtType::Insight,
-                "Invoice vendor payment receipt requires accounting follow-up.",
-            ),
-        )
-        .unwrap();
-
-    let without_expansion = chain.query_ranked(
-        &RankedSearchQuery::new()
-            .with_text("trip cost")
-            .with_limit(10),
-    );
-    assert_eq!(without_expansion.hits.len(), 1);
-
-    let with_expansion = chain.query_ranked(
-        &RankedSearchQuery::new()
-            .with_text("trip cost")
-            .with_query_expansion(PrfConfig {
-                enabled: true,
-                feedback_docs: 1,
-                expansion_terms: 3,
-                min_idf: 0.0,
-                original_weight: 1.0,
-                expansion_weight: 0.4,
-            })
-            .with_limit(10),
-    );
-    assert_eq!(with_expansion.hits.len(), 2);
-    let expanded_hit = with_expansion
-        .hits
-        .iter()
-        .find(|hit| {
-            hit.thought
-                .content
-                .starts_with("Invoice vendor payment receipt")
-        })
-        .expect("PRF should recover the vocabulary-mismatch hit");
-    assert_eq!(expanded_hit.score.lexical, 0.0);
-    assert!(expanded_hit.score.prf > 0.0);
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn ranked_query_routing_can_auto_enable_prf() {
-    let dir = unique_chain_dir();
-    let mut chain = MentisDb::open_with_key(&dir, "ranked-query-routing-prf").unwrap();
-
-    chain
-        .append_thought(
-            "planner",
-            ThoughtInput::new(
-                ThoughtType::Insight,
-                "Trip cost discussion mentioned invoice vendor payment reconciliation.",
-            ),
-        )
-        .unwrap();
-    chain
-        .append_thought(
-            "planner",
-            ThoughtInput::new(
-                ThoughtType::Insight,
-                "Invoice vendor payment receipt requires accounting follow-up.",
-            ),
-        )
-        .unwrap();
-    for index in 0..4 {
-        chain
-            .append_thought(
-                "planner",
-                ThoughtInput::new(
-                    ThoughtType::Insight,
-                    format!("Unrelated filler memory number {index}."),
-                ),
-            )
-            .unwrap();
-    }
-
-    let with_routing = chain.query_ranked(
-        &RankedSearchQuery::new()
-            .with_text("trip cost")
-            .with_query_routing(true)
-            .with_limit(10),
-    );
-    let recovered = with_routing
-        .hits
-        .iter()
-        .find(|hit| {
-            hit.thought
-                .content
-                .starts_with("Invoice vendor payment receipt")
-        })
-        .expect("query routing should auto-enable PRF for semantic/entity-like queries");
-    assert_eq!(recovered.score.lexical, 0.0);
-    assert!(recovered.score.prf > 0.0);
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn ranked_query_routing_can_auto_enable_ppr_for_causal_queries() {
-    let dir = unique_chain_dir();
-    let mut chain = MentisDb::open_with_key(&dir, "ranked-query-routing-ppr").unwrap();
-
-    let seed_id = chain
-        .append_thought(
-            "planner",
-            ThoughtInput::new(ThoughtType::Decision, "Why alpha ranking changed."),
-        )
-        .unwrap()
-        .id;
-    chain
-        .append_thought(
-            "planner",
-            ThoughtInput::new(
-                ThoughtType::Summary,
-                "Supporting causal context reachable through routing.",
-            )
-            .with_relations(vec![ThoughtRelation::new(
-                ThoughtRelationKind::CausedBy,
-                seed_id,
-            )]),
-        )
-        .unwrap();
-
-    let with_routing = chain.query_ranked(
-        &RankedSearchQuery::new()
-            .with_text("why alpha ranking")
-            .with_query_routing(true)
-            .with_limit(10),
-    );
-    let supporting = with_routing
-        .hits
-        .iter()
-        .find(|hit| hit.thought.content.starts_with("Supporting causal context"))
-        .expect("query routing should auto-enable PPR for causal queries");
-    assert!(supporting.score.ppr > 0.0);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -625,60 +464,6 @@ fn ranked_query_graph_expansion_prefers_closer_supporting_context() {
         .map(|locator| locator.thought_index)
         .collect::<Vec<_>>();
     assert_eq!(visited, vec![Some(0), Some(1), Some(2)]);
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn ranked_query_with_ppr_graph_surfaces_supporting_context() {
-    let dir = unique_chain_dir();
-    let mut chain = MentisDb::open_with_key(&dir, "ranked-query-ppr").unwrap();
-
-    let seed_id = chain
-        .append_thought(
-            "planner",
-            ThoughtInput::new(ThoughtType::Decision, "Alpha ranking seed for PPR."),
-        )
-        .unwrap()
-        .id;
-    chain
-        .append_thought(
-            "planner",
-            ThoughtInput::new(
-                ThoughtType::Summary,
-                "Supporting context reachable by graph.",
-            )
-            .with_relations(vec![ThoughtRelation::new(
-                ThoughtRelationKind::References,
-                seed_id,
-            )]),
-        )
-        .unwrap();
-
-    let without_graph = chain.query_ranked(
-        &RankedSearchQuery::new()
-            .with_text("alpha ranking")
-            .with_limit(10),
-    );
-    assert_eq!(without_graph.hits.len(), 1);
-
-    let with_ppr = chain.query_ranked(
-        &RankedSearchQuery::new()
-            .with_text("alpha ranking")
-            .with_graph(
-                RankedSearchGraph::new()
-                    .with_algorithm(RankedSearchGraphAlgorithm::Ppr)
-                    .with_max_visited(10),
-            )
-            .with_limit(10),
-    );
-    assert_eq!(with_ppr.hits.len(), 2);
-    let supporting = with_ppr
-        .hits
-        .iter()
-        .find(|hit| hit.thought.content.starts_with("Supporting context"))
-        .expect("PPR should recover graph-supporting context");
-    assert!(supporting.score.ppr > 0.0);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

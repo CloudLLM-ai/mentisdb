@@ -79,30 +79,17 @@
     candidate selection, and heuristic query-intent route planning; modules are
     exported for testing and future integration but do not change default ranked
     search behavior yet
-  - feat(search): integrate opt-in pseudo-relevance feedback query expansion into
-    ranked search — REST/MCP ranked-search requests can pass `query_expansion`
-    with `mode: "prf"`; the original lexical route remains unchanged by default,
-    while enabled PRF adds a separate `score.prf` contribution and can surface
-    vocabulary-mismatch hits recovered from high-IDF terms in top lexical feedback
-    documents
-  - feat(search): integrate opt-in Personalized PageRank graph scoring into ranked
-    search — graph config can pass `algorithm: "ppr"` to score lexical-seeded
-    neighborhoods over explicit relations plus implicit auto-edge overlay links;
-    BFS remains the default graph algorithm, while PPR contributes separately as
-    `score.ppr` for transport visibility and future tuning
-  - feat(search): integrate opt-in query-aware route planning — ranked-search
-    requests can pass `query_routing: true` to classify the query with deterministic
-    heuristics and auto-enable useful PRF/PPR routes; default routing remains off
-    so existing ranked-search behavior is unchanged unless explicitly requested
   - feat(memory): expose read-only append-only summary candidates — core, REST,
     and MCP callers can request deterministic source windows for future Summary
     thoughts using `mentisdb_summary_candidates` / `/v1/summary-candidates`;
     the API only selects candidate ranges and never generates text, rewrites
     memory, or appends summary thoughts
-  - bench: extend LongMemEval, LoCoMo, and ConvoMem harnesses with
-    --enable-prf / --use-ppr / --enable-query-routing flags (plus wiring for
-    existing --reranking in LoCoMo) so comparative sweeps of the new retrieval
-    routes can be run on the same ingested chains without code changes
+  - revert(search): remove PRF query expansion, PPR graph scoring, and query-aware
+    routing from ranked-search pipeline — benchmark validation (LongMemEval 500q)
+    showed these features did not improve recall and added latency; the primitive
+    modules remain in src/search/ for future work but are no longer wired into
+    default or opt-in ranked search; REST/MCP request parsing and score fields
+    for prf/ppr removed; summary candidates API is unaffected
 
  0.9.8.44 MAY/07/2026
   - BREAKING: rename binary from `mentisdbd` to `mentisdb` — all CLI commands,

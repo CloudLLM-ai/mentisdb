@@ -99,28 +99,12 @@ def append_turn(base_url: str, chain_key: str, content: str, speaker: str) -> No
     })
 
 
-def ranked_search(
-    base_url: str,
-    chain_key: str,
-    query: str,
-    limit: int,
-    enable_prf: bool = False,
-    use_ppr: bool = False,
-    enable_routing: bool = False,
-) -> list[dict]:
-    payload: dict = {
+def ranked_search(base_url: str, chain_key: str, query: str, limit: int) -> list[dict]:
+    resp = _post(base_url, "/v1/ranked-search", {
         "chain_key": chain_key,
         "text": query,
         "limit": limit,
-        "graph": {
-            "algorithm": "ppr" if use_ppr else "bfs",
-        },
-    }
-    if enable_prf:
-        payload["query_expansion"] = {"mode": "prf"}
-    if enable_routing:
-        payload["query_routing"] = True
-    resp = _post(base_url, "/v1/ranked-search", payload)
+    })
     return [r["thought"] for r in resp.get("results", [])]
 
 
