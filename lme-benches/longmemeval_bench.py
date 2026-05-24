@@ -145,6 +145,9 @@ def ranked_search(
     enable_prf: bool = False,
     use_ppr: bool = False,
     enable_routing: bool = False,
+    prf_min_idf: float | None = None,
+    prf_feedback_docs: int | None = None,
+    prf_expansion_terms: int | None = None,
 ) -> list[dict]:
     payload: dict = {
         "chain_key": chain_key,
@@ -163,6 +166,12 @@ def ranked_search(
             "feedback_docs": 5,
             "expansion_terms": 8,
         }
+        if prf_min_idf is not None:
+            payload["query_expansion"]["min_idf"] = prf_min_idf
+        if prf_feedback_docs is not None:
+            payload["query_expansion"]["feedback_docs"] = prf_feedback_docs
+        if prf_expansion_terms is not None:
+            payload["query_expansion"]["expansion_terms"] = prf_expansion_terms
     if enable_routing:
         payload["query_routing"] = True
     resp = _post(base_url, "/v1/ranked-search", payload)
@@ -263,6 +272,9 @@ def evaluate(
     enable_prf: bool = False,
     use_ppr: bool = False,
     enable_routing: bool = False,
+    prf_min_idf: float | None = None,
+    prf_feedback_docs: int | None = None,
+    prf_expansion_terms: int | None = None,
 ) -> tuple[float, dict, list[dict], list]:
     """
     Evaluate retrieval recall in parallel.
@@ -292,6 +304,9 @@ def evaluate(
             enable_prf=enable_prf,
             use_ppr=use_ppr,
             enable_routing=enable_routing,
+            prf_min_idf=prf_min_idf,
+            prf_feedback_docs=prf_feedback_docs,
+            prf_expansion_terms=prf_expansion_terms,
         )
         hit_k  = _hit(evidence, raw, top_k)
         hit_10 = _hit(evidence, raw, 10)
@@ -452,6 +467,9 @@ def main():
     ap.add_argument("--enable-prf", action="store_true", help="Enable PRF query expansion (opt-in)")
     ap.add_argument("--use-ppr", action="store_true", help="Use Personalized PageRank graph algorithm (opt-in)")
     ap.add_argument("--enable-query-routing", action="store_true", help="Enable deterministic query-aware routing (opt-in)")
+    ap.add_argument("--prf-min-idf", type=float, default=None, help="PRF minimum IDF threshold (default uses daemon default)")
+    ap.add_argument("--prf-feedback-docs", type=int, default=None, help="PRF number of feedback documents (default uses daemon default)")
+    ap.add_argument("--prf-expansion-terms", type=int, default=None, help="PRF number of expansion terms (default uses daemon default)")
     args = ap.parse_args()
 
     with open(args.data) as f:
@@ -465,7 +483,10 @@ def main():
     print(f"  chain        : {args.chain}")
     print(f"  endpoint     : {args.base_url}")
     print(f"  eval-workers : {args.eval_workers}")
-    print(f"  retrieval    : prf={args.enable_prf}  ppr={args.use_ppr}  routing={args.enable_query_routing}\n")
+    print(f"  retrieval    : prf={args.enable_prf}  ppr={args.use_ppr}  routing={args.enable_query_routing}")
+    if args.enable_prf and (args.prf_min_idf is not None or args.prf_feedback_docs is not None or args.prf_expansion_terms is not None):
+        print(f"  prf-tune     : min_idf={args.prf_min_idf}  feedback_docs={args.prf_feedback_docs}  expansion_terms={args.prf_expansion_terms}")
+    print()
 
     if args.force_reingest:
         args.chain = f"lme-{int(time.time())}"
@@ -501,6 +522,9 @@ def main():
         enable_prf=args.enable_prf,
         use_ppr=args.use_ppr,
         enable_routing=args.enable_query_routing,
+        prf_min_idf=args.prf_min_idf,
+        prf_feedback_docs=args.prf_feedback_docs,
+        prf_expansion_terms=args.prf_expansion_terms,
     )
     elapsed = time.monotonic() - t0
 
