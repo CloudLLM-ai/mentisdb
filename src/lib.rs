@@ -2710,6 +2710,15 @@ pub struct RankedSearchQuery {
     /// pipeline are included in the LLM reranking prompt to keep token
     /// usage manageable and latency reasonable.
     pub llm_rerank_top_k: usize,
+    /// Optional synonym expansion map for lexical queries.
+    ///
+    /// Each original term maps to a list of synonyms that are also searched
+    /// with reduced weight. This is per-query and opt-in.
+    pub synonyms: std::collections::HashMap<String, Vec<String>>,
+    /// Weight applied to synonym matches relative to original term matches.
+    ///
+    /// Defaults to 0.5. Must be non-negative.
+    pub synonym_weight: f32,
 }
 
 impl RankedSearchQuery {
@@ -2781,6 +2790,17 @@ impl RankedSearchQuery {
         self.llm_rerank_top_k = top_k.max(1);
         self
     }
+
+    /// Enable synonym expansion with a custom map and weight.
+    pub fn with_synonyms(
+        mut self,
+        synonyms: std::collections::HashMap<String, Vec<String>>,
+        weight: f32,
+    ) -> Self {
+        self.synonyms = synonyms;
+        self.synonym_weight = weight.max(0.0);
+        self
+    }
 }
 
 impl Default for RankedSearchQuery {
@@ -2797,6 +2817,8 @@ impl Default for RankedSearchQuery {
             llm_rerank: false,
             llm_model: None,
             llm_rerank_top_k: 20,
+            synonyms: std::collections::HashMap::new(),
+            synonym_weight: 0.7,
         }
     }
 }
@@ -5039,7 +5061,14 @@ impl MentisDb {
             .map(str::trim)
             .filter(|text| !text.is_empty());
         let lexical_scores = ranked_text
-            .map(|text| self.rank_candidates_lexically(&candidates, text))
+            .map(|text| {
+                self.rank_candidates_lexically(
+                    &candidates,
+                    text,
+                    &request.synonyms,
+                    request.synonym_weight,
+                )
+            })
             .unwrap_or_default();
         let vector_scores = ranked_text
             .map(|text| self.rank_candidates_semantically(&candidates, text))
@@ -5240,7 +5269,12 @@ impl MentisDb {
             };
         };
 
-        let lexical_scores = self.rank_candidates_lexically(&candidates, ranked_text);
+        let lexical_scores = self.rank_candidates_lexically(
+            &candidates,
+            ranked_text,
+            &request.synonyms,
+            request.synonym_weight,
+        );
         let seeds = self.context_bundle_seeds(&lexical_scores, request.limit);
         if seeds.is_empty() {
             return crate::search::ContextBundleResult {
@@ -6706,13 +6740,19 @@ impl MentisDb {
         &self,
         candidates: &[&Thought],
         text: &str,
+        synonyms: &std::collections::HashMap<String, Vec<String>>,
+        synonym_weight: f32,
     ) -> HashMap<usize, crate::search::lexical::LexicalHit> {
         let positions: Vec<usize> = candidates
             .iter()
             .map(|thought| thought.index as usize)
             .collect();
+        let mut query = crate::search::lexical::LexicalQuery::new(text);
+        if !synonyms.is_empty() {
+            query = query.with_synonyms(synonyms.clone(), synonym_weight);
+        }
         self.lexical_index
-            .search_in_positions(&crate::search::lexical::LexicalQuery::new(text), &positions)
+            .search_in_positions(&query, &positions)
             .into_iter()
             .map(|hit| (hit.doc_position, hit))
             .collect()

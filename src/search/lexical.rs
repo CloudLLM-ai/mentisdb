@@ -215,6 +215,11 @@ pub struct LexicalQuery {
     pub scoring: LexicalScoringConfig,
     /// Per-field document-frequency cutoffs for stop-word suppression.
     pub df_cutoffs: Bm25DfCutoffs,
+    /// Optional synonym expansion map: each original term maps to a list of
+    /// synonyms that should also be searched with reduced weight.
+    pub synonyms: std::collections::HashMap<String, Vec<String>>,
+    /// Weight applied to synonym matches relative to original term matches.
+    pub synonym_weight: f32,
 }
 
 impl LexicalQuery {
@@ -225,7 +230,20 @@ impl LexicalQuery {
             limit: None,
             scoring: LexicalScoringConfig::default(),
             df_cutoffs: Bm25DfCutoffs::default(),
+            synonyms: std::collections::HashMap::new(),
+            synonym_weight: 0.7,
         }
+    }
+
+    /// Enable synonym expansion with a custom map and weight.
+    pub fn with_synonyms(
+        mut self,
+        synonyms: std::collections::HashMap<String, Vec<String>>,
+        weight: f32,
+    ) -> Self {
+        self.synonyms = synonyms;
+        self.synonym_weight = weight.max(0.0);
+        self
     }
 
     /// Limit the number of ranked hits returned.
@@ -249,6 +267,28 @@ impl LexicalQuery {
     /// Return the unique normalized query terms in encounter order.
     pub fn normalized_terms(&self) -> Vec<String> {
         unique_normalized_terms(&self.text)
+    }
+
+    /// Return original terms and their synonyms for searching.
+    pub fn expanded_terms(&self) -> Vec<(String, f32)> {
+        let mut result = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for term in self.normalized_terms() {
+            if seen.insert(term.clone()) {
+                result.push((term.clone(), 1.0));
+                if let Some(syms) = self.synonyms.get(&term) {
+                    for syn in syms {
+                        let normalized = unique_normalized_terms(syn);
+                        for n in normalized {
+                            if seen.insert(n.clone()) {
+                                result.push((n, self.synonym_weight));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        result
     }
 }
 
@@ -646,185 +686,372 @@ impl LexicalIndex {
         query: &LexicalQuery,
         candidate_positions: &[usize],
     ) -> Vec<LexicalHit> {
-        let terms = query.normalized_terms();
-        if terms.is_empty() || self.document_stats.is_empty() {
-            return Vec::new();
-        }
-
-        let candidate_filter = if candidate_positions.is_empty() {
-            None
-        } else {
-            Some(
-                candidate_positions
-                    .iter()
-                    .copied()
-                    .collect::<HashSet<usize>>(),
-            )
-        };
-
-        let doc_count = self.document_stats.len() as f32;
-        let mut scores = HashMap::<usize, f32>::new();
-        let mut matched_terms = HashMap::<usize, Vec<String>>::new();
-        let mut match_sources = HashMap::<usize, Vec<LexicalMatchSource>>::new();
-
-        for term in terms {
-            let Some(postings) = self.postings.get(&term) else {
-                continue;
-            };
-            let global_df = postings.len() as f32;
-            let global_df_ratio = global_df / doc_count;
-            let content_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.content;
-            let tags_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.tags;
-            let concepts_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.concepts;
-            let agent_id_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.agent_id;
-            let agent_registry_allowed =
-                doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.agent_registry;
-            if !content_allowed
-                && !tags_allowed
-                && !concepts_allowed
-                && !agent_id_allowed
-                && !agent_registry_allowed
-            {
-                continue;
+        // Fast path: when no synonyms are configured, use the original
+        // normalized-terms path to avoid allocation and weight-multiplication
+        // overhead on every posting score.
+        if query.synonyms.is_empty() {
+            let terms = query.normalized_terms();
+            if terms.is_empty() || self.document_stats.is_empty() {
+                return Vec::new();
             }
-            let idf = bm25_idf(doc_count, global_df);
 
-            for posting in postings {
-                if candidate_filter
-                    .as_ref()
-                    .is_some_and(|allowed| !allowed.contains(&posting.doc_position))
+            let candidate_filter = if candidate_positions.is_empty() {
+                None
+            } else {
+                Some(
+                    candidate_positions
+                        .iter()
+                        .copied()
+                        .collect::<HashSet<usize>>(),
+                )
+            };
+
+            let doc_count = self.document_stats.len() as f32;
+            let mut scores = HashMap::<usize, f32>::new();
+            let mut matched_terms = HashMap::<usize, Vec<String>>::new();
+            let mut match_sources = HashMap::<usize, Vec<LexicalMatchSource>>::new();
+
+            for term in terms {
+                let Some(postings) = self.postings.get(&term) else {
+                    continue;
+                };
+                let global_df = postings.len() as f32;
+                let global_df_ratio = global_df / doc_count;
+                let content_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.content;
+                let tags_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.tags;
+                let concepts_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.concepts;
+                let agent_id_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.agent_id;
+                let agent_registry_allowed =
+                    doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.agent_registry;
+                if !content_allowed
+                    && !tags_allowed
+                    && !concepts_allowed
+                    && !agent_id_allowed
+                    && !agent_registry_allowed
                 {
                     continue;
                 }
-                let stats = &self.document_stats[posting.doc_position];
-                let content_score = if content_allowed {
-                    bm25_field_score(
-                        posting.content_term_frequency,
-                        stats.content_len,
-                        self.average_content_len,
-                        idf,
-                        query.scoring.k1,
-                        query.scoring.b,
-                    ) * query.scoring.content_weight
-                } else {
-                    0.0
-                };
-                let tag_score = if tags_allowed {
-                    bm25_field_score(
-                        posting.tag_term_frequency,
-                        stats.tag_len,
-                        self.average_tag_len,
-                        idf,
-                        query.scoring.k1,
-                        query.scoring.b,
-                    ) * query.scoring.tag_weight
-                } else {
-                    0.0
-                };
-                let concept_score = if concepts_allowed {
-                    bm25_field_score(
-                        posting.concept_term_frequency,
-                        stats.concept_len,
-                        self.average_concept_len,
-                        idf,
-                        query.scoring.k1,
-                        query.scoring.b,
-                    ) * query.scoring.concept_weight
-                } else {
-                    0.0
-                };
-                let agent_id_score = if agent_id_allowed {
-                    bm25_field_score(
-                        posting.agent_id_term_frequency,
-                        stats.agent_id_len,
-                        self.average_agent_id_len,
-                        idf,
-                        query.scoring.k1,
-                        query.scoring.b,
-                    ) * query.scoring.agent_id_weight
-                } else {
-                    0.0
-                };
-                let agent_registry_score = if agent_registry_allowed {
-                    bm25_field_score(
-                        posting.agent_registry_term_frequency,
-                        stats.agent_registry_len,
-                        self.average_agent_registry_len,
-                        idf,
-                        query.scoring.k1,
-                        query.scoring.b,
-                    ) * query.scoring.agent_registry_weight
-                } else {
-                    0.0
-                };
-                let score = content_score
-                    + tag_score
-                    + concept_score
-                    + agent_id_score
-                    + agent_registry_score;
+                let idf = bm25_idf(doc_count, global_df);
 
-                if score > 0.0 {
-                    *scores.entry(posting.doc_position).or_insert(0.0) += score;
-                    push_unique_string(
-                        matched_terms.entry(posting.doc_position).or_default(),
-                        &term,
-                    );
-                    let sources = match_sources.entry(posting.doc_position).or_default();
-                    if content_score > 0.0 {
-                        push_unique_match_source(sources, LexicalMatchSource::Content);
+                for posting in postings {
+                    if candidate_filter
+                        .as_ref()
+                        .is_some_and(|allowed| !allowed.contains(&posting.doc_position))
+                    {
+                        continue;
                     }
-                    if tag_score > 0.0 {
-                        push_unique_match_source(sources, LexicalMatchSource::Tags);
-                    }
-                    if concept_score > 0.0 {
-                        push_unique_match_source(sources, LexicalMatchSource::Concepts);
-                    }
-                    if agent_id_score > 0.0 {
-                        push_unique_match_source(sources, LexicalMatchSource::AgentId);
-                    }
-                    if agent_registry_score > 0.0 {
-                        push_unique_match_source(sources, LexicalMatchSource::AgentRegistry);
+                    let stats = &self.document_stats[posting.doc_position];
+                    let content_score = if content_allowed {
+                        bm25_field_score(
+                            posting.content_term_frequency,
+                            stats.content_len,
+                            self.average_content_len,
+                            idf,
+                            query.scoring.k1,
+                            query.scoring.b,
+                        ) * query.scoring.content_weight
+                    } else {
+                        0.0
+                    };
+                    let tag_score = if tags_allowed {
+                        bm25_field_score(
+                            posting.tag_term_frequency,
+                            stats.tag_len,
+                            self.average_tag_len,
+                            idf,
+                            query.scoring.k1,
+                            query.scoring.b,
+                        ) * query.scoring.tag_weight
+                    } else {
+                        0.0
+                    };
+                    let concept_score = if concepts_allowed {
+                        bm25_field_score(
+                            posting.concept_term_frequency,
+                            stats.concept_len,
+                            self.average_concept_len,
+                            idf,
+                            query.scoring.k1,
+                            query.scoring.b,
+                        ) * query.scoring.concept_weight
+                    } else {
+                        0.0
+                    };
+                    let agent_id_score = if agent_id_allowed {
+                        bm25_field_score(
+                            posting.agent_id_term_frequency,
+                            stats.agent_id_len,
+                            self.average_agent_id_len,
+                            idf,
+                            query.scoring.k1,
+                            query.scoring.b,
+                        ) * query.scoring.agent_id_weight
+                    } else {
+                        0.0
+                    };
+                    let agent_registry_score = if agent_registry_allowed {
+                        bm25_field_score(
+                            posting.agent_registry_term_frequency,
+                            stats.agent_registry_len,
+                            self.average_agent_registry_len,
+                            idf,
+                            query.scoring.k1,
+                            query.scoring.b,
+                        ) * query.scoring.agent_registry_weight
+                    } else {
+                        0.0
+                    };
+
+                    let score = content_score
+                        + tag_score
+                        + concept_score
+                        + agent_id_score
+                        + agent_registry_score;
+
+                    if score > 0.0 {
+                        *scores.entry(posting.doc_position).or_insert(0.0) += score;
+                        push_unique_string(
+                            matched_terms.entry(posting.doc_position).or_default(),
+                            &term,
+                        );
+                        let sources = match_sources.entry(posting.doc_position).or_default();
+                        if content_score > 0.0 {
+                            push_unique_match_source(sources, LexicalMatchSource::Content);
+                        }
+                        if tag_score > 0.0 {
+                            push_unique_match_source(sources, LexicalMatchSource::Tags);
+                        }
+                        if concept_score > 0.0 {
+                            push_unique_match_source(sources, LexicalMatchSource::Concepts);
+                        }
+                        if agent_id_score > 0.0 {
+                            push_unique_match_source(sources, LexicalMatchSource::AgentId);
+                        }
+                        if agent_registry_score > 0.0 {
+                            push_unique_match_source(sources, LexicalMatchSource::AgentRegistry);
+                        }
                     }
                 }
             }
-        }
 
-        let mut hits = scores
-            .into_iter()
-            .map(|(doc_position, score)| {
-                let stats = &self.document_stats[doc_position];
-                LexicalHit {
-                    doc_position,
-                    thought_index: stats.thought_index,
-                    thought_id: stats.thought_id,
-                    score,
-                    matched_terms: matched_terms.remove(&doc_position).unwrap_or_default(),
-                    match_sources: match_sources.remove(&doc_position).unwrap_or_default(),
-                }
-            })
-            .collect::<Vec<_>>();
-
-        hits.sort_by(|left, right| {
-            let left_stats = &self.document_stats[left.doc_position];
-            let right_stats = &self.document_stats[right.doc_position];
-            right
-                .score
-                .total_cmp(&left.score)
-                .then_with(|| right_stats.importance.total_cmp(&left_stats.importance))
-                .then_with(|| {
-                    right_stats
-                        .confidence
-                        .unwrap_or_default()
-                        .total_cmp(&left_stats.confidence.unwrap_or_default())
+            let mut hits = scores
+                .into_iter()
+                .map(|(doc_position, score)| {
+                    let stats = &self.document_stats[doc_position];
+                    LexicalHit {
+                        doc_position,
+                        thought_index: stats.thought_index,
+                        thought_id: stats.thought_id,
+                        score,
+                        matched_terms: matched_terms.remove(&doc_position).unwrap_or_default(),
+                        match_sources: match_sources.remove(&doc_position).unwrap_or_default(),
+                    }
                 })
-                .then_with(|| right_stats.timestamp.cmp(&left_stats.timestamp))
-                .then_with(|| right_stats.thought_index.cmp(&left_stats.thought_index))
-        });
+                .collect::<Vec<_>>();
 
-        if let Some(limit) = query.limit {
-            hits.truncate(limit);
+            hits.sort_by(|left, right| {
+                let left_stats = &self.document_stats[left.doc_position];
+                let right_stats = &self.document_stats[right.doc_position];
+                right
+                    .score
+                    .total_cmp(&left.score)
+                    .then_with(|| right_stats.importance.total_cmp(&left_stats.importance))
+                    .then_with(|| {
+                        right_stats
+                            .confidence
+                            .unwrap_or_default()
+                            .total_cmp(&left_stats.confidence.unwrap_or_default())
+                    })
+                    .then_with(|| right_stats.timestamp.cmp(&left_stats.timestamp))
+                    .then_with(|| right_stats.thought_index.cmp(&left_stats.thought_index))
+            });
+
+            if let Some(limit) = query.limit {
+                hits.truncate(limit);
+            }
+            hits
+        } else {
+            let expanded = query.expanded_terms();
+            if expanded.is_empty() || self.document_stats.is_empty() {
+                return Vec::new();
+            }
+
+            let candidate_filter = if candidate_positions.is_empty() {
+                None
+            } else {
+                Some(
+                    candidate_positions
+                        .iter()
+                        .copied()
+                        .collect::<HashSet<usize>>(),
+                )
+            };
+
+            let doc_count = self.document_stats.len() as f32;
+            let mut scores = HashMap::<usize, f32>::new();
+            let mut matched_terms = HashMap::<usize, Vec<String>>::new();
+            let mut match_sources = HashMap::<usize, Vec<LexicalMatchSource>>::new();
+
+            for (term, term_weight) in expanded {
+                let Some(postings) = self.postings.get(&term) else {
+                    continue;
+                };
+                let global_df = postings.len() as f32;
+                let global_df_ratio = global_df / doc_count;
+                let content_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.content;
+                let tags_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.tags;
+                let concepts_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.concepts;
+                let agent_id_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.agent_id;
+                let agent_registry_allowed =
+                    doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.agent_registry;
+                if !content_allowed
+                    && !tags_allowed
+                    && !concepts_allowed
+                    && !agent_id_allowed
+                    && !agent_registry_allowed
+                {
+                    continue;
+                }
+                let idf = bm25_idf(doc_count, global_df);
+
+                for posting in postings {
+                    if candidate_filter
+                        .as_ref()
+                        .is_some_and(|allowed| !allowed.contains(&posting.doc_position))
+                    {
+                        continue;
+                    }
+                    let stats = &self.document_stats[posting.doc_position];
+                    let content_score = if content_allowed {
+                        bm25_field_score(
+                            posting.content_term_frequency,
+                            stats.content_len,
+                            self.average_content_len,
+                            idf,
+                            query.scoring.k1,
+                            query.scoring.b,
+                        ) * query.scoring.content_weight * term_weight
+                    } else {
+                        0.0
+                    };
+                    let tag_score = if tags_allowed {
+                        bm25_field_score(
+                            posting.tag_term_frequency,
+                            stats.tag_len,
+                            self.average_tag_len,
+                            idf,
+                            query.scoring.k1,
+                            query.scoring.b,
+                        ) * query.scoring.tag_weight * term_weight
+                    } else {
+                        0.0
+                    };
+                    let concept_score = if concepts_allowed {
+                        bm25_field_score(
+                            posting.concept_term_frequency,
+                            stats.concept_len,
+                            self.average_concept_len,
+                            idf,
+                            query.scoring.k1,
+                            query.scoring.b,
+                        ) * query.scoring.concept_weight * term_weight
+                    } else {
+                        0.0
+                    };
+                    let agent_id_score = if agent_id_allowed {
+                        bm25_field_score(
+                            posting.agent_id_term_frequency,
+                            stats.agent_id_len,
+                            self.average_agent_id_len,
+                            idf,
+                            query.scoring.k1,
+                            query.scoring.b,
+                        ) * query.scoring.agent_id_weight * term_weight
+                    } else {
+                        0.0
+                    };
+                    let agent_registry_score = if agent_registry_allowed {
+                        bm25_field_score(
+                            posting.agent_registry_term_frequency,
+                            stats.agent_registry_len,
+                            self.average_agent_registry_len,
+                            idf,
+                            query.scoring.k1,
+                            query.scoring.b,
+                        ) * query.scoring.agent_registry_weight * term_weight
+                    } else {
+                        0.0
+                    };
+
+                    let score = content_score
+                        + tag_score
+                        + concept_score
+                        + agent_id_score
+                        + agent_registry_score;
+
+                    if score > 0.0 {
+                        *scores.entry(posting.doc_position).or_insert(0.0) += score;
+                        push_unique_string(
+                            matched_terms.entry(posting.doc_position).or_default(),
+                            &term,
+                        );
+                        let sources = match_sources.entry(posting.doc_position).or_default();
+                        if content_score > 0.0 {
+                            push_unique_match_source(sources, LexicalMatchSource::Content);
+                        }
+                        if tag_score > 0.0 {
+                            push_unique_match_source(sources, LexicalMatchSource::Tags);
+                        }
+                        if concept_score > 0.0 {
+                            push_unique_match_source(sources, LexicalMatchSource::Concepts);
+                        }
+                        if agent_id_score > 0.0 {
+                            push_unique_match_source(sources, LexicalMatchSource::AgentId);
+                        }
+                        if agent_registry_score > 0.0 {
+                            push_unique_match_source(sources, LexicalMatchSource::AgentRegistry);
+                        }
+                    }
+                }
+            }
+
+            let mut hits = scores
+                .into_iter()
+                .map(|(doc_position, score)| {
+                    let stats = &self.document_stats[doc_position];
+                    LexicalHit {
+                        doc_position,
+                        thought_index: stats.thought_index,
+                        thought_id: stats.thought_id,
+                        score,
+                        matched_terms: matched_terms.remove(&doc_position).unwrap_or_default(),
+                        match_sources: match_sources.remove(&doc_position).unwrap_or_default(),
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            hits.sort_by(|left, right| {
+                let left_stats = &self.document_stats[left.doc_position];
+                let right_stats = &self.document_stats[right.doc_position];
+                right
+                    .score
+                    .total_cmp(&left.score)
+                    .then_with(|| right_stats.importance.total_cmp(&left_stats.importance))
+                    .then_with(|| {
+                        right_stats
+                            .confidence
+                            .unwrap_or_default()
+                            .total_cmp(&left_stats.confidence.unwrap_or_default())
+                    })
+                    .then_with(|| right_stats.timestamp.cmp(&left_stats.timestamp))
+                    .then_with(|| right_stats.thought_index.cmp(&left_stats.thought_index))
+            });
+
+            if let Some(limit) = query.limit {
+                hits.truncate(limit);
+            }
+            hits
         }
-        hits
     }
 }
 

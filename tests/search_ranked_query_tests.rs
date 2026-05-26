@@ -1033,3 +1033,55 @@ fn ranked_query_without_reranking_has_zero_rrf_score() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn ranked_query_with_synonyms_boosts_recall() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "ranked-query-synonyms").unwrap();
+
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Plan, "Fast indexing strategy for search."),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "planner",
+            ThoughtInput::new(ThoughtType::Plan, "Quick retrieval using BM25 scores."),
+        )
+        .unwrap();
+
+    let without_synonyms = chain.query_ranked(
+        &RankedSearchQuery::new().with_text("fast").with_limit(10),
+    );
+    assert_eq!(without_synonyms.total_candidates, 1);
+
+    let mut synonyms = std::collections::HashMap::new();
+    synonyms.insert("fast".to_string(), vec!["quick".to_string()]);
+
+    let with_synonyms = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text("fast")
+            .with_limit(10)
+            .with_synonyms(synonyms, 0.5),
+    );
+    assert_eq!(with_synonyms.total_candidates, 2);
+
+    let fast_hit = with_synonyms
+        .hits
+        .iter()
+        .find(|h| h.thought.content == "Fast indexing strategy for search.")
+        .unwrap();
+    let quick_hit = with_synonyms
+        .hits
+        .iter()
+        .find(|h| h.thought.content == "Quick retrieval using BM25 scores.")
+        .unwrap();
+    assert!(
+        fast_hit.score.lexical > quick_hit.score.lexical,
+        "direct match should score higher than synonym match"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

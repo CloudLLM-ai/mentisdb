@@ -344,3 +344,64 @@ fn global_df_cutoffs_filter_common_terms_from_strict_fields() {
         "at least one hit should report tags as a match source"
     );
 }
+
+#[test]
+fn lexical_synonym_expansion_surfaces_hits_with_reduced_weight() {
+    let temp = tempdir().unwrap();
+    let chain_dir = temp.path().to_path_buf();
+    let mut db = MentisDb::open_with_key(&chain_dir, "search-lexical-synonyms").unwrap();
+
+    db.append_thought(
+        "tester",
+        ThoughtInput::new(ThoughtType::Insight, "Fast retrieval using indexes."),
+    )
+    .unwrap();
+
+    db.append_thought(
+        "tester",
+        ThoughtInput::new(ThoughtType::Insight, "Quick retrieval using indexes."),
+    )
+    .unwrap();
+
+    let index = LexicalIndex::build(db.thoughts());
+
+    let mut synonyms = std::collections::HashMap::new();
+    synonyms.insert("fast".to_string(), vec!["quick".to_string()]);
+
+    let hits = index.search(
+        &LexicalQuery::new("fast retrieval")
+            .with_synonyms(synonyms.clone(), 0.5),
+    );
+
+    assert_eq!(hits.len(), 2);
+    let fast_hit = hits.iter().find(|h| h.thought_index == 0).unwrap();
+    let quick_hit = hits.iter().find(|h| h.thought_index == 1).unwrap();
+    assert!(fast_hit.score > quick_hit.score, "direct match should outrank synonym match");
+    assert!(
+        quick_hit.matched_terms.iter().any(|t| t == "quick"),
+        "synonym match should report the synonym term"
+    );
+}
+
+#[test]
+fn lexical_synonym_expansion_deduplicates_terms() {
+    let temp = tempdir().unwrap();
+    let chain_dir = temp.path().to_path_buf();
+    let mut db = MentisDb::open_with_key(&chain_dir, "search-lexical-synonym-dedup").unwrap();
+
+    db.append_thought(
+        "tester",
+        ThoughtInput::new(ThoughtType::Insight, "Fast and quick retrieval."),
+    )
+    .unwrap();
+
+    let index = LexicalIndex::build(db.thoughts());
+
+    let mut synonyms = std::collections::HashMap::new();
+    synonyms.insert("fast".to_string(), vec!["quick".to_string()]);
+
+    let hits = index.search(&LexicalQuery::new("fast").with_synonyms(synonyms, 0.5));
+
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].matched_terms, vec!["fast", "quick"]);
+}
