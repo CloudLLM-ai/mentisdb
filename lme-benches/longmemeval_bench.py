@@ -129,8 +129,9 @@ def rebuild_vectors(base_url: str, chain_key: str, provider_key: str = "fastembe
         print(f"  WARNING: vector rebuild failed ({provider_key}): {e}", flush=True)
 
 
-def ranked_search(base_url: str, chain_key: str, query: str, limit: int) -> list[dict]:
-    resp = _post(base_url, "/v1/ranked-search", {
+def ranked_search(base_url: str, chain_key: str, query: str, limit: int,
+                    enable_reranking: bool = False, rerank_k: int = 50) -> list[dict]:
+    payload: dict = {
         "chain_key": chain_key,
         "text": query,
         "limit": limit,
@@ -139,7 +140,11 @@ def ranked_search(base_url: str, chain_key: str, query: str, limit: int) -> list
             "max_visited": 200,
             "include_seeds": False,
         },
-    })
+    }
+    if enable_reranking:
+        payload["enable_reranking"] = True
+        payload["rerank_k"] = rerank_k
+    resp = _post(base_url, "/v1/ranked-search", payload)
     # Each element: {"thought": {...}, "score": {lexical, vector, graph, ...}}
     return resp.get("results", [])
 
@@ -234,6 +239,8 @@ def evaluate(
     instances: list[dict],
     top_k: int,
     eval_workers: int,
+    enable_reranking: bool = False,
+    rerank_k: int = 50,
 ) -> tuple[float, dict, list[dict], list]:
     """
     Evaluate retrieval recall in parallel.
@@ -252,7 +259,8 @@ def evaluate(
 
     def _eval_one(idx: int, inst: dict):
         evidence = _collect_evidence(inst)
-        raw = ranked_search(base_url, chain_key, inst["question"], fetch_k)
+        raw = ranked_search(base_url, chain_key, inst["question"], fetch_k,
+                            enable_reranking=enable_reranking, rerank_k=rerank_k)
         hit_k  = _hit(evidence, raw, top_k)
         hit_10 = _hit(evidence, raw, 10)
         hit_20 = _hit(evidence, raw, NEAR_MISS_K)
@@ -409,6 +417,10 @@ def main():
     ap.add_argument("--rebuild-vectors", action="store_true",
                     help="Rebuild fastembed vector sidecar even when skipping ingestion")
     ap.add_argument("--output", help="Write per-instance JSONL results to this path")
+    ap.add_argument("--enable-reranking", action="store_true",
+                    help="Enable RRF reranking in ranked search")
+    ap.add_argument("--rerank-k", type=int, default=50,
+                    help="RRF candidates window size (default 50)")
     args = ap.parse_args()
 
     with open(args.data) as f:
@@ -421,7 +433,8 @@ def main():
     print(f"  top-k        : {args.top_k}  (also computing R@10, R@{NEAR_MISS_K})")
     print(f"  chain        : {args.chain}")
     print(f"  endpoint     : {args.base_url}")
-    print(f"  eval-workers : {args.eval_workers}\n")
+    print(f"  eval-workers : {args.eval_workers}")
+    print(f"  reranking    : enabled={args.enable_reranking} k={args.rerank_k}\n")
 
     if args.force_reingest:
         args.chain = f"lme-{int(time.time())}"
@@ -449,7 +462,13 @@ def main():
 
     t0 = time.monotonic()
     overall, by_type, misses, all_results = evaluate(
-        args.base_url, args.chain, instances, args.top_k, args.eval_workers
+        args.base_url,
+        args.chain,
+        instances,
+        args.top_k,
+        args.eval_workers,
+        enable_reranking=args.enable_reranking,
+        rerank_k=args.rerank_k,
     )
     elapsed = time.monotonic() - t0
 
