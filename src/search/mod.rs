@@ -17,6 +17,10 @@ pub mod implicit_edges;
 pub mod lemmas;
 /// BM25-style lexical indexing and ranking over committed thoughts.
 pub mod lexical;
+/// Static thesaurus for query-time synonym expansion.
+pub mod thesaurus;
+/// Embedding-based nearest-neighbor synonym generator.
+pub mod embedding_synonyms;
 /// Personalized PageRank graph expansion primitives.
 pub mod ppr;
 /// Provenance path structures for graph expansion starting from lexical seeds.
