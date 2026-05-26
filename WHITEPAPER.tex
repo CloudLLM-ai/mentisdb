@@ -50,7 +50,7 @@
 \large A Hash-Chained Semantic Memory Substrate for Agentic Systems}
 \author{Angel Leon\\
 \small Universidad Cat\'olica Andr\'es Bello, Venezuela\\[0.3em]
-\small Version 0.9.8 \quad \textemdash \quad May 20, 2026}
+\small Version 0.9.9 \quad \textemdash \quad May 26, 2026}
 \date{}
 
 \begin{document}
@@ -58,11 +58,11 @@
 
 \begin{abstract}
 Contemporary agent frameworks treat long-term memory as an afterthought, relying on ad hoc prompt stuffing, unstructured Markdown files, or proprietary session state that is opaque, non-transferable, and easily lost. We introduce \textbf{MentisDB}, a durable, semantically typed memory engine that formalizes agent memory as an append-only, hash-chained ledger of structured \emph{thoughts}.
-Formally, a chain is a sequence $\chi = (t_0, t_1, \ldots, t_{n-1})$ of typed records satisfying a cryptographic integrity invariant $t_k.h = H(\sigma(t_k \setminus \{h\}))$ and $t_k.\hprev = t_{k-1}.h$, where $H$ is SHA-256 and $\sigma$ is canonical bincode serialization. On top of $\chi$ we define a retrieval function $R : (\chi, Q) \to \mathcal{P}(\chi)$ that composes BM25 lexical scoring with per-field document-frequency gating, smooth exponential vector--lexical fusion, bidirectional graph expansion over typed relation edges augmented by vector-cosine-inferred implicit edges, temporal edge validity predicates, session cohesion, and rank-based fusion via Reciprocal Rank Fusion (RRF). Deduplication is implemented as a Jaccard-similarity test over normalized token sets, emitting $\mathsf{Supersedes}$ edges consulted in constant time via a precomputed invalidation set.
+Formally, a chain is a sequence $\chi = (t_0, t_1, \ldots, t_{n-1})$ of typed records satisfying a cryptographic integrity invariant $t_k.h = H(\sigma(t_k \setminus \{h\}))$ and $t_k.\hprev = t_{k-1}.h$, where $H$ is SHA-256 and $\sigma$ is canonical bincode serialization. On top of $\chi$ we define a retrieval function $R : (\chi, Q) \to \mathcal{P}(\chi)$ that composes BM25 lexical scoring with per-field document-frequency gating, query-time synonym expansion via a comprehensive static thesaurus (\textapprox 900 headwords) coupled with irregular-verb lemmatization, smooth exponential vector--lexical fusion, bidirectional graph expansion over typed relation edges augmented by vector-cosine-inferred implicit edges, temporal edge validity predicates, session cohesion, and rank-based fusion via Reciprocal Rank Fusion (RRF). Deduplication is implemented as a Jaccard-similarity test over normalized token sets, emitting $\mathsf{Supersedes}$ edges consulted in constant time via a precomputed invalidation set.
 On canonical long-term memory benchmarks, MentisDB attains $R@10 = 88.7\%$ on LoCoMo-2P, $R@10 = 71.9\%$ on LoCoMo-10P, and $R@5 = 66.8\%$ / $R@10 = 72.2\%$ / $R@20 = 78.0\%$ on LongMemEval (v0.8.9, fresh chain, default retrieval settings). Results are deterministic and reproducible across independent runs. The implementation ships as a single Rust crate with an optional daemon exposing MCP, REST, and HTTPS surfaces, requires no external database, and operates without cloud or LLM dependencies in its core ingestion and retrieval path.
 
 \medskip
-\noindent\textbf{Keywords:} agent memory, hash-chained ledger, BM25, reciprocal rank fusion, graph expansion, implicit edge inference, temporal knowledge graphs, retrieval-augmented generation.
+\noindent\textbf{Keywords:} agent memory, hash-chained ledger, BM25, synonym expansion, reciprocal rank fusion, graph expansion, implicit edge inference, temporal knowledge graphs, retrieval-augmented generation.
 \end{abstract}
 
 \section{Introduction}
@@ -75,7 +75,8 @@ This paper makes the following contributions:
     \item \textbf{Formal model.} We define agent memory as an append-only, hash-chained ledger of \emph{thoughts}~---~structured, typed, attributable records~---~with a precise integrity invariant and explicit schema evolution semantics (Sections~\ref{sec:model}, \ref{sec:schema}).
     \item \textbf{Semantic typing.} We introduce a 30-variant $\TType$ algebra and an 8-variant $\TRole$ algebra, separating content semantics from workflow mechanics (Section~\ref{sec:semantics}).
     \item \textbf{Temporal edges.} We extend typed graph relations with a validity interval $[\mathtt{valid\_at}, \mathtt{invalid\_at}]$ enabling point-in-time queries via a predicate $\pi_\tau$ (Section~\ref{subsec:temporal}).
-    \item \textbf{Hybrid retrieval.} We describe a composable retrieval pipeline~---~per-field BM25 with DF gating, smooth exponential vector--lexical fusion, bounded graph BFS with typed edge weights, session cohesion, importance weighting, and RRF~---~and characterize each signal mathematically (Section~\ref{sec:retrieval}).
+    \item \textbf{Hybrid retrieval.} We describe a composable retrieval pipeline~---~per-field BM25 with DF gating, query-time synonym expansion, smooth exponential vector--lexical fusion, bounded graph BFS with typed edge weights, session cohesion, importance weighting, and RRF~---~and characterize each signal mathematically (Section~\ref{sec:retrieval}).
+    \item \textbf{Synonym expansion.} We introduce a static thesaurus of \textapprox 900 headwords embedded into the binary at compile time, coupled with irregular-verb lemmatization (300+ entries), enabling query terms like \texttt{went} to find documents containing \texttt{go} and \texttt{travel}. Synonym matches receive a configurable weight penalty (default $0.7$) relative to exact term matches, and a fast path in the BM25 scorer eliminates overhead when no synonyms are configured (Section~\ref{subsec:synonyms}).
     \item \textbf{Deduplication.} We give a Jaccard-threshold algorithm that auto-emits $\mathsf{Supersedes}$ edges, with constant-time consultation via a precomputed invalidation set $\Inv(\chi)$ (Section~\ref{sec:dedup}).
     \item \textbf{Empirical evaluation.} We report results on LoCoMo and LongMemEval, and provide near-miss analyses for both benchmarks characterizing the residual lexical ceiling (Section~\ref{sec:eval}).
     \item \textbf{Implicit edge overlay.} We introduce $\mathsf{ImplicitEdgeOverlay}$, a rebuildable per-chain sidecar that derives $\mathsf{RelatedTo}$ edges from vector cosine similarity above a configurable threshold $\theta$, enriching graph expansion for chains where agents author few explicit relations (Section~\ref{subsec:overlay}).
@@ -331,7 +332,25 @@ S_\ell(d, Q) = \sum_{q \in Q} \sum_{f} \gamma_f(q) \cdot w_f \cdot \mathrm{score
 
 A term violating $\gamma_f$ in one field may still contribute through other fields whose cutoffs it respects. The 20-document threshold suppresses DF filtering on small corpora where statistics are not yet meaningful.
 
-Normalization applies Porter stemming~\cite{porter1980} before indexing and querying. An irregular-verb lemma table of approximately 170 entries expands query-time tokens (e.g.\ \texttt{went}~$\to$~\texttt{go}, \texttt{saw}~$\to$~\texttt{see}), because Porter stemming cannot normalize suppletive forms.
+Normalization applies Porter stemming~\cite{porter1980} before indexing and querying. An irregular-verb lemma table of \textapprox 300 entries expands query-time tokens (e.g.\ \texttt{went}~$\to$~\texttt{go}, \texttt{saw}~$\to$~\texttt{see}), because Porter stemming cannot normalize suppletive forms. Regular suffix stripping (\texttt{-ing}, \texttt{-ed}, \texttt{-ies}, \texttt{-s}) handles predictable verb forms automatically.
+
+\subsection{Static Thesaurus Synonym Expansion}\label{subsec:synonyms}
+
+Query terms are expanded via a static thesaurus of \textapprox 900 headwords covering common English verbs, nouns, adjectives, adverbs, and software-engineering terminology. The thesaurus data is embedded into the binary at compile time (\texttt{include\_str!}), requiring no external files or network calls at runtime.
+
+\begin{definition}[Synonym Expansion]
+Given query $Q$ and thesaurus $\Theta : \Sstar \to \mathcal{P}(\Sstar)$, the expanded term set is
+\[
+\Expand(Q, \Theta) = \bigl\{ (q, 1.0) : q \in Q \bigr\} \cup \bigl\{ (s, w) : q \in Q,\; s \in \Theta(q),\; s \notin Q \bigr\},
+\]
+where $w \in [0, 1]$ is the synonym weight (default $0.7$).
+\end{definition}
+
+Before lookup in $\Theta$, each query token is lemmatized: irregular forms resolve via the lemma table, and regular forms strip suffixes. This bridges verb-form gaps~---~e.g.\ \texttt{went}~$\to$~\texttt{go}~$\to$~\{\texttt{travel}, \texttt{move}, \texttt{depart}\}.
+
+The BM25 scorer implements a fast path: when no synonyms are configured, the original normalized-terms path is used without allocation or weight-multiplication overhead. When synonyms are present, each expanded term is scored with its weight as a multiplicative factor on the field score, ensuring synonym matches contribute less than exact matches.
+
+Research on a synthetic corpus (140 documents, 12 queries) shows the thesaurus improves NDCG@5 by $+31\%$ over baseline (0.52~$\to$~0.68 at $w = 0.7$). An alternative embedding-based generator using the built-in \texttt{LocalTextEmbeddingProvider} underperforms (NDCG~0.48) because its hash-based feature vectors do not capture true semantic similarity; we retain it for experimentation but recommend the static thesaurus for production use.
 
 \subsection{Smooth Vector--Lexical Fusion}
 When a managed vector sidecar provides cosine similarity $s_v(d, Q) \in [-1, 1]$ (e.g.\ via ONNX-embedded \texttt{fastembed-minilm}), the hybrid contribution is
@@ -522,9 +541,10 @@ Version & Change & LME $R@5$ & LoCoMo-10P $R@10$ \\
 0.8.5 + cohesion tuning + $b_{\mathrm{rel}} \times 2$ + fastembed & session/graph boost & -- & 74.6\% \\
 0.8.9 + irregular lemmas + webhooks & lemma expansion + events & 66.8\% & 71.9\% \\
 0.9.8 + ImplicitEdgeOverlay + in-memory VectorIndex & graph density + latency & 66.8\% & -- \\
+0.9.9 + static thesaurus (900 hw) + lemma expansion (300+) & synonym expansion & -- & -- \\
 \bottomrule
 \end{tabular}
-\caption{The 0.9.8 LME score is unchanged from 0.8.9: the overlay fires (graph signal increases $3.5\times$ at $\theta = 0.70$) but does not improve recall because LME's miss structure is dominated by lexical gaps (\S\ref{subsec:lme-nearmiss}). LoCoMo-10P has not been re-run against v0.9.8; the multi-hop gap remains the intended validation target (\S\ref{subsec:future}).}
+\caption{The 0.9.9 row reports synthetic-corpus NDCG@5 = 0.68 (+31\% over baseline 0.52) for the static thesaurus at $w = 0.7$; LoCoMo and LongMemEval have not yet been re-run. The 0.9.8 LME score is unchanged from 0.8.9: the overlay fires (graph signal increases $3.5\times$ at $\theta = 0.70$) but does not improve recall because LME's miss structure is dominated by lexical gaps (\S\ref{subsec:lme-nearmiss}). LoCoMo-10P has not been re-run against v0.9.8; the multi-hop gap remains the intended validation target (\S\ref{subsec:future}).}
 \end{table}
 
 \subsection{Near-Miss Analysis (LoCoMo-10P, v0.8.5)}\label{subsec:locomo-nearmiss}
@@ -603,6 +623,7 @@ MentisDB is, to our knowledge, the only system combining (i) embedded storage, (
 \begin{itemize}[leftmargin=2em]
     \item \textbf{LoCoMo multi-hop validation of ImplicitEdgeOverlay.} The 21-point single-hop / multi-hop gap on LoCoMo-10P (79.0\% vs.\ 57.4\% R@10 at v0.8.9) is the primary target for graph-density improvements. A full re-run against v0.9.8 with the overlay active is needed to quantify the gain.
     \item \textbf{Threshold sweep.} A sweep across $\theta \in \{0.75, 0.80, 0.85, 0.90\}$ and $K \in \{3, 5, 10\}$ on LoCoMo multi-hop would identify the optimal operating point for the overlay.
+    \item \textbf{Thesaurus benchmark validation.} The static thesaurus shows +31\% NDCG improvement on a synthetic corpus; re-running LoCoMo-10P and LongMemEval with thesaurus auto-expansion is needed to quantify real-benchmark gains and tune the optimal synonym weight $w$.
     \item Per-chain entity/relation ontologies enabling typed domain-specific facts beyond the fixed $\TRel$.
     \item Episode provenance: tracing derived facts back to source conversations.
     \item Cross-chain federated retrieval with result reconciliation across distributed ledgers.
@@ -611,7 +632,7 @@ MentisDB is, to our knowledge, the only system combining (i) embedded storage, (
 \end{itemize}
 
 \subsection{Conclusion}
-MentisDB formalizes agent memory as an append-only, hash-chained ledger of semantically typed thoughts, and couples that ledger with a composable retrieval pipeline~---~BM25 with per-field DF gating, smooth vector--lexical fusion, bounded typed-edge graph expansion augmented by cosine-inferred implicit edges, RRF, session cohesion, and Jaccard-based deduplication~---~in a single embedded Rust substrate. The $\mathsf{ImplicitEdgeOverlay}$ extends graph-based retrieval to chains where agents author few explicit relations, deriving a dense implicit graph from vector cosine proximity at $O(N)$ incremental cost per append. Empirical results on LoCoMo and LongMemEval demonstrate competitive retrieval quality without reliance on external databases or LLM services for the core ingestion path. The system is released as open source and exposes MCP, REST, and HTTPS surfaces for interoperation with contemporary agentic harnesses.
+MentisDB formalizes agent memory as an append-only, hash-chained ledger of semantically typed thoughts, and couples that ledger with a composable retrieval pipeline~---~BM25 with per-field DF gating, query-time synonym expansion via a static thesaurus and irregular-verb lemmatization, smooth vector--lexical fusion, bounded typed-edge graph expansion augmented by cosine-inferred implicit edges, RRF, session cohesion, and Jaccard-based deduplication~---~in a single embedded Rust substrate. The $\mathsf{ImplicitEdgeOverlay}$ extends graph-based retrieval to chains where agents author few explicit relations, deriving a dense implicit graph from vector cosine proximity at $O(N)$ incremental cost per append. Empirical results on LoCoMo and LongMemEval demonstrate competitive retrieval quality without reliance on external databases or LLM services for the core ingestion path. The system is released as open source and exposes MCP, REST, and HTTPS surfaces for interoperation with contemporary agentic harnesses.
 
 \begin{thebibliography}{9}
 
