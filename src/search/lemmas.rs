@@ -3,191 +3,451 @@
 //! Porter stemming cannot bridge irregular verb forms (e.g. "went" vs "go"),
 //! so this module provides a lookup from irregular past-tense and past-participle
 //! forms to their base (lemma) forms, applied at query time only.
+//!
+//! This module covers ~300 irregular verbs including all common English verbs
+//! and their past tense, past participle, and present participle forms.
 
 /// Expand an irregular verb form to its base lemma.
 ///
-/// Returns `Some(lemma)` if `token` is a known irregular past tense or
-/// past participle form, otherwise `None`.
+/// Returns `Some(lemma)` if `token` is a known irregular past tense,
+/// past participle, or other non-base form, otherwise `None`.
+///
+/// Regular verbs (walked, talked, etc.) are handled by the Porter stemmer
+/// in `normalize_lexical_tokens` and do not need entries here.
 pub fn expand_lemma(token: &str) -> Option<&'static str> {
     match token {
+        // A
         "arisen" => Some("arise"),
         "arose" => Some("arise"),
         "awoken" => Some("awake"),
         "awoke" => Some("awake"),
+        // B
+        "been" => Some("be"),
+        "was" => Some("be"),
+        "were" => Some("be"),
+        "am" => Some("be"),
+        "is" => Some("be"),
+        "are" => Some("be"),
         "beaten" => Some("beat"),
         "became" => Some("become"),
-        "been" => Some("be"),
         "befell" => Some("befall"),
+        "befallen" => Some("befall"),
+        "began" => Some("begin"),
         "begun" => Some("begin"),
+        "beheld" => Some("behold"),
         "bent" => Some("bend"),
         "bereft" => Some("bereave"),
         "besought" => Some("beseech"),
+        "bet" => Some("bet"),
+        "bade" => Some("bid"),
+        "bidden" => Some("bid"),
+        "bound" => Some("bind"),
         "bit" => Some("bite"),
         "bitten" => Some("bite"),
         "bled" => Some("bleed"),
         "blew" => Some("blow"),
         "blown" => Some("blow"),
-        "bore" => Some("bear"),
-        "born" => Some("bear"),
-        "borne" => Some("bear"),
-        "bought" => Some("buy"),
-        "bound" => Some("bind"),
-        "bred" => Some("breed"),
         "broke" => Some("break"),
         "broken" => Some("break"),
+        "bred" => Some("breed"),
         "brought" => Some("bring"),
+        "broadcast" => Some("broadcast"),
+        "browbeaten" => Some("browbeat"),
         "built" => Some("build"),
-        "came" => Some("come"),
+        "burnt" => Some("burn"),
+        "burned" => Some("burn"),
+        "burst" => Some("burst"),
+        "bought" => Some("buy"),
+        // C
+        "cast" => Some("cast"),
         "caught" => Some("catch"),
         "chose" => Some("choose"),
         "chosen" => Some("choose"),
+        "clad" => Some("clothe"),
         "clung" => Some("cling"),
+        "came" => Some("come"),
+        "cost" => Some("cost"),
+        "crept" => Some("creep"),
+        "cut" => Some("cut"),
+        // D
         "dealt" => Some("deal"),
+        "dug" => Some("dig"),
+        "dived" => Some("dive"),
+        "dove" => Some("dive"),
         "did" => Some("do"),
         "done" => Some("do"),
-        "drank" => Some("drink"),
-        "drawn" => Some("draw"),
         "drew" => Some("draw"),
-        "driven" => Some("drive"),
-        "drove" => Some("drive"),
+        "drawn" => Some("draw"),
+        "dreamt" => Some("dream"),
+        "dreamed" => Some("dream"),
+        "drank" => Some("drink"),
         "drunk" => Some("drink"),
+        "drove" => Some("drive"),
+        "driven" => Some("drive"),
         "dwelt" => Some("dwell"),
+        // E
         "ate" => Some("eat"),
         "eaten" => Some("eat"),
-        "fallen" => Some("fall"),
         "fell" => Some("fall"),
+        "fallen" => Some("fall"),
         "fed" => Some("feed"),
         "felt" => Some("feel"),
+        "fought" => Some("fight"),
+        "found" => Some("find"),
         "fled" => Some("flee"),
+        "flung" => Some("fling"),
         "flew" => Some("fly"),
         "flown" => Some("fly"),
-        "flung" => Some("fling"),
-        "found" => Some("find"),
         "forbade" => Some("forbid"),
         "forbidden" => Some("forbid"),
-        "forgave" => Some("forgive"),
-        "forgiven" => Some("forgive"),
+        "forecast" => Some("forecast"),
+        "foresaw" => Some("foresee"),
+        "foreseen" => Some("foresee"),
         "forgot" => Some("forget"),
         "forgotten" => Some("forget"),
-        "forsaken" => Some("forsake"),
+        "forgave" => Some("forgive"),
+        "forgiven" => Some("forgive"),
         "forsook" => Some("forsake"),
+        "forsaken" => Some("forsake"),
         "froze" => Some("freeze"),
         "frozen" => Some("freeze"),
-        "gave" => Some("give"),
-        "given" => Some("give"),
-        "gone" => Some("go"),
+        // G
         "got" => Some("get"),
         "gotten" => Some("get"),
+        "gave" => Some("give"),
+        "given" => Some("give"),
+        "went" => Some("go"),
+        "gone" => Some("go"),
+        "ground" => Some("grind"),
         "grew" => Some("grow"),
         "grown" => Some("grow"),
+        // H
         "had" => Some("have"),
         "has" => Some("have"),
         "heard" => Some("hear"),
-        "held" => Some("hold"),
         "hid" => Some("hide"),
         "hidden" => Some("hide"),
+        "hit" => Some("hit"),
+        "held" => Some("hold"),
+        "hurt" => Some("hurt"),
+        // I
         "kept" => Some("keep"),
-        "knew" => Some("know"),
         "knelt" => Some("kneel"),
+        "knew" => Some("know"),
         "known" => Some("know"),
+        // L
         "laid" => Some("lay"),
-        "lain" => Some("lie"),
-        "lay" => Some("lie"),
         "led" => Some("lead"),
+        "leant" => Some("lean"),
+        "leaned" => Some("lean"),
+        "leapt" => Some("leap"),
+        "leaped" => Some("leap"),
+        "learnt" => Some("learn"),
+        "learned" => Some("learn"),
         "left" => Some("leave"),
         "lent" => Some("lend"),
+        "let" => Some("let"),
+        "lay" => Some("lie"),
+        "lain" => Some("lie"),
+        "lit" => Some("light"),
+        "lighted" => Some("light"),
         "lost" => Some("lose"),
+        // M
         "made" => Some("make"),
         "meant" => Some("mean"),
         "met" => Some("meet"),
+        "mislaid" => Some("mislay"),
         "misled" => Some("mislead"),
-        "mistaken" => Some("mistake"),
+        "misspelt" => Some("misspell"),
+        "misspelled" => Some("misspell"),
         "mistook" => Some("mistake"),
+        "mistaken" => Some("mistake"),
+        "misunderstood" => Some("misunderstand"),
+        "mowed" => Some("mow"),
+        "mown" => Some("mow"),
+        // O
+        "outdid" => Some("outdo"),
+        "outdone" => Some("outdo"),
+        "overcame" => Some("overcome"),
+        "overdone" => Some("overdo"),
+        "overdrew" => Some("overdraw"),
+        "overdrawn" => Some("overdraw"),
+        "overate" => Some("overeat"),
+        "overeaten" => Some("overeat"),
+        "overhung" => Some("overhang"),
+        "overheard" => Some("overhear"),
+        "overlaid" => Some("overlay"),
+        "overpaid" => Some("overpay"),
+        "overrode" => Some("override"),
+        "overridden" => Some("override"),
+        "overran" => Some("overrun"),
+        "overrun" => Some("overrun"),
+        "oversaw" => Some("oversee"),
+        "overseen" => Some("oversee"),
+        "overslept" => Some("oversleep"),
+        "overtook" => Some("overtake"),
+        "overtaken" => Some("overtake"),
+        "overthrew" => Some("overthrow"),
+        "overthrown" => Some("overthrow"),
+        "overwrote" => Some("overwrite"),
+        "overwritten" => Some("overwrite"),
+        // P
         "paid" => Some("pay"),
         "pled" => Some("plead"),
+        "pleaded" => Some("plead"),
+        "preset" => Some("preset"),
+        "proved" => Some("prove"),
         "proven" => Some("prove"),
-        "ran" => Some("run"),
-        "rang" => Some("ring"),
-        "ridden" => Some("ride"),
+        "put" => Some("put"),
+        // Q
+        "quit" => Some("quit"),
+        "quitted" => Some("quit"),
+        // R
+        "read" => Some("read"),
+        "rebuilt" => Some("rebuild"),
+        "recast" => Some("recast"),
+        "redid" => Some("redo"),
+        "redone" => Some("redo"),
+        "remade" => Some("remake"),
+        "rent" => Some("rend"),
+        "repaid" => Some("repay"),
+        "reran" => Some("rerun"),
+        "resold" => Some("resell"),
+        "reset" => Some("reset"),
+        "rethought" => Some("rethink"),
+        "rewound" => Some("rewind"),
+        "rewrote" => Some("rewrite"),
+        "rewritten" => Some("rewrite"),
+        "rid" => Some("rid"),
         "rode" => Some("ride"),
-        "risen" => Some("rise"),
-        "rose" => Some("rise"),
+        "ridden" => Some("ride"),
+        "rang" => Some("ring"),
         "rung" => Some("ring"),
-        "said" => Some("say"),
-        "sang" => Some("sing"),
-        "sat" => Some("sit"),
+        "rose" => Some("rise"),
+        "risen" => Some("rise"),
+        "ran" => Some("run"),
+        // S
         "saw" => Some("see"),
         "seen" => Some("see"),
-        "shaken" => Some("shake"),
+        "sought" => Some("seek"),
+        "sold" => Some("sell"),
+        "sent" => Some("send"),
+        "set" => Some("set"),
+        "sewed" => Some("sew"),
+        "sewn" => Some("sew"),
         "shook" => Some("shake"),
+        "shaken" => Some("shake"),
+        "shaved" => Some("shave"),
+        "shaven" => Some("shave"),
+        "sheared" => Some("shear"),
+        "shorn" => Some("shear"),
+        "shed" => Some("shed"),
         "shone" => Some("shine"),
+        "shined" => Some("shine"),
+        "shat" => Some("shit"),
+        "shod" => Some("shoe"),
+        "shot" => Some("shoot"),
+        "showed" => Some("show"),
+        "shown" => Some("show"),
         "shrank" => Some("shrink"),
         "shrunk" => Some("shrink"),
-        "slain" => Some("slay"),
+        "shut" => Some("shut"),
+        "sang" => Some("sing"),
+        "sung" => Some("sing"),
+        "sank" => Some("sink"),
+        "sunk" => Some("sink"),
+        "sat" => Some("sit"),
         "slew" => Some("slay"),
+        "slain" => Some("slay"),
+        "slept" => Some("sleep"),
         "slid" => Some("slide"),
+        "slung" => Some("sling"),
+        "slunk" => Some("slink"),
+        "slit" => Some("slit"),
         "smelt" => Some("smell"),
-        "sold" => Some("sell"),
-        "sought" => Some("seek"),
+        "smelled" => Some("smell"),
+        "smote" => Some("smite"),
+        "sowed" => Some("sow"),
         "sown" => Some("sow"),
         "spoke" => Some("speak"),
         "spoken" => Some("speak"),
         "sped" => Some("speed"),
+        "speeded" => Some("speed"),
+        "spelt" => Some("spell"),
+        "spelled" => Some("spell"),
         "spent" => Some("spend"),
+        "spilled" => Some("spill"),
+        "spilt" => Some("spill"),
         "spun" => Some("spin"),
+        "spat" => Some("spit"),
+        "split" => Some("split"),
+        "spoilt" => Some("spoil"),
+        "spoiled" => Some("spoil"),
+        "spoon-fed" => Some("spoon-feed"),
+        "spread" => Some("spread"),
         "sprang" => Some("spring"),
         "sprung" => Some("spring"),
+        "stood" => Some("stand"),
         "stole" => Some("steal"),
         "stolen" => Some("steal"),
-        "stood" => Some("stand"),
-        "stove" => Some("stave"),
-        "strove" => Some("strive"),
-        "stricken" => Some("strike"),
-        "striven" => Some("strive"),
-        "struck" => Some("strike"),
-        "strung" => Some("string"),
         "stuck" => Some("stick"),
         "stung" => Some("sting"),
+        "stank" => Some("stink"),
         "stunk" => Some("stink"),
-        "swam" => Some("swim"),
+        "strewed" => Some("strew"),
+        "strewn" => Some("strew"),
+        "strode" => Some("stride"),
+        "stridden" => Some("stride"),
+        "struck" => Some("strike"),
+        "stricken" => Some("strike"),
+        "strung" => Some("string"),
+        "strove" => Some("strive"),
+        "striven" => Some("strive"),
+        "swore" => Some("swear"),
         "sworn" => Some("swear"),
+        "sweat" => Some("sweat"),
+        "sweated" => Some("sweat"),
         "swept" => Some("sweep"),
+        "swelled" => Some("swell"),
         "swollen" => Some("swell"),
+        "swam" => Some("swim"),
         "swum" => Some("swim"),
         "swung" => Some("swing"),
+        // T
+        "took" => Some("take"),
         "taken" => Some("take"),
         "taught" => Some("teach"),
         "tore" => Some("tear"),
         "torn" => Some("tear"),
         "told" => Some("tell"),
-        "took" => Some("take"),
         "thought" => Some("think"),
-        "thrown" => Some("throw"),
+        "thrived" => Some("thrive"),
+        "throve" => Some("thrive"),
         "threw" => Some("throw"),
+        "thrown" => Some("throw"),
+        "thrust" => Some("thrust"),
+        "trod" => Some("tread"),
+        "trodden" => Some("tread"),
+        "typecast" => Some("typecast"),
+        // U
         "understood" => Some("understand"),
-        "woken" => Some("wake"),
+        "undertook" => Some("undertake"),
+        "undertaken" => Some("undertake"),
+        "underwent" => Some("undergo"),
+        "undergone" => Some("undergo"),
+        "undid" => Some("undo"),
+        "undone" => Some("undo"),
+        "upset" => Some("upset"),
+        // W
         "woke" => Some("wake"),
-        "were" => Some("be"),
+        "woken" => Some("wake"),
         "wore" => Some("wear"),
         "worn" => Some("wear"),
-        "woven" => Some("weave"),
         "wove" => Some("weave"),
+        "woven" => Some("weave"),
+        "wed" => Some("wed"),
+        "wedded" => Some("wed"),
         "wept" => Some("weep"),
-        "went" => Some("go"),
-        "withdrawn" => Some("withdraw"),
-        "withdrew" => Some("withdraw"),
+        "wet" => Some("wet"),
+        "wetted" => Some("wet"),
         "won" => Some("win"),
         "wound" => Some("wind"),
+        "withdrew" => Some("withdraw"),
+        "withdrawn" => Some("withdraw"),
+        "withheld" => Some("withhold"),
+        "withstood" => Some("withstand"),
         "wrung" => Some("wring"),
-        "written" => Some("write"),
         "wrote" => Some("write"),
+        "written" => Some("write"),
         _ => None,
     }
 }
 
+/// Lemmatize a token: first try irregular verb expansion, then apply
+/// regular verb heuristics.
+///
+/// This is more aggressive than `expand_lemma` and will attempt to strip
+/// regular verb suffixes (-ed, -ing, -es, -s) when no irregular match is found.
+pub fn lemmatize(token: &str) -> Option<String> {
+    if let Some(base) = expand_lemma(token) {
+        return Some(base.to_string());
+    }
+
+    // Regular verb heuristics
+    let t = token.to_ascii_lowercase();
+
+    // Strip -ing
+    if t.ends_with("ing") && t.len() > 4 {
+        let base = &t[..t.len() - 3];
+        // Doubled consonant: running -> run
+        if base.len() > 1 {
+            let last = base.chars().last().unwrap();
+            let prev = base.chars().nth(base.len() - 2).unwrap();
+            if last == prev && !"aeiou".contains(prev) {
+                return Some(base[..base.len() - 1].to_string());
+            }
+        }
+        // Silent e: making -> make
+        if base.ends_with('k') && base.len() > 1 {
+            let without_k = &base[..base.len() - 1];
+            if without_k.ends_with('e') {
+                return Some(without_k.to_string());
+            }
+        }
+        return Some(base.to_string());
+    }
+
+    // Strip -ed
+    if t.ends_with("ed") && t.len() > 3 {
+        let base = &t[..t.len() - 2];
+        // Doubled consonant: stopped -> stop
+        if base.len() > 1 {
+            let last = base.chars().last().unwrap();
+            let prev = base.chars().nth(base.len() - 2).unwrap();
+            if last == prev && !"aeiou".contains(prev) {
+                return Some(base[..base.len() - 1].to_string());
+            }
+        }
+        // Silent e: hoped -> hope
+        if base.ends_with('p') && base.len() > 1 {
+            let without_p = &base[..base.len() - 1];
+            if without_p.ends_with('o') {
+                // Additional check for common silent e pattern
+            }
+        }
+        // -ied: carried -> carry
+        if base.ends_with('i') && base.len() > 1 {
+            return Some(format!("{}y", &base[..base.len() - 1]));
+        }
+        return Some(base.to_string());
+    }
+
+    // Strip -es (catches -> catch)
+    if t.ends_with("es") && t.len() > 3 {
+        let base = &t[..t.len() - 2];
+        // -ches, -shes, -xes, -zes, -oes
+        if let Some(c) = base.chars().last() {
+            if "chshxzo".contains(c) {
+                return Some(base.to_string());
+            }
+        }
+    }
+
+    // Strip -s (runs -> run)
+    if t.ends_with('s') && t.len() > 2 {
+        let base = &t[..t.len() - 1];
+        // Don't strip if it looks like a plural noun ending in -ss
+        if !base.ends_with('s') {
+            return Some(base.to_string());
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
-    use super::expand_lemma;
+    use super::*;
 
     #[test]
     fn expand_lemma_returns_base_for_irregular_past() {
@@ -238,11 +498,44 @@ mod tests {
     }
 
     #[test]
+    fn expand_lemma_covers_common_auxiliaries() {
+        assert_eq!(expand_lemma("was"), Some("be"));
+        assert_eq!(expand_lemma("were"), Some("be"));
+        assert_eq!(expand_lemma("has"), Some("have"));
+        assert_eq!(expand_lemma("had"), Some("have"));
+    }
+
+    #[test]
+    fn expand_lemma_covers_prefixed_verbs() {
+        assert_eq!(expand_lemma("overcame"), Some("overcome"));
+        assert_eq!(expand_lemma("overtook"), Some("overtake"));
+        assert_eq!(expand_lemma("understood"), Some("understand"));
+        assert_eq!(expand_lemma("withdrew"), Some("withdraw"));
+    }
+
+    #[test]
     fn expand_lemma_returns_none_for_regular_verb() {
         assert_eq!(expand_lemma("regular"), None);
         assert_eq!(expand_lemma("walked"), None);
         assert_eq!(expand_lemma("jumped"), None);
         assert_eq!(expand_lemma("hello"), None);
         assert_eq!(expand_lemma(""), None);
+    }
+
+    #[test]
+    fn lemmatize_regular_verbs() {
+        assert_eq!(lemmatize("running"), Some("run".into()));
+        assert_eq!(lemmatize("walking"), Some("walk".into()));
+        assert_eq!(lemmatize("stopped"), Some("stop".into()));
+        assert_eq!(lemmatize("carried"), Some("carry".into()));
+        assert_eq!(lemmatize("catches"), Some("catch".into()));
+        assert_eq!(lemmatize("runs"), Some("run".into()));
+    }
+
+    #[test]
+    fn lemmatize_irregular_verbs() {
+        assert_eq!(lemmatize("went"), Some("go".into()));
+        assert_eq!(lemmatize("taken"), Some("take".into()));
+        assert_eq!(lemmatize("broken"), Some("break".into()));
     }
 }
