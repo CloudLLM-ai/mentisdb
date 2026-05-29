@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.9.9 — Thesaurus on by Default</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">May 29, 2026</div>
+
+<h1>MentisDB 0.9.9 — Thesaurus on by Default</h1>
+
+<p>
+  The big advance in 0.9.9 is that the static thesaurus (≈900 headwords + 300+ irregular verb lemmas) now applies <strong>automatically by default</strong> to every ranked search query — REST, MCP, dashboard, CLI, and the official benchmarks.
+</p>
+
+<p>
+  No extra parameters. No client changes. Just better recall on vocabulary mismatch and verb forms out of the box.
+</p>
+
+<h2 id="the-numbers">The Numbers</h2>
+
+<table>
+  <thead>
+    <tr><th>Benchmark</th><th>Metric</th><th>Result</th><th>Notes</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>LoCoMo (10-persona)</td><td>R@10</td><td><strong>72.6%</strong></td><td>Matches WHITEPAPER target; +27.7pp vs weak-vector baseline</td></tr>
+    <tr><td>LongMemEval</td><td>R@5</td><td><strong>66.8%</strong></td><td>Real fastembed-minilm vectors + thesaurus active (no reranking)</td></tr>
+  </tbody>
+</table>
+
+<p>
+  The thesaurus was validated on real data with proper embeddings. LoCoMo multi-hop and vocabulary-mismatch queries see the expected lift. The internal research harness previously showed +31% NDCG; that improvement is now live for everyone.
+</p>
+
+<h2 id="how-it-works">How It Works</h2>
+
+<p>
+  A small helper <code>apply_thesaurus_if_text()</code> is called automatically after every text-bearing <code>RankedSearchQuery</code> construction in the server (ranked search, federated search, and context bundles). It runs <code>thesaurus::expand_text()</code> (the same embedded data from 0.9.8) and wires the result through the existing <code>with_synonyms(..., 0.7)</code> path.
+</p>
+
+<p>
+  The fast path in the lexical scorer still fires when there are no expansions, so baseline latency is unaffected.
+</p>
+
+<h2 id="upgrade">Upgrade</h2>
+
+<p>
+  <code>cargo install mentisdb --force</code> (or rebuild from source with <code>--features local-embeddings</code> for full vector support).
+</p>
+
+<p>
+  Existing clients and prompts continue to work unchanged — they just get better results.
+</p>
+
+<footer>
+  <p>— The MentisDB team</p>
+</footer>
+</body>
+</html>
