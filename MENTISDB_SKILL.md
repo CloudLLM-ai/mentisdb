@@ -110,13 +110,18 @@ Git-like immutable version store for agent behaviour. Tools: `mentisdb_upload_sk
 
 ## 🔍 RETRIEVAL
 
-| Need | Tool |
-|---|---|
-| Topical search | `mentisdb_ranked_search` |
-| Keyword match | `mentisdb_lexical_search` |
-| Recent context | `mentisdb_recent_context(last_n=N)` |
+| Need                  | Recommended Tool              |
+|-----------------------|-------------------------------|
+| **Most queries** (topical, semantic, agent memory, multi-hop) | `mentisdb_ranked_search` (default) |
+| Pure keyword / exact matching | `mentisdb_lexical_search` |
+| Recent context        | `mentisdb_recent_context(last_n=N)` |
 
-Ranked search (`mentisdb_ranked_search`) now automatically expands queries using the built-in static thesaurus (~900 headwords + lemmas) for improved recall on vocabulary mismatch and verb forms — no extra parameters needed.
+**Strong recommendation:** Use `mentisdb_ranked_search` as your primary tool for almost everything.
+
+It now automatically applies the built-in static thesaurus (~900 headwords + 300+ lemmas) on every query. This gives significantly better recall on vocabulary mismatch, synonyms, and verb forms ("went", "walked", etc.) with **no extra parameters or work required**.
+
+Only use `mentisdb_lexical_search` when you specifically need strict keyword matching with zero expansion.
+
 | One thought | `mentisdb_get_thought` |
 | First thought | `mentisdb_get_genesis_thought` |
 | Page history | `mentisdb_traverse_thoughts` |
