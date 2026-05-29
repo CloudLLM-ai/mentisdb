@@ -115,6 +115,8 @@ Git-like immutable version store for agent behaviour. Tools: `mentisdb_upload_sk
 | Topical search | `mentisdb_ranked_search` |
 | Keyword match | `mentisdb_lexical_search` |
 | Recent context | `mentisdb_recent_context(last_n=N)` |
+
+Ranked search (`mentisdb_ranked_search`) now automatically expands queries using the built-in static thesaurus (~900 headwords + lemmas) for improved recall on vocabulary mismatch and verb forms — no extra parameters needed.
 | One thought | `mentisdb_get_thought` |
 | First thought | `mentisdb_get_genesis_thought` |
 | Page history | `mentisdb_traverse_thoughts` |
