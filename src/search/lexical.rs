@@ -717,10 +717,13 @@ impl LexicalIndex {
                 };
                 let global_df = postings.len() as f32;
                 let global_df_ratio = global_df / doc_count;
-                let content_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.content;
+                let content_allowed =
+                    doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.content;
                 let tags_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.tags;
-                let concepts_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.concepts;
-                let agent_id_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.agent_id;
+                let concepts_allowed =
+                    doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.concepts;
+                let agent_id_allowed =
+                    doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.agent_id;
                 let agent_registry_allowed =
                     doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.agent_registry;
                 if !content_allowed
@@ -898,10 +901,13 @@ impl LexicalIndex {
                 };
                 let global_df = postings.len() as f32;
                 let global_df_ratio = global_df / doc_count;
-                let content_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.content;
+                let content_allowed =
+                    doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.content;
                 let tags_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.tags;
-                let concepts_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.concepts;
-                let agent_id_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.agent_id;
+                let concepts_allowed =
+                    doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.concepts;
+                let agent_id_allowed =
+                    doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.agent_id;
                 let agent_registry_allowed =
                     doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.agent_registry;
                 if !content_allowed
@@ -930,7 +936,8 @@ impl LexicalIndex {
                             idf,
                             query.scoring.k1,
                             query.scoring.b,
-                        ) * query.scoring.content_weight * term_weight
+                        ) * query.scoring.content_weight
+                            * term_weight
                     } else {
                         0.0
                     };
@@ -942,7 +949,8 @@ impl LexicalIndex {
                             idf,
                             query.scoring.k1,
                             query.scoring.b,
-                        ) * query.scoring.tag_weight * term_weight
+                        ) * query.scoring.tag_weight
+                            * term_weight
                     } else {
                         0.0
                     };
@@ -954,7 +962,8 @@ impl LexicalIndex {
                             idf,
                             query.scoring.k1,
                             query.scoring.b,
-                        ) * query.scoring.concept_weight * term_weight
+                        ) * query.scoring.concept_weight
+                            * term_weight
                     } else {
                         0.0
                     };
@@ -966,7 +975,8 @@ impl LexicalIndex {
                             idf,
                             query.scoring.k1,
                             query.scoring.b,
-                        ) * query.scoring.agent_id_weight * term_weight
+                        ) * query.scoring.agent_id_weight
+                            * term_weight
                     } else {
                         0.0
                     };
@@ -978,7 +988,8 @@ impl LexicalIndex {
                             idf,
                             query.scoring.k1,
                             query.scoring.b,
-                        ) * query.scoring.agent_registry_weight * term_weight
+                        ) * query.scoring.agent_registry_weight
+                            * term_weight
                     } else {
                         0.0
                     };

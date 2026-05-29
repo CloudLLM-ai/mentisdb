@@ -74,22 +74,38 @@ fn evaluate(
         rq.synonyms = synonyms.clone();
         rq.synonym_weight = synonym_weight;
         let ranked = chain.query_ranked(&rq);
-        let results: Vec<usize> = ranked.hits.iter().map(|h| h.thought.index as usize).collect();
+        let results: Vec<usize> = ranked
+            .hits
+            .iter()
+            .map(|h| h.thought.index as usize)
+            .collect();
 
-        let hits5 = results.iter().take(5).filter(|idx| q.relevant.contains(*idx)).count();
-        let hits10 = results.iter().take(10).filter(|idx| q.relevant.contains(*idx)).count();
+        let hits5 = results
+            .iter()
+            .take(5)
+            .filter(|idx| q.relevant.contains(*idx))
+            .count();
+        let hits10 = results
+            .iter()
+            .take(10)
+            .filter(|idx| q.relevant.contains(*idx))
+            .count();
         let nrel = q.relevant.len().max(1);
 
         total_r5 += hits5 as f32 / nrel as f32;
         total_r10 += hits10 as f32 / nrel as f32;
         total_p5 += hits5 as f32 / 5.0;
-        total_mrr += results.iter().enumerate().find_map(|(i, idx)| {
-            if q.relevant.contains(idx) {
-                Some(1.0 / (i + 1) as f32)
-            } else {
-                None
-            }
-        }).unwrap_or(0.0);
+        total_mrr += results
+            .iter()
+            .enumerate()
+            .find_map(|(i, idx)| {
+                if q.relevant.contains(idx) {
+                    Some(1.0 / (i + 1) as f32)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0.0);
         total_ndcg5 += compute_ndcg(&q.relevant, &results, 5);
     }
 
@@ -207,7 +223,10 @@ fn build_corpus() -> (MentisDb, Vec<EvalQuery>, Vec<String>, PathBuf) {
     for doc in &docs {
         for word in doc.split_whitespace() {
             let normalized = word.to_ascii_lowercase();
-            let cleaned: String = normalized.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+            let cleaned: String = normalized
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect();
             if !cleaned.is_empty() {
                 vocab.insert(cleaned);
             }
@@ -216,24 +235,98 @@ fn build_corpus() -> (MentisDb, Vec<EvalQuery>, Vec<String>, PathBuf) {
 
     // Add some extra vocabulary words for better embedding coverage
     let extra = [
-        "fast", "quick", "rapid", "speedy", "swift", "slow", "sluggish",
-        "search", "lookup", "query", "find", "seek", "retrieve",
-        "ranking", "scoring", "ordering", "sorting", "grading",
-        "debugging", "diagnostics", "tracing", "testing",
-        "backend", "server", "service", "api", "gateway",
-        "engineer", "developer", "programmer", "architect", "designer",
-        "graph", "network", "tree", "web", "structure",
-        "data", "information", "records", "facts", "content",
-        "integrity", "consistency", "validity", "correctness", "soundness",
-        "vector", "embedding", "tensor", "array", "matrix",
-        "latency", "delay", "lag", "overhead", "performance",
-        "store", "shop", "market", "warehouse", "repository",
-        "build", "create", "construct", "develop", "assemble",
-        "update", "modify", "change", "revise", "refresh",
-        "deploy", "release", "launch", "ship", "publish",
-        "went", "go", "travel", "move", "walk",
-        "recall", "precision", "accuracy", "fidelity", "exactness",
-        "analysis", "study", "examination", "investigation", "review",
+        "fast",
+        "quick",
+        "rapid",
+        "speedy",
+        "swift",
+        "slow",
+        "sluggish",
+        "search",
+        "lookup",
+        "query",
+        "find",
+        "seek",
+        "retrieve",
+        "ranking",
+        "scoring",
+        "ordering",
+        "sorting",
+        "grading",
+        "debugging",
+        "diagnostics",
+        "tracing",
+        "testing",
+        "backend",
+        "server",
+        "service",
+        "api",
+        "gateway",
+        "engineer",
+        "developer",
+        "programmer",
+        "architect",
+        "designer",
+        "graph",
+        "network",
+        "tree",
+        "web",
+        "structure",
+        "data",
+        "information",
+        "records",
+        "facts",
+        "content",
+        "integrity",
+        "consistency",
+        "validity",
+        "correctness",
+        "soundness",
+        "vector",
+        "embedding",
+        "tensor",
+        "array",
+        "matrix",
+        "latency",
+        "delay",
+        "lag",
+        "overhead",
+        "performance",
+        "store",
+        "shop",
+        "market",
+        "warehouse",
+        "repository",
+        "build",
+        "create",
+        "construct",
+        "develop",
+        "assemble",
+        "update",
+        "modify",
+        "change",
+        "revise",
+        "refresh",
+        "deploy",
+        "release",
+        "launch",
+        "ship",
+        "publish",
+        "went",
+        "go",
+        "travel",
+        "move",
+        "walk",
+        "recall",
+        "precision",
+        "accuracy",
+        "fidelity",
+        "exactness",
+        "analysis",
+        "study",
+        "examination",
+        "investigation",
+        "review",
     ];
     for word in extra {
         vocab.insert(word.into());
@@ -331,7 +424,10 @@ fn build_corpus() -> (MentisDb, Vec<EvalQuery>, Vec<String>, PathBuf) {
         docs.push(d.into());
         for word in d.split_whitespace() {
             let normalized = word.to_ascii_lowercase();
-            let cleaned: String = normalized.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+            let cleaned: String = normalized
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect();
             if !cleaned.is_empty() {
                 vocab.insert(cleaned);
             }
@@ -340,25 +436,68 @@ fn build_corpus() -> (MentisDb, Vec<EvalQuery>, Vec<String>, PathBuf) {
 
     // Append all thoughts.
     for (i, content) in docs.iter().enumerate() {
-        let agent = if i % 3 == 0 { "backend-dev" } else { "frontend-dev" };
+        let agent = if i % 3 == 0 {
+            "backend-dev"
+        } else {
+            "frontend-dev"
+        };
         chain
-            .append_thought(agent, ThoughtInput::new(ThoughtType::Insight, content.clone()))
+            .append_thought(
+                agent,
+                ThoughtInput::new(ThoughtType::Insight, content.clone()),
+            )
             .unwrap();
     }
 
     let queries = vec![
-        EvalQuery { text: "fast retrieval",      relevant: HashSet::from([0, 1, 2, 3]) },
-        EvalQuery { text: "search ranking",      relevant: HashSet::from([4, 5, 6, 7]) },
-        EvalQuery { text: "went to store",       relevant: HashSet::from([8, 9, 10, 11]) },
-        EvalQuery { text: "debugging latency",   relevant: HashSet::from([12, 13, 14, 15]) },
-        EvalQuery { text: "backend engineer",    relevant: HashSet::from([16, 17, 18, 19]) },
-        EvalQuery { text: "graph expansion",     relevant: HashSet::from([20, 21, 22, 23]) },
-        EvalQuery { text: "data integrity",      relevant: HashSet::from([24, 25, 26, 27]) },
-        EvalQuery { text: "vector search",       relevant: HashSet::from([28, 29, 30, 31]) },
-        EvalQuery { text: "recall precision",    relevant: HashSet::from([32, 33, 34, 35]) },
-        EvalQuery { text: "tree traversal",      relevant: HashSet::from([36, 37, 38, 39]) },
-        EvalQuery { text: "build system",        relevant: HashSet::from([40, 41, 42, 43]) },
-        EvalQuery { text: "update deploy",       relevant: HashSet::from([44, 45, 46, 47]) },
+        EvalQuery {
+            text: "fast retrieval",
+            relevant: HashSet::from([0, 1, 2, 3]),
+        },
+        EvalQuery {
+            text: "search ranking",
+            relevant: HashSet::from([4, 5, 6, 7]),
+        },
+        EvalQuery {
+            text: "went to store",
+            relevant: HashSet::from([8, 9, 10, 11]),
+        },
+        EvalQuery {
+            text: "debugging latency",
+            relevant: HashSet::from([12, 13, 14, 15]),
+        },
+        EvalQuery {
+            text: "backend engineer",
+            relevant: HashSet::from([16, 17, 18, 19]),
+        },
+        EvalQuery {
+            text: "graph expansion",
+            relevant: HashSet::from([20, 21, 22, 23]),
+        },
+        EvalQuery {
+            text: "data integrity",
+            relevant: HashSet::from([24, 25, 26, 27]),
+        },
+        EvalQuery {
+            text: "vector search",
+            relevant: HashSet::from([28, 29, 30, 31]),
+        },
+        EvalQuery {
+            text: "recall precision",
+            relevant: HashSet::from([32, 33, 34, 35]),
+        },
+        EvalQuery {
+            text: "tree traversal",
+            relevant: HashSet::from([36, 37, 38, 39]),
+        },
+        EvalQuery {
+            text: "build system",
+            relevant: HashSet::from([40, 41, 42, 43]),
+        },
+        EvalQuery {
+            text: "update deploy",
+            relevant: HashSet::from([44, 45, 46, 47]),
+        },
     ];
 
     let vocab_vec: Vec<String> = vocab.into_iter().collect();
@@ -393,25 +532,144 @@ fn search_quality_research_loop() {
     // MANUAL: hand-crafted synonym map (from previous experiments)
     // ------------------------------------------------------------------
     let mut manual = HashMap::new();
-    manual.insert("fast".into(), vec!["quick".into(), "rapid".into(), "speedy".into(), "swift".into()]);
-    manual.insert("search".into(), vec!["lookup".into(), "querying".into(), "find".into()]);
-    manual.insert("ranking".into(), vec!["scoring".into(), "ordering".into(), "sorting".into()]);
-    manual.insert("debugging".into(), vec!["diagnostics".into(), "tracing".into(), "logging".into(), "monitoring".into()]);
-    manual.insert("backend".into(), vec!["server".into(), "service".into(), "api".into(), "gateway".into()]);
-    manual.insert("engineer".into(), vec!["developer".into(), "programmer".into(), "architect".into(), "designer".into()]);
+    manual.insert(
+        "fast".into(),
+        vec![
+            "quick".into(),
+            "rapid".into(),
+            "speedy".into(),
+            "swift".into(),
+        ],
+    );
+    manual.insert(
+        "search".into(),
+        vec!["lookup".into(), "querying".into(), "find".into()],
+    );
+    manual.insert(
+        "ranking".into(),
+        vec!["scoring".into(), "ordering".into(), "sorting".into()],
+    );
+    manual.insert(
+        "debugging".into(),
+        vec![
+            "diagnostics".into(),
+            "tracing".into(),
+            "logging".into(),
+            "monitoring".into(),
+        ],
+    );
+    manual.insert(
+        "backend".into(),
+        vec![
+            "server".into(),
+            "service".into(),
+            "api".into(),
+            "gateway".into(),
+        ],
+    );
+    manual.insert(
+        "engineer".into(),
+        vec![
+            "developer".into(),
+            "programmer".into(),
+            "architect".into(),
+            "designer".into(),
+        ],
+    );
     manual.insert("graph".into(), vec!["network".into(), "tree".into()]);
-    manual.insert("expansion".into(), vec!["growth".into(), "traversal".into()]);
-    manual.insert("data".into(), vec!["information".into(), "records".into(), "state".into(), "content".into()]);
-    manual.insert("integrity".into(), vec!["consistency".into(), "validity".into(), "correctness".into(), "soundness".into()]);
-    manual.insert("vector".into(), vec!["embedding".into(), "tensor".into(), "array".into(), "matrix".into()]);
-    manual.insert("recall".into(), vec!["precision".into(), "accuracy".into(), "fidelity".into(), "exactness".into()]);
-    manual.insert("went".into(), vec!["go".into(), "travel".into(), "move".into(), "walk".into()]);
-    manual.insert("store".into(), vec!["shop".into(), "market".into(), "warehouse".into(), "depot".into()]);
-    manual.insert("latency".into(), vec!["delay".into(), "slowness".into(), "responsiveness".into(), "performance".into()]);
+    manual.insert(
+        "expansion".into(),
+        vec!["growth".into(), "traversal".into()],
+    );
+    manual.insert(
+        "data".into(),
+        vec![
+            "information".into(),
+            "records".into(),
+            "state".into(),
+            "content".into(),
+        ],
+    );
+    manual.insert(
+        "integrity".into(),
+        vec![
+            "consistency".into(),
+            "validity".into(),
+            "correctness".into(),
+            "soundness".into(),
+        ],
+    );
+    manual.insert(
+        "vector".into(),
+        vec![
+            "embedding".into(),
+            "tensor".into(),
+            "array".into(),
+            "matrix".into(),
+        ],
+    );
+    manual.insert(
+        "recall".into(),
+        vec![
+            "precision".into(),
+            "accuracy".into(),
+            "fidelity".into(),
+            "exactness".into(),
+        ],
+    );
+    manual.insert(
+        "went".into(),
+        vec!["go".into(), "travel".into(), "move".into(), "walk".into()],
+    );
+    manual.insert(
+        "store".into(),
+        vec![
+            "shop".into(),
+            "market".into(),
+            "warehouse".into(),
+            "depot".into(),
+        ],
+    );
+    manual.insert(
+        "latency".into(),
+        vec![
+            "delay".into(),
+            "slowness".into(),
+            "responsiveness".into(),
+            "performance".into(),
+        ],
+    );
     manual.insert("tree".into(), vec!["graph".into(), "network".into()]);
-    manual.insert("build".into(), vec!["create".into(), "construct".into(), "develop".into(), "assemble".into(), "make".into()]);
-    manual.insert("update".into(), vec!["modify".into(), "change".into(), "revise".into(), "refresh".into(), "upgrade".into()]);
-    manual.insert("deploy".into(), vec!["release".into(), "launch".into(), "ship".into(), "publish".into(), "rollout".into()]);
+    manual.insert(
+        "build".into(),
+        vec![
+            "create".into(),
+            "construct".into(),
+            "develop".into(),
+            "assemble".into(),
+            "make".into(),
+        ],
+    );
+    manual.insert(
+        "update".into(),
+        vec![
+            "modify".into(),
+            "change".into(),
+            "revise".into(),
+            "refresh".into(),
+            "upgrade".into(),
+        ],
+    );
+    manual.insert(
+        "deploy".into(),
+        vec![
+            "release".into(),
+            "launch".into(),
+            "ship".into(),
+            "publish".into(),
+            "rollout".into(),
+        ],
+    );
     let manual_07 = evaluate(&chain, &queries, &manual, 0.7);
 
     // ------------------------------------------------------------------
@@ -454,7 +712,10 @@ fn search_quality_research_loop() {
     // ------------------------------------------------------------------
     let mut combined = thesaurus_map.clone();
     for (k, v) in &embed_map {
-        combined.entry(k.clone()).or_insert_with(Vec::new).extend(v.clone());
+        combined
+            .entry(k.clone())
+            .or_insert_with(Vec::new)
+            .extend(v.clone());
     }
     for v in combined.values_mut() {
         let seen: HashSet<_> = v.iter().cloned().collect();
@@ -467,10 +728,16 @@ fn search_quality_research_loop() {
     // ------------------------------------------------------------------
     let mut triple = manual.clone();
     for (k, v) in &thesaurus_map {
-        triple.entry(k.clone()).or_insert_with(Vec::new).extend(v.clone());
+        triple
+            .entry(k.clone())
+            .or_insert_with(Vec::new)
+            .extend(v.clone());
     }
     for (k, v) in &embed_map {
-        triple.entry(k.clone()).or_insert_with(Vec::new).extend(v.clone());
+        triple
+            .entry(k.clone())
+            .or_insert_with(Vec::new)
+            .extend(v.clone());
     }
     for v in triple.values_mut() {
         let seen: HashSet<_> = v.iter().cloned().collect();
@@ -487,7 +754,10 @@ fn search_quality_research_loop() {
         ("thesaurus auto w=0.7".to_string(), thesaurus_07),
         ("embedding auto w=0.7".to_string(), embed_07),
         ("thesaurus + embedding w=0.7".to_string(), combined_07),
-        ("manual + thesaurus + embedding w=0.7".to_string(), triple_07),
+        (
+            "manual + thesaurus + embedding w=0.7".to_string(),
+            triple_07,
+        ),
     ];
 
     rows.sort_by(|a, b| b.1.ndcg_at_5.total_cmp(&a.1.ndcg_at_5));

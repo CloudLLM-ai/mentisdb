@@ -5,6 +5,8 @@
 
 /// Seed-anchored context bundle rendering over graph-expansion hits.
 pub mod bundle;
+/// Embedding-based nearest-neighbor synonym generator.
+pub mod embedding_synonyms;
 /// Deterministic breadth-first expansion helpers built on top of the adjacency
 /// layer.
 pub mod expansion;
@@ -17,10 +19,6 @@ pub mod implicit_edges;
 pub mod lemmas;
 /// BM25-style lexical indexing and ranking over committed thoughts.
 pub mod lexical;
-/// Static thesaurus for query-time synonym expansion.
-pub mod thesaurus;
-/// Embedding-based nearest-neighbor synonym generator.
-pub mod embedding_synonyms;
 /// Personalized PageRank graph expansion primitives.
 pub mod ppr;
 /// Provenance path structures for graph expansion starting from lexical seeds.
@@ -35,6 +33,8 @@ pub mod ranked;
 pub mod sidecar;
 /// Append-only hierarchical summary candidate selection.
 pub mod summary_index;
+/// Static thesaurus for query-time synonym expansion.
+pub mod thesaurus;
 /// Provider-agnostic vector and embedding helpers for deterministic ranking.
 pub mod vector;
 

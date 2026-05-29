@@ -113,7 +113,10 @@ pub fn lookup_lemmatized(token: &str) -> Option<Vec<String>> {
 pub fn expand_text(text: &str) -> HashMap<String, Vec<String>> {
     let mut result = HashMap::new();
 
-    for raw in text.split(|c: char| !c.is_alphanumeric()).filter(|s| !s.is_empty()) {
+    for raw in text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+    {
         let term = raw.to_ascii_lowercase();
         if let Some(syms) = lookup_lemmatized(&term) {
             result.entry(term).or_insert_with(|| syms);
@@ -136,14 +139,24 @@ mod tests {
     fn thesaurus_loaded_and_non_empty() {
         let map = thesaurus_map();
         assert!(!map.is_empty(), "thesaurus should not be empty");
-        assert!(map.len() >= 850, "thesaurus should have 850+ headwords, got {}", map.len());
+        assert!(
+            map.len() >= 850,
+            "thesaurus should have 850+ headwords, got {}",
+            map.len()
+        );
     }
 
     #[test]
     fn lookup_finds_fast_synonyms() {
         let syms = lookup("fast").expect("'fast' should be in thesaurus");
-        assert!(syms.contains(&"quick".to_string()), "fast should map to quick");
-        assert!(syms.contains(&"rapid".to_string()), "fast should map to rapid");
+        assert!(
+            syms.contains(&"quick".to_string()),
+            "fast should map to quick"
+        );
+        assert!(
+            syms.contains(&"rapid".to_string()),
+            "fast should map to rapid"
+        );
     }
 
     #[test]
@@ -156,22 +169,34 @@ mod tests {
         let expanded = expand_text("fast search debugging");
         assert!(expanded.contains_key("fast"), "should contain 'fast'");
         assert!(expanded.contains_key("search"), "should contain 'search'");
-        assert!(expanded.contains_key("debugging"), "should contain 'debugging' via lemmatization");
-        assert!(!expanded.contains_key("unknown"), "should not contain unknown");
+        assert!(
+            expanded.contains_key("debugging"),
+            "should contain 'debugging' via lemmatization"
+        );
+        assert!(
+            !expanded.contains_key("unknown"),
+            "should not contain unknown"
+        );
     }
 
     #[test]
     fn lemmatized_lookup_finds_went() {
         // "went" is not in thesaurus directly, but "go" is.
         let syms = lookup_lemmatized("went").expect("'went' should lemmatize to 'go'");
-        assert!(syms.contains(&"travel".to_string()), "went/go should map to travel");
+        assert!(
+            syms.contains(&"travel".to_string()),
+            "went/go should map to travel"
+        );
     }
 
     #[test]
     fn lemmatized_lookup_finds_walked() {
         // "walked" is not in thesaurus, but "walk" is.
         let syms = lookup_lemmatized("walked").expect("'walked' should lemmatize to 'walk'");
-        assert!(syms.contains(&"step".to_string()), "walked/walk should map to step");
+        assert!(
+            syms.contains(&"step".to_string()),
+            "walked/walk should map to step"
+        );
     }
 
     #[test]

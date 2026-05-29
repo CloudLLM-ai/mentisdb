@@ -1052,9 +1052,8 @@ fn ranked_query_with_synonyms_boosts_recall() {
         )
         .unwrap();
 
-    let without_synonyms = chain.query_ranked(
-        &RankedSearchQuery::new().with_text("fast").with_limit(10),
-    );
+    let without_synonyms =
+        chain.query_ranked(&RankedSearchQuery::new().with_text("fast").with_limit(10));
     assert_eq!(without_synonyms.total_candidates, 1);
 
     let mut synonyms = std::collections::HashMap::new();

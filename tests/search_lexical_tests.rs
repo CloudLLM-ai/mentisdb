@@ -368,15 +368,16 @@ fn lexical_synonym_expansion_surfaces_hits_with_reduced_weight() {
     let mut synonyms = std::collections::HashMap::new();
     synonyms.insert("fast".to_string(), vec!["quick".to_string()]);
 
-    let hits = index.search(
-        &LexicalQuery::new("fast retrieval")
-            .with_synonyms(synonyms.clone(), 0.5),
-    );
+    let hits =
+        index.search(&LexicalQuery::new("fast retrieval").with_synonyms(synonyms.clone(), 0.5));
 
     assert_eq!(hits.len(), 2);
     let fast_hit = hits.iter().find(|h| h.thought_index == 0).unwrap();
     let quick_hit = hits.iter().find(|h| h.thought_index == 1).unwrap();
-    assert!(fast_hit.score > quick_hit.score, "direct match should outrank synonym match");
+    assert!(
+        fast_hit.score > quick_hit.score,
+        "direct match should outrank synonym match"
+    );
     assert!(
         quick_hit.matched_terms.iter().any(|t| t == "quick"),
         "synonym match should report the synonym term"
