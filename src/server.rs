@@ -2679,10 +2679,6 @@ impl MentisDbService {
             if let Some(graph) = &request.graph {
                 ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
             }
-            ranked_query = apply_thesaurus_if_text(ranked_query, request.text.as_deref());
-            if let Some(graph) = &request.graph {
-                ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
-            }
             if let Some(as_of) = request.as_of {
                 ranked_query = ranked_query.with_as_of(as_of);
             }
