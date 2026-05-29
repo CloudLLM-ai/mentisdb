@@ -5,6 +5,8 @@
 
 /// Seed-anchored context bundle rendering over graph-expansion hits.
 pub mod bundle;
+/// Embedding-based nearest-neighbor synonym generator.
+pub mod embedding_synonyms;
 /// Deterministic breadth-first expansion helpers built on top of the adjacency
 /// layer.
 pub mod expansion;
@@ -31,6 +33,8 @@ pub mod ranked;
 pub mod sidecar;
 /// Append-only hierarchical summary candidate selection.
 pub mod summary_index;
+/// Static thesaurus for query-time synonym expansion.
+pub mod thesaurus;
 /// Provider-agnostic vector and embedding helpers for deterministic ranking.
 pub mod vector;
 

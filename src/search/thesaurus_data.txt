@@ -1,0 +1,1005 @@
+# Comprehensive built-in thesaurus for mentisdb
+# Format: term: synonym1, synonym2, synonym3
+# Lines starting with # are ignored
+# Empty lines are ignored
+
+# === Verbs - Movement ===
+go: travel, move, walk, proceed, advance, progress
+come: approach, arrive, reach, enter, appear
+leave: depart, exit, withdraw, retreat, abandon
+run: sprint, race, dash, jog, gallop
+walk: step, stride, pace, trek, march
+jump: leap, bound, spring, hop, vault
+climb: ascend, scale, mount, rise
+fall: descend, drop, plunge, tumble, sink
+fly: soar, glide, navigate, pilot
+swim: float, drift, wade, dive, paddle
+drive: operate, steer, guide, control, pilot
+ride: mount, sit, perch
+throw: cast, toss, hurl, fling, pitch
+catch: capture, seize, grab, snare, trap
+hold: grasp, grip, clutch, cling, retain
+release: free, liberate, unleash, discharge
+push: shove, press, propel, drive, force
+pull: drag, tug, draw, haul, yank
+lift: raise, elevate, hoist, boost, uplift
+lower: drop, reduce, decrease, diminish, decline
+turn: rotate, spin, revolve, swivel, pivot
+twist: bend, warp, distort, curl, wring
+stretch: extend, lengthen, expand, spread, reach
+bend: flex, curve, arch, bow
+break: fracture, shatter, crack, split, rupture
+fix: repair, mend, restore, correct, resolve
+open: unlock, unseal, uncover, reveal, expose
+close: shut, seal, lock, bar, secure
+hit: strike, smack, slap, punch, bash
+kick: boot, punt
+touch: feel, handle, grasp, contact, tap
+
+# === Verbs - Communication ===
+say: state, declare, assert, mention, remark
+tell: inform, notify, advise, report, reveal
+speak: talk, converse, communicate, discuss, chat
+ask: inquire, question, query, request, seek
+answer: reply, respond, retort, acknowledge, solve
+call: phone, ring, dial, contact, summon
+write: compose, draft, author, pen, scribe
+read: peruse, study, scan, browse, examine
+sing: chant, croon, hum, warble, vocalize
+shout: yell, scream, cry, holler, bellow
+whisper: murmur, mumble, mutter
+explain: clarify, elucidate, illuminate, interpret, demonstrate
+describe: depict, portray, characterize, illustrate
+announce: proclaim, declare, publish, broadcast
+argue: debate, dispute, contend, quarrel
+agree: consent, concur, accept, approve
+refuse: reject, decline, deny, dismiss, discard
+promise: pledge, vow, swear, guarantee, assure
+warn: caution, alert, notify, advise
+complain: protest, object, grumble, moan
+praise: compliment, commend, applaud, laud
+criticize: blame, condemn, denounce, rebuke
+apologize: regret, repent
+thank: gratitude, appreciate
+invite: ask, request, summon
+order: command, instruct, direct, dictate
+suggest: propose, recommend, advise, urge
+request: ask, demand, require, plead
+offer: propose, present, extend, tender
+give: donate, offer, present, bestow, grant
+take: seize, grab, capture, acquire, obtain
+receive: accept, get, obtain, acquire, collect
+send: dispatch, transmit, forward, convey, deliver
+show: display, exhibit, present, reveal, demonstrate
+hide: conceal, cover, mask, shield, camouflage
+
+# === Verbs - Mental ===
+think: ponder, consider, reflect, contemplate, meditate
+know: understand, comprehend, grasp, recognize, realize
+learn: study, acquire, master, discover
+teach: instruct, educate, train, guide, coach
+remember: recall, recollect, retain, memorize
+forget: overlook, neglect, omit, ignore
+believe: trust, accept, assume, conclude
+doubt: suspect, question, distrust, hesitate
+wonder: ponder, speculate, marvel
+dream: imagine, fantasize, envision, visualize
+plan: scheme, design, arrange, prepare, organize
+decide: determine, resolve, settle, conclude
+choose: select, pick, elect, opt, prefer
+guess: estimate, predict, speculate, surmise
+assume: presume, suppose, postulate, hypothesize
+analyze: examine, investigate, study, inspect
+compare: contrast, evaluate, assess, weigh
+solve: resolve, fix, answer, crack
+create: generate, produce, make, form, construct
+destroy: remove, eliminate, delete, annihilate
+invent: devise, conceive, design, originate
+discover: find, detect, uncover, reveal
+
+# === Verbs - Emotion ===
+love: adore, cherish, treasure, worship
+like: enjoy, prefer, appreciate, favor
+hate: despise, detest, abhor, loathe
+dislike: hate, detest, abhor
+want: desire, wish, need, crave, seek
+need: require, demand, necessitate, lack
+fear: dread, terrify, frighten, alarm, panic
+hope: expect, anticipate, wish, aspire
+worry: fret, concern, anxiety
+
+# === Verbs - State / Change ===
+be: exist, occur, happen, transpire
+become: grow, turn, get, go
+begin: start, commence, initiate, launch, open
+end: finish, conclude, complete, terminate, close
+continue: proceed, persist, maintain, carry on, keep
+stop: halt, cease, pause, terminate, end
+wait: delay, pause, hold, stay, remain
+stay: remain, persist, continue, abide, endure
+change: transform, alter, modify, shift, vary
+remain: stay, persist, continue, abide
+return: come back, revert, restore
+increase: raise, boost, elevate, escalate, intensify
+decrease: lower, reduce, diminish, decline, weaken
+improve: enhance, refine, better, upgrade, advance
+worsen: deteriorate, decline, degrade, degenerate
+appear: seem, look, emerge
+disappear: vanish, fade, dissolve, evaporate
+exist: be, occur, prevail, persist
+happen: occur, transpire, take place, ensue
+
+# === Verbs - Work ===
+work: labor, toil, operate, function, perform
+try: attempt, endeavor, strive, seek, aim
+achieve: accomplish, attain, reach, fulfill, realize
+fail: fall short, collapse, breakdown, flop
+win: succeed, triumph, prevail, conquer, achieve
+lose: forfeit, surrender, yield, relinquish
+gain: acquire, obtain, secure, attain, win
+cost: price, expense, charge, fee, rate
+pay: compensate, remunerate, reimburse, settle, cover
+buy: purchase, acquire, obtain, procure, get
+sell: vend, trade, market, dispose, auction
+trade: exchange, swap, barter, deal, transact
+share: distribute, divide, allocate, split, portion
+own: possess, have, hold, retain, keep
+rent: lease, hire, let, charter, sublet
+borrow: lend, loan, advance, credit, fund
+save: conserve, preserve, protect, reserve
+spend: expend, use, consume, allocate, invest
+waste: squander, misuse, dissipate, drain, exhaust
+earn: make, gain, receive, obtain, secure
+hire: employ, recruit, engage, appoint, enlist
+fire: dismiss, sack, terminate, discharge, remove
+manage: administer, oversee, supervise, direct, run
+organize: arrange, coordinate, systematize, structure
+prepare: ready, set up, arrange, organize
+practice: rehearse, drill, train, exercise
+
+# === Verbs - Software ===
+search: lookup, query, find, seek, retrieve, explore
+find: discover, locate, detect, uncover, spot
+lookup: search, query, find
+query: question, inquiry, request, search
+retrieve: fetch, recover, extract, get, obtain
+rank: order, sort, arrange, classify, grade
+sort: order, arrange, classify, rank, group
+filter: screen, sieve, select, refine, purify
+index: catalog, directory, register, list
+cache: buffer, store, reserve, pool
+deploy: release, launch, ship, publish, rollout
+build: create, construct, develop, assemble, make
+compile: assemble, build, generate, produce
+execute: run, perform, operate, conduct, carry out
+run: execute, operate, perform, function, work
+test: verify, validate, check, confirm, examine
+debug: troubleshoot, diagnose, fix, repair
+update: modify, change, revise, refresh, upgrade
+upgrade: improve, enhance, advance, promote
+downgrade: demote, reduce, lower, weaken
+install: setup, configure, deploy, implement
+uninstall: remove, delete, erase, purge
+configure: setup, arrange, adjust, tune, calibrate
+setup: install, configure, arrange, establish
+initialize: start, begin, launch, boot, initiate
+terminate: stop, end, halt, shutdown, kill
+restart: reboot, reload, reset, refresh, reinitialize
+load: fetch, retrieve, read, import, pull
+save: store, preserve, keep, retain, archive
+store: save, keep, hold, retain, reserve
+write: record, log, document, note, save
+read: access, view, inspect, scan, browse
+delete: remove, erase, destroy, drop, purge
+remove: extract, eliminate, detach, purge, clear
+insert: add, inject, introduce, embed
+add: append, attach, insert, include, incorporate
+append: attach, add, suffix, tag on
+merge: combine, join, unify, integrate, fuse
+split: divide, separate, partition, segment, break
+join: attach, connect, link, merge, unite
+connect: link, join, attach, bind, relate
+link: connect, join, attach, relate, associate
+copy: duplicate, clone, replicate, reproduce, mirror
+paste: insert, embed, implant
+cut: slice, chop, dice, carve, sever
+move: shift, transfer, relocate, transport, displace
+backup: archive, copy, snapshot, save, preserve
+restore: recover, reinstate, rebuild, retrieve
+synchronize: sync, align, match, harmonize, coordinate
+replicate: copy, duplicate, clone, mirror, reproduce
+migrate: move, transfer, relocate, shift, transition
+scale: grow, expand, increase, multiply, extend
+optimize: improve, enhance, refine, tune, boost
+compress: shrink, reduce, compact, squeeze, minimize
+expand: grow, enlarge, extend, broaden, widen
+encrypt: encode, cipher, scramble, protect
+decrypt: decode, decipher, unscramble, reveal
+authenticate: verify, validate, confirm, certify, authorize
+authorize: permit, allow, empower, enable, license
+validate: confirm, verify, authenticate, substantiate, approve
+verify: confirm, check, validate, authenticate, prove
+check: inspect, examine, verify, test, review
+review: examine, inspect, scrutinize, assess, evaluate
+monitor: observe, watch, track, survey, measure
+observe: watch, view, notice, detect, perceive
+track: trace, follow, monitor, trail, pursue
+trace: track, follow, outline, sketch
+log: record, register, document, note, write
+alert: warn, notify, inform, caution, advise
+notify: inform, tell, advise, alert, warn
+trigger: initiate, start, activate, spark, provoke
+schedule: plan, arrange, organize, coordinate, time
+queue: line, sequence, backlog, stack, list
+batch: group, bundle, cluster, collection, set
+stream: flow, sequence, pipeline, channel, current
+lock: block, seal, secure, restrict, bar
+unlock: release, open, free, unblock, liberate
+retry: attempt, redo, repeat, reiterate, resume
+timeout: deadline, limit, expiration, cutoff, boundary
+overflow: spill, flood, overrun, exceed
+underflow: deficit, shortage, insufficiency
+
+# === Verbs - Control ===
+control: manage, direct, govern, regulate, command
+manage: administer, oversee, supervise, direct, run
+direct: guide, lead, steer, command, instruct
+lead: guide, direct, head, command, pilot
+follow: pursue, track, trail, shadow, chase
+guide: direct, lead, steer, navigate, conduct
+rule: govern, control, dominate, command, reign
+govern: rule, control, manage, administer, regulate
+regulate: control, adjust, modulate, standardize
+restrict: limit, confine, constrain, bound, restrain
+limit: bound, restrict, confine, cap, ceiling
+allow: permit, enable, authorize, let, grant
+permit: allow, enable, authorize, let, grant
+enable: facilitate, allow, permit, empower, support
+disable: deactivate, turn off, shut down, stop, prevent
+prevent: stop, block, hinder, impede, prohibit
+block: obstruct, hinder, impede, bar, stop
+start: begin, commence, initiate, launch, open
+halt: stop, cease, pause, terminate, end
+pause: halt, suspend, freeze, interrupt, delay
+resume: continue, proceed, restart, recommence, carry on
+cancel: abort, stop, terminate, revoke, withdraw
+abort: cancel, terminate, stop, halt, end
+enforce: implement, apply, execute, administer
+implement: execute, apply, enforce, realize, accomplish
+apply: use, utilize, employ, exercise, implement
+use: utilize, employ, apply, exercise, operate
+require: demand, need, necessitate, obligate, compel
+demand: require, need, request, insist, claim
+force: compel, oblige, coerce, pressure, drive
+compel: force, oblige, require, necessitate
+oblige: compel, force, require, necessitate
+ensure: guarantee, assure, secure, verify, confirm
+guarantee: ensure, assure, warrant, promise, secure
+protect: guard, shield, defend, safeguard, secure
+guard: protect, defend, watch, shield, patrol
+defend: protect, guard, shield, resist, oppose
+attack: assault, strike, invade, raid, offend
+invade: attack, assault, intrude, encroach, trespass
+conquer: defeat, overcome, vanquish, subjugate, master
+defeat: beat, conquer, overcome, vanquish, trounce
+surrender: yield, submit, capitulate, give up, relinquish
+submit: surrender, yield, present, propose, tender
+resist: oppose, fight, counter, challenge, defy
+oppose: resist, fight, counter, challenge, defy
+support: help, assist, aid, back, uphold
+help: assist, aid, support, serve, facilitate
+assist: help, aid, support, serve
+aid: help, assist, support, relief, assistance
+
+# === Nouns - People ===
+person: individual, human, being, soul, body
+people: persons, individuals, humans, folks, crowd
+man: male, gentleman, guy, fellow, chap
+woman: female, lady, girl, gal
+child: kid, youth, juvenile, minor
+baby: infant, toddler, newborn, neonate
+adult: grownup, mature
+friend: companion, pal, buddy, mate, ally
+enemy: foe, adversary, opponent, rival, antagonist
+neighbor: resident, inhabitant, dweller
+stranger: foreigner, alien, outsider, newcomer
+guest: visitor, caller, company
+host: hostess, master, mistress, presenter
+member: participant, constituent, component
+leader: chief, head, commander, director, captain
+boss: supervisor, manager, chief, head, director
+worker: employee, laborer, staff, personnel
+employee: worker, staff, laborer, hand
+employer: boss, manager, owner, proprietor
+customer: client, consumer, buyer, purchaser, patron
+client: customer, patron, consumer
+user: consumer, operator, handler
+student: pupil, learner, scholar, trainee
+teacher: instructor, educator, professor, tutor, mentor
+doctor: physician, medical, medic, surgeon, clinician
+engineer: developer, programmer, architect, designer, builder
+developer: coder, engineer, programmer, creator
+programmer: coder, developer, engineer, hacker
+designer: creator, artist, architect, planner
+architect: designer, planner, creator, builder
+scientist: researcher, scholar, academic, investigator
+researcher: scientist, investigator, scholar, analyst
+analyst: examiner, investigator, evaluator, critic
+manager: administrator, supervisor, director, executive
+director: manager, supervisor, head, chief, leader
+executive: manager, director, officer, administrator
+officer: official, functionary, agent
+agent: representative, delegate, proxy, broker
+representative: delegate, agent, proxy, spokesperson
+specialist: expert, authority, professional, consultant
+expert: specialist, authority, professional, master
+consultant: advisor, counselor, expert, specialist
+advisor: counselor, consultant, guide, mentor
+mentor: advisor, guide, teacher, coach
+coach: trainer, instructor, tutor, mentor
+author: writer, creator, originator, founder
+writer: author, scribe, novelist, journalist
+artist: creator, designer, painter, sculptor
+actor: performer, player, thespian
+musician: player, performer, instrumentalist
+singer: vocalist, performer, songster
+player: participant, contestant, competitor, actor
+athlete: sportsman, player, competitor, contestant
+driver: operator, pilot, chauffeur, motorist
+pilot: aviator, driver, navigator, guide
+captain: skipper, commander, master, leader
+soldier: trooper, warrior, fighter, combatant
+police: officer, cop, lawman, constable
+judge: magistrate, justice, arbiter, referee
+lawyer: attorney, counsel, solicitor, barrister
+criminal: felon, offender, culprit, lawbreaker
+prisoner: inmate, convict, captive, detainee
+victim: casualty, sufferer, prey, target
+witness: observer, bystander, viewer, spectator
+crowd: mob, throng, masses, multitude, horde
+audience: spectators, crowd, listeners, viewers
+public: people, society, community, population
+family: household, kin, relatives, folks, clan
+parent: mother, father, guardian, caretaker
+mother: mom, mum, mama, parent
+father: dad, papa, pop, parent
+brother: sibling, kin
+sister: sibling, kin
+husband: spouse, partner, mate
+wife: spouse, partner, mate
+partner: associate, colleague, companion, spouse
+group: team, party, band, crew, squad
+team: crew, squad, unit, group, party
+crew: team, staff, workers, hands
+staff: personnel, employees, workers, crew
+organization: institution, company, corporation, enterprise
+company: firm, business, corporation, enterprise
+corporation: company, firm, business, enterprise
+business: company, firm, enterprise, venture
+enterprise: venture, undertaking, project, initiative
+institution: organization, establishment, foundation
+government: administration, regime, authority, state
+nation: country, state, land, kingdom, republic
+country: nation, state, land, territory
+state: condition, status, situation, position
+city: town, municipality, metropolis, urban
+town: city, village, municipality
+village: hamlet, settlement, community
+community: society, neighborhood, locality, population
+society: community, culture, civilization, people
+world: earth, globe, planet, universe, realm
+
+# === Nouns - Software ===
+system: platform, framework, architecture, infrastructure
+platform: system, framework, stage, base
+framework: structure, system, platform, skeleton
+architecture: structure, design, framework, organization
+infrastructure: foundation, base, framework, support
+application: app, program, software, tool
+app: application, program, software
+program: software, application, routine, procedure
+software: program, application, code, system
+code: program, software, script, source
+script: program, code, text, manuscript
+tool: instrument, device, implement, utility
+utility: tool, service, function, usefulness
+device: tool, instrument, gadget, apparatus
+instrument: tool, device, implement, apparatus
+gadget: device, tool, appliance, contraption
+machine: device, apparatus, mechanism, engine
+engine: motor, machine, mechanism, locomotive
+mechanism: machine, device, system, apparatus
+component: part, piece, element, constituent
+module: component, unit, part, section
+unit: module, component, element, entity
+element: component, constituent, factor, ingredient
+part: piece, section, segment, portion, component
+piece: part, section, segment, fragment
+section: part, segment, division, portion
+segment: section, part, piece, division
+layer: level, stratum, tier, coat
+level: degree, stage, tier, layer
+stage: phase, period, level, step
+phase: stage, period, step
+step: stage, phase, level, degree
+process: procedure, operation, method, technique
+procedure: process, method, technique, routine
+operation: process, procedure, function, action
+method: technique, procedure, process, approach
+technique: method, procedure, approach, strategy
+approach: method, technique, strategy, way
+strategy: plan, approach, tactic, method
+tactic: strategy, maneuver, approach
+algorithm: procedure, method, routine, formula
+routine: procedure, habit, practice, program
+function: operation, role, purpose, feature
+feature: characteristic, trait, attribute, aspect
+characteristic: trait, feature, attribute, quality
+trait: characteristic, feature, attribute, quality
+attribute: characteristic, trait, feature, property
+property: attribute, characteristic, trait, quality
+quality: characteristic, trait, attribute, property
+aspect: facet, side, feature, dimension
+parameter: variable, factor, argument
+variable: parameter, factor, quantity
+factor: element, component, ingredient, aspect
+argument: parameter, dispute, debate
+input: entry, data, information
+output: result, product, outcome
+result: outcome, consequence, effect, product
+outcome: result, consequence, effect, product
+consequence: result, outcome, effect, product
+effect: result, outcome, consequence, impact
+impact: effect, influence, consequence, collision
+influence: effect, impact, power, sway
+cause: reason, source, origin, motive
+reason: cause, motive, explanation, justification
+source: origin, cause, root, beginning
+origin: source, beginning, root, cause
+root: origin, source, base, foundation
+base: foundation, basis, ground, bottom
+foundation: base, basis, groundwork, cornerstone
+basis: foundation, base, ground, reason
+ground: earth, soil, foundation, basis
+resource: asset, source, supply, reserve
+asset: resource, property, possession, advantage
+service: facility, utility, assistance, help
+facility: service, building, plant, complex
+database: repository, store, archive, warehouse
+repository: store, depository, archive, warehouse
+archive: record, repository, collection, files
+warehouse: storehouse, depot, repository
+server: host, node, machine, instance
+host: server, presenter, master, organism
+node: point, junction, vertex, hub
+hub: center, node, core, focus
+cluster: group, bunch, collection, batch
+instance: example, case, occurrence, illustration
+client: customer, patron, user
+endpoint: terminus, destination, target
+interface: boundary, surface, frontier, connection
+api: interface, protocol, contract
+protocol: procedure, convention, rule, agreement
+contract: agreement, deal, pact, treaty
+schema: plan, diagram, outline, structure
+configuration: setup, arrangement, settings, layout
+setting: environment, context, background, scene
+environment: surroundings, setting, context, habitat
+context: background, setting, situation, circumstances
+condition: state, status, situation, circumstance
+status: state, condition, position, standing
+situation: condition, state, circumstance, context
+circumstance: condition, situation, event, fact
+event: occurrence, incident, happening, episode
+incident: event, occurrence, episode, accident
+episode: event, incident, occurrence, chapter
+accident: mishap, collision, crash, casualty
+issue: problem, matter, topic, concern
+problem: issue, difficulty, trouble, dilemma
+difficulty: problem, trouble, hardship, obstacle
+trouble: problem, difficulty, distress, bother
+dilemma: problem, predicament, quandary, plight
+crisis: emergency, disaster, catastrophe, predicament
+emergency: crisis, urgency, exigency
+disaster: catastrophe, calamity, tragedy, misfortune
+catastrophe: disaster, calamity, tragedy
+risk: danger, hazard, peril, threat
+danger: risk, hazard, peril, threat
+hazard: danger, risk, peril, threat
+threat: danger, risk, menace, warning
+warning: caution, alert, notice, admonition
+alert: warning, alarm, notification, caution
+alarm: alert, warning, siren, dismay
+notification: notice, alert, message, announcement
+message: communication, note, dispatch, information
+communication: message, correspondence, transmission
+signal: sign, indication, cue, beacon
+sign: signal, indication, mark, symbol
+mark: sign, symbol, indicator, trace
+symbol: sign, emblem, token, representation
+token: symbol, sign, emblem, coin
+indicator: sign, signal, measure, gauge
+measure: measurement, gauge, indicator, criterion
+metric: measure, criterion, standard, indicator
+standard: criterion, benchmark, norm, measure
+benchmark: standard, criterion, reference, yardstick
+criterion: standard, measure, rule, principle
+threshold: limit, boundary, brink, verge
+limit: boundary, border, edge, restriction
+boundary: border, frontier, limit, edge
+border: boundary, edge, frontier, perimeter
+edge: border, boundary, margin, brink
+margin: edge, border, boundary, profit
+range: scope, extent, span, spectrum
+scope: range, extent, reach, compass
+extent: scope, range, degree, magnitude
+span: range, extent, stretch, duration
+spectrum: range, continuum, array
+scale: range, spectrum, scope, magnitude
+magnitude: size, extent, scale, importance
+size: dimension, magnitude, extent, volume
+dimension: size, measurement, aspect, facet
+volume: capacity, amount, quantity, bulk
+capacity: ability, volume, capability, competence
+ability: capability, capacity, skill, competence
+capability: ability, capacity, competence, potential
+skill: ability, talent, expertise, proficiency
+talent: gift, ability, skill, aptitude
+expertise: skill, knowledge, proficiency, mastery
+proficiency: skill, expertise, competence, mastery
+competence: ability, capability, proficiency, skill
+potential: possibility, capability, capacity
+
+# === Adjectives - Quality ===
+good: excellent, great, superior, fine, quality
+bad: poor, inferior, deficient, flawed, substandard
+better: improved, superior, enhanced, upgraded, advanced
+best: optimal, ideal, top, finest, prime
+worst: terrible, awful, dreadful, poorest, lowest
+big: large, huge, enormous, massive, substantial
+small: tiny, little, miniature, compact, minor
+high: elevated, tall, great, intense, strong
+low: reduced, minimal, slight, weak, minor
+long: extended, lengthy, prolonged, enduring, lasting
+short: brief, concise, compact, terse, abbreviated
+wide: broad, extensive, expansive, spacious, vast
+narrow: slim, thin, tight, restricted, limited
+deep: profound, intense, thorough, extensive, far
+shallow: superficial, surface, light, minor, slight
+heavy: weighty, substantial, dense, burdensome, massive
+light: faint, dim, weak, slight, gentle
+hard: difficult, challenging, tough, arduous, demanding
+easy: simple, straightforward, effortless, uncomplicated, clear
+strong: powerful, robust, sturdy, forceful, intense
+weak: fragile, feeble, delicate, frail, vulnerable
+rich: wealthy, abundant, plentiful, ample, prolific
+poor: lacking, deficient, inadequate, scarce, meager
+fast: quick, rapid, speedy, swift, express
+slow: sluggish, delayed, gradual, leisurely
+new: fresh, recent, novel, modern, latest
+old: legacy, ancient, previous, former, outdated
+current: present, existing, active, ongoing, live
+future: upcoming, forthcoming, impending, prospective, planned
+past: previous, earlier, prior, former, history
+full: complete, entire, total, whole, comprehensive
+empty: blank, void, vacant, clear, bare
+partial: incomplete, fragmented, limited, restricted, segmented
+complete: finished, entire, total, whole, comprehensive
+
+# === Adjectives - Evaluation ===
+beautiful: pretty, lovely, gorgeous, attractive, stunning
+ugly: unattractive, hideous, grotesque, unsightly
+happy: joyful, pleased, delighted, cheerful, content
+sad: unhappy, sorrowful, melancholy, gloomy, dejected
+angry: furious, irate, enraged, livid, mad
+calm: peaceful, serene, tranquil, quiet, relaxed
+excited: enthusiastic, eager, thrilled, passionate, animated
+bored: uninterested, indifferent, listless, apathetic
+surprised: amazed, astonished, shocked, stunned, bewildered
+confused: puzzled, perplexed, bewildered, disoriented, unclear
+clear: obvious, evident, apparent, plain, distinct
+unclear: vague, ambiguous, obscure, fuzzy, cloudy
+important: significant, crucial, critical, essential, vital
+unimportant: trivial, insignificant, minor, negligible
+necessary: required, essential, needed, mandatory, compulsory
+optional: elective, voluntary, discretionary, alternative
+available: accessible, obtainable, ready, free, present
+unavailable: inaccessible, unreachable, occupied, busy, gone
+visible: apparent, observable, noticeable, evident, clear
+invisible: hidden, concealed, unseen, obscure, secret
+possible: feasible, viable, achievable, attainable, realizable
+impossible: infeasible, unachievable, unattainable, impractical
+likely: probable, expected, anticipated, predictable, plausible
+unlikely: improbable, doubtful, unexpected, unanticipated, implausible
+certain: sure, definite, positive, convinced, confident
+uncertain: unsure, doubtful, ambiguous, hesitant, tentative
+similar: alike, comparable, analogous, equivalent, matching
+different: distinct, separate, unlike, divergent, dissimilar
+same: identical, equal, equivalent, uniform, consistent
+opposite: contrary, reverse, inverse, antithesis, counter
+related: connected, associated, linked, relevant, pertinent
+unrelated: separate, unconnected, irrelevant, independent, distinct
+public: open, shared, communal, collective, accessible
+private: secret, personal, confidential, exclusive, restricted
+
+# === Adjectives - Technical ===
+active: operational, functioning, working, running, live
+inactive: dormant, idle, passive, inert, static
+online: connected, live, active, operational
+offline: disconnected, down, inactive, unavailable
+active: busy, engaged, occupied, working
+idle: inactive, dormant, unused, unoccupied
+ready: prepared, set, primed, available
+pending: waiting, outstanding, unresolved, open
+complete: finished, concluded, finalized, closed, resolved
+incomplete: unfinished, partial, deficient, lacking
+valid: legitimate, lawful, sound, correct, proper
+invalid: illegitimate, void, null, incorrect, erroneous
+correct: accurate, right, proper, true, exact
+incorrect: wrong, erroneous, false, inaccurate, mistaken
+exact: precise, accurate, specific, strict, literal
+approximate: rough, estimated, close, near, loose
+specific: particular, definite, explicit, precise, distinct
+general: common, universal, broad, widespread, overall
+absolute: total, complete, utter, pure, unconditional
+relative: comparative, proportional, conditional
+primary: main, principal, chief, foremost, leading
+secondary: auxiliary, subsidiary, minor, inferior, supporting
+main: primary, principal, chief, major, central
+major: main, principal, significant, important, considerable
+minor: small, slight, trivial, insignificant, negligible
+critical: crucial, vital, essential, decisive, acute
+fatal: deadly, lethal, mortal, terminal, critical
+severe: serious, harsh, strict, grave, intense
+mild: gentle, moderate, slight, temperate, lenient
+stable: steady, firm, secure, constant, durable
+unstable: unstable, volatile, erratic, shaky, insecure
+secure: safe, protected, guarded, fortified, stable
+insecure: unsafe, vulnerable, exposed, unprotected, risky
+robust: strong, sturdy, resilient, durable, hardy
+fragile: delicate, brittle, frail, breakable, vulnerable
+flexible: adaptable, pliable, elastic, supple, adjustable
+rigid: stiff, inflexible, fixed, strict, unbending
+portable: mobile, transportable, movable, handheld
+fixed: stationary, permanent, immobile, static, set
+static: stationary, fixed, unchanging, constant, stable
+dynamic: active, changing, fluid, energetic, kinetic
+persistent: enduring, lasting, constant, continual, tenacious
+temporary: transient, fleeting, brief, momentary, provisional
+permanent: lasting, enduring, eternal, perpetual, fixed
+consistent: uniform, steady, regular, constant, coherent
+inconsistent: variable, irregular, erratic, contradictory
+compatible: consistent, harmonious, congruent, agreeable
+incompatible: inconsistent, conflicting, contradictory, irreconcilable
+interoperable: compatible, integrated, connected
+isolated: separate, detached, segregated, insulated, lone
+integrated: unified, combined, consolidated, incorporated
+
+# === Common Terms ===
+time: duration, period, era, epoch, interval
+place: location, spot, site, position, area
+space: room, area, volume, gap, distance
+area: region, zone, district, territory, field
+region: area, zone, district, territory, province
+zone: area, region, district, sector, belt
+district: area, region, zone, neighborhood, quarter
+territory: area, region, land, domain, province
+field: domain, area, sphere, realm, discipline
+domain: realm, sphere, area, field, territory
+realm: domain, sphere, kingdom, world, region
+sphere: domain, realm, area, field, orbit
+world: earth, globe, planet, universe, realm
+land: country, nation, territory, ground, soil
+ground: earth, soil, land, terrain, floor
+earth: world, globe, planet, ground, soil
+soil: earth, ground, dirt, land, terrain
+water: liquid, aqua, moisture, fluid
+air: atmosphere, breeze, wind, sky
+fire: flame, blaze, inferno, combustion
+light: illumination, brightness, radiance, glow
+dark: darkness, shadow, gloom, blackness, dusk
+sound: noise, audio, tone, voice, music
+noise: sound, racket, din, clamor, disturbance
+voice: speech, vocal, tone, utterance
+music: melody, tune, song, harmony, rhythm
+song: tune, melody, hymn, ballad, chant
+picture: image, photo, photograph, painting, drawing
+image: picture, photo, likeness, representation, icon
+photo: photograph, picture, snapshot, shot, image
+video: film, movie, clip, footage, recording
+film: movie, picture, video, motion picture, cinema
+movie: film, picture, video, motion picture, flick
+book: volume, tome, publication, work, text
+page: sheet, leaf, folio, screen
+word: term, expression, utterance, statement
+letter: character, symbol, note, message
+number: digit, figure, numeral, integer, count
+amount: quantity, sum, total, volume, mass
+quantity: amount, number, volume, measure, portion
+sum: total, amount, aggregate, whole, entirety
+total: sum, aggregate, whole, complete, entire
+whole: entire, complete, total, full, intact
+part: portion, section, piece, segment, fraction
+portion: part, section, piece, share, fraction
+half: moiety, fifty percent, one-half, bisection
+quarter: fourth, one-fourth, twenty-five percent
+majority: most, bulk, greater part, preponderance
+minority: few, lesser part, smaller number
+all: everything, entire, whole, total, complete
+none: nothing, zero, nil, null, no one
+some: several, a few, certain, partial, portion
+many: numerous, several, various, multiple, abundant
+few: several, a couple, scarce, rare, sparse
+several: some, a few, various, multiple, sundry
+various: diverse, assorted, different, several, miscellaneous
+same: identical, equal, equivalent, uniform, consistent
+other: different, alternative, additional, extra, separate
+another: additional, extra, different, alternative, further
+such: similar, like, comparable, corresponding, aforementioned
+
+# === Computer / Tech Specific ===
+computer: machine, device, PC, workstation, laptop
+laptop: notebook, portable, computer
+ desktop: workstation, computer, PC, tower
+server: host, node, machine, instance
+network: graph, mesh, grid, system, web
+internet: web, net, cyberspace, online, www
+website: site, webpage, portal, domain, page
+webpage: page, site, document, screen
+browser: navigator, explorer, client, viewer
+screen: display, monitor, interface, viewport
+monitor: screen, display, tracker, supervisor
+keyboard: keypad, input device, console
+mouse: pointer, cursor, input device, rodent
+disk: drive, storage, media, volume, platter
+file: document, record, data, entry, archive
+folder: directory, catalog, container, repository
+directory: folder, catalog, index, listing
+path: route, way, course, track, trail
+link: connection, reference, hyperlink, URL, bond
+URL: address, link, locator, reference, web address
+address: location, place, URL, destination, direction
+port: harbor, socket, connection, interface, gateway
+socket: port, outlet, connector, jack, plug
+plug: connector, socket, jack, adapter
+adapter: converter, connector, interface, bridge
+bridge: connector, link, span, adapter, gateway
+gateway: portal, entrance, access, bridge, router
+router: gateway, switch, hub, device, network device
+switch: router, hub, toggle, change, exchange
+hub: center, node, core, focus, switch
+cable: wire, cord, line, connector, lead
+wire: cable, line, cord, conductor, thread
+wireless: cordless, radio, wifi, bluetooth, untethered
+bluetooth: wireless, protocol, connection, pairing
+wifi: wireless, network, internet, hotspot, wlan
+cloud: internet, network, web, online, virtual
+virtual: digital, simulated, online, synthetic, imaginary
+digital: electronic, computerized, virtual, binary, numeric
+binary: dual, twofold, digital, base-two
+hexadecimal: hex, base-sixteen
+algorithm: procedure, method, routine, formula, process
+logic: reasoning, rationale, sense, coherence, algorithm
+syntax: grammar, structure, format, rules, construction
+semantic: meaning, significance, sense, interpretation
+compiler: translator, builder, generator, assembler
+runtime: execution, environment, engine, framework
+library: collection, archive, repository, module, package
+package: bundle, parcel, container, module, library
+module: component, unit, part, section, piece
+plugin: extension, add-on, module, component, adapter
+extension: add-on, plugin, expansion, supplement, appendage
+addon: extension, plugin, add-on, extra, supplement
+widget: gadget, tool, component, element, applet
+ applet: widget, component, application, program
+api: interface, protocol, contract, specification, endpoint
+sdk: toolkit, framework, library, development kit
+toolkit: tools, set, kit, utilities, resources
+framework: structure, system, platform, skeleton, architecture
+platform: system, framework, stage, base, environment
+environment: surroundings, setting, context, habitat, ecosystem
+ecosystem: environment, system, network, community, habitat
+stack: pile, heap, collection, set, array
+heap: pile, stack, mound, mass, accumulation
+queue: line, sequence, backlog, stack, list
+stack: pile, heap, collection, set, array
+array: collection, set, group, series, arrangement
+list: catalog, register, roster, inventory, record
+tree: hierarchy, structure, graph, network, organization
+graph: network, chart, diagram, plot, structure
+chart: graph, diagram, map, table, plot
+diagram: chart, graph, figure, illustration, schematic
+map: chart, plan, diagram, atlas, guide
+matrix: array, grid, table, network, framework
+grid: network, matrix, lattice, mesh, array
+table: chart, matrix, list, schedule, board
+record: document, file, entry, account, note
+entry: input, record, item, submission, access
+log: record, register, journal, diary, account
+journal: log, diary, record, periodical, magazine
+diagram: chart, graph, figure, illustration
+schema: plan, diagram, outline, structure, framework
+model: pattern, prototype, example, version, design
+prototype: model, mockup, sample, draft, trial
+mockup: prototype, model, dummy, sample, template
+template: pattern, model, stencil, prototype, guide
+pattern: design, model, template, motif, arrangement
+design: plan, pattern, layout, blueprint, scheme
+layout: arrangement, design, plan, configuration, format
+format: layout, structure, arrangement, style, pattern
+style: manner, fashion, mode, design, approach
+scheme: plan, design, system, arrangement, project
+project: undertaking, venture, enterprise, scheme, plan
+undertaking: project, venture, enterprise, task, mission
+venture: enterprise, undertaking, project, risk, adventure
+enterprise: venture, undertaking, project, initiative, business
+initiative: project, program, venture, enterprise, plan
+program: software, application, schedule, plan, routine
+routine: procedure, habit, practice, program, schedule
+schedule: plan, timetable, agenda, calendar, program
+timetable: schedule, agenda, calendar, program, roster
+agenda: schedule, plan, program, calendar, list
+calendar: schedule, agenda, almanac, timetable, planner
+planner: organizer, scheduler, diary, calendar, agenda
+organizer: planner, coordinator, arranger, facilitator
+
+# === Data / Information ===
+data: information, records, facts, content, statistics
+information: knowledge, details, intelligence, data, facts
+knowledge: understanding, wisdom, information, expertise, learning
+wisdom: knowledge, insight, sagacity, judgment, understanding
+insight: understanding, perception, awareness, intuition, discernment
+understanding: comprehension, grasp, knowledge, awareness, insight
+awareness: consciousness, realization, recognition, knowledge, perception
+perception: awareness, understanding, insight, observation, viewpoint
+viewpoint: perspective, standpoint, angle, outlook, opinion
+perspective: viewpoint, outlook, angle, standpoint, view
+opinion: view, belief, judgment, sentiment, estimation
+belief: faith, trust, conviction, opinion, view
+view: opinion, perspective, outlook, sight, scene
+outlook: perspective, viewpoint, forecast, prospect, view
+standpoint: viewpoint, perspective, position, angle, stance
+stance: position, stand, attitude, posture, viewpoint
+position: place, location, stance, role, job
+attitude: stance, posture, outlook, disposition, mindset
+mindset: attitude, outlook, mentality, philosophy, approach
+philosophy: doctrine, belief, ideology, theory, wisdom
+doctrine: teaching, belief, creed, dogma, principle
+principle: rule, law, doctrine, tenet, axiom
+rule: regulation, law, principle, guideline, standard
+regulation: rule, law, ordinance, decree, guideline
+law: rule, regulation, statute, ordinance, decree
+guideline: rule, principle, standard, recommendation, advice
+standard: criterion, benchmark, norm, measure, rule
+policy: strategy, plan, procedure, course, program
+procedure: process, method, technique, routine, protocol
+protocol: procedure, convention, rule, agreement, etiquette
+convention: custom, tradition, practice, standard, rule
+custom: tradition, habit, practice, convention, usage
+tradition: custom, heritage, legacy, practice, convention
+practice: habit, custom, routine, exercise, method
+habit: custom, practice, routine, tendency, pattern
+routine: procedure, habit, practice, program, schedule
+method: technique, procedure, process, approach, strategy
+technique: method, procedure, approach, strategy, skill
+approach: method, technique, strategy, way, manner
+strategy: plan, approach, tactic, method, scheme
+tactic: strategy, maneuver, approach, method, ploy
+maneuver: move, tactic, strategy, operation, exercise
+
+# === Time ===
+time: duration, period, era, epoch, interval
+duration: length, period, span, extent, time
+period: era, epoch, age, span, duration
+era: age, epoch, period, time, generation
+epoch: era, age, period, time, date
+age: era, period, epoch, generation, lifetime
+generation: era, age, cohort, lineage, progeny
+interval: gap, break, pause, space, period
+moment: instant, minute, second, juncture, point
+instant: moment, second, minute, flash, twinkling
+minute: moment, instant, second, while, bit
+second: moment, instant, minute, while, bit
+while: period, time, interval, duration, spell
+spell: period, while, stint, turn, time
+stint: period, spell, stretch, turn, shift
+shift: change, move, transfer, period, stint
+turn: rotation, change, shift, opportunity, twist
+phase: stage, period, step, aspect, part
+stage: phase, period, level, step, platform
+season: period, time, term, span, interval
+term: period, duration, semester, word, phrase
+semester: term, session, half-year, period
+session: meeting, term, sitting, period, conference
+meeting: gathering, assembly, conference, session, encounter
+gathering: meeting, assembly, collection, group, crowd
+assembly: gathering, meeting, congregation, council, forum
+conference: meeting, convention, summit, symposium, forum
+summit: peak, top, conference, meeting, apex
+forum: platform, meeting, discussion, marketplace, assembly
+council: assembly, committee, board, panel, convention
+committee: council, board, panel, commission, jury
+board: panel, committee, council, plank, table
+panel: board, committee, council, group, jury
+commission: committee, board, council, authority, delegation
+delegation: representatives, envoys, mission, committee, group
+representatives: delegates, envoys, agents, deputies, reps
+
+# === Money / Business ===
+money: currency, cash, funds, capital, wealth
+currency: money, cash, legal tender, medium of exchange
+cash: money, currency, funds, capital, liquid assets
+funds: money, capital, resources, finances, cash
+capital: funds, money, resources, assets, wealth
+wealth: riches, prosperity, abundance, fortune, assets
+assets: property, resources, holdings, possessions, capital
+property: assets, real estate, land, possessions, belongings
+possessions: belongings, property, assets, goods, effects
+belongings: possessions, property, effects, goods, items
+goods: merchandise, products, commodities, wares, items
+merchandise: goods, products, commodities, wares, stock
+products: goods, merchandise, commodities, wares, items
+commodities: goods, products, merchandise, staples, wares
+stock: inventory, merchandise, goods, shares, capital
+inventory: stock, goods, supplies, merchandise, list
+supplies: provisions, materials, equipment, goods, stock
+materials: supplies, resources, substances, ingredients, matter
+resources: assets, reserves, materials, supplies, sources
+reserves: resources, savings, stockpile, cache, fund
+savings: reserves, nest egg, funds, deposits, economy
+investment: stake, venture, contribution, outlay, speculation
+budget: allowance, allocation, funds, estimate, plan
+allowance: budget, allocation, stipend, grant, ration
+allocation: distribution, allotment, apportionment, budget, share
+share: portion, part, stake, interest, contribution
+stake: share, interest, investment, claim, bet
+interest: stake, share, concern, benefit, advantage
+profit: gain, earnings, return, revenue, income
+revenue: income, earnings, receipts, returns, proceeds
+income: earnings, revenue, wages, salary, proceeds
+earnings: income, revenue, profit, wages, returns
+wages: pay, salary, earnings, remuneration, compensation
+salary: pay, wages, earnings, income, stipend
+pay: wages, salary, compensation, remuneration, earnings
+compensation: pay, remuneration, recompense, reimbursement, damages
+remuneration: pay, compensation, salary, wages, reward
+reward: prize, award, recompense, payment, bonus
+bonus: reward, premium, incentive, extra, dividend
+premium: bonus, incentive, reward, extra, surcharge
+incentive: motivation, stimulus, encouragement, bonus, reward
+motivation: incentive, drive, stimulus, inspiration, encouragement
+
+# === Science / Nature ===
+science: knowledge, learning, discipline, field, study
+nature: environment, natural world, wilderness, outdoors, universe
+environment: surroundings, habitat, ecosystem, setting, conditions
+habitat: environment, home, territory, dwelling, niche
+ecosystem: environment, system, network, community, habitat
+organism: creature, being, life form, entity, living thing
+creature: being, organism, animal, beast, entity
+animal: creature, beast, organism, brute, fauna
+plant: flora, vegetation, organism, herb, shrub
+tree: plant, woody plant, sapling, timber, hardwood
+flower: blossom, bloom, floret, posy, botanical
+water: liquid, aqua, moisture, fluid, H2O
+air: atmosphere, breeze, wind, sky, oxygen
+earth: world, globe, planet, ground, soil
+fire: flame, blaze, inferno, combustion, conflagration
+light: illumination, brightness, radiance, glow, luminescence
+dark: darkness, shadow, gloom, blackness, dusk
+sound: noise, audio, tone, voice, music
+energy: power, force, vigor, vitality, strength
+power: energy, force, strength, might, authority
+force: strength, power, energy, might, compulsion
+matter: substance, material, stuff, mass, body
+substance: material, matter, essence, stuff, fabric
+material: substance, matter, stuff, fabric, component
+mass: bulk, volume, weight, body, majority
+weight: mass, heaviness, burden, load, pressure
+pressure: stress, strain, force, tension, burden
+temperature: heat, warmth, coldness, climate, weather
+heat: warmth, temperature, hotness, fervor, passion
+cold: chill, coolness, frigidity, frost, iciness
+weather: climate, conditions, atmosphere, meteorology
+climate: weather, atmosphere, environment, conditions, mood
+

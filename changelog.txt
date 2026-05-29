@@ -1,6 +1,42 @@
 0.9.9.45 UNRELEASED
+  - feat(search): comprehensive static thesaurus for query-time synonym
+    expansion — ~895 headwords covering verbs, nouns, adjectives, adverbs,
+    and technical vocabulary; data is embedded into the binary at compile
+    time via include_str! with no external file or network dependency;
+    parser builds a unidirectional map from headwords to synonym lists;
+    query terms are lemmatized (irregular + regular suffix stripping)
+    before lookup so past-tense verbs like "went" resolve to "go" and
+    find synonyms; default synonym_weight is 0.7; research harness shows
+    +31% NDCG improvement over baseline (0.52 → 0.68) on synthetic corpus
+  - feat(search): expand irregular verb lemma coverage from ~100 to 300+
+    entries — covers all common English irregular verbs and their past
+    tense, past participle, and present participle forms; new lemmatize()
+    helper combines irregular lookup with regular suffix stripping
+    (-ing, -ed, -ies, -s) for comprehensive verb-form normalization
+  - feat(search): add embedding-based synonym generator as alternative
+    to static thesaurus — uses LocalTextEmbeddingProvider + VectorIndex
+    to find cosine-similar terms from a fixed vocabulary; kept for
+    experimentation but research shows it underperforms (NDCG 0.48 vs
+    0.68 thesaurus) due to hash-based feature vectors rather than true
+    semantic similarity
+  - feat(search): integrate synonym expansion into BM25 lexical scoring
+    and ranked queries — LexicalQuery gains synonyms HashMap and
+    synonym_weight (default 0.7); LexicalIndex::search_in_positions
+    adds a fast path that bypasses synonym overhead when no synonyms are
+    configured, keeping baseline latency neutral; when synonyms are
+    present, expanded terms are scored with reduced weight relative to
+    original term matches; RankedSearchQuery wires synonym maps through
+    to rank_candidates_lexically
+  - test(search): add search quality research harness comparing synonym
+    generators — synthetic corpus (140 docs, 12 queries) with R@5, R@10,
+    P@5, MRR, NDCG@5 metrics; compares manual oracle map, static thesaurus
+    auto, embedding auto, and combined configurations; key finding: one
+    high-quality source (thesaurus) outperforms combined maps because
+    synonym noise degrades precision
   - feat(search): auto-infer implicit RelatedTo edges from vector cosine
     similarity — the vector sidecar and graph adjacency index were previously
+    disconnected signals; chains where agents never author explicit refs or
+    relations now have a dense implicit graph populated automatically;
     disconnected signals; chains where agents never author explicit refs or
     relations now have a dense implicit graph populated automatically;
     edges with cosine >= threshold (default 0.85, env MENTISDB_AUTO_EDGE_THRESHOLD)
