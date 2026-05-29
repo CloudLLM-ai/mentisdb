@@ -1,4 +1,11 @@
 0.9.9.45 UNRELEASED
+  - feat(search): thesaurus now applies **automatically by default** to all
+    ranked search queries (REST `/v1/ranked-search`, MCP, dashboard, CLI,
+    and benchmark harnesses). No client changes required. The static
+    thesaurus (895 headwords + 300+ lemmas) is invoked transparently via
+    `apply_thesaurus_if_text` in the server for every text-bearing
+    `RankedSearchQuery`. This surfaces the +31% NDCG research improvement
+    to all users and the official LoCoMo/LongMemEval benchmarks.
   - feat(search): comprehensive static thesaurus for query-time synonym
     expansion — ~895 headwords covering verbs, nouns, adjectives, adverbs,
     and technical vocabulary; data is embedded into the binary at compile

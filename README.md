@@ -488,6 +488,8 @@ REST endpoints:
 
 MentisDB keeps its baseline thought search surface **filter-first and append-order**. Ranked, graph-aware, and vector retrieval are additive surfaces layered on top of that stable baseline.
 
+**Ranked search now automatically expands queries** using the built-in static thesaurus (~900 headwords + 300+ irregular verb lemmas) for better recall on vocabulary mismatch and verb-form variation. No client changes or extra parameters are required — the expansion is applied transparently to every text-bearing ranked query (REST, MCP, dashboard, and CLI).
+
 Today, the main search APIs are:
 
 - `MentisDb::query(&ThoughtQuery)`
