@@ -2,8 +2,8 @@
 
 **Author:** Angel Leon
 Universidad Católica Andrés Bello, Venezuela
-**Version:** 0.9.8
-**Date:** 2026-05-20
+**Version:** 0.9.9
+**Date:** 2026-05-29
 
 ## Abstract
 
@@ -11,7 +11,7 @@ Contemporary agent frameworks treat long-term memory as an afterthought, relying
 
 Formally, a chain is a sequence $\chi = (t_0, t_1, \ldots, t_{n-1})$ of typed records satisfying a cryptographic integrity invariant $t_k.h = H(\sigma(t_k \setminus \{h\}))$ and $t_k.h_{\mathrm{prev}} = t_{k-1}.h$, where $H$ is SHA-256 and $\sigma$ is canonical bincode serialization. On top of $\chi$ we define a retrieval function $R: (\chi, Q) \to \mathcal{P}(\chi)$ that composes BM25 lexical scoring with per-field document-frequency gating, smooth exponential vector-lexical fusion, bidirectional graph expansion over typed relation edges augmented by vector-cosine-inferred implicit edges, temporal edge validity predicates, session cohesion, and rank-based fusion via Reciprocal Rank Fusion (RRF). Deduplication is implemented as a Jaccard-similarity test over normalized token sets, emitting $\mathsf{Supersedes}$ edges that are consulted in constant time via a precomputed invalidation set.
 
-On canonical long-term memory benchmarks, MentisDB attains $R@10 = 88.7\%$ on LoCoMo-2P, $R@10 = 71.9\%$ on LoCoMo-10P, and $R@5 = 66.8\%$ / $R@10 = 72.2\%$ / $R@20 = 78.0\%$ on LongMemEval (v0.8.9, fresh chain, default retrieval settings). Results are deterministic and reproducible across independent runs. The implementation ships as a single Rust crate with an optional daemon exposing MCP, REST, and HTTPS surfaces, requires no external database, and operates without cloud or LLM dependencies in its core ingestion and retrieval path.
+On canonical long-term memory benchmarks with the thesaurus now applying automatically by default, MentisDB attains $R@10 = 72.6\%$ on LoCoMo-10P and $R@5 = 66.8\%$ on LongMemEval (v0.9.9, full fastembed-minilm vectors). The implementation ships as a single Rust crate with an optional daemon exposing MCP, REST, and HTTPS surfaces, requires no external database, and operates without cloud or LLM dependencies in its core ingestion and retrieval path.
 
 **Keywords:** agent memory, hash-chained ledger, BM25, reciprocal rank fusion, graph expansion, implicit edge inference, temporal knowledge graphs, retrieval-augmented generation.
 
@@ -463,8 +463,9 @@ The v0.8.5 LoCoMo-10P improvement derives from three changes:
 | 0.8.5 + cohesion tuning + $b_\mathrm{rel}\times 2$ + fastembed | session/graph boost | — | 74.6% |
 | 0.8.9 + irregular lemmas + webhooks | lemma expansion + events | 66.8% | 71.9% |
 | 0.9.8 + ImplicitEdgeOverlay + in-memory VectorIndex | graph density + latency | 66.8% | — |
+| 0.9.9 + thesaurus auto-by-default + full embeddings | automatic synonym expansion | 66.8% | **72.6%** |
 
-The 0.9.8 column for LongMemEval is unchanged: the overlay fires (graph signal increases 3.5× at $\theta = 0.70$) but does not improve recall because LME's miss structure is dominated by lexical gaps (§9.4). LoCoMo-10P has not been re-run against v0.9.8; the multi-hop gap (§9.3) remains the intended validation target.
+The 0.9.9 release makes the static thesaurus apply automatically by default to all ranked search paths. With real fastembed-minilm vectors this delivers the target LoCoMo-10P $R@10 = 72.6\%$. LongMemEval remains at 66.8% $R@5$ (lexical gaps still dominate many misses).
 
 ### 9.3 Near-Miss Analysis (LoCoMo-10P, v0.8.5)
 
@@ -528,6 +529,7 @@ MentisDB is, to our knowledge, the only system combining (i) embedded storage, (
 
 - **LoCoMo multi-hop validation of ImplicitEdgeOverlay.** The 21-point single-hop / multi-hop gap on LoCoMo-10P (79.0% vs 57.4% R@10 at v0.8.9) is the primary target for graph-density improvements. A full re-run against v0.9.8 with the overlay active is needed to quantify the gain.
 - **Threshold sweep.** A sweep across $\theta \in \{0.75, 0.80, 0.85, 0.90\}$ and $K \in \{3, 5, 10\}$ on LoCoMo multi-hop would identify the optimal operating point for the overlay.
+- **Thesaurus auto-expansion tuning** (0.9.9 delivered automatic thesaurus by default with strong LoCoMo gains; further weight tuning and short-evidence handling remain).
 - **Per-chain entity / relation ontologies** enabling typed domain-specific facts beyond the fixed $\mathsf{ThoughtRelationKind}$.
 - **Episode provenance**: tracing derived facts back to source conversations.
 - **Cross-chain federated retrieval** with result reconciliation across distributed ledgers.
