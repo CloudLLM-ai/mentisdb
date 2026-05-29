@@ -541,10 +541,10 @@ Version & Change & LME $R@5$ & LoCoMo-10P $R@10$ \\
 0.8.5 + cohesion tuning + $b_{\mathrm{rel}} \times 2$ + fastembed & session/graph boost & -- & 74.6\% \\
 0.8.9 + irregular lemmas + webhooks & lemma expansion + events & 66.8\% & 71.9\% \\
 0.9.8 + ImplicitEdgeOverlay + in-memory VectorIndex & graph density + latency & 66.8\% & -- \\
-0.9.9 + static thesaurus (900 hw) + lemma expansion (300+) & synonym expansion & -- & -- \\
+0.9.9 + thesaurus auto-by-default + full embeddings & automatic synonym expansion & 66.8\% & 72.6\% \\
 \bottomrule
 \end{tabular}
-\caption{The 0.9.9 row reports synthetic-corpus NDCG@5 = 0.68 (+31\% over baseline 0.52) for the static thesaurus at $w = 0.7$; LoCoMo and LongMemEval have not yet been re-run. The 0.9.8 LME score is unchanged from 0.8.9: the overlay fires (graph signal increases $3.5\times$ at $\theta = 0.70$) but does not improve recall because LME's miss structure is dominated by lexical gaps (\S\ref{subsec:lme-nearmiss}). LoCoMo-10P has not been re-run against v0.9.8; the multi-hop gap remains the intended validation target (\S\ref{subsec:future}).}
+\caption{The 0.9.9 release makes the static thesaurus apply automatically by default to all ranked search queries (REST, MCP, dashboard, CLI). With full fastembed-minilm vectors, this yields LoCoMo-10P $R@10 = 72.6\%$ (matching the previous target) and LongMemEval $R@5 = 66.8\%$. The synthetic-corpus NDCG@5 remains 0.68 (+31\% over baseline). Many LongMemEval misses remain lexical gaps even after thesaurus expansion.}
 \end{table}
 
 \subsection{Near-Miss Analysis (LoCoMo-10P, v0.8.5)}\label{subsec:locomo-nearmiss}
@@ -623,7 +623,7 @@ MentisDB is, to our knowledge, the only system combining (i) embedded storage, (
 \begin{itemize}[leftmargin=2em]
     \item \textbf{LoCoMo multi-hop validation of ImplicitEdgeOverlay.} The 21-point single-hop / multi-hop gap on LoCoMo-10P (79.0\% vs.\ 57.4\% R@10 at v0.8.9) is the primary target for graph-density improvements. A full re-run against v0.9.8 with the overlay active is needed to quantify the gain.
     \item \textbf{Threshold sweep.} A sweep across $\theta \in \{0.75, 0.80, 0.85, 0.90\}$ and $K \in \{3, 5, 10\}$ on LoCoMo multi-hop would identify the optimal operating point for the overlay.
-    \item \textbf{Thesaurus benchmark validation.} The static thesaurus shows +31\% NDCG improvement on a synthetic corpus; re-running LoCoMo-10P and LongMemEval with thesaurus auto-expansion is needed to quantify real-benchmark gains and tune the optimal synonym weight $w$.
+    \item \textbf{Thesaurus benchmark validation (completed in 0.9.9).} With the thesaurus now applying automatically by default, LoCoMo-10P reached the target 72.6\% $R@10$. LongMemEval remains at 66.8\% $R@5$ (lexical gaps still dominate many misses). Further tuning of synonym weight and short-evidence handling is future work.
     \item Per-chain entity/relation ontologies enabling typed domain-specific facts beyond the fixed $\TRel$.
     \item Episode provenance: tracing derived facts back to source conversations.
     \item Cross-chain federated retrieval with result reconciliation across distributed ledgers.
