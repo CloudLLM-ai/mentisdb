@@ -260,6 +260,19 @@
 //! - Always call `flush()` before shutdown unless `auto_flush` is enabled.
 //! - Use the backup/restore APIs (`backup` module) for disaster recovery and chain migration.
 //!
+//! ## Resilience & Durability
+//!
+//! MentisDB is designed for durability:
+//!
+//! - Every append produces a cryptographic hash chained to the previous thought.
+//! - The `invalidated_thought_ids` set provides O(1) skipping of superseded content.
+//! - The skill registry is itself versioned and immutable.
+//! - Full chain backups (`.mentis` files) are self-contained and verifiable.
+//!
+//! When building a custom integration, treat `MentisDb` as the source of truth
+//! for agent state. Combine it with your own replication/backup strategy if you
+//! need geographic redundancy.
+//!
 //! ## Next Steps for Integrators
 //!
 //! 1. Start with the examples above.
