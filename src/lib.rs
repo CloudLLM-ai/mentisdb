@@ -1997,6 +1997,34 @@ impl ThoughtRelation {
 /// assert_eq!(input.role, ThoughtRole::Summary);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Input for appending a new thought to a chain.
+///
+/// This is the primary type you construct when writing to MentisDB from a
+/// custom integration or agent harness.
+///
+/// Most fields are optional. At minimum you usually only need to set
+/// `thought_type` and `content`.
+///
+/// # Common Patterns
+///
+/// ```rust
+/// use mentisdb::{ThoughtInput, ThoughtType};
+///
+/// // Simple decision
+/// let input = ThoughtInput::new(
+///     ThoughtType::Decision,
+///     "We will use vector search + graph expansion for retrieval"
+/// );
+///
+/// // With references and high importance
+/// let mut input = ThoughtInput::new(ThoughtType::Observation, "User prefers concise answers");
+/// input.refs = vec![42, 43];           // references earlier thoughts by index
+/// input.importance = Some(0.9);
+/// input.agent_name = Some("user-modeler".into());
+/// ```
+///
+/// See [`MentisDb::append_thought`] and the [crate-level documentation](crate)
+/// for full usage patterns when building custom integrations.
 pub struct ThoughtInput {
     /// Optional session identifier associated with the thought.
     ///
