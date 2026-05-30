@@ -2994,6 +2994,15 @@ impl RankedSearchBackend {
 /// filtered candidate set, expands over `refs` and typed `relations`, then
 /// reranks any reached candidate thoughts as supporting context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Configuration for graph-aware expansion during ranked search.
+///
+/// When attached to a `RankedSearchQuery` via `with_graph()`, MentisDB will
+/// traverse the thought graph (using `refs` / `ThoughtRelation` links) starting
+/// from the initial lexical matches. This dramatically improves recall for
+/// queries where the best answers are connected by chains of reasoning,
+/// corrections, or summaries.
+///
+/// Highly recommended for sophisticated custom agent harnesses.
 pub struct RankedSearchGraph {
     /// Maximum graph distance explored from each lexical seed.
     pub max_depth: usize,
