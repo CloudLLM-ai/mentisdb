@@ -1797,6 +1797,14 @@ pub enum ThoughtType {
 /// assert_eq!(ThoughtRole::default(), ThoughtRole::Memory);
 /// ```
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+/// The operational role a thought plays in an agent's cognitive process.
+///
+/// Roles are orthogonal to `ThoughtType`. While `ThoughtType` describes *what*
+/// the thought means semantically, `ThoughtRole` describes *how* it is intended
+/// to be used (e.g. as long-term memory vs a temporary checkpoint).
+///
+/// This distinction is very useful in custom integrations for filtering and
+/// prioritizing retrieval.
 pub enum ThoughtRole {
     /// Durable long-term memory.
     #[default]
