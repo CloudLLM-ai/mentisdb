@@ -1449,6 +1449,14 @@ impl AgentRecord {
 
 /// Per-chain registry of the agents that have written thoughts.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Per-chain registry of agents that have written thoughts.
+///
+/// When you append a thought with a new `agent_id`, MentisDB automatically
+/// creates or updates an entry in this registry. This is extremely useful
+/// for custom integrations that need to know "which agents have been active
+/// on this chain".
+///
+/// The registry is persisted alongside the chain and is always kept in sync.
 pub struct AgentRegistry {
     /// Registry entries keyed by stable `agent_id`.
     pub agents: BTreeMap<String, AgentRecord>,
