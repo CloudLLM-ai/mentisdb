@@ -372,6 +372,23 @@ pub use skills::{
 /// A harness that wants to store all memory inside an existing Postgres
 /// instance instead of local files can implement `StorageAdapter` and pass
 /// it to [`MentisDb::open_with_storage`].
+/// Pluggable persistence backend for a MentisDB chain.
+///
+/// The default implementation is [`BinaryStorageAdapter`], which writes
+/// length-prefixed bincode to a local file. You can implement this trait
+/// to store chains in a remote database, distributed filesystem, or any
+/// other durable medium.
+///
+/// Implementations must be `Send + Sync` because `MentisDb` is shared
+/// across threads. All methods are called synchronously; if your backend
+/// is async, block on the runtime inside the implementation.
+///
+/// # When to Implement a Custom Adapter
+///
+/// - You need replication across multiple machines.
+/// - You want to store chains in an existing database (PostgreSQL, SQLite, etc.).
+/// - You need encryption-at-rest that the default adapter does not provide.
+/// - You are building a hosted MentisDB service with multi-tenant storage.
 pub trait StorageAdapter: Send + Sync {
     /// Load all persisted thoughts in append order.
     fn load_thoughts(&self) -> io::Result<Vec<Thought>>;
