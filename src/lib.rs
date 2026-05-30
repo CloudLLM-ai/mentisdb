@@ -68,36 +68,46 @@ pub use skills::{
 ///
 /// assert!(location.ends_with(".tcbin"));
 /// ```
+/// Trait for custom persistence backends.
+///
+/// Implement this trait if you are building a custom integration of MentisDB
+/// into an agentic harness and need non-standard storage (e.g. database-backed,
+/// S3, in-memory for testing, encrypted at rest, etc.).
+///
+/// The default on-disk implementation is [`BinaryStorageAdapter`].
+///
+/// # Example Use Case
+///
+/// A harness that wants to store all memory inside an existing Postgres
+/// instance instead of local files can implement `StorageAdapter` and pass
+/// it to [`MentisDb::open_with_storage`].
 pub trait StorageAdapter: Send + Sync {
-    /// Load all persisted thoughts in order.
+    /// Load all persisted thoughts in append order.
     fn load_thoughts(&self) -> io::Result<Vec<Thought>>;
 
-    /// Persist a newly appended thought.
+    /// Persist a newly appended thought (must be durable after this call
+    /// returns, or after a subsequent `flush()` depending on `auto_flush`).
     fn append_thought(&self, thought: &Thought) -> io::Result<()>;
 
-    /// Flush any pending buffered writes to the backing store.
+    /// Flush any pending buffered writes.
     ///
-    /// Adapters that do not buffer writes may leave the default no-op
-    /// implementation.
+    /// Adapters that do not buffer may leave the default no-op implementation.
     fn flush(&self) -> io::Result<()> {
         Ok(())
     }
 
     /// Reconfigure whether appends should be flushed immediately.
-    ///
-    /// Adapters that do not support write-mode reconfiguration may leave the
-    /// default no-op implementation.
     fn set_auto_flush(&self, _auto_flush: bool) -> io::Result<()> {
         Ok(())
     }
 
-    /// Return a human-readable storage location or descriptor.
+    /// Human-readable description of where data lives (for logging / UI).
     fn storage_location(&self) -> String;
 
-    /// Return the durable storage adapter kind.
+    /// The kind of storage this adapter represents.
     fn storage_kind(&self) -> StorageAdapterKind;
 
-    /// Return the concrete backing path when the adapter is file-based.
+    /// Return the filesystem path if this adapter is file-backed.
     fn storage_path(&self) -> Option<&Path>;
 }
 
@@ -3680,24 +3690,18 @@ pub struct MentisDb {
 }
 
 impl MentisDb {
-    /// Open or create a chain using the agent id as the durable storage key.
+    /// Open or create a chain.
     ///
-    /// The additional identity parameters are accepted for compatibility with
-    /// `cloudllm`, but storage identity is now derived from `agent_id` so
-    /// changing an agent's profile does not fork its memory file.
+    /// **Preferred for new custom integrations:** Use [`MentisDb::open_with_key`] instead.
     ///
-    /// # Example
+    /// This method exists primarily for compatibility with older `cloudllm`-based
+    /// code. The `agent_name`, `expertise`, and `personality` parameters are
+    /// currently ignored — the durable chain identity is derived solely from
+    /// `agent_id` (passed as the chain key).
     ///
-    /// ```rust,no_run
-    /// use std::path::PathBuf;
-    /// use mentisdb::MentisDb;
-    ///
-    /// # fn main() -> std::io::Result<()> {
-    /// let chain = MentisDb::open(&PathBuf::from("/tmp/tc_open"), "agent1", "Agent", None, None)?;
-    /// assert!(chain.thoughts().is_empty());
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// For building a custom integration into an agentic harness, prefer the
+    /// more explicit [`open_with_key`](Self::open_with_key) or
+    /// [`open_with_storage`](Self::open_with_storage) methods.
     pub fn open(
         chain_dir: &PathBuf,
         agent_id: &str,
@@ -3882,10 +3886,35 @@ impl MentisDb {
         Self::open_with_key_and_storage_kind(chain_dir, chain_key, StorageAdapterKind::default())
     }
 
-    /// Open or create a chain using an explicit stable chain key and default adapter preference.
+    /// Open or create a chain using an explicit stable `chain_key`.
     ///
-    /// Returns an error if `default_storage_kind` is [`StorageAdapterKind::Jsonl`]. JSONL chains
-    /// are no longer supported for active use; run `mentisdb migrate` first to convert to binary.
+    /// This is the recommended entry point when embedding `mentisdb` directly
+    /// into a custom agentic harness or integration.
+    ///
+    /// The `chain_key` becomes the stable identity of the memory chain (independent
+    /// of any agent display name). Use the same key across restarts to resume
+    /// the same durable memory.
+    ///
+    /// Returns an error if `default_storage_kind` is [`StorageAdapterKind::Jsonl`].
+    /// JSONL is legacy-only; migrate existing chains with the CLI first.
+    ///
+    /// # Example — Direct embedding in a custom harness
+    ///
+    /// ```rust,no_run
+    /// use std::path::PathBuf;
+    /// use mentisdb::MentisDb;
+    ///
+    /// # fn main() -> std::io::Result<()> {
+    /// // Typical pattern when integrating into your own agent runtime
+    /// let chain = MentisDb::open_with_key(
+    ///     PathBuf::from("/var/lib/my-harness/memory"),
+    ///     "project-alpha-brain"
+    /// )?;
+    ///
+    /// // Now use the chain for append + ranked search from your harness code
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn open_with_key_and_storage_kind<P: AsRef<Path>>(
         chain_dir: P,
         chain_key: &str,
