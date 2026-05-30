@@ -5410,6 +5410,19 @@ impl MentisDb {
     /// reorders the matching candidates by lexical score, optional vector
     /// sidecar similarity, optional graph-expansion proximity, or lightweight
     /// metadata heuristics.
+    /// Perform full hybrid ranked retrieval.
+    ///
+    /// This is the main search method recommended for almost all custom
+    /// integration use cases.
+    ///
+    /// It combines:
+    /// - Lexical BM25 (with automatic thesaurus expansion)
+    /// - Vector similarity (if sidecars are registered)
+    /// - Graph expansion
+    /// - Various boosting signals (importance, recency, session cohesion)
+    /// - Optional RRF reranking
+    ///
+    /// See [`RankedSearchQuery`] for the full set of options.
     pub fn query_ranked(&self, request: &RankedSearchQuery) -> RankedSearchResult<'_> {
         let candidates = self.query(&request.filter);
 
