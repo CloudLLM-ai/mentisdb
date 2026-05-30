@@ -997,6 +997,20 @@ impl SkillIndexes {
 /// let rendered = registry.read_skill("pr-reviewer", None, SkillFormat::Markdown).unwrap();
 /// assert!(rendered.content.contains("PR Reviewer"));
 /// ```
+/// Versioned, immutable skill registry (git-like for agent instructions).
+///
+/// This is one of the most powerful features for custom integrations.
+///
+/// Skills are stored as immutable versions. Uploading a new version of a skill
+/// never overwrites previous ones. Agents (and your harness) can read any
+/// historical version.
+///
+/// This is ideal for:
+/// - Managing system prompts and agent instructions
+/// - Self-improving agents that upload improved skills over time
+/// - Audit and rollback of agent behavior
+///
+/// See the [crate-level documentation](crate) for usage examples from Rust.
 pub struct SkillRegistry {
     version: u32,
     skills: BTreeMap<String, SkillEntry>,

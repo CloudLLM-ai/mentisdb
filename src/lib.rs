@@ -165,26 +165,100 @@
 //!
 //! The crate is designed to be highly testable:
 //!
-//! - Use `BinaryStorageAdapter` with a temp directory.
-//! - Or implement an in-memory `StorageAdapter` for fast unit tests.
-//! - All search quality harnesses in the repo are good examples of integration testing.
+//! - Use `BinaryStorageAdapter` with a temp directory for realistic integration tests.
+//! - Implement a simple in-memory `StorageAdapter` for fast unit tests.
+//! - The search quality research harnesses (`tests/search_quality_research.rs`) are excellent real-world examples.
+//!
+//! ## Skill Registry from Rust
+//!
+//! MentisDB includes a powerful, versioned skill registry (git-like for agent instructions).
+//!
+//! ```rust,ignore
+//! use mentisdb::SkillRegistry;
+//!
+//! let mut registry = SkillRegistry::open(&path)?;
+//!
+//! // Upload a new version of a skill
+//! let upload = SkillUpload {
+//!     skill_id: Some("my-agent-system-prompt".into()),
+//!     content: include_str!("skills/system.md").to_string(),
+//!     format: SkillFormat::Markdown,
+//!     ..Default::default()
+//! };
+//!
+//! registry.upload(&upload, "planner-agent")?;
+//!
+//! // Read the latest version for an agent at runtime
+//! let skill = registry.read_latest("my-agent-system-prompt")?;
+//! println!("{}", skill.latest_content);
+//! ```
+//!
+//! Skills are immutable once uploaded. Old versions remain available forever for audit and rollback.
+//!
+//! ## Thought Signing & Cryptographic Provenance
+//!
+//! For multi-tenant systems or high-trust environments, you can cryptographically sign thoughts:
+//!
+//! ```rust,ignore
+//! use mentisdb::signable_thought_payload;
+//!
+//! let payload = signable_thought_payload("agent-42", &input);
+//! let signature = ed25519_sign(&payload, &my_private_key);
+//!
+//! input.signing_key_id = Some("key-7".to_string());
+//! input.thought_signature = Some(signature);
+//!
+//! chain.append_thought("agent-42", input)?;
+//! ```
+//!
+//! The daemon and clients can later verify signatures using the agent's registered public keys.
+//!
+//! ## Vector Sidecar Management (When Embedding)
+//!
+//! ```rust,ignore
+//! // Register the built-in fastembed provider
+//! chain.register_managed_vector_sidecar(
+//!     ManagedVectorProviderKind::LocalTextV1,
+//!     Some("all-MiniLM-L6-v2".to_string()), // model name
+//! )?;
+//!
+//! // Later check status
+//! let status = chain.vector_sidecar_status()?;
+//! println!("Indexed {} thoughts", status.thought_count);
+//! ```
+//!
+//! You can also bring your own embedding provider by implementing the traits in the `search` module.
+//!
+//! ## Error Handling & Durability
+//!
+//! - Most operations return `std::io::Result`.
+//! - Storage errors, I/O failures, and hash-chain integrity violations are `io::Error`.
+//! - Always call `flush()` before process exit if `auto_flush` is disabled.
+//! - Use `dedup_threshold` for automatic `Supersedes` relations on near-duplicate content.
+//!
+//! ## Production Considerations for Custom Harnesses
+//!
+//! - Open the chain once at startup and keep the handle alive.
+//! - Consider running vector rebuilds in a background task.
+//! - For very high write throughput, batch appends or use the daemon.
+//! - Monitor the size of the implicit edge overlay on very large chains.
+//! - Use `MENTISDB_*` environment variables for configuration when possible (consistent with the daemon).
 //!
 //! ## Next Steps for Integrators
 //!
-//! 1. Start with the [Getting Started example](#getting-started--embedding-in-your-harness) above.
-//! 2. Read the [Whitepaper](https://github.com/CloudLLM-ai/mentisdb/blob/master/WHITEPAPER.md) for the full mental model.
-//! 3. Explore the `search` module for advanced retrieval.
-//! 4. Look at the test suite (`tests/`) — it contains many realistic usage patterns.
-//! 5. Join the discussion on GitHub if you need help designing your integration.
+//! 1. Start with the examples above.
+//! 2. Read the [Whitepaper](https://github.com/CloudLLM-ai/mentisdb/blob/master/WHITEPAPER.md).
+//! 3. Study the test suite — it is full of realistic, battle-tested patterns.
+//! 4. Explore the `search` module if you need advanced retrieval control.
+//! 5. Reach out on GitHub if you're designing something unusual — we're happy to help shape the APIs.
 //!
 //! ---
 //!
-//! This crate is the foundation of the entire MentisDB ecosystem. The daemon,
-//! MCP server, dashboard, Python client, and all future language bindings are
-//! built on top of the APIs documented here.
+//! This crate is the foundation of the MentisDB ecosystem. Everything else
+//! (daemon, MCP/REST server, dashboard, Python client, etc.) is built on top
+//! of the stable, well-documented APIs you see here.
 //!
-//! Welcome to the MentisDB developer experience. We designed it to feel like
-//! infrastructure you can trust for years.
+//! We designed MentisDB to be infrastructure you can trust for years. Welcome.
 #![warn(missing_docs)]
 
 pub mod backup;
@@ -4401,6 +4475,25 @@ impl MentisDb {
     /// assert_eq!(chain.thoughts().len(), 1);
     /// # Ok(())
     /// # }
+    /// ```
+    /// Append a new thought to the chain.
+    ///
+    /// This is the primary write method when using MentisDB from a custom integration.
+    ///
+    /// The method will:
+    /// - Validate any `refs` (they must point to existing thoughts)
+    /// - Automatically add `References` relations for any `refs`
+    /// - Apply deduplication (if `dedup_threshold` was set at open time)
+    /// - Generate the cryptographic hash
+    /// - Persist via the `StorageAdapter`
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let thought = chain.append_thought(
+    ///     "planner",
+    ///     ThoughtInput::new(ThoughtType::Decision, "Use MentisDB as source of truth")
+    /// )?;
     /// ```
     pub fn append_thought(
         &mut self,
