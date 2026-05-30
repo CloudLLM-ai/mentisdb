@@ -5,6 +5,31 @@
 //! typed, optionally connected to prior thoughts, and exportable as prompts or
 //! Markdown memory snapshots. The current default backend is binary, but the
 //! chain model is intentionally independent from any single storage format.
+//!
+//! ## For Custom Integration Developers
+//!
+//! If you are embedding MentisDB directly into an agentic harness (rather than
+//! speaking to the daemon over MCP/REST), the recommended pattern is:
+//!
+//! ```rust,no_run
+//! use std::path::PathBuf;
+//! use mentisdb::MentisDb;
+//!
+//! let chain = MentisDb::open_with_key(
+//!     PathBuf::from("/var/lib/my-harness/memory"),
+//!     "project-brain"
+//! )?;
+//! # Ok::<(), std::io::Error>(())
+//! ```
+//!
+//! Key extension points for custom harnesses:
+//!
+//! - Implement [`StorageAdapter`] for non-filesystem backends (database, S3,
+//!   encrypted store, in-memory for tests, etc.).
+//! - Use [`MentisDb::open_with_storage`] to inject your adapter.
+//! - `&MentisDb` is `Send + Sync` — safe to share across threads for reads.
+//! - All core operations (`append_thought`, `query_ranked`, skill registry,
+//!   webhooks, etc.) are available directly from the crate with no daemon required.
 #![warn(missing_docs)]
 
 pub mod backup;
