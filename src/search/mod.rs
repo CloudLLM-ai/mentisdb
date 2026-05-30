@@ -1,7 +1,30 @@
-//! Search-specific derived state and ranking helpers.
+//! # Search & Retrieval
 //!
-//! These modules build rebuildable indexes over committed thoughts without
-//! changing the append-only chain itself.
+//! This module contains everything related to querying and ranking thoughts.
+//!
+//! MentisDB's retrieval system is **hybrid by design** and **extensible**:
+//!
+//! - Lexical (BM25 with per-field DF gating + automatic thesaurus expansion since 0.9.9)
+//! - Dense vector similarity (via pluggable embedding providers)
+//! - Graph expansion (explicit relations + implicit cosine-based edges)
+//! - Session cohesion, importance, recency, and RRF reranking
+//!
+//! ## For Custom Integration Developers
+//!
+//! When embedding MentisDB, you will primarily interact with:
+//!
+//! - [`RankedSearchQuery`] — the main query builder (recommended for almost all use cases)
+//! - [`query_ranked`](crate::MentisDb::query_ranked) on [`crate::MentisDb`]
+//! - The various index types if you want to build custom retrieval pipelines
+//!
+//! The automatic thesaurus expansion (introduced in 0.9.9) is applied transparently
+//! inside the server layer for daemon users, and can be used directly when embedding
+//! by calling [`thesaurus::expand_text`](thesaurus::expand_text) and passing the result
+//! to `RankedSearchQuery::with_synonyms`.
+//!
+//! Most harness authors should **not** need to touch the internal index types directly.
+//! Use the high-level [`RankedSearchQuery`] API unless you are doing advanced research
+//! or replacing large parts of the retrieval stack.
 
 /// Seed-anchored context bundle rendering over graph-expansion hits.
 pub mod bundle;

@@ -1,35 +1,110 @@
-//! Semantic, hash-chained memory for long-running agents.
+//! # MentisDB
 //!
-//! `mentisdb` provides an append-only, adapter-backed memory log for
-//! durable, queryable cognitive state. Thoughts are timestamped, hash-chained,
-//! typed, optionally connected to prior thoughts, and exportable as prompts or
-//! Markdown memory snapshots. The current default backend is binary, but the
-//! chain model is intentionally independent from any single storage format.
+//! **Durable, semantic, hash-chained memory for long-running and multi-agent systems.**
 //!
-//! ## For Custom Integration Developers
+//! MentisDB is a standalone Rust crate that gives AI agents (and the harnesses that run them)
+//! a persistent, queryable, cryptographically verifiable memory substrate.
 //!
-//! If you are embedding MentisDB directly into an agentic harness (rather than
-//! speaking to the daemon over MCP/REST), the recommended pattern is:
+//! It stores semantically typed thoughts in an append-only, hash-chained log. Every thought
+//! carries type, role, timestamp, optional relations to prior thoughts, importance, confidence,
+//! and cryptographic integrity. The system supports powerful hybrid retrieval (lexical + vector
+//! + graph) with automatic synonym expansion via a built-in thesaurus.
+//!
+//! ## When to Use This Crate Directly
+//!
+//! Use `mentisdb` as a library when you are building a **custom integration** into an agentic
+//! harness and want one or more of the following:
+//!
+//! - Full control over the memory lifecycle inside your process
+//! - Custom storage backends (database, S3, encrypted volumes, in-memory, etc.)
+//! - Lowest possible latency (no IPC to a daemon)
+//! - Tight integration with your existing runtime, scheduler, or agent framework
+//! - Ability to extend or replace parts of the retrieval pipeline
+//!
+//! If you just want to give existing agents (Claude Code, Cursor, Codex, etc.) durable memory,
+//! the [`mentisdb` daemon](https://github.com/CloudLLM-ai/mentisdb) + MCP/REST is usually simpler.
+//!
+//! ## Core Concepts
+//!
+//! - **[`Thought`]** — The fundamental unit. A typed, attributed, hash-chained record.
+//! - **[`ThoughtInput`]** — What you provide when appending. The crate handles hashing, relations, and signing.
+//! - **[`MentisDb`]** — The main handle. Owns the in-memory chain + indexes + storage adapter.
+//! - **[`StorageAdapter`]** — The pluggable persistence layer. Implement this for custom backends.
+//! - **Ranked Retrieval** — [`RankedSearchQuery`] + [`query_ranked`](MentisDb::query_ranked) gives you the full
+//!   hybrid (lexical + vector + graph + thesaurus + RRF) experience.
+//! - **Skill Registry** — Versioned, immutable instruction bundles for agents (git-like).
+//!
+//! ## Getting Started — Embedding in Your Harness
 //!
 //! ```rust,no_run
 //! use std::path::PathBuf;
-//! use mentisdb::MentisDb;
+//! use mentisdb::{MentisDb, ThoughtInput, ThoughtType};
 //!
-//! let chain = MentisDb::open_with_key(
-//!     PathBuf::from("/var/lib/my-harness/memory"),
-//!     "project-brain"
+//! # fn main() -> std::io::Result<()> {
+//! // Open (or create) a durable chain
+//! let mut chain = MentisDb::open_with_key(
+//!     PathBuf::from("/var/lib/my-agent/memories"),
+//!     "project-alpha"
 //! )?;
-//! # Ok::<(), std::io::Error>(())
+//!
+//! // Append a decision
+//! chain.append_thought(
+//!     "planner",
+//!     ThoughtInput::new(
+//!         ThoughtType::Decision,
+//!         "We will use MentisDB as the single source of truth for project memory"
+//!     )
+//! )?;
+//!
+//! // Powerful ranked search (thesaurus is automatic since 0.9.9)
+//! let results = chain.query_ranked(
+//!     &mentisdb::RankedSearchQuery::new()
+//!         .with_text("memory durability")
+//!         .with_limit(10)
+//! );
+//!
+//! for hit in results.hits {
+//!     println!("{}: {}", hit.thought.id, hit.thought.content);
+//! }
+//! # Ok(())
+//! # }
 //! ```
 //!
-//! Key extension points for custom harnesses:
+//! ## Extension Points for Custom Integrations
 //!
-//! - Implement [`StorageAdapter`] for non-filesystem backends (database, S3,
-//!   encrypted store, in-memory for tests, etc.).
-//! - Use [`MentisDb::open_with_storage`] to inject your adapter.
-//! - `&MentisDb` is `Send + Sync` — safe to share across threads for reads.
-//! - All core operations (`append_thought`, `query_ranked`, skill registry,
-//!   webhooks, etc.) are available directly from the crate with no daemon required.
+//! | Need                              | Extension Point                          |
+//! |-----------------------------------|------------------------------------------|
+//! | Custom persistence                | [`StorageAdapter`] trait                 |
+//! | Custom vector / embedding backend | Managed vector sidecars + [`search`] module |
+//! | Custom retrieval logic            | Build on top of [`RankedSearchQuery`] + indexes |
+//! | Versioned agent instructions      | [`SkillRegistry`]                        |
+//! | Cryptographic provenance          | [`signable_thought_payload`] + Ed25519 keys |
+//! | Real-time notifications           | Webhooks (`webhooks` module)             |
+//!
+//! ## Concurrency Model
+//!
+//! - `&MentisDb` is `Send + Sync`.
+//! - Multiple threads can safely perform reads concurrently.
+//! - Writes require `&mut self`. For highly concurrent write workloads, either
+//!   serialize through a single writer task or run the daemon and talk to it over HTTP/MCP.
+//!
+//! ## Error Handling
+//!
+//! Most fallible operations return `std::io::Result`. Storage errors, hash-chain
+//! integrity violations, and invalid references surface as `io::Error`. Higher-level
+//! semantic errors (e.g. LLM extraction) use dedicated error types in the `llm` module.
+//!
+//! ## Next Steps
+//!
+//! - Read the [Whitepaper](https://github.com/CloudLLM-ai/mentisdb/blob/master/WHITEPAPER.md)
+//! - Browse the [full API documentation on docs.rs](https://docs.rs/mentisdb)
+//! - Look at the [example integrations](https://github.com/CloudLLM-ai/mentisdb/tree/master/examples)
+//!   (when available) and the test suite for realistic usage patterns.
+//!
+//! ---
+//!
+//! This crate is the foundation of the MentisDB ecosystem. Everything else
+//! (daemon, MCP server, dashboard, Python client, etc.) is built on top of it.
 #![warn(missing_docs)]
 
 pub mod backup;
@@ -3670,6 +3745,31 @@ struct LegacyThoughtV2 {
 }
 
 /// Append-only, hash-chained semantic memory store.
+/// The main handle to a MentisDB memory chain.
+///
+/// This is the primary type you interact with when embedding MentisDB directly
+/// into an agentic harness or custom runtime.
+///
+/// `MentisDb` owns:
+/// - The full in-memory chain of thoughts
+/// - All indexes (lexical, vector sidecars, implicit graph edges, invalidated set)
+/// - The pluggable [`StorageAdapter`]
+/// - Agent and entity type registries
+/// - Optional webhook manager (when the `server` feature is enabled)
+///
+/// It is `Send + Sync`, so you can share `&MentisDb` across threads for reads.
+/// Writes require `&mut self`.
+///
+/// # Typical Lifecycle in a Custom Harness
+///
+/// 1. Open once at harness startup using [`MentisDb::open_with_key`] or
+///    [`MentisDb::open_with_storage`].
+/// 2. Keep the handle alive for the lifetime of the process (or agent session).
+/// 3. Append thoughts as your agents make decisions, observations, etc.
+/// 4. Use [`query_ranked`](Self::query_ranked) (and friends) for retrieval.
+/// 5. Call `flush()` before shutdown if you are not using `auto_flush`.
+///
+/// See the [crate-level documentation](crate) for a full integration guide.
 pub struct MentisDb {
     thoughts: Vec<Thought>,
     id_to_index: HashMap<Uuid, usize>,
