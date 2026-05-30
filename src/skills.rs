@@ -547,6 +547,13 @@ pub struct SkillVersionSummary {
 /// .with_signing(Some("key-v1".to_string()), Some(vec![0u8; 64]));
 /// ```
 #[derive(Debug, Clone)]
+/// Builder-style request for uploading a new immutable skill version.
+///
+/// Used with `SkillRegistry::upload_skill`. Supports both Markdown and JSON
+/// formats and optional Ed25519 signing for provenance.
+///
+/// This is the primary API for custom agent harnesses that want to
+/// programmatically contribute or update skills in a shared MentisDB chain.
 pub struct SkillUpload<'a> {
     skill_id: Option<&'a str>,
     uploaded_by_agent_id: &'a str,
