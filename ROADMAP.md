@@ -1,6 +1,13 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 -> 0.9.8.44)
+## Shipped (0.8.2 -> 0.9.9)
+
+### 0.9.9 - Automatic Thesaurus + Validated Retrieval Quality
+- **Thesaurus now applies automatically by default** to all ranked search (REST, MCP, dashboard, CLI, benchmarks) — no client changes required
+- Static thesaurus (~900 headwords + 300+ lemmas) + irregular verb lemmatization now fires transparently on every text query via `apply_thesaurus_if_text` in the server
+- Real benchmark validation with full embeddings: LoCoMo-10P R@10 reached the target **72.6%**; LongMemEval R@5 at 66.8% (thesaurus delivered clear gains on vocabulary-mismatch and multi-hop cases)
+- WHITEPAPER, README, skill file, blog post, and docs.mentisdb.com all updated for the new default behavior
+- Full release engineering pipeline followed (Phases 1–5): benchmarks via sub-agents, Phase 4 code review, granular docs commits
 
 ### 0.9.8.44 - Binary Rename, Dashboard Settings, and Dotenvy
 - **Binary rename** — `mentisdbd` → `mentisdb`; all docs, tests, CI, install scripts, and TUI references updated
