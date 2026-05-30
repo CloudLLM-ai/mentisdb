@@ -6,6 +6,12 @@ results/
 .fastembed_cache/
 data/
 locomo-benches/__pycache__/
+lme-benches/__pycache__/
+
+# LaTeX build artifacts
+docs/pdf/*.aux
+docs/pdf/*.log
+docs/pdf/*.out
 
 # Python build artefacts produced by pymentisdb
 pymentisdb/__pycache__/
