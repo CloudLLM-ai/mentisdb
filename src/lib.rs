@@ -3222,6 +3222,24 @@ impl Default for RankedSearchQuery {
 }
 
 /// Score breakdown for one ranked-search hit.
+///
+/// MentisDB's ranked search fuses multiple independent signals into a single
+/// ranking. This struct exposes the contribution of each signal so you can
+/// inspect why a particular thought scored highly.
+///
+/// The `total` field is the final fused score used for sorting. The other
+/// fields show the raw or adjusted contributions from each subsystem.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let result = chain.query_ranked(&query)?;
+/// for hit in &result.hits {
+///     println!("thought #{} — total: {:.3}", hit.thought.index, hit.score.total);
+///     println!("  lexical: {:.3}  vector: {:.3}  graph: {:.3}",
+///              hit.score.lexical, hit.score.vector, hit.score.graph);
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct RankedSearchScore {
     /// Score contributed by lexical matching.
@@ -3252,6 +3270,12 @@ pub struct RankedSearchScore {
 }
 
 /// One ranked-search hit.
+///
+/// A hit is a single [`Thought`] that matched a [`RankedSearchQuery`],
+/// together with its score breakdown and provenance metadata.
+///
+/// The `graph_distance`, `graph_path`, and `graph_relation_kinds` fields
+/// are only populated when graph expansion was enabled on the query.
 #[derive(Debug, Clone)]
 pub struct RankedSearchHit<'a> {
     /// Matching thought.
@@ -3273,6 +3297,23 @@ pub struct RankedSearchHit<'a> {
 }
 
 /// Ranked-search response over committed thoughts.
+///
+/// Returned by `MentisDb::query_ranked`. Contains the ranked hits plus
+/// metadata about how many candidates were considered.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let result = chain.query_ranked(
+///     RankedSearchQuery::new("deployment rollback")
+///         .with_limit(5)
+/// )?;
+/// println!("Found {} candidates, showing top {}:",
+///          result.total_candidates, result.hits.len());
+/// for hit in &result.hits {
+///     println!("  [{:.3}] {}", hit.score.total, hit.thought.content);
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct RankedSearchResult<'a> {
     /// Ranking backend used to score the hits.
