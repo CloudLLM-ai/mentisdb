@@ -169,6 +169,20 @@
 //! - Implement a simple in-memory `StorageAdapter` for fast unit tests.
 //! - The search quality research harnesses (`tests/search_quality_research.rs`) are excellent real-world examples.
 //!
+//! ## Cookbook: Common Patterns
+//!
+//! ### Long-lived Brain
+//!
+//! Open once at startup and keep the handle for the lifetime of the process.
+//!
+//! ### Background Vector Work
+//!
+//! Rebuild vector sidecars in a background task so the main agent loop is never blocked.
+//!
+//! ### Self-Improving Loop
+//!
+//! Agent reads skill → runs → reflects → uploads improved skill version (history is preserved forever).
+//!
 //! ## Skill Registry from Rust
 //!
 //! MentisDB includes a powerful, versioned skill registry (git-like for agent instructions).
@@ -238,11 +252,13 @@
 //!
 //! ## Production Considerations for Custom Harnesses
 //!
-//! - Open the chain once at startup and keep the handle alive.
-//! - Consider running vector rebuilds in a background task.
-//! - For very high write throughput, batch appends or use the daemon.
-//! - Monitor the size of the implicit edge overlay on very large chains.
-//! - Use `MENTISDB_*` environment variables for configuration when possible (consistent with the daemon).
+//! - Open the chain once at startup and keep the handle alive for the lifetime of the process.
+//! - Consider running vector sidecar rebuilds in a background task on large chains.
+//! - For extremely high write throughput from many threads, either serialize writes or use the daemon over HTTP/MCP.
+//! - Monitor implicit edge overlay size on chains with >50k thoughts.
+//! - Prefer the provided environment variable configuration (`MENTISDB_*`) for consistency with the daemon.
+//! - Always call `flush()` before shutdown unless `auto_flush` is enabled.
+//! - Use the backup/restore APIs (`backup` module) for disaster recovery and chain migration.
 //!
 //! ## Next Steps for Integrators
 //!
