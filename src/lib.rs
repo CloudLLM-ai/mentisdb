@@ -1468,7 +1468,6 @@ impl AgentRecord {
     }
 }
 
-/// Per-chain registry of the agents that have written thoughts.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 /// Per-chain registry of agents that have written thoughts.
 ///
@@ -1560,6 +1559,14 @@ impl EntityTypeRegistry {
 
 /// Metadata describing one registered thought chain.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Metadata record for a single chain in the daemon registry.
+///
+/// Every time a chain is opened or modified, the daemon updates its
+/// registration in the global `MentisDbRegistry`. This lets the dashboard
+/// and CLI list chains without opening every file.
+///
+/// Custom integrations typically do not construct this directly; it is
+/// produced by `MentisDb::open` and `load_registered_chains`.
 pub struct MentisDbRegistration {
     /// Stable chain identifier.
     pub chain_key: String,
@@ -1583,6 +1590,14 @@ pub struct MentisDbRegistration {
 }
 
 /// Registry of all known thought chains in one storage directory.
+///
+/// The daemon maintains this registry at `$MENTISDB_DIR/chains.json`. It
+/// stores a [`MentisDbRegistration`] for every chain that has ever been
+/// opened, allowing fast listing without touching individual chain files.
+///
+/// Use `load_registered_chains()` to read the registry, and
+/// `deregister_chain()` to remove an entry (this does **not** delete the
+/// underlying chain data).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MentisDbRegistry {
     /// Version of the registry file itself.
@@ -1591,7 +1606,11 @@ pub struct MentisDbRegistry {
     pub chains: BTreeMap<String, MentisDbRegistration>,
 }
 
-/// Summary of a successful chain migration.
+/// Summary of a successful chain schema migration.
+///
+/// When MentisDB bumps its on-disk format (e.g. V2 → V3), existing chains
+/// are transparently upgraded on open. This struct captures what happened
+/// so callers can log or audit the change.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MentisDbMigrationReport {
     /// Stable chain identifier.
@@ -2243,44 +2262,6 @@ impl ThoughtRelation {
 /// assert_eq!(input.role, ThoughtRole::Summary);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-/// Input for appending a new thought to a chain.
-///
-/// This is the primary type you construct when writing to MentisDB from a
-/// custom integration or agent harness.
-///
-/// Most fields are optional. At minimum you usually only need to set
-/// `thought_type` and `content`.
-///
-/// # Common Patterns
-///
-/// ```rust
-/// use mentisdb::{ThoughtInput, ThoughtType};
-///
-/// // Simple decision
-/// let input = ThoughtInput::new(
-///     ThoughtType::Decision,
-///     "We will use vector search + graph expansion for retrieval"
-/// );
-///
-/// // With references and high importance
-/// let mut input = ThoughtInput::new(ThoughtType::Observation, "User prefers concise answers");
-/// input.refs = vec![42, 43];           // references earlier thoughts by index
-/// input.importance = Some(0.9);
-/// input.agent_name = Some("user-modeler".into());
-/// ```
-///
-/// See [`MentisDb::append_thought`] and the [crate-level documentation](crate)
-/// for full usage patterns when building custom integrations.
-/// The input record used when appending a new thought to a chain.
-///
-/// This is the primary type passed to `MentisDb::append_thought` (and the
-/// lower-level `append` function). All the rich semantic, relational, and
-/// provenance information about a memory entry flows through this struct.
-///
-/// In custom integrations you will construct `ThoughtInput` values (often via
-/// the builder-style `ThoughtInput::new(...)` helpers) and pass them to the
-/// append path. The resulting `Thought` (with stable ID, hashes, timestamps,
-/// etc.) is what gets stored and returned.
 pub struct ThoughtInput {
     /// Optional session identifier associated with the thought.
     ///
@@ -2592,25 +2573,6 @@ pub fn signable_thought_payload(agent_id: &str, input: &ThoughtInput) -> Vec<u8>
 /// # }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-/// A single committed thought in a MentisDB chain.
-///
-/// This is the fundamental data structure you will read from and (indirectly)
-/// write to when using MentisDB in a custom integration.
-///
-/// A `Thought` is immutable once appended. It contains:
-/// - Strong identity (`id`, `index`, `timestamp`)
-/// - Semantic typing (`thought_type`, `role`)
-/// - Provenance (`agent_id`, optional signing)
-/// - Content and relations to other thoughts
-/// - Scoring metadata (importance, confidence, etc.)
-///
-/// You almost never construct `Thought` directly — you create a [`ThoughtInput`]
-/// and pass it to [`MentisDb::append_thought`], which returns the fully formed
-/// `Thought`.
-///
-/// Most custom integrations will primarily interact with `Thought` when
-/// processing search results from [`query_ranked`](MentisDb::query_ranked) or
-/// when traversing history.
 pub struct Thought {
     /// Thought schema version used by this record.
     #[serde(default = "current_schema_version")]
@@ -2710,18 +2672,6 @@ pub struct Thought {
 /// assert!(query.min_importance.is_some());
 /// ```
 #[derive(Debug, Clone, Default)]
-/// Filter for selecting thoughts before ranking or traversal.
-///
-/// `ThoughtQuery` is used both as a standalone filter (via [`MentisDb::query`])
-/// and as the `filter` field inside [`RankedSearchQuery`].
-///
-/// It supports semantic filters (type, role), provenance filters (agent),
-/// content filters (tags, concepts, text), and metadata filters (importance,
-/// confidence, time windows).
-///
-/// For most ranked search use cases, you will set a `ThoughtQuery` as the
-/// `filter` on a `RankedSearchQuery` to first narrow the candidate set before
-/// expensive ranking and graph expansion.
 pub struct ThoughtQuery {
     /// Semantic thought types to match.
     pub thought_types: Option<Vec<ThoughtType>>,
@@ -3007,11 +2957,6 @@ impl RankedSearchBackend {
     }
 }
 
-/// Graph-expansion configuration for ranked search.
-///
-/// This mode is additive: it starts from lexical seed matches inside the
-/// filtered candidate set, expands over `refs` and typed `relations`, then
-/// reranks any reached candidate thoughts as supporting context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Configuration for graph-aware expansion during ranked search.
 ///
@@ -3075,11 +3020,6 @@ impl Default for RankedSearchGraph {
     }
 }
 
-/// Request for ranked retrieval over committed thoughts.
-///
-/// Ranked search is additive. The embedded [`ThoughtQuery`] still applies the
-/// same filter semantics as [`MentisDb::query`]; ranked search only changes how
-/// the matching candidates are ordered and trimmed.
 #[derive(Debug, Clone)]
 /// The primary query builder for high-quality retrieval.
 ///
@@ -3343,7 +3283,7 @@ pub struct RankedSearchResult<'a> {
     pub hits: Vec<RankedSearchHit<'a>>,
 }
 
-/// Request for vector similarity retrieval over committed thoughts.
+/// A single hit from a federated ranked search across chains.
 #[derive(Debug, Clone)]
 pub struct FederatedSearchHit<'a> {
     /// Chain key of the source chain for this hit.
