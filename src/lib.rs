@@ -2271,6 +2271,16 @@ impl ThoughtRelation {
 ///
 /// See [`MentisDb::append_thought`] and the [crate-level documentation](crate)
 /// for full usage patterns when building custom integrations.
+/// The input record used when appending a new thought to a chain.
+///
+/// This is the primary type passed to `MentisDb::append_thought` (and the
+/// lower-level `append` function). All the rich semantic, relational, and
+/// provenance information about a memory entry flows through this struct.
+///
+/// In custom integrations you will construct `ThoughtInput` values (often via
+/// the builder-style `ThoughtInput::new(...)` helpers) and pass them to the
+/// append path. The resulting `Thought` (with stable ID, hashes, timestamps,
+/// etc.) is what gets stored and returned.
 pub struct ThoughtInput {
     /// Optional session identifier associated with the thought.
     ///
