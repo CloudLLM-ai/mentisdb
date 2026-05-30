@@ -74,6 +74,27 @@ impl EmbeddingVector {
 }
 
 /// Provider-agnostic batch embedding interface.
+/// Pluggable embedding provider for vector sidecars.
+///
+/// Implement this trait to bring your own embedding model (OpenAI,
+/// Anthropic, local ONNX, etc.) into MentisDB's vector search pipeline.
+///
+/// The daemon uses this trait to:
+/// 1. Embed new thoughts when they are appended (if a vector sidecar is registered)
+/// 2. Embed query text during ranked search (if vector scoring is enabled)
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use mentisdb::search::vector::{EmbeddingProvider, EmbeddingInput, EmbeddingVector, EmbeddingMetadata};
+///
+/// struct MyProvider;
+/// impl EmbeddingProvider for MyProvider {
+///     type Error = std::io::Error;
+///     fn metadata(&self) -> &EmbeddingMetadata { /* ... */ }
+///     fn embed_batch(&self, inputs: &[EmbeddingInput]) -> Result<Vec<EmbeddingVector>, Self::Error> { /* ... */ }
+/// }
+/// ```
 pub trait EmbeddingProvider {
     /// Provider-specific embedding error.
     type Error: Error + Send + Sync + 'static;
