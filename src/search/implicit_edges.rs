@@ -17,7 +17,7 @@ pub struct ImplicitNeighbor {
 /// In-memory overlay of vector-inferred `RelatedTo` edges.
 ///
 /// These edges are derived from the vector sidecar at a given threshold and K,
-/// and supplement the explicit relations in [`ThoughtAdjacencyIndex`] during BFS.
+/// and supplement the explicit relations in [`crate::search::graph::ThoughtAdjacencyIndex`] during BFS.
 /// The overlay is rebuildable from the sidecar with no loss of ground truth.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ImplicitEdgeOverlay {
@@ -79,7 +79,7 @@ impl ImplicitEdgeOverlay {
     ///
     /// O(N) — called on every append when sidecar is active.
     /// Computes cosine between `new_vector` and all existing entries,
-    /// populates edges[new_id] and also adds back-edges to neighbors.
+    /// populates `edges[new_id]` and also adds back-edges to neighbors.
     pub fn add_thought(
         &mut self,
         new_id: Uuid,

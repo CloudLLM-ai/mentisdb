@@ -1,0 +1,116 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.1}Contributions}{1}{subsection.1.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.2}Paper Organization}{2}{subsection.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}System Model and Core Data}{2}{section.2}\protected@file@percent }
+\newlabel{sec:model}{{2}{2}{System Model and Core Data}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Thought Record}{2}{subsection.2.1}\protected@file@percent }
+\newlabel{def:thought}{{1}{2}{Thought}{definition.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Fields of a thought record.}}{3}{table.1}\protected@file@percent }
+\newlabel{tab:thought-fields}{{1}{3}{Fields of a thought record}{table.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Hash-Chained Ledger}{3}{subsection.2.2}\protected@file@percent }
+\newlabel{def:chain}{{2}{3}{Chain}{definition.2}{}}
+\newlabel{prop:tamper}{{1}{3}{Tamper Evidence}{proposition.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Typed Relation Edges}{3}{subsection.2.3}\protected@file@percent }
+\newlabel{def:relation}{{3}{3}{Relation}{definition.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}Agent Registry}{4}{subsection.2.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Schema Evolution}{4}{section.3}\protected@file@percent }
+\newlabel{sec:schema}{{3}{4}{Schema Evolution}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Version Lattice}{4}{subsection.3.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Schema versions. The current constant is $V_{\mathrm  {cur}} = V_3$.}}{4}{table.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Migration as Idempotent Transformation}{4}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Version Detection}{4}{subsection.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Semantic Memory Algebra}{4}{section.4}\protected@file@percent }
+\newlabel{sec:semantics}{{4}{4}{Semantic Memory Algebra}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}ThoughtType}{4}{subsection.4.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}ThoughtRole}{4}{subsection.4.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}ThoughtRelationKind}{5}{subsection.4.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Temporal Edge Validity}{5}{subsection.4.4}\protected@file@percent }
+\newlabel{subsec:temporal}{{4.4}{5}{Temporal Edge Validity}{subsection.4.4}{}}
+\newlabel{def:asof}{{4}{5}{As-Of Predicate}{definition.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Invalidation Set}{5}{subsection.4.5}\protected@file@percent }
+\newlabel{def:inv}{{5}{5}{Invalidation Set}{definition.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Storage Layer}{5}{section.5}\protected@file@percent }
+\newlabel{sec:storage}{{5}{5}{Storage Layer}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Storage Adapter Abstraction}{5}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}BinaryStorageAdapter}{5}{subsection.5.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Legacy Adapters}{6}{subsection.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}File Layout}{6}{subsection.5.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Retrieval}{6}{section.6}\protected@file@percent }
+\newlabel{sec:retrieval}{{6}{6}{Retrieval}{section.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Baseline Filter}{6}{subsection.6.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Ranked Pipeline}{6}{subsection.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}BM25 with Per-Field DF Gating}{6}{subsection.6.3}\protected@file@percent }
+\newlabel{def:bm25}{{6}{6}{BM25 Field Score}{definition.6}{}}
+\citation{porter1980}
+\newlabel{def:dfgate}{{7}{7}{DF Gate}{definition.7}{}}
+\newlabel{def:lex}{{8}{7}{Lexical Score}{definition.8}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.4}Static Thesaurus Synonym Expansion}{7}{subsection.6.4}\protected@file@percent }
+\newlabel{subsec:synonyms}{{6.4}{7}{Static Thesaurus Synonym Expansion}{subsection.6.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.5}Smooth Vector--Lexical Fusion}{8}{subsection.6.5}\protected@file@percent }
+\newlabel{eq:fuse}{{3}{8}{Smooth Vector--Lexical Fusion}{equation.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.6}Graph-Aware Expansion}{8}{subsection.6.6}\protected@file@percent }
+\newlabel{def:expand}{{10}{8}{Bounded BFS Expansion}{definition.10}{}}
+\@writefile{toc}{\contentsline {paragraph}{Edge weights.}{8}{section*.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Graph proximity.}{8}{section*.2}\protected@file@percent }
+\citation{cormack2009rrf}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.7}Session Cohesion}{9}{subsection.6.7}\protected@file@percent }
+\newlabel{def:coh}{{11}{9}{Session Cohesion Boost}{definition.11}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.8}Importance Weighting}{9}{subsection.6.8}\protected@file@percent }
+\newlabel{def:imp}{{12}{9}{Importance Boost}{definition.12}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.9}Reciprocal Rank Fusion}{9}{subsection.6.9}\protected@file@percent }
+\newlabel{def:rrf}{{13}{9}{Reciprocal Rank Fusion}{definition.13}{}}
+\newlabel{eq:rrf}{{4}{9}{Reciprocal Rank Fusion}{equation.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.10}Memory Scopes}{9}{subsection.6.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.11}Context Bundles}{9}{subsection.6.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.12}Vector Sidecars}{9}{subsection.6.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.13}Implicit Edge Overlay}{10}{subsection.6.13}\protected@file@percent }
+\newlabel{subsec:overlay}{{6.13}{10}{Implicit Edge Overlay}{subsection.6.13}{}}
+\newlabel{def:overlay}{{14}{10}{Implicit Edge Overlay}{definition.14}{}}
+\@writefile{toc}{\contentsline {paragraph}{Build complexity.}{10}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Invalidation.}{10}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Integration with BFS.}{10}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.14}Decomposed Scores}{10}{subsection.6.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Deduplication}{10}{section.7}\protected@file@percent }
+\newlabel{sec:dedup}{{7}{10}{Deduplication}{section.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Jaccard--Supersedes Algorithm}{10}{subsection.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Complexity.}{10}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Configuration}{11}{subsection.7.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}Operational Surfaces}{11}{section.8}\protected@file@percent }
+\newlabel{sec:ops}{{8}{11}{Operational Surfaces}{section.8}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.1}CLI}{11}{subsection.8.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.2}MCP Server}{11}{subsection.8.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.3}Skill Registry}{11}{subsection.8.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.4}Bootstrap Protocol}{11}{subsection.8.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {9}Empirical Evaluation}{11}{section.9}\protected@file@percent }
+\newlabel{sec:eval}{{9}{11}{Empirical Evaluation}{section.9}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.1}Benchmarks}{11}{subsection.9.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Retrieval quality across MentisDB releases. All v0.8.9 numbers are the mean of independent full-scale runs on 2026-04-14 and 2026-04-17 against fresh chains with default retrieval configuration (\texttt  {fastembed-minilm} vector sidecar, graph expansion enabled, RRF reranking disabled); the scores were bit-identical across runs.}}{12}{table.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.2}Scoring Evolution}{12}{subsection.9.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces The 0.9.9 release makes the static thesaurus apply automatically by default to all ranked search queries (REST, MCP, dashboard, CLI). With full fastembed-minilm vectors, this yields LoCoMo-10P $R@10 = 72.6\%$ (matching the previous target) and LongMemEval $R@5 = 66.8\%$. The synthetic-corpus NDCG@5 remains 0.68 (+31\% over baseline). Many LongMemEval misses remain lexical gaps even after thesaurus expansion.}}{12}{table.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.3}Near-Miss Analysis (LoCoMo-10P, v0.8.5)}{12}{subsection.9.3}\protected@file@percent }
+\newlabel{subsec:locomo-nearmiss}{{9.3}{12}{Near-Miss Analysis (LoCoMo-10P, v0.8.5)}{subsection.9.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.4}Near-Miss Analysis (LongMemEval, v0.9.8)}{12}{subsection.9.4}\protected@file@percent }
+\newlabel{subsec:lme-nearmiss}{{9.4}{12}{Near-Miss Analysis (LongMemEval, v0.9.8)}{subsection.9.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.5}Micro-Benchmarks}{13}{subsection.9.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {10}Related Work and Positioning}{13}{section.10}\protected@file@percent }
+\newlabel{sec:related}{{10}{13}{Related Work and Positioning}{section.10}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {11}Discussion, Limitations, and Conclusion}{13}{section.11}\protected@file@percent }
+\newlabel{sec:conclusion}{{11}{13}{Discussion, Limitations, and Conclusion}{section.11}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {11.1}Limitations}{13}{subsection.11.1}\protected@file@percent }
+\bibcite{robertson2009bm25}{1}
+\@writefile{toc}{\contentsline {subsection}{\numberline {11.2}Future Work}{14}{subsection.11.2}\protected@file@percent }
+\newlabel{subsec:future}{{11.2}{14}{Future Work}{subsection.11.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {11.3}Conclusion}{14}{subsection.11.3}\protected@file@percent }
+\bibcite{cormack2009rrf}{2}
+\bibcite{porter1980}{3}
+\bibcite{jaccard1901}{4}
+\bibcite{bernstein2012ed25519}{5}
+\bibcite{fips180-4}{6}
+\bibcite{maharana2024locomo}{7}
+\bibcite{wu2024longmemeval}{8}
+\bibcite{anthropic2024mcp}{9}
+\gdef \@abspage@last{15}

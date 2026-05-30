@@ -215,7 +215,7 @@ pub struct MentisDbServiceConfig {
     /// parent directory is created automatically if it does not exist.
     /// Controlled by `MENTISDB_LOG_FILE` in the daemon.
     pub log_file: Option<PathBuf>,
-    /// Controls whether [`BinaryStorageAdapter`] chains use durable
+    /// Controls whether [`BinaryStorageAdapter`](crate::BinaryStorageAdapter) chains use durable
     /// group-commit acknowledgements (`true`) or buffered batched writes
     /// (`false`).
     ///
@@ -393,7 +393,7 @@ impl MentisDbServiceConfig {
     ///   short group-commit window, but at most zero acknowledged thoughts are
     ///   lost on a hard crash.
     /// * `false` — writes are queued to a bounded background worker; the
-    ///   [`BinaryStorageAdapter`] flushes batches roughly every
+    ///   [`BinaryStorageAdapter`](crate::BinaryStorageAdapter) flushes batches roughly every
     ///   `FLUSH_THRESHOLD` appends. This trades durability for significantly
     ///   higher write throughput on multi-agent hubs. A sudden power failure or
     ///   `SIGKILL` can still lose the current in-memory batch plus queued
@@ -1948,7 +1948,7 @@ impl InteractionLogSink {
 /// MCP protocol implementation for MentisDB over streamable HTTP.
 ///
 /// This type wraps [`MentisDbService`] and implements the MCP
-/// [`ToolProtocol`][mcp::ToolProtocol] so it can be used with the
+    /// [`mcp::ToolProtocol`] so it can be used with the
 /// `streamable_http_router` from the `mcp` crate.
 #[derive(Clone)]
 pub struct MentisDbMcpProtocol {
@@ -2213,7 +2213,7 @@ impl MentisDbService {
     /// Create a new `MentisDbService` from a service configuration.
     ///
     /// The service opens the skill registry and webhook manager immediately;
-    /// chain data is lazily loaded on first access via [`get_chain`](Self::get_chain).
+    /// chain data is lazily loaded on first access via `get_chain`.
     pub fn new(config: MentisDbServiceConfig) -> Self {
         let interaction_log = Arc::new(
             InteractionLogSink::open(config.log_file.as_deref()).unwrap_or_else(|error| {

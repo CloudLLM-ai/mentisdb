@@ -2012,7 +2012,7 @@ pub enum ThoughtRelationKind {
 #[derive(Debug, Clone)]
 /// Configuration for LLM-based memory extraction.
 ///
-/// Used with [`MentisDb::extract_memories_from_text`] and related functions
+/// Used with [`extract_memories_from_text`](crate::llm::extract_memories_from_text) and related functions
 /// when you want to turn raw agent text, logs, or reasoning traces into
 /// structured `ThoughtInput` records.
 ///

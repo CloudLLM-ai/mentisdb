@@ -1,4 +1,4 @@
-0.9.9.45 UNRELEASED
+0.9.9.45 MAY/30/2026
   - feat(search): thesaurus now applies **automatically by default** to all
     ranked search queries (REST `/v1/ranked-search`, MCP, dashboard, CLI,
     and benchmark harnesses). No client changes required. The static
