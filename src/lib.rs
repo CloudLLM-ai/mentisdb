@@ -4341,7 +4341,12 @@ impl MentisDb {
         Ok(chain)
     }
 
-    /// Open or create a chain using an explicit stable chain key.
+    /// Open or create a chain using an explicit stable `chain_key`.
+    ///
+    /// This is a convenience wrapper around `open_with_key_and_storage_kind`
+    /// that uses the default file-based storage adapter.
+    ///
+    /// Prefer this when you just want the normal durable on-disk chain.
     ///
     /// # Example
     ///
