@@ -427,6 +427,14 @@ impl SkillEntry {
 
 /// Lightweight searchable summary of one stored skill.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Lightweight summary of a skill in the versioned registry.
+///
+/// Returned by `SkillRegistry::list_skills` and search operations.
+/// Use the `latest_version_id` to fetch the full content via
+/// `SkillRegistry::read_skill`.
+///
+/// This type is the primary way custom integrations discover and browse
+/// available skills without loading full content.
 pub struct SkillSummary {
     /// Stable skill identifier.
     pub skill_id: String,
