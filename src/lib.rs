@@ -1922,6 +1922,13 @@ pub enum ThoughtRelationKind {
 /// };
 /// ```
 #[derive(Debug, Clone)]
+/// Configuration for LLM-based memory extraction.
+///
+/// Used with [`MentisDb::extract_memories_from_text`] and related functions
+/// when you want to turn raw agent text, logs, or reasoning traces into
+/// structured `ThoughtInput` records.
+///
+/// This is an opt-in feature (behind the `llm-extraction` feature flag).
 pub struct LlmExtractionConfig {
     /// OpenAI-compatible API base URL.
     ///
