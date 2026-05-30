@@ -28,9 +28,54 @@ It stores semantically typed thoughts in an append-only, hash-chained memory log
 
 ---
 
+## Installation
+
+### Prerequisites
+
+#### macOS
+
+Install the Xcode Command Line Tools (required for native crates):
+
+```bash
+xcode-select --install
+```
+
+#### Ubuntu / Debian
+
+On a fresh Ubuntu or Debian system you need a few development packages before `cargo install` will succeed (especially because the default build enables audio support for the TUI startup chime).
+
+```bash
+sudo apt update
+sudo apt install -y \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    libasound2-dev \
+    curl
+```
+
+Then install Rust (if you don't already have it):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+```
+
+**Headless servers / minimal installs**
+
+If you are installing on a server and do not want the startup sound (and the ALSA dependency), install without the default features:
+
+```bash
+cargo install mentisdb --no-default-features --features server
+```
+
+This produces a smaller binary with no audio dependencies.
+
+---
+
 ## Quick Start
 
-Install the daemon:
+Install the daemon (after completing the platform-specific prerequisites above):
 
 ```bash
 cargo install mentisdb
