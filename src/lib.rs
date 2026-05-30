@@ -2111,6 +2111,15 @@ impl std::error::Error for LlmExtractionError {}
 /// assert_eq!(cross.chain_key.as_deref(), Some("other-chain"));
 /// ```
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+/// A directed semantic link from one thought to another.
+///
+/// Relations are the edges in MentisDB's thought graph. They enable powerful
+/// graph traversal during retrieval (see `RankedSearchGraph`) and are essential
+/// for modeling causality, corrections, summaries, and branching in agent
+/// reasoning.
+///
+/// Custom integrations should create relations whenever there is a clear
+/// semantic connection between two pieces of memory.
 pub struct ThoughtRelation {
     /// Semantic meaning of the edge.
     pub kind: ThoughtRelationKind,
