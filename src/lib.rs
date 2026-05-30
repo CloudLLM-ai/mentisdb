@@ -2865,6 +2865,30 @@ impl Default for RankedSearchGraph {
 /// same filter semantics as [`MentisDb::query`]; ranked search only changes how
 /// the matching candidates are ordered and trimmed.
 #[derive(Debug, Clone)]
+/// The primary query builder for high-quality retrieval.
+///
+/// This is the main type most custom integrations should use for searching
+/// memory. It supports the full hybrid retrieval pipeline:
+///
+/// - Lexical (BM25 + automatic thesaurus expansion since 0.9.9)
+/// - Vector similarity (when sidecars are registered)
+/// - Graph expansion (explicit + implicit edges)
+/// - Session cohesion, importance, recency
+/// - Optional RRF reranking
+///
+/// ## Recommended Default Usage
+///
+/// ```rust,ignore
+/// let results = chain.query_ranked(
+///     &RankedSearchQuery::new()
+///         .with_text("project decisions about caching")
+///         .with_limit(15)
+///         .with_graph(RankedSearchGraph::default())
+/// );
+/// ```
+///
+/// For most agent memory use cases, this + the automatic thesaurus gives
+/// excellent results with very little configuration.
 pub struct RankedSearchQuery {
     /// Deterministic semantic filter applied before ranked ordering.
     pub filter: ThoughtQuery,
