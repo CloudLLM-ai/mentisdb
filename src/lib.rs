@@ -1698,6 +1698,15 @@ pub enum MentisDbMigrationEvent {
 /// assert_eq!(json, "\"Constraint\"");
 /// ```
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+/// Semantic classification of a thought.
+///
+/// `ThoughtType` answers the question "What *kind* of memory is this?"
+/// It is one of the most important fields for filtering and understanding
+/// the contents of a chain in custom integrations.
+///
+/// The variants are designed to be useful across many different agent
+/// architectures while still being specific enough to enable powerful
+/// retrieval and analysis.
 pub enum ThoughtType {
     /// A user's stated preference changed or became explicit.
     PreferenceUpdate,
