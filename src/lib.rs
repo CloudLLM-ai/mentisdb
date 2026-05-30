@@ -2506,6 +2506,25 @@ pub fn signable_thought_payload(agent_id: &str, input: &ThoughtInput) -> Vec<u8>
 /// # }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// A single committed thought in a MentisDB chain.
+///
+/// This is the fundamental data structure you will read from and (indirectly)
+/// write to when using MentisDB in a custom integration.
+///
+/// A `Thought` is immutable once appended. It contains:
+/// - Strong identity (`id`, `index`, `timestamp`)
+/// - Semantic typing (`thought_type`, `role`)
+/// - Provenance (`agent_id`, optional signing)
+/// - Content and relations to other thoughts
+/// - Scoring metadata (importance, confidence, etc.)
+///
+/// You almost never construct `Thought` directly — you create a [`ThoughtInput`]
+/// and pass it to [`MentisDb::append_thought`], which returns the fully formed
+/// `Thought`.
+///
+/// Most custom integrations will primarily interact with `Thought` when
+/// processing search results from [`query_ranked`](MentisDb::query_ranked) or
+/// when traversing history.
 pub struct Thought {
     /// Thought schema version used by this record.
     #[serde(default = "current_schema_version")]
