@@ -2712,12 +2712,26 @@ impl ThoughtQuery {
     }
 
     /// Limit matches to the provided semantic thought types.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mentisdb::{ThoughtQuery, ThoughtType};
+    /// let query = ThoughtQuery::new().with_types(vec![ThoughtType::Decision, ThoughtType::Constraint]);
+    /// ```
     pub fn with_types(mut self, thought_types: Vec<ThoughtType>) -> Self {
         self.thought_types = Some(thought_types);
         self
     }
 
     /// Limit matches to the provided thought roles.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mentisdb::{ThoughtQuery, ThoughtRole};
+    /// let query = ThoughtQuery::new().with_roles(vec![ThoughtRole::Checkpoint, ThoughtRole::Summary]);
+    /// ```
     pub fn with_roles(mut self, roles: Vec<ThoughtRole>) -> Self {
         self.roles = Some(roles);
         self
@@ -2754,6 +2768,13 @@ impl ThoughtQuery {
     }
 
     /// Match thoughts that have at least one of the provided tags.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mentisdb::ThoughtQuery;
+    /// let query = ThoughtQuery::new().with_tags_any(["offline", "ops"]);
+    /// ```
     pub fn with_tags_any<I, S>(mut self, tags: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -2774,12 +2795,28 @@ impl ThoughtQuery {
     }
 
     /// Match thoughts whose content, tags, or concepts contain the provided text.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mentisdb::ThoughtQuery;
+    /// let query = ThoughtQuery::new().with_text("cache invalidation");
+    /// ```
     pub fn with_text(mut self, text: impl Into<String>) -> Self {
         self.text_contains = Some(text.into());
         self
     }
 
     /// Only match thoughts whose importance is at least this value.
+    ///
+    /// Values are clamped to the 0.0–1.0 range.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mentisdb::ThoughtQuery;
+    /// let query = ThoughtQuery::new().with_min_importance(0.85);
+    /// ```
     pub fn with_min_importance(mut self, importance: f32) -> Self {
         self.min_importance = Some(importance.clamp(0.0, 1.0));
         self
@@ -2792,12 +2829,32 @@ impl ThoughtQuery {
     }
 
     /// Only match thoughts at or after the given timestamp.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mentisdb::ThoughtQuery;
+    /// use chrono::Utc;
+    ///
+    /// let query = ThoughtQuery::new()
+    ///     .with_since(Utc::now() - chrono::Duration::hours(24));
+    /// ```
     pub fn with_since(mut self, since: DateTime<Utc>) -> Self {
         self.since = Some(since);
         self
     }
 
     /// Only match thoughts at or before the given timestamp.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mentisdb::ThoughtQuery;
+    /// use chrono::Utc;
+    ///
+    /// let query = ThoughtQuery::new()
+    ///     .with_until(Utc::now());
+    /// ```
     pub fn with_until(mut self, until: DateTime<Utc>) -> Self {
         self.until = Some(until);
         self
