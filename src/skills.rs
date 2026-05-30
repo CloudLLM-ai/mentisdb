@@ -48,6 +48,10 @@ const MENTISDB_SKILL_REGISTRY_FILENAME: &str = "mentisdb-skills.bin";
 /// }
 /// ```
 #[derive(Debug, Clone, Serialize)]
+/// Result of reading a skill from the registry.
+///
+/// Returned by [`SkillRegistry::read_skill`]. Contains the rendered content
+/// in the requested format, along with warnings and lifecycle status.
 pub struct SkillReadOutput {
     /// The rendered skill content in the requested format.
     pub content: String,
@@ -313,6 +317,12 @@ pub struct SkillSection {
 /// assert_eq!(doc, doc2);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Parsed representation of an agent skill.
+///
+/// Skills are versioned instruction bundles written in Markdown with YAML
+/// frontmatter. They describe how an agent should behave in specific contexts.
+///
+/// This struct is the canonical parsed form used by the skill registry.
 pub struct SkillDocument {
     /// Schema version for this structured skill object.
     pub schema_version: u32,
@@ -425,7 +435,6 @@ impl SkillEntry {
     }
 }
 
-/// Lightweight searchable summary of one stored skill.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 /// Lightweight summary of a skill in the versioned registry.
 ///
@@ -547,13 +556,6 @@ pub struct SkillVersionSummary {
 /// .with_signing(Some("key-v1".to_string()), Some(vec![0u8; 64]));
 /// ```
 #[derive(Debug, Clone)]
-/// Builder-style request for uploading a new immutable skill version.
-///
-/// Used with `SkillRegistry::upload_skill`. Supports both Markdown and JSON
-/// formats and optional Ed25519 signing for provenance.
-///
-/// This is the primary API for custom agent harnesses that want to
-/// programmatically contribute or update skills in a shared MentisDB chain.
 pub struct SkillUpload<'a> {
     skill_id: Option<&'a str>,
     uploaded_by_agent_id: &'a str,
@@ -1026,6 +1028,24 @@ impl SkillIndexes {
 /// - Audit and rollback of agent behavior
 ///
 /// See the [crate-level documentation](crate) for usage examples from Rust.
+/// Versioned, immutable skill registry for agent instruction bundles.
+///
+/// The skill registry stores agent skills as versioned, diff-based documents.
+/// Every upload creates a new immutable version. History is never overwritten.
+/// Skills can be deprecated or revoked while preserving full audit history.
+///
+/// # Typical Usage
+///
+/// ```rust,no_run
+/// use mentisdb::SkillRegistry;
+/// use std::path::PathBuf;
+///
+/// # fn main() -> std::io::Result<()> {
+/// let mut registry = SkillRegistry::open(PathBuf::from("/tmp/mentisdb"))?;
+/// let skills = registry.list_skills();
+/// # Ok(())
+/// # }
+/// ```
 pub struct SkillRegistry {
     version: u32,
     skills: BTreeMap<String, SkillEntry>,
