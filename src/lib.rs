@@ -2624,6 +2624,18 @@ pub struct Thought {
 /// assert!(query.min_importance.is_some());
 /// ```
 #[derive(Debug, Clone, Default)]
+/// Filter for selecting thoughts before ranking or traversal.
+///
+/// `ThoughtQuery` is used both as a standalone filter (via [`MentisDb::query`])
+/// and as the `filter` field inside [`RankedSearchQuery`].
+///
+/// It supports semantic filters (type, role), provenance filters (agent),
+/// content filters (tags, concepts, text), and metadata filters (importance,
+/// confidence, time windows).
+///
+/// For most ranked search use cases, you will set a `ThoughtQuery` as the
+/// `filter` on a `RankedSearchQuery` to first narrow the candidate set before
+/// expensive ranking and graph expansion.
 pub struct ThoughtQuery {
     /// Semantic thought types to match.
     pub thought_types: Option<Vec<ThoughtType>>,
