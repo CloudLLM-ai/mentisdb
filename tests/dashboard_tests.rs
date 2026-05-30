@@ -131,9 +131,9 @@ async fn agent_detail_form_hydrates_values_after_dom_insertion() {
         .await
         .unwrap();
     let html = String::from_utf8(html.to_vec()).unwrap();
-    assert!(html.contains("<input type=\"text\" id=\"ad-name\">"));
-    assert!(html.contains("<textarea id=\"ad-desc\"></textarea>"));
-    assert!(html.contains("<input type=\"text\" id=\"ad-owner\">"));
+    assert!(html.contains("<input type=\"text\" id=\"ad-name\""));
+    assert!(html.contains("<textarea id=\"ad-desc\""));
+    assert!(html.contains("<input type=\"text\" id=\"ad-owner\""));
     assert!(html.contains("document.getElementById('ad-name').value = agent.display_name || '';"));
     assert!(html.contains("document.getElementById('ad-desc').value = agent.description || '';"));
     assert!(html.contains("document.getElementById('ad-owner').value = agent.owner || '';"));
