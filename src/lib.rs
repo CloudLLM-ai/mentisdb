@@ -4969,16 +4969,39 @@ impl MentisDb {
     }
 
     /// Return the newest thought at the current chain tip, if any.
+    /// Return the most recently appended thought, if any.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// if let Some(tip) = chain.head_thought() {
+    ///     println!("Latest thought #{}: {}", tip.index, tip.content);
+    /// }
+    /// ```
     pub fn head_thought(&self) -> Option<&Thought> {
         self.thoughts.last()
     }
 
     /// Return one thought by append-order index.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let thought = chain.get_thought_by_index(0)
+    ///     .expect("chain has at least one thought");
+    /// ```
     pub fn get_thought_by_index(&self, index: u64) -> Option<&Thought> {
         self.thoughts.get(index as usize)
     }
 
     /// Return one thought by stable UUID.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let thought = chain.get_thought_by_id(some_uuid)
+    ///     .expect("thought exists");
+    /// ```
     pub fn get_thought_by_id(&self, thought_id: Uuid) -> Option<&Thought> {
         self.id_to_index
             .get(&thought_id)
@@ -4987,6 +5010,13 @@ impl MentisDb {
     }
 
     /// Return one thought by stable chain hash.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let thought = chain.get_thought_by_hash(&expected_hash)
+    ///     .expect("hash exists in chain");
+    /// ```
     pub fn get_thought_by_hash(&self, hash: &str) -> Option<&Thought> {
         self.hash_to_index
             .get(hash)
@@ -5592,6 +5622,21 @@ impl MentisDb {
     /// - Optional RRF reranking
     ///
     /// See [`RankedSearchQuery`] for the full set of options.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use mentisdb::{MentisDb, RankedSearchQuery};
+    ///
+    /// let result = chain.query_ranked(
+    ///     &RankedSearchQuery::new("deployment rollback strategy")
+    ///         .with_limit(5)
+    /// );
+    ///
+    /// for hit in &result.hits {
+    ///     println!("[{}] {}", hit.thought.index, hit.thought.content);
+    /// }
+    /// ```
     pub fn query_ranked(&self, request: &RankedSearchQuery) -> RankedSearchResult<'_> {
         let candidates = self.query(&request.filter);
 
