@@ -1834,6 +1834,13 @@ pub enum ThoughtRole {
 /// assert_eq!(MemoryScope::Agent.as_tag(), "scope:agent");
 /// ```
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+/// Visibility scope for a thought.
+///
+/// Scopes are stored as tags (`scope:user`, `scope:session`, `scope:agent`) and
+/// can be used to filter results in ranked search and other queries.
+///
+/// This is particularly useful in multi-agent or multi-user harnesses where
+/// you want to control what different agents can "see" in shared chains.
 pub enum MemoryScope {
     /// Visible to all agents sharing the same user identity.
     #[default]
