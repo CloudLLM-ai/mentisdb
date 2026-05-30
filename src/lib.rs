@@ -94,17 +94,97 @@
 //! integrity violations, and invalid references surface as `io::Error`. Higher-level
 //! semantic errors (e.g. LLM extraction) use dedicated error types in the `llm` module.
 //!
-//! ## Next Steps
+//! ## Custom Integration Patterns
 //!
-//! - Read the [Whitepaper](https://github.com/CloudLLM-ai/mentisdb/blob/master/WHITEPAPER.md)
-//! - Browse the [full API documentation on docs.rs](https://docs.rs/mentisdb)
-//! - Look at the [example integrations](https://github.com/CloudLLM-ai/mentisdb/tree/master/examples)
-//!   (when available) and the test suite for realistic usage patterns.
+//! ### Direct Embedding vs Daemon
+//!
+//! | Approach              | Best For                                      | Trade-offs |
+//! |-----------------------|-----------------------------------------------|----------|
+//! | Embed the crate       | Custom harnesses, maximum control, low latency | You manage storage, concurrency, lifecycle |
+//! | Use the daemon (MCP/REST) | Existing agent tools, quick integration     | Small IPC overhead, simpler for most users |
+//!
+//! Most serious custom integrations embed the crate directly.
+//!
+//! ### Recommended Architecture
+//!
+//! ```text
+//! Your Agent Runtime
+//!        │
+//!        ▼
+//! MentisDb (in-process)
+//!   ├── StorageAdapter (your choice)
+//!   ├── Vector Sidecars (optional)
+//!   └── Skill Registry
+//! ```
+//!
+//! Keep one long-lived `MentisDb` instance per logical "brain" (usually per project or user).
+//!
+//! ### Working with Skills from Rust
+//!
+//! ```rust,ignore
+//! use mentisdb::SkillRegistry;
+//!
+//! let registry = SkillRegistry::open(&path)?;
+//! let skill = registry.read_latest("my-agent-primer")?;
+//! ```
+//!
+//! Skills are versioned and immutable — perfect for agent instruction management.
+//!
+//! ### Thought Signing & Provenance
+//!
+//! For multi-tenant or high-trust environments you can sign thoughts:
+//!
+//! ```rust,ignore
+//! let payload = mentisdb::signable_thought_payload("agent-42", &input);
+//! let signature = ed25519_sign(&payload, &private_key);
+//! input.signing_key_id = Some("key-7".into());
+//! input.thought_signature = Some(signature);
+//! ```
+//!
+//! ### Vector Sidecars when Embedding
+//!
+//! You can register embedding providers directly:
+//!
+//! ```rust,ignore
+//! use mentisdb::search::LocalTextEmbeddingProvider;
+//!
+//! chain.register_managed_vector_sidecar(
+//!     ManagedVectorProviderKind::LocalTextV1,
+//!     None, // use default model
+//! )?;
+//! ```
+//!
+//! ## Advanced Topics
+//!
+//! - **Deduplication**: Set `dedup_threshold` at open time for automatic `Supersedes` relations.
+//! - **Implicit Graph**: The `ImplicitEdgeOverlay` adds semantic edges based on vector similarity.
+//! - **RRF Reranking**: Enable on `RankedSearchQuery` when lexical and vector signals disagree.
+//! - **Federated Search**: Search across multiple chains (including branches) in one call.
+//!
+//! ## Testing Custom Integrations
+//!
+//! The crate is designed to be highly testable:
+//!
+//! - Use `BinaryStorageAdapter` with a temp directory.
+//! - Or implement an in-memory `StorageAdapter` for fast unit tests.
+//! - All search quality harnesses in the repo are good examples of integration testing.
+//!
+//! ## Next Steps for Integrators
+//!
+//! 1. Start with the [Getting Started example](#getting-started--embedding-in-your-harness) above.
+//! 2. Read the [Whitepaper](https://github.com/CloudLLM-ai/mentisdb/blob/master/WHITEPAPER.md) for the full mental model.
+//! 3. Explore the `search` module for advanced retrieval.
+//! 4. Look at the test suite (`tests/`) — it contains many realistic usage patterns.
+//! 5. Join the discussion on GitHub if you need help designing your integration.
 //!
 //! ---
 //!
-//! This crate is the foundation of the MentisDB ecosystem. Everything else
-//! (daemon, MCP server, dashboard, Python client, etc.) is built on top of it.
+//! This crate is the foundation of the entire MentisDB ecosystem. The daemon,
+//! MCP server, dashboard, Python client, and all future language bindings are
+//! built on top of the APIs documented here.
+//!
+//! Welcome to the MentisDB developer experience. We designed it to feel like
+//! infrastructure you can trust for years.
 #![warn(missing_docs)]
 
 pub mod backup;
