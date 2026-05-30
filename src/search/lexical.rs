@@ -206,6 +206,23 @@ impl LexicalMatchSource {
 
 /// Ranked lexical query parameters.
 #[derive(Debug, Clone, PartialEq)]
+/// Lexical (BM25) query for searching thought content, tags, concepts,
+/// and agent metadata.
+///
+/// This is the lower-level building block for ranked search. Most custom
+/// integrations should prefer [`RankedSearchQuery`](crate::RankedSearchQuery),
+/// which automatically wires lexical search together with vector and graph
+/// signals. Use `LexicalQuery` directly when you only need text matching
+/// and do not want the full hybrid pipeline.
+///
+/// # Example
+///
+/// ```rust
+/// use mentisdb::search::lexical::LexicalQuery;
+///
+/// let query = LexicalQuery::new("cache invalidation strategy")
+///     .with_limit(10);
+/// ```
 pub struct LexicalQuery {
     /// Raw query text that will be normalized using the current normalizer.
     pub text: String,
@@ -224,6 +241,13 @@ pub struct LexicalQuery {
 
 impl LexicalQuery {
     /// Create a new lexical query with default scoring settings.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mentisdb::search::lexical::LexicalQuery;
+    /// let query = LexicalQuery::new("deployment rollback");
+    /// ```
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
