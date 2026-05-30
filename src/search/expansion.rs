@@ -6,7 +6,16 @@ use crate::ThoughtRelationKind;
 use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
 
-/// Direction policy for graph expansion.
+/// Direction policy for graph expansion during ranked search.
+///
+/// Controls which direction(s) the graph traversal follows when expanding
+/// from lexical seed thoughts using `ThoughtRelation` edges.
+///
+/// - `OutgoingOnly` — follow "this thought points to other thoughts" (causality, summaries, etc.)
+/// - `IncomingOnly` — follow "other thoughts point to this one" (what led here, corrections, etc.)
+/// - `Bidirectional` — both directions (most common for broad recall)
+///
+/// Used inside `RankedSearchGraph`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GraphExpansionMode {
     /// Expand only along outgoing edges from the current frontier.
