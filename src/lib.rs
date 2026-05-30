@@ -3200,24 +3200,54 @@ impl RankedSearchQuery {
     }
 
     /// Apply a deterministic semantic filter before ranking.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mentisdb::{RankedSearchQuery, ThoughtQuery, ThoughtType};
+    /// let query = RankedSearchQuery::new()
+    ///     .with_filter(ThoughtQuery::new().with_types(vec![ThoughtType::Decision]));
+    /// ```
     pub fn with_filter(mut self, filter: ThoughtQuery) -> Self {
         self.filter = filter;
         self
     }
 
     /// Set the ranked lexical query text.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mentisdb::RankedSearchQuery;
+    /// let query = RankedSearchQuery::new().with_text("cache invalidation strategy");
+    /// ```
     pub fn with_text(mut self, text: impl Into<String>) -> Self {
         self.text = Some(text.into());
         self
     }
 
     /// Enable graph-aware ranked retrieval seeded from lexical matches.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mentisdb::{RankedSearchQuery, RankedSearchGraph};
+    /// let query = RankedSearchQuery::new()
+    ///     .with_graph(RankedSearchGraph::new().with_max_depth(3));
+    /// ```
     pub fn with_graph(mut self, graph: RankedSearchGraph) -> Self {
         self.graph = Some(graph);
         self
     }
 
     /// Limit the number of ranked hits returned.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mentisdb::RankedSearchQuery;
+    /// let query = RankedSearchQuery::new().with_limit(25);
+    /// ```
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = limit.max(1);
         self
