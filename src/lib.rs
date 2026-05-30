@@ -1890,6 +1890,13 @@ impl fmt::Display for MemoryScope {
 /// assert_eq!(ThoughtRelationKind::Corrects as u8, ThoughtRelationKind::Corrects as u8);
 /// ```
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+/// The semantic meaning of a relation between two thoughts.
+///
+/// These relation kinds form the basis of the thought graph and are used
+/// heavily during graph expansion in ranked search.
+///
+/// Custom integrations often use these to model causality, corrections,
+/// summaries, and branching between different lines of agent reasoning.
 pub enum ThoughtRelationKind {
     /// A general back-reference.
     References,
