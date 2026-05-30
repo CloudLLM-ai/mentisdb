@@ -281,6 +281,14 @@
 //! 4. Explore the `search` module if you need advanced retrieval control.
 //! 5. Reach out on GitHub if you're designing something unusual — we're happy to help shape the APIs.
 //!
+//! ## Common Pitfalls for New Integrators
+//!
+//! - Using the legacy `open()` method instead of `open_with_key`.
+//! - Forgetting to call `flush()` on shutdown when `auto_flush` is false.
+//! - Expecting `Thought` to be mutable (it is not — always append new thoughts).
+//! - Trying to do very high-concurrency writes directly on a single `MentisDb` instance without serialization.
+//! - Not using `refs` / relations when there is clear causality between thoughts.
+//!
 //! ---
 //!
 //! This crate is the foundation of the MentisDB ecosystem. Everything else
