@@ -349,6 +349,9 @@ Once startup completes, it prints:
   HTTPS dashboard port. Default: `9475`. Set to `0` to disable the web dashboard.
 - `MENTISDB_DASHBOARD_PIN`
   Optional PIN required to access the dashboard. Leave unset only for trusted localhost use.
+- `MENTISDB_BEARER_TOKEN_ACCESS`
+  Require bearer tokens for MCP requests. Default: `false`. Set `true` for remote
+  or multi-user MCP servers. This can also be toggled live from the dashboard Settings screen.
 - `MENTISDB_AUTO_FLUSH`
   Controls per-write durability of the `binary` storage adapter.
   - `true` (default): every `append_thought` flushes to disk immediately. Full durability.
@@ -798,6 +801,19 @@ Starting in 0.8.6, ranked search adds three features:
 - **Irregular verb lemma expansion** — the query tokenizer maps irregular past-tense verbs to their base form (e.g. "went" → "go", "gave" → "give", "ran" → "run"). About 170 mappings. Indexed content is not modified — expansion is query-time only.
 - **Reciprocal Rank Fusion (RRF)** — an opt-in reranking pass. When `enable_reranking=true` is set on a ranked search query, the engine produces separate lexical-only, vector-only, and graph-only rankings over the top `rerank_k` candidates (default 50), merges them via `1/(k + rank)` with `k=60`, and replaces the additive total with the RRF total plus non-rankable signal adjustments. Use when lexical and vector signals disagree on top candidates.
 - **Per-field BM25 DF cutoffs** — `Bm25DfCutoffs` on `LexicalQuery` allows configuring separate document-frequency cutoff ratios per field (content, tags, concepts, agent_id, agent_registry). Terms whose global DF exceeds the cutoff for a given field are skipped for that field only. Default cutoffs match the original behavior (content=0.30, tags=0.30, concepts=0.30, agent_id=0.70, agent_registry=0.60).
+
+### Search Scoring (after 0.9.9)
+
+The post-0.9.9 ranked-search validation run used real embeddings plus automatic thesaurus expansion on the full LoCoMo-10P benchmark:
+
+- **LoCoMo-10P overall R@10: 72.6%** (1436 / 1977 queries)
+- **Single-hop R@10: 76.8%** (1193 / 1554 queries)
+- **Multi-hop R@10: 57.4%** (243 / 423 queries)
+- **Weak-vector smoke baseline: 44.9% R@10**, so the validated pipeline improved recall by 27.7 percentage points.
+- **Evaluation throughput: 6 seconds for 1977 queries** (~317 queries/second).
+- **Vector sidecar: `fastembed-all-minilm-l6-v2`**, about 28 MB with 5882 indexed thoughts.
+
+The run applied the built-in thesaurus transparently on every `ranked_search` call and matches the whitepaper target of about 72% overall LoCoMo-10P R@10.
 
 ### Vector Sidecars
 
@@ -1304,6 +1320,64 @@ That means you can:
 
 - use native MCP clients such as Codex and Claude Code against `http://127.0.0.1:9471`
 - keep using direct HTTP calls or `cloudllm`'s MCP compatibility layer when needed
+
+### Bearer Token Access For Remote MCP Servers
+
+If a MentisDB daemon is reachable beyond your own machine, enable bearer-token
+access before adding it to remote MCP clients:
+
+```bash
+MENTISDB_BIND_HOST=0.0.0.0 \
+MENTISDB_BEARER_TOKEN_ACCESS=true \
+MENTISDB_DASHBOARD_PIN=change-me \
+mentisdb
+```
+
+Tokens are managed by alias. The raw token is printed once at creation time;
+MentisDB stores only a SHA-256 hash plus metadata such as scope, creation time,
+revocation time, and last successful use.
+
+Create a global admin token:
+
+```bash
+mentisdb bearertoken create --global admin-laptop
+```
+
+Create a token limited to one or more chains:
+
+```bash
+mentisdb bearertoken create --chain alice alice-agent
+mentisdb bearertoken create bob-agent --chain bob
+mentisdb bearertoken create team-agent --chain alice --chain shared
+```
+
+List and revoke tokens:
+
+```bash
+mentisdb bearertoken list
+mentisdb bearertoken list --chain alice
+mentisdb bearertoken list --chain alice --chain shared
+mentisdb bearertoken remove alice-agent
+```
+
+Global tokens can call every MCP tool and access every chain. Chain-scoped tokens
+can call tools for any chain in their configured set, including requests that
+omit `chain_key` when the daemon default chain is in their scope. Tools that
+expose server-wide state, such as `mentisdb_list_chains`, require a global token.
+
+For Codex, include the token as an HTTP header in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.mentisdb]
+url = "https://my.mentisdb.com:9473"
+headers = { Authorization = "Bearer mdb_live_replace_me" }
+```
+
+You can also manage tokens in the dashboard Settings screen: enter an alias,
+choose Global or Chains, select one or more chains for scoped tokens, create the
+token, and revoke active tokens from the table. The bearer-token table is
+intentionally metadata-only; future versions can extend those records with
+per-token usage counters without changing how clients authenticate.
 
 ### Codex
 
