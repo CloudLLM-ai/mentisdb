@@ -298,6 +298,7 @@
 //! We designed MentisDB to be infrastructure you can trust for years. Welcome.
 #![warn(missing_docs)]
 
+pub mod auth;
 pub mod backup;
 pub mod cli;
 #[cfg(feature = "server")]
