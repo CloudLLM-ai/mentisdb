@@ -327,15 +327,17 @@ Commands:
     Restore a MENTISDB_DIR from a .mentis backup archive.
 
     Restores all chain data, registry, skills, and optionally TLS files.
-    By default, existing files are preserved (idempotent). Pass --overwrite
-    to replace all files with their backed-up versions.
+    Empty targets receive a full instance restore. Non-empty targets preserve
+    the local registry, add newly discovered backup chains, append verified
+    same-key suffixes, and import divergent same-name chains under a renamed key.
 
     The daemon must not be running during restore. If mentisdb is detected,
     the restore aborts with a message to stop the daemon first. This prevents
     the daemon's in-memory state from overwriting restored files.
 
-    If files already exist in the target directory and --overwrite is not
-    passed, an interactive prompt asks for confirmation before overwriting.
+    --overwrite is chain-scoped: it can replace same-path chain files when a
+    safe suffix merge is not possible. It does not blindly replace the local
+    registry, skills, webhooks, TLS, or unrelated chains.
 
     Examples:
       mentisdb restore mentisdb-2026-04-14.mentis
@@ -345,8 +347,8 @@ Commands:
     Options:
       <archive.mentis>   Path to the .mentis backup archive (required)
       --dir <path>       Path to MENTISDB_DIR (default: platform default)
-      --overwrite        Overwrite existing files in the target directory (skips interactive prompt)
-      --yes              Assume yes to all prompts (skips interactive confirmation)
+      --overwrite        Allow same-path chain files to be replaced when needed
+      --yes              Skip interactive confirmation prompts
       --help             Show this help text
 
   bearertoken

@@ -1047,14 +1047,27 @@ mentisdb restore /backups/mentisdb-2026-04-14.mentis
 # Restore to a specific directory
 mentisdb restore /backups/mentisdb-2026-04-14.mentis --dir ~/.cloudllm/mentisdb
 
-# Force overwrite of all files
+# Allow same-path chain files to be replaced when a safe suffix merge is not possible
 mentisdb restore /backups/mentisdb-2026-04-14.mentis --overwrite
 
-# Skip interactive confirmation prompts
+# Skip interactive confirmation prompts while keeping the default preserve/merge behavior
 mentisdb restore /backups/mentisdb-2026-04-14.mentis --yes
 ```
 
-Restore is **idempotent by default** — existing files are preserved. If files in the archive already exist in the target directory and `--overwrite` is not passed, an interactive prompt asks for confirmation. Pass `--yes` to skip all prompts.
+Restore is **idempotent by default**. When the target directory is empty,
+MentisDB imports the full instance, including registry, chains, skills,
+webhooks, and optional TLS files. When the target already contains a MentisDB
+instance, restore preserves the local `mentisdb-registry.json` and treats the
+backup registry as a hint: new chains are appended to the local registry with
+local storage paths, compatible same-key chains append only the verified missing
+suffix, older backups are ignored, and same-name chains with different genesis
+are imported under a non-conflicting `-imported` chain key. Existing global files
+such as skills and webhooks are preserved unless they are absent locally.
+
+`--overwrite` no longer means "replace the whole instance." It only allows
+same-path chain files to be replaced when the chain cannot be safely merged and
+the operator explicitly requested overwrite. The local registry is still merged
+and preserved.
 
 ### Archive format
 

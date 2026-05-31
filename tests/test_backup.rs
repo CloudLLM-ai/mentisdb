@@ -14,6 +14,9 @@ use mentisdb::backup::{
     RestoreOptions, BACKUP_EXTENSION, BACKUP_FILENAME_PREFIX, BACKUP_FORMAT_VERSION,
     MANIFEST_FILENAME,
 };
+use mentisdb::{
+    chain_storage_filename, load_registered_chains, MentisDb, StorageAdapterKind, ThoughtType,
+};
 use tempfile::TempDir;
 use zip::ZipArchive;
 
@@ -83,6 +86,22 @@ fn run_backup(source_dir: &Path, output_path: Option<PathBuf>, include_tls: bool
 
     create_backup(&opts).expect("create_backup should succeed");
     output
+}
+
+fn append_real_thought(dir: &Path, chain_key: &str, agent_id: &str, content: &str) {
+    let mut chain = MentisDb::open_with_key(dir, chain_key).unwrap();
+    chain
+        .append(agent_id, ThoughtType::Finding, content)
+        .unwrap();
+}
+
+fn chain_contents(dir: &Path, chain_key: &str) -> Vec<String> {
+    MentisDb::open_with_key(dir, chain_key)
+        .unwrap()
+        .thoughts()
+        .iter()
+        .map(|thought| thought.content.clone())
+        .collect()
 }
 
 // ── Round-trip tests ─────────────────────────────────────────────────────────
@@ -744,6 +763,107 @@ fn test_backup_and_restore_source_without_optional_files() {
     assert!(restore_target.join("solo-123.tcbin").exists());
     assert!(!restore_target.join("mentisdb-skills.bin").exists());
     assert!(!restore_target.join("mentisdb-webhooks.json").exists());
+}
+
+#[test]
+fn test_restore_into_existing_instance_adds_new_foreign_chain_to_registry() {
+    let tmp = TempDir::new().unwrap();
+    let local = tmp.path().join("local");
+    let foreign = tmp.path().join("foreign");
+    fs::create_dir_all(&local).unwrap();
+    fs::create_dir_all(&foreign).unwrap();
+
+    append_real_thought(&local, "local-memory", "local-agent", "local only");
+    append_real_thought(&foreign, "wife-memory", "wife-agent", "wife only");
+
+    let backup_path = run_backup(&foreign, None, false);
+
+    restore_backup(
+        backup_path,
+        local.clone(),
+        RestoreOptions { overwrite: false },
+    )
+    .expect("restore should import non-conflicting foreign chains");
+
+    assert_eq!(chain_contents(&local, "local-memory"), vec!["local only"]);
+    assert_eq!(chain_contents(&local, "wife-memory"), vec!["wife only"]);
+
+    let registry = load_registered_chains(&local).unwrap();
+    assert!(registry.chains.contains_key("local-memory"));
+    assert!(registry.chains.contains_key("wife-memory"));
+    assert!(
+        registry.chains["wife-memory"]
+            .storage_location
+            .starts_with(local.to_str().unwrap()),
+        "imported registry entry should point at the local host path"
+    );
+}
+
+#[test]
+fn test_restore_appends_suffix_when_backup_extends_local_chain() {
+    let tmp = TempDir::new().unwrap();
+    let local = tmp.path().join("local");
+    let backup_source = tmp.path().join("backup-source");
+    fs::create_dir_all(&local).unwrap();
+    fs::create_dir_all(&backup_source).unwrap();
+
+    append_real_thought(&local, "shared", "agent", "one");
+    fs::copy(
+        local.join(chain_storage_filename("shared", StorageAdapterKind::Binary)),
+        backup_source.join(chain_storage_filename("shared", StorageAdapterKind::Binary)),
+    )
+    .unwrap();
+
+    append_real_thought(&backup_source, "shared", "agent", "two");
+    append_real_thought(&backup_source, "shared", "agent", "three");
+
+    let backup_path = run_backup(&backup_source, None, false);
+
+    restore_backup(
+        backup_path,
+        local.clone(),
+        RestoreOptions { overwrite: false },
+    )
+    .expect("restore should append verified suffix thoughts");
+
+    assert_eq!(
+        chain_contents(&local, "shared"),
+        vec!["one", "two", "three"]
+    );
+    assert!(MentisDb::open_with_key(&local, "shared")
+        .unwrap()
+        .verify_integrity());
+}
+
+#[test]
+fn test_restore_renames_same_key_when_genesis_differs() {
+    let tmp = TempDir::new().unwrap();
+    let local = tmp.path().join("local");
+    let foreign = tmp.path().join("foreign");
+    fs::create_dir_all(&local).unwrap();
+    fs::create_dir_all(&foreign).unwrap();
+
+    append_real_thought(&local, "shared", "local-agent", "local genesis");
+    append_real_thought(&foreign, "shared", "foreign-agent", "foreign genesis");
+
+    let backup_path = run_backup(&foreign, None, false);
+
+    restore_backup(
+        backup_path,
+        local.clone(),
+        RestoreOptions { overwrite: false },
+    )
+    .expect("restore should rename same-key chains with different genesis");
+
+    assert_eq!(chain_contents(&local, "shared"), vec!["local genesis"]);
+    assert_eq!(
+        chain_contents(&local, "shared-imported"),
+        vec!["foreign genesis"]
+    );
+
+    let registry = load_registered_chains(&local).unwrap();
+    assert!(registry.chains.contains_key("shared"));
+    assert!(registry.chains.contains_key("shared-imported"));
 }
 
 // ── Idempotent restore tests ─────────────────────────────────────────────────

@@ -452,7 +452,9 @@ fn run_restore(
     writeln!(out).map_err(|e| e.to_string())?;
 
     // Interactive prompt if there are conflicting files and --overwrite not passed.
-    // A confirmed answer switches the restore into overwrite mode for the conflicting files.
+    // A confirmed answer enables chain-scoped overwrite. The restore engine
+    // still preserves and merges the local registry instead of replacing the
+    // whole target instance.
     let mut overwrite = cmd.overwrite;
     if !overwrite && !cmd.yes {
         let existing: Vec<&str> = files
@@ -464,7 +466,7 @@ fn run_restore(
         if !existing.is_empty() {
             let conflict_list = existing.join("\n  ");
             let question = format!(
-                "The following files already exist in the target directory:\n\n  {}\n\nOverwrite existing files?",
+                "The following files already exist in the target directory:\n\n  {}\n\nAllow chain-scoped overwrite where a safe merge is not possible?",
                 conflict_list
             );
             let answer =

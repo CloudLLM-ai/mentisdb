@@ -1,3 +1,8 @@
+0.10.1.46 UNRELEASED
+  - fix(restore): preserve local registries during cross-instance restores,
+    append verified same-chain suffixes, and import divergent same-name chains
+    under renamed keys.
+
 0.9.9.45 MAY/30/2026
   - feat(search): thesaurus now applies **automatically by default** to all
     ranked search queries (REST `/v1/ranked-search`, MCP, dashboard, CLI,

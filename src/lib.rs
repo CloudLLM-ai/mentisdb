@@ -8338,6 +8338,10 @@ impl MentisDb {
         self.maybe_flush_chain_registration(true)
     }
 
+    pub(crate) fn persist_import_metadata(&mut self) -> io::Result<()> {
+        self.persist_registries()
+    }
+
     fn persist_chain_registration(&self) -> io::Result<()> {
         let Some(metadata) = &self.persistence else {
             return Ok(());
@@ -8841,6 +8845,13 @@ fn save_mentisdb_registry(chain_dir: &Path, registry: &MentisDbRegistry) -> io::
     }
 
     Ok(())
+}
+
+pub(crate) fn save_registered_chains<P: AsRef<Path>>(
+    chain_dir: P,
+    registry: &MentisDbRegistry,
+) -> io::Result<()> {
+    save_mentisdb_registry(chain_dir.as_ref(), registry)
 }
 
 fn resolve_storage_kind_for_chain(

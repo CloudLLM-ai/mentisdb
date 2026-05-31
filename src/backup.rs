@@ -52,6 +52,11 @@
 //! ).unwrap();
 //! ```
 
+use crate::{
+    chain_key_from_storage_filename, chain_storage_filename, load_registered_chains,
+    save_registered_chains, BinaryStorageAdapter, MentisDb, MentisDbRegistry, StorageAdapter,
+    StorageAdapterKind, Thought,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -557,26 +562,488 @@ pub fn restore_backup(
         validate_restore_relative_path(&entry.relative_path)?;
     }
 
-    // ── Extract files ─────────────────────────────────────────────────────────────
-    for entry in &manifest.files {
-        let dest = target_dir.join(&entry.relative_path);
+    let staging = create_restore_staging_dir()?;
+    let restore_result = (|| {
+        extract_archive_to_staging(&mut archive, &manifest, &staging)?;
+        fs::create_dir_all(&target_dir)?;
 
-        // Ensure parent directory exists
+        if target_is_effectively_empty(&target_dir)? {
+            restore_full_instance(&staging, &target_dir, &manifest, options.overwrite)?;
+        } else {
+            restore_into_existing_instance(&staging, &target_dir, &manifest, options.overwrite)?;
+        }
+
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&staging);
+    restore_result
+}
+
+fn create_restore_staging_dir() -> io::Result<PathBuf> {
+    let path = std::env::temp_dir().join(format!("mentisdb-restore-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&path)?;
+    Ok(path)
+}
+
+fn extract_archive_to_staging<R: Read + io::Seek>(
+    archive: &mut ZipArchive<R>,
+    manifest: &BackupManifest,
+    staging_dir: &Path,
+) -> io::Result<()> {
+    for entry in &manifest.files {
+        let dest = staging_dir.join(&entry.relative_path);
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
         }
-
-        // Skip existing files unless overwrite is set
-        if dest.exists() && !options.overwrite {
-            continue;
-        }
-
         let mut src = archive.by_name(&entry.relative_path)?;
         let mut dest_file = File::create(&dest)?;
         io::copy(&mut src, &mut dest_file)?;
     }
+    Ok(())
+}
+
+fn restore_full_instance(
+    staging_dir: &Path,
+    target_dir: &Path,
+    manifest: &BackupManifest,
+    overwrite: bool,
+) -> io::Result<()> {
+    for entry in &manifest.files {
+        let should_overwrite = overwrite || entry.relative_path == "mentisdb-registry.json";
+        copy_staged_file(
+            staging_dir,
+            target_dir,
+            &entry.relative_path,
+            should_overwrite,
+        )?;
+    }
+    normalize_restored_chain_registrations(target_dir, load_staged_registry(staging_dir)?.as_ref())
+}
+
+fn restore_into_existing_instance(
+    staging_dir: &Path,
+    target_dir: &Path,
+    manifest: &BackupManifest,
+    overwrite: bool,
+) -> io::Result<()> {
+    let backup_registry = load_staged_registry(staging_dir)?;
+    copy_non_chain_files_into_existing_instance(staging_dir, target_dir, manifest)?;
+
+    for entry in manifest
+        .files
+        .iter()
+        .filter(|entry| is_chain_data_file(&entry.relative_path))
+    {
+        let Some(file_name) = Path::new(&entry.relative_path)
+            .file_name()
+            .and_then(|value| value.to_str())
+        else {
+            continue;
+        };
+        let Some(chain_key) = chain_key_from_storage_filename(file_name) else {
+            copy_staged_file(staging_dir, target_dir, &entry.relative_path, overwrite)?;
+            continue;
+        };
+        import_chain_from_staging(
+            staging_dir,
+            target_dir,
+            &chain_key,
+            &entry.relative_path,
+            backup_registry.as_ref(),
+            overwrite,
+        )?;
+    }
 
     Ok(())
+}
+
+fn target_is_effectively_empty(target_dir: &Path) -> io::Result<bool> {
+    if !target_dir.exists() {
+        return Ok(true);
+    }
+
+    let mut meaningful_entries = Vec::new();
+    for entry in fs::read_dir(target_dir)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if file_name.starts_with('.') {
+            continue;
+        }
+        meaningful_entries.push(entry.path());
+    }
+
+    if meaningful_entries.is_empty() {
+        return Ok(true);
+    }
+    if meaningful_entries.len() == 1
+        && meaningful_entries[0]
+            .file_name()
+            .and_then(|value| value.to_str())
+            == Some("mentisdb-registry.json")
+    {
+        return load_registered_chains(target_dir)
+            .map(|registry| registry.chains.is_empty())
+            .or(Ok(false));
+    }
+
+    Ok(false)
+}
+
+fn load_staged_registry(staging_dir: &Path) -> io::Result<Option<MentisDbRegistry>> {
+    let path = staging_dir.join("mentisdb-registry.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let file = File::open(path)?;
+    let registry = serde_json::from_reader(file).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Failed to deserialize staged MentisDB registry: {error}"),
+        )
+    })?;
+    Ok(Some(registry))
+}
+
+fn copy_staged_file(
+    staging_dir: &Path,
+    target_dir: &Path,
+    relative_path: &str,
+    overwrite: bool,
+) -> io::Result<bool> {
+    let src = staging_dir.join(relative_path);
+    let dest = target_dir.join(relative_path);
+    if dest.exists() && !overwrite {
+        return Ok(false);
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(src, dest)?;
+    Ok(true)
+}
+
+fn copy_non_chain_files_into_existing_instance(
+    staging_dir: &Path,
+    target_dir: &Path,
+    manifest: &BackupManifest,
+) -> io::Result<()> {
+    for entry in &manifest.files {
+        if entry.relative_path == "mentisdb-registry.json"
+            || is_chain_data_file(&entry.relative_path)
+            || is_chain_sidecar_file(&entry.relative_path)
+        {
+            continue;
+        }
+        copy_staged_file(staging_dir, target_dir, &entry.relative_path, false)?;
+    }
+    Ok(())
+}
+
+fn is_chain_data_file(relative_path: &str) -> bool {
+    Path::new(relative_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|file_name| file_name.ends_with(".tcbin"))
+}
+
+fn is_chain_sidecar_file(relative_path: &str) -> bool {
+    Path::new(relative_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|file_name| {
+            file_name.ends_with(".agents.json")
+                || file_name.ends_with(".entity-types.json")
+                || file_name.contains(".vectors.")
+                || file_name.ends_with(".auto_edges.bin")
+        })
+}
+
+fn import_chain_from_staging(
+    staging_dir: &Path,
+    target_dir: &Path,
+    chain_key: &str,
+    relative_path: &str,
+    backup_registry: Option<&MentisDbRegistry>,
+    overwrite: bool,
+) -> io::Result<()> {
+    let staged_chain_path = staging_dir.join(relative_path);
+    let dest_path = target_dir.join(chain_storage_filename(
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+    let backup_chain = open_staged_chain(&staged_chain_path).ok();
+
+    if !dest_path.exists() {
+        copy_chain_bundle(staging_dir, target_dir, relative_path, chain_key, false)?;
+        normalize_imported_chain(target_dir, chain_key, chain_key, backup_registry)?;
+        return Ok(());
+    }
+
+    let Some(backup_chain) = backup_chain else {
+        if overwrite {
+            copy_chain_bundle(staging_dir, target_dir, relative_path, chain_key, true)?;
+            let _ = normalize_imported_chain(target_dir, chain_key, chain_key, backup_registry);
+        }
+        return Ok(());
+    };
+
+    let local_chain = MentisDb::open_with_key(target_dir, chain_key).ok();
+    let Some(local_chain) = local_chain else {
+        if overwrite {
+            copy_chain_bundle(staging_dir, target_dir, relative_path, chain_key, true)?;
+            normalize_imported_chain(target_dir, chain_key, chain_key, backup_registry)?;
+        } else {
+            let renamed_key = next_import_chain_key(target_dir, chain_key)?;
+            copy_chain_bundle(staging_dir, target_dir, relative_path, &renamed_key, false)?;
+            normalize_imported_chain(target_dir, &renamed_key, chain_key, backup_registry)?;
+        }
+        return Ok(());
+    };
+
+    match classify_chain_relationship(local_chain.thoughts(), backup_chain.thoughts()) {
+        ChainRelationship::Identical | ChainRelationship::LocalExtendsBackup => Ok(()),
+        ChainRelationship::BackupExtendsLocal { suffix_start } => append_verified_suffix(
+            target_dir,
+            chain_key,
+            &backup_chain.thoughts()[suffix_start..],
+        ),
+        ChainRelationship::Divergent => {
+            let renamed_key = next_import_chain_key(target_dir, chain_key)?;
+            copy_chain_bundle(staging_dir, target_dir, relative_path, &renamed_key, false)?;
+            normalize_imported_chain(target_dir, &renamed_key, chain_key, backup_registry)
+        }
+    }
+}
+
+fn open_staged_chain(path: &Path) -> io::Result<MentisDb> {
+    MentisDb::open_with_storage(Box::new(BinaryStorageAdapter::new(path.to_path_buf())))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChainRelationship {
+    Identical,
+    BackupExtendsLocal { suffix_start: usize },
+    LocalExtendsBackup,
+    Divergent,
+}
+
+fn classify_chain_relationship(local: &[Thought], backup: &[Thought]) -> ChainRelationship {
+    let common = local
+        .iter()
+        .zip(backup.iter())
+        .take_while(|(left, right)| left.hash == right.hash)
+        .count();
+
+    if common == local.len() && common == backup.len() {
+        return ChainRelationship::Identical;
+    }
+    if common == local.len()
+        && backup.get(common).is_some_and(|thought| {
+            thought.prev_hash == local.last().map(|t| t.hash.as_str()).unwrap_or("")
+        })
+    {
+        return ChainRelationship::BackupExtendsLocal {
+            suffix_start: common,
+        };
+    }
+    if common == backup.len() {
+        return ChainRelationship::LocalExtendsBackup;
+    }
+    ChainRelationship::Divergent
+}
+
+fn append_verified_suffix(
+    target_dir: &Path,
+    chain_key: &str,
+    suffix: &[Thought],
+) -> io::Result<()> {
+    if suffix.is_empty() {
+        return Ok(());
+    }
+    let adapter = BinaryStorageAdapter::for_chain_key(target_dir, chain_key);
+    for thought in suffix {
+        adapter.append_thought(thought)?;
+    }
+    adapter.flush()?;
+    let mut chain = MentisDb::open_with_key(target_dir, chain_key)?;
+    chain.persist_import_metadata()
+}
+
+fn copy_chain_bundle(
+    staging_dir: &Path,
+    target_dir: &Path,
+    source_chain_relative_path: &str,
+    destination_chain_key: &str,
+    overwrite: bool,
+) -> io::Result<()> {
+    let source_file_name = Path::new(source_chain_relative_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chain file has no filename"))?;
+    let source_stem = source_file_name
+        .strip_suffix(".tcbin")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chain file is not .tcbin"))?;
+    let destination_file =
+        chain_storage_filename(destination_chain_key, StorageAdapterKind::Binary);
+    let destination_stem = destination_file
+        .strip_suffix(".tcbin")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "destination is not .tcbin"))?;
+
+    copy_staged_file_as(
+        staging_dir,
+        target_dir,
+        source_chain_relative_path,
+        &destination_file,
+        overwrite,
+    )?;
+
+    for entry in fs::read_dir(staging_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        let Some(suffix) = file_name.strip_prefix(source_stem) else {
+            continue;
+        };
+        if suffix == ".tcbin" {
+            continue;
+        }
+        if !(suffix == ".agents.json"
+            || suffix == ".entity-types.json"
+            || suffix.starts_with(".vectors.")
+            || suffix == ".auto_edges.bin")
+        {
+            continue;
+        }
+        let destination_relative_path = format!("{destination_stem}{suffix}");
+        copy_staged_file_as(
+            staging_dir,
+            target_dir,
+            &file_name,
+            &destination_relative_path,
+            overwrite,
+        )?;
+    }
+    Ok(())
+}
+
+fn copy_staged_file_as(
+    staging_dir: &Path,
+    target_dir: &Path,
+    source_relative_path: &str,
+    destination_relative_path: &str,
+    overwrite: bool,
+) -> io::Result<bool> {
+    let src = staging_dir.join(source_relative_path);
+    let dest = target_dir.join(destination_relative_path);
+    if dest.exists() && !overwrite {
+        return Ok(false);
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(src, dest)?;
+    Ok(true)
+}
+
+fn normalize_restored_chain_registrations(
+    target_dir: &Path,
+    backup_registry: Option<&MentisDbRegistry>,
+) -> io::Result<()> {
+    let mut chain_files = Vec::new();
+    for entry in fs::read_dir(target_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if !file_name.ends_with(".tcbin") {
+            continue;
+        }
+        if let Some(chain_key) = chain_key_from_storage_filename(file_name) {
+            chain_files.push(chain_key);
+        }
+    }
+    chain_files.sort();
+    chain_files.dedup();
+    for chain_key in chain_files {
+        if normalize_imported_chain(target_dir, &chain_key, &chain_key, backup_registry).is_err() {
+            continue;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_imported_chain(
+    target_dir: &Path,
+    imported_chain_key: &str,
+    source_chain_key: &str,
+    backup_registry: Option<&MentisDbRegistry>,
+) -> io::Result<()> {
+    let mut chain = MentisDb::open_with_key(target_dir, imported_chain_key)?;
+    chain.persist_import_metadata()?;
+    apply_backup_registration_hint(
+        target_dir,
+        imported_chain_key,
+        source_chain_key,
+        backup_registry,
+    )
+}
+
+fn apply_backup_registration_hint(
+    target_dir: &Path,
+    imported_chain_key: &str,
+    source_chain_key: &str,
+    backup_registry: Option<&MentisDbRegistry>,
+) -> io::Result<()> {
+    let Some(hint) = backup_registry.and_then(|registry| registry.chains.get(source_chain_key))
+    else {
+        return Ok(());
+    };
+    let mut local_registry = load_registered_chains(target_dir)?;
+    if let Some(entry) = local_registry.chains.get_mut(imported_chain_key) {
+        entry.created_at = hint.created_at;
+        entry.updated_at = hint.updated_at;
+    }
+    save_registered_chains(target_dir, &local_registry)
+}
+
+fn next_import_chain_key(target_dir: &Path, base_key: &str) -> io::Result<String> {
+    let registry = load_registered_chains(target_dir).unwrap_or_default();
+    let mut occupied = registry.chains.keys().cloned().collect::<Vec<_>>();
+    for entry in fs::read_dir(target_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        if let Some(file_name) = file_name.to_str() {
+            if let Some(chain_key) = chain_key_from_storage_filename(file_name) {
+                occupied.push(chain_key);
+            }
+        }
+    }
+
+    let mut candidate = format!("{base_key}-imported");
+    let mut counter = 2usize;
+    while occupied.iter().any(|key| key == &candidate)
+        || target_dir
+            .join(chain_storage_filename(
+                &candidate,
+                StorageAdapterKind::Binary,
+            ))
+            .exists()
+    {
+        candidate = format!("{base_key}-imported-{counter}");
+        counter += 1;
+    }
+    Ok(candidate)
 }
 
 /// List the files inside a backup archive without extracting them.
