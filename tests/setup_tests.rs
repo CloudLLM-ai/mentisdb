@@ -140,7 +140,7 @@ fn bearertoken_cli_create_list_and_remove_roundtrip() {
     let created_output = String::from_utf8(output.clone()).unwrap();
     assert!(created_output.contains("alias: codex-laptop"));
     assert!(created_output.contains("scope: global"));
-    assert!(created_output.contains("token: mdb_live_"));
+    assert!(created_output.contains("token: mentisdb_"));
 
     output.clear();
     let list = run_with_io(
@@ -154,7 +154,7 @@ fn bearertoken_cli_create_list_and_remove_roundtrip() {
     assert!(list_output.contains("codex-laptop"));
     assert!(list_output.contains("active"));
     assert!(list_output.contains("global"));
-    assert!(!list_output.contains("mdb_live_"));
+    assert!(!list_output.contains("mentisdb_"));
 
     output.clear();
     let remove = run_with_io(

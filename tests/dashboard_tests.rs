@@ -285,7 +285,7 @@ async fn dashboard_bearer_token_api_creates_lists_and_revokes_tokens() {
     let token = created["token"].as_str().unwrap();
     assert_eq!(created["alias"], "codex-laptop");
     assert_eq!(created["scope"], "chains:gubatron,mentisdb");
-    assert!(token.starts_with("mdb_live_"));
+    assert!(token.starts_with("mentisdb_"));
 
     let list = router
         .clone()

@@ -416,7 +416,7 @@ impl BearerTokenStore {
     ///
     /// assert_eq!(created.record.alias, "admin");
     /// assert_eq!(created.record.scope, BearerTokenScope::Global);
-    /// assert!(created.token.starts_with("mdb_live_"));
+    /// assert!(created.token.starts_with("mentisdb_"));
     ///
     /// let _ = std::fs::remove_dir_all(dir);
     /// # Ok::<(), mentisdb::auth::BearerTokenError>(())
@@ -621,7 +621,7 @@ fn normalize_chain_key(chain_key: impl Into<String>) -> Result<String, BearerTok
 
 fn generate_token() -> String {
     format!(
-        "mdb_live_{}{}{}",
+        "mentisdb_{}{}{}",
         Uuid::new_v4().simple(),
         Uuid::new_v4().simple(),
         Uuid::new_v4().simple()

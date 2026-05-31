@@ -1370,7 +1370,7 @@ For Codex, include the token as an HTTP header in `~/.codex/config.toml`:
 ```toml
 [mcp_servers.mentisdb]
 url = "https://my.mentisdb.com:9473"
-headers = { Authorization = "Bearer mdb_live_replace_me" }
+headers = { Authorization = "Bearer mentisdb_replace_me" }
 ```
 
 You can also manage tokens in the dashboard Settings screen: enter an alias,
