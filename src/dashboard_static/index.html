@@ -1309,6 +1309,7 @@
           </table></div>
           <div class="settings-actions">
             <button class="btn btn-primary btn-sm" id="st-apply" disabled title="Save changed settings to the .env file and apply hot-reloadable ones immediately">Apply Settings</button>
+            <button class="btn btn-danger btn-sm" id="st-restart" title="Restart the MentisDB daemon using the saved environment">Restart Daemon</button>
             <span id="st-msg" class="settings-msg"></span>
           </div>
         `;
@@ -1356,6 +1357,7 @@
     });
 
     const applyBtn = document.getElementById('st-apply');
+    const restartBtn = document.getElementById('st-restart');
     if (applyBtn) {
       applyBtn.addEventListener('click', () => {
         if (_settingsDirty.size === 0) return;
@@ -1412,11 +1414,39 @@
         });
       });
     }
+    if (restartBtn) {
+      restartBtn.addEventListener('click', () => restartDaemon());
+    }
   }
 
   function updateApplyButton() {
     const btn = document.getElementById('st-apply');
     if (btn) btn.disabled = _settingsDirty.size === 0;
+  }
+
+  function restartDaemon() {
+    const restartBtn = document.getElementById('st-restart');
+    const msgEl = document.getElementById('st-msg');
+    if (!restartBtn || !msgEl) return;
+    if (_settingsDirty.size > 0) {
+      msgEl.textContent = 'Apply or reset pending setting changes before restarting.';
+      msgEl.className = 'settings-msg err';
+      return;
+    }
+    if (!confirm('Restart the MentisDB daemon now? The dashboard will briefly disconnect.')) return;
+    restartBtn.disabled = true;
+    msgEl.textContent = 'Restarting daemon...';
+    msgEl.className = 'settings-msg';
+    api('/dashboard/api/restart', { method: 'POST' })
+      .then(r => {
+        msgEl.textContent = r.message || 'Restart scheduled.';
+        msgEl.className = 'settings-msg ok';
+      })
+      .catch(err => {
+        msgEl.textContent = err.message || 'Restart failed.';
+        msgEl.className = 'settings-msg err';
+        restartBtn.disabled = false;
+      });
   }
 
   // =====================================================================

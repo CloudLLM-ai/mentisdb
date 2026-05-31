@@ -207,12 +207,45 @@ async fn dashboard_serves_skill_edit_controls() {
     assert!(html.contains("id=\"bt-access-toggle\""));
     assert!(html.contains("function updateBearerTokenAccess(enabled)"));
     assert!(html.contains("MENTISDB_BEARER_TOKEN_ACCESS: enabled ? 'true' : 'false'"));
+    assert!(html.contains("id=\"st-restart\""));
+    assert!(html.contains("function restartDaemon()"));
+    assert!(html.contains("api('/dashboard/api/restart', { method: 'POST' })"));
     assert!(html.contains("id=\"bt-alias\""));
     assert!(html.contains("id=\"bt-scope\""));
     assert!(html.contains("id=\"bt-chain-picker\""));
     assert!(html.contains("function selectedBearerTokenChains()"));
     assert!(html.contains("data-bt-revoke"));
     assert!(!html.contains(r#"<a href="$2" target="_blank" rel="noopener">$1</a>"#));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn dashboard_restart_api_schedules_restart() {
+    let dir = unique_chain_dir();
+    let router = dashboard_router_for_dir(&dir);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/dashboard/api/restart")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["success"], true);
+    assert!(payload["message"]
+        .as_str()
+        .unwrap()
+        .contains("Restart scheduled"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

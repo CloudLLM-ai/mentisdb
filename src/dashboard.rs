@@ -193,6 +193,7 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
         .route("/version", get(api_version))
         // Settings
         .route("/settings", get(api_settings).post(api_update_settings))
+        .route("/restart", post(api_restart_daemon))
         // Bearer-token management
         .route(
             "/bearer-tokens",
@@ -2910,6 +2911,13 @@ struct SettingsUpdateResponse {
     restart_required: bool,
 }
 
+/// Response body for restarting the daemon from the dashboard.
+#[derive(Serialize)]
+struct RestartDaemonResponse {
+    success: bool,
+    message: String,
+}
+
 /// `POST /dashboard/api/settings`
 ///
 /// Accepts changed setting values, updates the environment, hot-reloads
@@ -3032,6 +3040,62 @@ async fn api_update_settings(
         message,
         restart_required,
     }))
+}
+
+/// `POST /dashboard/api/restart`
+///
+/// Schedules a process restart after the HTTP response has been sent. The
+/// restarted process uses the same executable and command-line arguments; any
+/// `.env` changes saved by the settings API are picked up during the next
+/// startup path just like a manual daemon restart.
+async fn api_restart_daemon() -> Result<Json<RestartDaemonResponse>, (StatusCode, Json<Value>)> {
+    schedule_daemon_restart();
+    Ok(Json(RestartDaemonResponse {
+        success: true,
+        message: "Restart scheduled. The dashboard will reconnect after the daemon comes back."
+            .to_string(),
+    }))
+}
+
+#[cfg(test)]
+fn schedule_daemon_restart() {
+    // Integration tests assert that the route is wired without replacing the
+    // test runner process.
+}
+
+#[cfg(not(test))]
+fn schedule_daemon_restart() {
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+        let exe = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("dashboard restart failed: cannot resolve current executable: {error}");
+                return;
+            }
+        };
+        let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let error = std::process::Command::new(&exe).args(&args).exec();
+            eprintln!("dashboard restart failed: exec {:?} returned: {error}", exe);
+        }
+
+        #[cfg(not(unix))]
+        {
+            match std::process::Command::new(&exe).args(&args).spawn() {
+                Ok(_) => std::process::exit(0),
+                Err(error) => {
+                    eprintln!(
+                        "dashboard restart failed: spawn {:?} returned: {error}",
+                        exe
+                    );
+                }
+            }
+        }
+    });
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
