@@ -1,3 +1,4 @@
+use crate::auth::BearerTokenScope;
 use crate::integrations::plan::default_url_for_integration;
 use crate::integrations::IntegrationKind;
 use std::ffi::OsString;
@@ -100,11 +101,15 @@ pub enum BearerTokenCommand {
     Create {
         /// Human-friendly token alias.
         alias: String,
+        /// Token authorization scope.
+        scope: BearerTokenScope,
         /// MentisDB storage directory.
         dir: Option<String>,
     },
     /// List bearer tokens.
     List {
+        /// Optional token authorization scope filter.
+        scope_filter: Option<BearerTokenScope>,
         /// MentisDB storage directory.
         dir: Option<String>,
     },
@@ -122,6 +127,8 @@ pub enum BearerTokenCommand {
 pub enum CliCommand {
     /// Print CLI help.
     Help,
+    /// Print bearer-token CLI help.
+    BearerTokenHelp,
     /// Print a setup scaffold for one target agent.
     Setup(SetupCommand),
     /// Run the interactive setup wizard.
@@ -190,8 +197,9 @@ Usage:
   mentisdb agents [--chain <key>] [--url <url>]
   mentisdb backup [-o <path>] [--dir <path>] [--flush] [--include-tls]
   mentisdb restore <archive.mentis> [--dir <path>] [--overwrite] [--yes]
-  mentisdb bearertoken create <alias> [--dir <path>]
-  mentisdb bearertoken list [--dir <path>]
+  mentisdb bearertoken create --global <alias> [--dir <path>]
+  mentisdb bearertoken create --chain <chain_key> [--chain <chain_key> ...] <alias> [--dir <path>]
+  mentisdb bearertoken list [--global | --chain <chain_key> [--chain <chain_key> ...]] [--dir <path>]
   mentisdb bearertoken remove <alias> [--dir <path>]
 
 Daemon modes (start HTTP servers by default):
@@ -344,11 +352,14 @@ Commands:
   bearertoken
     Manage bearer tokens used when MENTISDB_BEARER_TOKEN_ACCESS=true.
 
+    Run `mentisdb bearertoken --help` for focused bearer-token help.
+
     The raw token is printed only once by `create`; MentisDB stores only a
     token hash in the bearer-token registry.
 
     Examples:
-      mentisdb bearertoken create codex-laptop
+      mentisdb bearertoken create --global codex-admin
+      mentisdb bearertoken create --chain mentisdb --chain gubatron codex-laptop
       mentisdb bearertoken list
       mentisdb bearertoken remove codex-laptop
 
@@ -365,19 +376,81 @@ Notes:
  "
 }
 
+pub(crate) fn bearer_token_help_text() -> &'static str {
+    "\
+Manage bearer tokens for MCP access.
+
+Bearer tokens are enforced only when MENTISDB_BEARER_TOKEN_ACCESS=true.
+Existing tokens can be created, listed, and revoked regardless of the setting.
+
+Usage:
+  mentisdb bearertoken create --global <alias>
+  mentisdb bearertoken create --chain <chain_key> [--chain <chain_key> ...] <alias>
+  mentisdb bearertoken create <alias> --chain <chain_key> [--chain <chain_key> ...]
+  mentisdb bearertoken list [--global | --chain <chain_key> [--chain <chain_key> ...]] [--dir <path>]
+  mentisdb bearertoken remove <alias> [--dir <path>]
+
+Create scopes:
+  --global             Token can access all chains.
+  --chain <chain_key>  Token can access this chain. Repeat for multiple chains.
+
+Examples:
+  mentisdb bearertoken create --global codex-admin
+  mentisdb bearertoken create --chain gubatron alice
+  mentisdb bearertoken create alice --chain gubatron --chain mentisdb
+  mentisdb bearertoken list
+  mentisdb bearertoken list --chain gubatron
+  mentisdb bearertoken remove alice
+
+Options:
+  --dir <path>         Path to MENTISDB_DIR (default: platform default)
+  --help               Show this help text
+"
+}
+
 fn parse_bearer_token(parts: Vec<String>) -> Result<CliCommand, String> {
-    if parts.iter().any(|part| part == "--help" || part == "-h") {
-        return Ok(CliCommand::Help);
+    if parts.len() == 1
+        || parts
+            .iter()
+            .skip(1)
+            .any(|part| matches!(part.as_str(), "--help" | "-h" | "help"))
+    {
+        return Ok(CliCommand::BearerTokenHelp);
     }
 
     let Some(action) = parts.get(1).map(String::as_str) else {
         return Err("bearertoken requires an action: create, list, or remove".to_string());
     };
     let mut dir = None;
+    let mut global_scope = false;
+    let mut chain_keys = Vec::new();
     let mut positional = Vec::new();
     let mut i = 2;
     while i < parts.len() {
         match parts[i].as_str() {
+            "--global" => {
+                if global_scope || !chain_keys.is_empty() {
+                    return Err(
+                        "bearertoken accepts either --global or one or more --chain <chain_key> options"
+                            .to_string(),
+                    );
+                }
+                global_scope = true;
+            }
+            "--chain" => {
+                if global_scope {
+                    return Err(
+                        "bearertoken accepts either --global or one or more --chain <chain_key> options"
+                            .to_string(),
+                    );
+                }
+                i += 1;
+                let chain_key = parts
+                    .get(i)
+                    .cloned()
+                    .ok_or_else(|| "--chain requires a value".to_string())?;
+                chain_keys.push(chain_key);
+            }
             "--dir" => {
                 i += 1;
                 dir = Some(
@@ -398,21 +471,60 @@ fn parse_bearer_token(parts: Vec<String>) -> Result<CliCommand, String> {
     let command = match action {
         "create" => {
             let alias = exactly_one_arg("bearertoken create", positional)?;
-            BearerTokenCommand::Create { alias, dir }
+            let scope = bearer_token_scope_from_flags(global_scope, chain_keys)?;
+            BearerTokenCommand::Create { alias, scope, dir }
         }
         "list" => {
             if !positional.is_empty() {
                 return Err("bearertoken list does not accept positional arguments".to_string());
             }
-            BearerTokenCommand::List { dir }
+            let scope = optional_bearer_token_scope_from_flags(global_scope, chain_keys)?;
+            BearerTokenCommand::List {
+                scope_filter: scope,
+                dir,
+            }
         }
         "remove" | "rm" | "revoke" => {
+            if global_scope || !chain_keys.is_empty() {
+                return Err("bearertoken remove does not accept scope options".to_string());
+            }
             let alias = exactly_one_arg("bearertoken remove", positional)?;
             BearerTokenCommand::Remove { alias, dir }
         }
         other => return Err(format!("Unknown bearertoken action '{other}'")),
     };
     Ok(CliCommand::BearerToken(command))
+}
+
+fn bearer_token_scope_from_flags(
+    global_scope: bool,
+    chain_keys: Vec<String>,
+) -> Result<BearerTokenScope, String> {
+    if global_scope {
+        return Ok(BearerTokenScope::Global);
+    }
+    if chain_keys.is_empty() {
+        return Err(
+            "bearertoken create requires exactly one scope: --global or at least one --chain <chain_key>"
+                .to_string(),
+        );
+    }
+    BearerTokenScope::chains(chain_keys).map_err(|error| error.to_string())
+}
+
+fn optional_bearer_token_scope_from_flags(
+    global_scope: bool,
+    chain_keys: Vec<String>,
+) -> Result<Option<BearerTokenScope>, String> {
+    if global_scope {
+        return Ok(Some(BearerTokenScope::Global));
+    }
+    if chain_keys.is_empty() {
+        return Ok(None);
+    }
+    BearerTokenScope::chains(chain_keys)
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 fn exactly_one_arg(command: &str, positional: Vec<String>) -> Result<String, String> {

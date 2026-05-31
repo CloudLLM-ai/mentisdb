@@ -1,3 +1,4 @@
+use mentisdb::auth::BearerTokenScope;
 use mentisdb::cli::{
     parse_args, parse_node_major, render_setup_plan, run_with_io, BearerTokenCommand, CliCommand,
     SetupCommand,
@@ -45,6 +46,8 @@ fn parse_bearertoken_commands_accept_alias_and_dir() {
         "mentisdb",
         "bearertoken",
         "create",
+        "--chain",
+        "mentisdb",
         "codex-laptop",
         "--dir",
         "/tmp/mentisdb-auth",
@@ -55,7 +58,49 @@ fn parse_bearertoken_commands_accept_alias_and_dir() {
         parsed,
         CliCommand::BearerToken(BearerTokenCommand::Create {
             alias: "codex-laptop".to_string(),
+            scope: BearerTokenScope::Chains(vec!["mentisdb".to_string()]),
             dir: Some("/tmp/mentisdb-auth".to_string()),
+        })
+    );
+
+    let parsed = parse_args([
+        "mentisdb",
+        "bearertoken",
+        "create",
+        "alice",
+        "--chain",
+        "alice-chain",
+    ])
+    .unwrap();
+    assert_eq!(
+        parsed,
+        CliCommand::BearerToken(BearerTokenCommand::Create {
+            alias: "alice".to_string(),
+            scope: BearerTokenScope::Chains(vec!["alice-chain".to_string()]),
+            dir: None,
+        })
+    );
+
+    let parsed = parse_args([
+        "mentisdb",
+        "bearertoken",
+        "create",
+        "team",
+        "--chain",
+        "alice-chain",
+        "--chain",
+        "shared-chain",
+    ])
+    .unwrap();
+    assert_eq!(
+        parsed,
+        CliCommand::BearerToken(BearerTokenCommand::Create {
+            alias: "team".to_string(),
+            scope: BearerTokenScope::Chains(vec![
+                "alice-chain".to_string(),
+                "shared-chain".to_string()
+            ]),
+            dir: None,
         })
     );
 
@@ -82,6 +127,7 @@ fn bearertoken_cli_create_list_and_remove_roundtrip() {
             "mentisdb",
             "bearertoken",
             "create",
+            "--global",
             "codex-laptop",
             "--dir",
             &dir_arg,
@@ -93,6 +139,7 @@ fn bearertoken_cli_create_list_and_remove_roundtrip() {
     assert_eq!(create, ExitCode::SUCCESS);
     let created_output = String::from_utf8(output.clone()).unwrap();
     assert!(created_output.contains("alias: codex-laptop"));
+    assert!(created_output.contains("scope: global"));
     assert!(created_output.contains("token: mdb_live_"));
 
     output.clear();
@@ -106,6 +153,7 @@ fn bearertoken_cli_create_list_and_remove_roundtrip() {
     let list_output = String::from_utf8(output.clone()).unwrap();
     assert!(list_output.contains("codex-laptop"));
     assert!(list_output.contains("active"));
+    assert!(list_output.contains("global"));
     assert!(!list_output.contains("mdb_live_"));
 
     output.clear();
@@ -127,6 +175,160 @@ fn bearertoken_cli_create_list_and_remove_roundtrip() {
         .unwrap()
         .contains("revoked bearer token"));
     assert!(errors.is_empty());
+}
+
+#[test]
+fn bearertoken_cli_lists_and_filters_global_single_and_multi_chain_tokens() {
+    let dir = tempdir().unwrap();
+    let dir_arg = dir.path().to_string_lossy().into_owned();
+    let mut input = Cursor::new(Vec::<u8>::new());
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+
+    for args in [
+        vec![
+            "mentisdb",
+            "bearertoken",
+            "create",
+            "--global",
+            "admin",
+            "--dir",
+            &dir_arg,
+        ],
+        vec![
+            "mentisdb",
+            "bearertoken",
+            "create",
+            "--chain",
+            "alice",
+            "alice-agent",
+            "--dir",
+            &dir_arg,
+        ],
+        vec![
+            "mentisdb",
+            "bearertoken",
+            "create",
+            "--chain",
+            "alice",
+            "--chain",
+            "shared",
+            "team-agent",
+            "--dir",
+            &dir_arg,
+        ],
+    ] {
+        output.clear();
+        let code = run_with_io(args, &mut input, &mut output, &mut errors);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    output.clear();
+    let list_all = run_with_io(
+        ["mentisdb", "bearertoken", "list", "--dir", &dir_arg],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+    assert_eq!(list_all, ExitCode::SUCCESS);
+    let all = String::from_utf8(output.clone()).unwrap();
+    assert!(all.contains("admin"));
+    assert!(all.contains("alice-agent"));
+    assert!(all.contains("team-agent"));
+    assert!(all.contains("global"));
+    assert!(all.contains("chain:alice"));
+    assert!(all.contains("chains:alice,shared"));
+
+    output.clear();
+    let list_alice = run_with_io(
+        [
+            "mentisdb",
+            "bearertoken",
+            "list",
+            "--chain",
+            "alice",
+            "--dir",
+            &dir_arg,
+        ],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+    assert_eq!(list_alice, ExitCode::SUCCESS);
+    let alice = String::from_utf8(output.clone()).unwrap();
+    assert!(alice.contains("admin"));
+    assert!(alice.contains("alice-agent"));
+    assert!(alice.contains("team-agent"));
+
+    output.clear();
+    let list_shared = run_with_io(
+        [
+            "mentisdb",
+            "bearertoken",
+            "list",
+            "--chain",
+            "shared",
+            "--dir",
+            &dir_arg,
+        ],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+    assert_eq!(list_shared, ExitCode::SUCCESS);
+    let shared = String::from_utf8(output.clone()).unwrap();
+    assert!(shared.contains("admin"));
+    assert!(!shared.contains("alice-agent"));
+    assert!(shared.contains("team-agent"));
+
+    output.clear();
+    let list_global = run_with_io(
+        [
+            "mentisdb",
+            "bearertoken",
+            "list",
+            "--global",
+            "--dir",
+            &dir_arg,
+        ],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+    assert_eq!(list_global, ExitCode::SUCCESS);
+    let global = String::from_utf8(output).unwrap();
+    assert!(global.contains("admin"));
+    assert!(!global.contains("alice-agent"));
+    assert!(!global.contains("team-agent"));
+    assert!(errors.is_empty());
+}
+
+#[test]
+fn bearertoken_without_action_prints_subcommand_help() {
+    let mut input = Cursor::new(Vec::<u8>::new());
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+
+    let code = run_with_io(
+        ["mentisdb", "bearertoken"],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+    assert_eq!(code, ExitCode::SUCCESS);
+    let help = String::from_utf8(output).unwrap();
+    assert!(help.contains("Manage bearer tokens for MCP access."));
+    assert!(help.contains("mentisdb bearertoken create --global <alias>"));
+    assert!(errors.is_empty());
+}
+
+#[test]
+fn bearertoken_create_requires_explicit_scope() {
+    let err = parse_args(["mentisdb", "bearertoken", "create", "alice"]).unwrap_err();
+    assert_eq!(
+        err,
+        "bearertoken create requires exactly one scope: --global or at least one --chain <chain_key>"
+    );
 }
 
 #[test]

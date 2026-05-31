@@ -8,7 +8,7 @@ mod prompt;
 mod setup;
 mod wizard;
 
-use crate::auth::BearerTokenStore;
+use crate::auth::{BearerTokenScope, BearerTokenStore};
 use crate::backup::{
     create_backup, list_backup_contents, restore_backup, BackupOptions, RestoreOptions,
 };
@@ -40,6 +40,10 @@ where
     match parse_args(args) {
         Ok(CliCommand::Help) => {
             let _ = write!(out, "{}", args::help_text());
+            ExitCode::SUCCESS
+        }
+        Ok(CliCommand::BearerTokenHelp) => {
+            let _ = write!(out, "{}", args::bearer_token_help_text());
             ExitCode::SUCCESS
         }
         Ok(CliCommand::Setup(command)) => match setup::run_setup(&command, input, out) {
@@ -113,26 +117,34 @@ fn run_bearer_token(
     _err: &mut dyn Write,
 ) -> Result<(), String> {
     match cmd {
-        BearerTokenCommand::Create { alias, dir } => {
+        BearerTokenCommand::Create { alias, scope, dir } => {
             let store = BearerTokenStore::new(resolve_mentisdb_dir(dir));
-            let created = store.create(alias).map_err(|error| error.to_string())?;
+            let created = store
+                .create(alias, scope.clone())
+                .map_err(|error| error.to_string())?;
             writeln!(out, "alias: {}", created.record.alias).map_err(|e| e.to_string())?;
+            writeln!(out, "scope: {}", created.record.scope).map_err(|e| e.to_string())?;
             writeln!(out, "token: {}", created.token).map_err(|e| e.to_string())?;
             writeln!(out, "export MENTISDB_MCP_TOKEN=\"{}\"", created.token)
                 .map_err(|e| e.to_string())?;
             Ok(())
         }
-        BearerTokenCommand::List { dir } => {
+        BearerTokenCommand::List { scope_filter, dir } => {
             let store = BearerTokenStore::new(resolve_mentisdb_dir(dir));
-            let records = store.list().map_err(|error| error.to_string())?;
+            let records = store
+                .list()
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .filter(|record| scope_matches_filter(&record.scope, scope_filter))
+                .collect::<Vec<_>>();
             if records.is_empty() {
                 writeln!(out, "No bearer tokens.").map_err(|e| e.to_string())?;
                 return Ok(());
             }
             writeln!(
                 out,
-                "{:<24} {:<8} {:<25} {:<25}",
-                "alias", "status", "created_at", "last_used_at"
+                "{:<24} {:<8} {:<24} {:<25} {:<25}",
+                "alias", "status", "scope", "created_at", "last_used_at"
             )
             .map_err(|e| e.to_string())?;
             for record in records {
@@ -143,9 +155,10 @@ fn run_bearer_token(
                 };
                 writeln!(
                     out,
-                    "{:<24} {:<8} {:<25} {:<25}",
+                    "{:<24} {:<8} {:<24} {:<25} {:<25}",
                     record.alias,
                     status,
+                    record.scope,
                     record.created_at.to_rfc3339(),
                     record
                         .last_used_at
@@ -161,6 +174,16 @@ fn run_bearer_token(
             let record = store.revoke(alias).map_err(|error| error.to_string())?;
             writeln!(out, "revoked bearer token: {}", record.alias).map_err(|e| e.to_string())
         }
+    }
+}
+
+fn scope_matches_filter(scope: &BearerTokenScope, filter: &Option<BearerTokenScope>) -> bool {
+    match filter {
+        None => true,
+        Some(BearerTokenScope::Global) => matches!(scope, BearerTokenScope::Global),
+        Some(BearerTokenScope::Chains(chain_keys)) => chain_keys
+            .iter()
+            .all(|chain_key| scope.allows_chain(chain_key)),
     }
 }
 
