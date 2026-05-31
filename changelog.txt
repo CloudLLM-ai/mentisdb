@@ -1,7 +1,59 @@
 0.10.1.46 UNRELEASED
+  - feat(auth): built-in bearer-token authentication for remote MCP servers.
+    `MENTISDB_BEARER_TOKEN_ACCESS=true` now protects standard Streamable HTTP
+    MCP and legacy HTTP MCP routes with `Authorization: Bearer ...`; when the
+    flag is disabled, local/default deployments keep the old unauthenticated
+    behavior. Tokens are stored in `bearer-tokens.json` as SHA-256 hashes only,
+    never as plaintext.
+  - feat(auth): scoped bearer-token registry and CLI. Operators can issue global
+    tokens or tokens limited to one or more chains with:
+      `mentisdb bearertoken create --global <alias>`
+      `mentisdb bearertoken create --chain <chain> [--chain <chain> ...] <alias>`
+      `mentisdb bearertoken list [--global | --chain <chain> ...]`
+      `mentisdb bearertoken remove <alias>`
+    The CLI help is focused and explicit when users run `mentisdb bearertoken`
+    or `mentisdb bearertoken --help`.
+  - feat(auth): MCP chain-scope enforcement. Global tokens can call server-wide
+    tools and access every chain. Chain-scoped tokens may call tools only for
+    their configured chain set, including omitted `chain_key` requests only when
+    the daemon default chain is within scope. Server-wide tools such as
+    `mentisdb_list_chains` require a global token.
+  - feat(dashboard): dedicated Bearer Tokens page in the header navigation
+    (`Chains | Agents | Skills | Bearer Tokens | Settings`). The page exposes
+    the bearer-token feature toggle, alias input, Global/Chains radio controls
+    with Global selected by default, a full-width multi-chain selector table,
+    one-time token display, copy-to-clipboard button, token table, and revoke
+    action.
+  - feat(dashboard): Settings can edit `MENTISDB_BEARER_TOKEN_ACCESS`, and the
+    Settings page now includes a Restart Daemon button for environment changes
+    that require a daemon restart.
+  - feat(mcp): updated `cloudllm_mcp` integration to support dynamic bearer
+    authorization context, including request payload/params so MentisDB can make
+    chain/global authorization decisions inside the MentisDB auth policy layer.
+  - fix(auth): generated token secrets now use the clearer `mentisdb_` prefix
+    instead of `mdb_live_`; README, tests, docs site, and the demo script were
+    updated to match.
+  - fix(tui): increased contrast for the bottom instruction/hint bar so
+    navigation hints remain readable on low-contrast terminal themes.
   - fix(restore): preserve local registries during cross-instance restores,
     append verified same-chain suffixes, and import divergent same-name chains
     under renamed keys.
+  - docs: expanded remote bearer-token documentation in README and
+    docs.mentisdb.com, including server activation, CLI token management,
+    dashboard management, scoped access behavior, Codex `config.toml` header
+    examples, and future usage-stats room in the token registry model.
+  - docs: expanded crate-level and API rustdoc toward a manual-quality
+    developer experience: custom integration guidance, production
+    considerations, query/ranked-search examples, storage adapter extension
+    notes, skill registry docs, thought/relationship/scope structs, and
+    installation prerequisites. Follow-up fixes removed unresolved and
+    redundant rustdoc links so strict docs builds stay clean.
+  - docs(search): README now records the post-0.9.9 ranked-search validation
+    scores: LoCoMo-10P overall R@10 72.6% (1436/1977), single-hop R@10 76.8%,
+    multi-hop R@10 57.4%, weak-vector baseline 44.9% R@10, and ~317 queries/s
+    evaluation throughput with the `fastembed-all-minilm-l6-v2` vector sidecar.
+  - chore: ignore generated LaTeX build artifacts and LME benchmark pycache
+    files to keep future working trees cleaner.
 
 0.9.9.45 MAY/30/2026
   - feat(search): thesaurus now applies **automatically by default** to all
