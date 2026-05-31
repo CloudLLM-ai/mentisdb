@@ -401,7 +401,7 @@
     .settings-msg { font-size: 0.88rem; color: #8b949e; }
     .settings-msg.ok { color: #3fb950; }
     .settings-msg.err { color: #f85149; }
-    .token-tools { border-top: 1px solid #30363d; margin-top: 18px; padding-top: 18px; }
+    .token-tools { margin-top: 0; }
     .token-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 10px 0 12px; }
     .token-form input {
       background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;
@@ -429,6 +429,7 @@
       <a href="#chains"   id="nav-chains" title="Browse all memory chains, their thoughts, and search indices">Chains</a>
       <a href="#agents"   id="nav-agents" title="View all agents that have written to any chain">Agents</a>
       <a href="#skills"   id="nav-skills" title="Browse and manage agent skills and instructions">Skills</a>
+      <a href="#bearer-tokens" id="nav-bearer-tokens" title="Manage MCP bearer-token access and scoped tokens">Bearer Tokens</a>
       <a href="#settings" id="nav-settings" style="color:#f0883e" title="Configure daemon environment variables and hot-reload settings">Settings</a>
     </div>
   </nav>
@@ -1310,26 +1311,8 @@
             <button class="btn btn-primary btn-sm" id="st-apply" disabled title="Save changed settings to the .env file and apply hot-reloadable ones immediately">Apply Settings</button>
             <span id="st-msg" class="settings-msg"></span>
           </div>
-          <div class="token-tools">
-            <h3 style="margin:0 0 6px;color:#e6edf3;font-size:1rem">Bearer Tokens</h3>
-            <div class="token-form">
-              <input type="text" id="bt-alias" placeholder="alias, e.g. codex-laptop" autocomplete="off" title="Use letters, numbers, dash, underscore, or dot">
-              <select id="bt-scope" title="Choose whether this token can access every chain or selected chains" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:0.88rem">
-                <option value="chain">Chains</option>
-                <option value="global">Global</option>
-              </select>
-              <div id="bt-chain-picker" class="token-chain-picker" title="Select one or more chains this token can access">
-                <span style="color:#8b949e;font-size:0.84rem">Loading chains...</span>
-              </div>
-              <button class="btn btn-primary btn-sm" id="bt-create" title="Create a bearer token and reveal the secret once">Create Token</button>
-              <span id="bt-msg" class="settings-msg"></span>
-            </div>
-            <div id="bt-secret"></div>
-            <div id="bt-table"></div>
-          </div>
         `;
         wireSettingsControls(settings);
-        loadBearerTokens();
       })
       .catch(err => errBox(el, err.message));
   }
@@ -1434,6 +1417,113 @@
   function updateApplyButton() {
     const btn = document.getElementById('st-apply');
     if (btn) btn.disabled = _settingsDirty.size === 0;
+  }
+
+  // =====================================================================
+  // BEARER TOKENS
+  // =====================================================================
+  function renderBearerTokensPage() {
+    const app = document.getElementById('app');
+    app.innerHTML = `
+      <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+        <h1 title="Manage MCP bearer-token authentication and scoped access">Bearer Tokens</h1>
+      </div>
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <div>
+            <div class="section-label" style="margin:0 0 6px">MCP Access Control</div>
+            <div style="color:#8b949e;font-size:0.88rem;line-height:1.4">Require bearer tokens for remote MCP HTTP and HTTPS clients.</div>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;color:#c9d1d9;cursor:pointer" title="Hot-reload MENTISDB_BEARER_TOKEN_ACCESS">
+            <input type="checkbox" id="bt-access-toggle" style="width:auto;margin:0;accent-color:#58a6ff">
+            <span id="bt-access-label">Loading...</span>
+          </label>
+        </div>
+        <div id="bt-access-msg" class="settings-msg" style="margin-top:8px"></div>
+      </div>
+      <div class="card">
+        ${bearerTokenToolsHtml()}
+      </div>
+    `;
+    loadBearerTokenAccessToggle();
+    loadBearerTokens();
+  }
+
+  function bearerTokenToolsHtml() {
+    return `
+      <div class="token-tools">
+        <h3 style="margin:0 0 6px;color:#e6edf3;font-size:1rem">Token Registry</h3>
+        <div class="token-form">
+          <input type="text" id="bt-alias" placeholder="alias, e.g. codex-laptop" autocomplete="off" title="Use letters, numbers, dash, underscore, or dot">
+          <select id="bt-scope" title="Choose whether this token can access every chain or selected chains" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:0.88rem">
+            <option value="chain">Chains</option>
+            <option value="global">Global</option>
+          </select>
+          <div id="bt-chain-picker" class="token-chain-picker" title="Select one or more chains this token can access">
+            <span style="color:#8b949e;font-size:0.84rem">Loading chains...</span>
+          </div>
+          <button class="btn btn-primary btn-sm" id="bt-create" title="Create a bearer token and reveal the secret once">Create Token</button>
+          <span id="bt-msg" class="settings-msg"></span>
+        </div>
+        <div id="bt-secret"></div>
+        <div id="bt-table"></div>
+      </div>
+    `;
+  }
+
+  function loadBearerTokenAccessToggle() {
+    const toggle = document.getElementById('bt-access-toggle');
+    const label = document.getElementById('bt-access-label');
+    const msg = document.getElementById('bt-access-msg');
+    if (!toggle || !label || !msg) return;
+    toggle.disabled = true;
+    api('/dashboard/api/settings')
+      .then(settings => {
+        const setting = (settings || []).find(s => s.name === 'MENTISDB_BEARER_TOKEN_ACCESS');
+        const rawValue = setting ? (setting.value || setting.default_value || 'false') : 'false';
+        toggle.checked = ['1','true','yes','on'].includes(rawValue.toLowerCase());
+        updateBearerTokenAccessLabel();
+        toggle.disabled = false;
+        toggle.addEventListener('change', () => updateBearerTokenAccess(toggle.checked));
+      })
+      .catch(err => {
+        label.textContent = 'Unavailable';
+        msg.textContent = err.message || 'Failed to load bearer-token access setting.';
+        msg.className = 'settings-msg err';
+      });
+  }
+
+  function updateBearerTokenAccessLabel() {
+    const toggle = document.getElementById('bt-access-toggle');
+    const label = document.getElementById('bt-access-label');
+    if (!toggle || !label) return;
+    label.textContent = toggle.checked ? 'Enabled' : 'Disabled';
+  }
+
+  function updateBearerTokenAccess(enabled) {
+    const toggle = document.getElementById('bt-access-toggle');
+    const msg = document.getElementById('bt-access-msg');
+    if (!toggle || !msg) return;
+    toggle.disabled = true;
+    msg.textContent = enabled ? 'Enabling bearer-token access...' : 'Disabling bearer-token access...';
+    msg.className = 'settings-msg';
+    api('/dashboard/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { MENTISDB_BEARER_TOKEN_ACCESS: enabled ? 'true' : 'false' } })
+    })
+      .then(r => {
+        updateBearerTokenAccessLabel();
+        msg.textContent = r.message || 'Settings saved.';
+        msg.className = 'settings-msg ok';
+      })
+      .catch(err => {
+        toggle.checked = !enabled;
+        updateBearerTokenAccessLabel();
+        msg.textContent = err.message || 'Save failed.';
+        msg.className = 'settings-msg err';
+      })
+      .finally(() => { toggle.disabled = false; });
   }
 
   function loadBearerTokens() {
@@ -1624,6 +1714,7 @@
     else if (parts[0] === 'agents')                          renderAgentList();
     else if (parts[0] === 'skills' && parts[1])              renderSkillDetail(decodeURIComponent(parts[1]));
     else if (parts[0] === 'skills')                          renderSkillList();
+    else if (parts[0] === 'bearer-tokens')                   renderBearerTokensPage();
     else if (parts[0] === 'settings')                       renderSettingsList();
     else                                                     renderChainList();
   }
