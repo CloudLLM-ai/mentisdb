@@ -2234,6 +2234,9 @@ Important environment variables:
   MENTISDB_DASHBOARD_PIN
     Optional PIN required to open the HTTPS dashboard
 
+  MENTISDB_BEARER_TOKEN_ACCESS
+    Require bearer tokens for MCP HTTP/HTTPS access. Default: false
+
   MENTISDB_TLS_CERT
   MENTISDB_TLS_KEY
     TLS certificate and private-key paths
@@ -2283,7 +2286,7 @@ where
     let first = args[0].to_string_lossy();
     if matches!(
         first.as_ref(),
-        "setup" | "wizard" | "add" | "search" | "agents" | "backup" | "restore"
+        "setup" | "wizard" | "add" | "search" | "agents" | "backup" | "restore" | "bearertoken"
     ) {
         let mut command = vec![OsString::from("mentisdb")];
         command.extend(args);

@@ -93,6 +93,30 @@ pub struct RestoreCommand {
     pub yes: bool,
 }
 
+/// Parsed `bearertoken` subcommand arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BearerTokenCommand {
+    /// Create a new bearer token with the given alias.
+    Create {
+        /// Human-friendly token alias.
+        alias: String,
+        /// MentisDB storage directory.
+        dir: Option<String>,
+    },
+    /// List bearer tokens.
+    List {
+        /// MentisDB storage directory.
+        dir: Option<String>,
+    },
+    /// Revoke a bearer token by alias.
+    Remove {
+        /// Human-friendly token alias.
+        alias: String,
+        /// MentisDB storage directory.
+        dir: Option<String>,
+    },
+}
+
 /// Supported top-level commands for `mentisdb` CLI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
@@ -112,6 +136,8 @@ pub enum CliCommand {
     Backup(BackupCommand),
     /// Restore from a backup archive.
     Restore(RestoreCommand),
+    /// Manage bearer tokens for MCP access.
+    BearerToken(BearerTokenCommand),
 }
 
 /// Parse command-line arguments for the embedded `mentisdb` setup and wizard CLI.
@@ -142,6 +168,7 @@ where
         "agents" => parse_agents(parts),
         "backup" => parse_backup(parts),
         "restore" => parse_restore(parts),
+        "bearertoken" => parse_bearer_token(parts),
         other => Err(format!("Unknown subcommand '{other}'")),
     }
 }
@@ -163,6 +190,9 @@ Usage:
   mentisdb agents [--chain <key>] [--url <url>]
   mentisdb backup [-o <path>] [--dir <path>] [--flush] [--include-tls]
   mentisdb restore <archive.mentis> [--dir <path>] [--overwrite] [--yes]
+  mentisdb bearertoken create <alias> [--dir <path>]
+  mentisdb bearertoken list [--dir <path>]
+  mentisdb bearertoken remove <alias> [--dir <path>]
 
 Daemon modes (start HTTP servers by default):
   --mode stdio     Start MCP server over stdio (for Claude Desktop subprocess)
@@ -311,6 +341,21 @@ Commands:
       --yes              Assume yes to all prompts (skips interactive confirmation)
       --help             Show this help text
 
+  bearertoken
+    Manage bearer tokens used when MENTISDB_BEARER_TOKEN_ACCESS=true.
+
+    The raw token is printed only once by `create`; MentisDB stores only a
+    token hash in the bearer-token registry.
+
+    Examples:
+      mentisdb bearertoken create codex-laptop
+      mentisdb bearertoken list
+      mentisdb bearertoken remove codex-laptop
+
+    Options:
+      --dir <path>       Path to MENTISDB_DIR (default: platform default)
+      --help             Show this help text
+
 Notes:
   - `mentisdb` with no subcommand starts the daemon.
   - `mentisdb --help` shows daemon help; subcommand --help shows subcommand help.
@@ -318,6 +363,64 @@ Notes:
   - `add`, `search`, and `agents` require a running daemon.
   - `backup` and `restore` operate on the MENTISDB_DIR directly and do not require a running daemon.
  "
+}
+
+fn parse_bearer_token(parts: Vec<String>) -> Result<CliCommand, String> {
+    if parts.iter().any(|part| part == "--help" || part == "-h") {
+        return Ok(CliCommand::Help);
+    }
+
+    let Some(action) = parts.get(1).map(String::as_str) else {
+        return Err("bearertoken requires an action: create, list, or remove".to_string());
+    };
+    let mut dir = None;
+    let mut positional = Vec::new();
+    let mut i = 2;
+    while i < parts.len() {
+        match parts[i].as_str() {
+            "--dir" => {
+                i += 1;
+                dir = Some(
+                    parts
+                        .get(i)
+                        .cloned()
+                        .ok_or_else(|| "--dir requires a value".to_string())?,
+                );
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("Unknown bearertoken option '{other}'"));
+            }
+            other => positional.push(other.to_string()),
+        }
+        i += 1;
+    }
+
+    let command = match action {
+        "create" => {
+            let alias = exactly_one_arg("bearertoken create", positional)?;
+            BearerTokenCommand::Create { alias, dir }
+        }
+        "list" => {
+            if !positional.is_empty() {
+                return Err("bearertoken list does not accept positional arguments".to_string());
+            }
+            BearerTokenCommand::List { dir }
+        }
+        "remove" | "rm" | "revoke" => {
+            let alias = exactly_one_arg("bearertoken remove", positional)?;
+            BearerTokenCommand::Remove { alias, dir }
+        }
+        other => return Err(format!("Unknown bearertoken action '{other}'")),
+    };
+    Ok(CliCommand::BearerToken(command))
+}
+
+fn exactly_one_arg(command: &str, positional: Vec<String>) -> Result<String, String> {
+    match positional.as_slice() {
+        [arg] => Ok(arg.clone()),
+        [] => Err(format!("{command} requires an alias")),
+        _ => Err(format!("{command} accepts exactly one alias")),
+    }
 }
 
 fn parse_setup(args: Vec<String>) -> Result<CliCommand, String> {

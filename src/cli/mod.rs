@@ -8,14 +8,15 @@ mod prompt;
 mod setup;
 mod wizard;
 
+use crate::auth::BearerTokenStore;
 use crate::backup::{
     create_backup, list_backup_contents, restore_backup, BackupOptions, RestoreOptions,
 };
 use crate::paths::default_mentisdb_dir;
 
 pub use args::{
-    parse_args, AddCommand, AgentsCommand, BackupCommand, CliCommand, RestoreCommand,
-    SearchCommand, SetupCommand, WizardCommand,
+    parse_args, AddCommand, AgentsCommand, BackupCommand, BearerTokenCommand, CliCommand,
+    RestoreCommand, SearchCommand, SetupCommand, WizardCommand,
 };
 pub use prompt::{boxed_apply_summary, boxed_skip_notice, boxed_text_prompt, boxed_yn_prompt};
 pub use setup::{parse_node_major, render_setup_plan};
@@ -90,6 +91,13 @@ where
                 ExitCode::from(1)
             }
         },
+        Ok(CliCommand::BearerToken(command)) => match run_bearer_token(&command, out, err) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                let _ = writeln!(err, "bearertoken failed: {error}");
+                ExitCode::from(1)
+            }
+        },
         Err(message) => {
             let _ = writeln!(err, "{message}");
             let _ = writeln!(err);
@@ -97,6 +105,69 @@ where
             ExitCode::from(2)
         }
     }
+}
+
+fn run_bearer_token(
+    cmd: &BearerTokenCommand,
+    out: &mut dyn Write,
+    _err: &mut dyn Write,
+) -> Result<(), String> {
+    match cmd {
+        BearerTokenCommand::Create { alias, dir } => {
+            let store = BearerTokenStore::new(resolve_mentisdb_dir(dir));
+            let created = store.create(alias).map_err(|error| error.to_string())?;
+            writeln!(out, "alias: {}", created.record.alias).map_err(|e| e.to_string())?;
+            writeln!(out, "token: {}", created.token).map_err(|e| e.to_string())?;
+            writeln!(out, "export MENTISDB_MCP_TOKEN=\"{}\"", created.token)
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        BearerTokenCommand::List { dir } => {
+            let store = BearerTokenStore::new(resolve_mentisdb_dir(dir));
+            let records = store.list().map_err(|error| error.to_string())?;
+            if records.is_empty() {
+                writeln!(out, "No bearer tokens.").map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+            writeln!(
+                out,
+                "{:<24} {:<8} {:<25} {:<25}",
+                "alias", "status", "created_at", "last_used_at"
+            )
+            .map_err(|e| e.to_string())?;
+            for record in records {
+                let status = if record.is_active() {
+                    "active"
+                } else {
+                    "revoked"
+                };
+                writeln!(
+                    out,
+                    "{:<24} {:<8} {:<25} {:<25}",
+                    record.alias,
+                    status,
+                    record.created_at.to_rfc3339(),
+                    record
+                        .last_used_at
+                        .map(|ts| ts.to_rfc3339())
+                        .unwrap_or_else(|| "-".to_string())
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }
+        BearerTokenCommand::Remove { alias, dir } => {
+            let store = BearerTokenStore::new(resolve_mentisdb_dir(dir));
+            let record = store.revoke(alias).map_err(|error| error.to_string())?;
+            writeln!(out, "revoked bearer token: {}", record.alias).map_err(|e| e.to_string())
+        }
+    }
+}
+
+fn resolve_mentisdb_dir(dir: &Option<String>) -> PathBuf {
+    dir.as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(default_mentisdb_dir)
 }
 
 fn run_add(cmd: &AddCommand, out: &mut dyn Write, _err: &mut dyn Write) -> Result<(), String> {

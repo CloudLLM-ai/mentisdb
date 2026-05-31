@@ -1,5 +1,6 @@
 use mentisdb::cli::{
-    parse_args, parse_node_major, render_setup_plan, run_with_io, CliCommand, SetupCommand,
+    parse_args, parse_node_major, render_setup_plan, run_with_io, BearerTokenCommand, CliCommand,
+    SetupCommand,
 };
 use mentisdb::integrations::plan::build_setup_plan_for_integration;
 use mentisdb::integrations::IntegrationKind;
@@ -36,6 +37,96 @@ fn parse_setup_command_accepts_supported_agent_and_url_override() {
             assume_yes: false,
         })
     );
+}
+
+#[test]
+fn parse_bearertoken_commands_accept_alias_and_dir() {
+    let parsed = parse_args([
+        "mentisdb",
+        "bearertoken",
+        "create",
+        "codex-laptop",
+        "--dir",
+        "/tmp/mentisdb-auth",
+    ])
+    .unwrap();
+
+    assert_eq!(
+        parsed,
+        CliCommand::BearerToken(BearerTokenCommand::Create {
+            alias: "codex-laptop".to_string(),
+            dir: Some("/tmp/mentisdb-auth".to_string()),
+        })
+    );
+
+    let parsed = parse_args(["mentisdb", "bearertoken", "revoke", "codex-laptop"]).unwrap();
+    assert_eq!(
+        parsed,
+        CliCommand::BearerToken(BearerTokenCommand::Remove {
+            alias: "codex-laptop".to_string(),
+            dir: None,
+        })
+    );
+}
+
+#[test]
+fn bearertoken_cli_create_list_and_remove_roundtrip() {
+    let dir = tempdir().unwrap();
+    let dir_arg = dir.path().to_string_lossy().into_owned();
+    let mut input = Cursor::new(Vec::<u8>::new());
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+
+    let create = run_with_io(
+        [
+            "mentisdb",
+            "bearertoken",
+            "create",
+            "codex-laptop",
+            "--dir",
+            &dir_arg,
+        ],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+    assert_eq!(create, ExitCode::SUCCESS);
+    let created_output = String::from_utf8(output.clone()).unwrap();
+    assert!(created_output.contains("alias: codex-laptop"));
+    assert!(created_output.contains("token: mdb_live_"));
+
+    output.clear();
+    let list = run_with_io(
+        ["mentisdb", "bearertoken", "list", "--dir", &dir_arg],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+    assert_eq!(list, ExitCode::SUCCESS);
+    let list_output = String::from_utf8(output.clone()).unwrap();
+    assert!(list_output.contains("codex-laptop"));
+    assert!(list_output.contains("active"));
+    assert!(!list_output.contains("mdb_live_"));
+
+    output.clear();
+    let remove = run_with_io(
+        [
+            "mentisdb",
+            "bearertoken",
+            "remove",
+            "codex-laptop",
+            "--dir",
+            &dir_arg,
+        ],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+    assert_eq!(remove, ExitCode::SUCCESS);
+    assert!(String::from_utf8(output)
+        .unwrap()
+        .contains("revoked bearer token"));
+    assert!(errors.is_empty());
 }
 
 #[test]
