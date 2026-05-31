@@ -402,24 +402,39 @@
     .settings-msg.ok { color: #3fb950; }
     .settings-msg.err { color: #f85149; }
     .token-tools { margin-top: 0; }
-    .token-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 10px 0 12px; }
+    .token-form { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; gap: 10px; align-items: center; margin: 10px 0 12px; }
     .token-form input {
       background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;
       padding:6px 10px;font-size:0.88rem;min-width:220px;
     }
     .token-form input:focus { outline: none; border-color: #58a6ff; }
+    .token-scope-options { display:flex;align-items:center;gap:6px;flex-wrap:wrap; }
+    .token-scope-option {
+      display:inline-flex;align-items:center;gap:6px;border:1px solid #30363d;
+      border-radius:6px;padding:6px 10px;background:#0d1117;color:#c9d1d9;
+      font-size:0.88rem;cursor:pointer;white-space:nowrap;
+    }
+    .token-scope-option input { min-width:0;width:auto;margin:0;accent-color:#58a6ff; }
     .token-chain-picker {
       background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;
-      padding:6px 8px;min-width:260px;max-width:420px;max-height:120px;overflow:auto;
-      display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+      padding:0;width:100%;max-height:220px;overflow:auto;box-sizing:border-box;
+      grid-column:1 / -1;
     }
     .token-chain-picker.disabled { opacity:0.55; }
+    .token-chain-table { width:100%;border-collapse:collapse;table-layout:fixed; }
+    .token-chain-table td { border-bottom:1px solid #21262d;padding:0;vertical-align:top; }
+    .token-chain-table tr:last-child td { border-bottom:0; }
     .token-chain-option {
-      display:inline-flex;align-items:center;gap:5px;border:1px solid rgba(88,166,255,0.2);
-      border-radius:6px;padding:4px 7px;font-size:0.82rem;white-space:nowrap;cursor:pointer;
+      display:flex;align-items:center;gap:8px;padding:9px 10px;font-size:0.84rem;
+      white-space:nowrap;cursor:pointer;min-width:0;
     }
-    .token-chain-option input { min-width:0;width:auto;margin:0; }
+    .token-chain-option input { min-width:0;width:auto;margin:0;accent-color:#58a6ff; }
+    .token-chain-option .mono { overflow:hidden;text-overflow:ellipsis; }
     .token-secret { background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px;margin:10px 0;color:#e6edf3;font-size:0.84rem;word-break:break-all; }
+    @media (max-width: 760px) {
+      .token-form { grid-template-columns: 1fr; }
+      .token-form input { width:100%;box-sizing:border-box; }
+    }
   </style>
 </head>
 <body>
@@ -1485,14 +1500,20 @@
         <h3 style="margin:0 0 6px;color:#e6edf3;font-size:1rem">Token Registry</h3>
         <div class="token-form">
           <input type="text" id="bt-alias" placeholder="alias, e.g. codex-laptop" autocomplete="off" title="Use letters, numbers, dash, underscore, or dot">
-          <select id="bt-scope" title="Choose whether this token can access every chain or selected chains" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:0.88rem">
-            <option value="chain">Chains</option>
-            <option value="global">Global</option>
-          </select>
+          <div id="bt-scope" class="token-scope-options" title="Choose whether this token can access every chain or selected chains">
+            <label class="token-scope-option" title="Allow this token to access every chain">
+              <input type="radio" name="bt-scope" value="global" checked>
+              <span>Global</span>
+            </label>
+            <label class="token-scope-option" title="Limit this token to selected chains">
+              <input type="radio" name="bt-scope" value="chain">
+              <span>Chains</span>
+            </label>
+          </div>
+          <button class="btn btn-primary btn-sm" id="bt-create" title="Create a bearer token and reveal the secret once">Create Token</button>
           <div id="bt-chain-picker" class="token-chain-picker" title="Select one or more chains this token can access">
             <span style="color:#8b949e;font-size:0.84rem">Loading chains...</span>
           </div>
-          <button class="btn btn-primary btn-sm" id="bt-create" title="Create a bearer token and reveal the secret once">Create Token</button>
           <span id="bt-msg" class="settings-msg"></span>
         </div>
         <div id="bt-secret"></div>
@@ -1566,8 +1587,7 @@
 
     const createBtn = document.getElementById('bt-create');
     const aliasInput = document.getElementById('bt-alias');
-    const scopeInput = document.getElementById('bt-scope');
-    const chainPicker = document.getElementById('bt-chain-picker');
+    const scopeInputs = document.querySelectorAll('input[name="bt-scope"]');
     loadBearerTokenChainOptions();
     if (createBtn && aliasInput && !createBtn.dataset.wired) {
       createBtn.dataset.wired = '1';
@@ -1575,11 +1595,12 @@
       aliasInput.addEventListener('keydown', e => {
         if (e.key === 'Enter') createBearerToken();
       });
-      scopeInput?.addEventListener('change', () => {
-        const chainScoped = scopeInput.value === 'chain';
-        setBearerTokenChainPickerEnabled(chainScoped);
+      scopeInputs.forEach(input => {
+        input.addEventListener('change', () => {
+          setBearerTokenChainPickerEnabled(selectedBearerTokenScope() === 'chain');
+        });
       });
-      scopeInput?.dispatchEvent(new Event('change'));
+      setBearerTokenChainPickerEnabled(selectedBearerTokenScope() === 'chain');
     }
   }
 
@@ -1609,16 +1630,33 @@
       .filter(Boolean)
       .sort((a, b) => String(a).localeCompare(String(b)));
     if (!sorted.length) {
-      picker.innerHTML = '<span style="color:#8b949e;font-size:0.84rem">No chains available</span>';
+      picker.innerHTML = '<div style="padding:10px;color:#8b949e;font-size:0.84rem">No chains available</div>';
       return;
     }
-    picker.innerHTML = sorted.map(chainKey => `
-      <label class="token-chain-option" title="Allow this token to access ${esc(chainKey)}">
-        <input type="checkbox" data-bt-chain="${esc(chainKey)}">
-        <span class="mono">${esc(chainKey)}</span>
-      </label>
-    `).join('');
-    setBearerTokenChainPickerEnabled((document.getElementById('bt-scope')?.value || 'chain') === 'chain');
+    const columnCount = Math.max(1, Math.min(3, Math.floor((picker.clientWidth || 720) / 240)));
+    const rows = [];
+    for (let i = 0; i < sorted.length; i += columnCount) rows.push(sorted.slice(i, i + columnCount));
+    picker.innerHTML = `
+      <table class="token-chain-table">
+        <tbody>
+          ${rows.map(row => `
+            <tr>
+              ${Array.from({ length: columnCount }, (_, idx) => {
+                const chainKey = row[idx];
+                if (!chainKey) return '<td></td>';
+                return `<td>
+                  <label class="token-chain-option" title="Allow this token to access ${esc(chainKey)}">
+                    <input type="checkbox" data-bt-chain="${esc(chainKey)}">
+                    <span class="mono">${esc(chainKey)}</span>
+                  </label>
+                </td>`;
+              }).join('')}
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+    setBearerTokenChainPickerEnabled(selectedBearerTokenScope() === 'chain');
   }
 
   function setBearerTokenChainPickerEnabled(enabled) {
@@ -1632,6 +1670,10 @@
     return Array.from(document.querySelectorAll('#bt-chain-picker input[data-bt-chain]:checked'))
       .map(input => input.getAttribute('data-bt-chain'))
       .filter(Boolean);
+  }
+
+  function selectedBearerTokenScope() {
+    return document.querySelector('input[name="bt-scope"]:checked')?.value || 'global';
   }
 
   function renderBearerTokens(tokens) {
@@ -1672,9 +1714,8 @@
     const msgEl = document.getElementById('bt-msg');
     const secretEl = document.getElementById('bt-secret');
     const btn = document.getElementById('bt-create');
-    const scopeInput = document.getElementById('bt-scope');
     const alias = (aliasInput?.value || '').trim();
-    const scope = scopeInput?.value || 'chain';
+    const scope = selectedBearerTokenScope();
     const chain_keys = selectedBearerTokenChains();
     if (!alias) {
       msgEl.textContent = 'Enter an alias.';

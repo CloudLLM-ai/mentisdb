@@ -212,7 +212,12 @@ async fn dashboard_serves_skill_edit_controls() {
     assert!(html.contains("api('/dashboard/api/restart', { method: 'POST' })"));
     assert!(html.contains("id=\"bt-alias\""));
     assert!(html.contains("id=\"bt-scope\""));
+    assert!(html.contains("type=\"radio\" name=\"bt-scope\" value=\"global\" checked"));
+    assert!(html.contains("type=\"radio\" name=\"bt-scope\" value=\"chain\""));
+    assert!(html.contains("function selectedBearerTokenScope()"));
     assert!(html.contains("id=\"bt-chain-picker\""));
+    assert!(html.contains("grid-column:1 / -1"));
+    assert!(html.contains("class=\"token-chain-table\""));
     assert!(html.contains("function selectedBearerTokenChains()"));
     assert!(html.contains("data-bt-revoke"));
     assert!(!html.contains(r#"<a href="$2" target="_blank" rel="noopener">$1</a>"#));
