@@ -401,6 +401,14 @@
     .settings-msg { font-size: 0.88rem; color: #8b949e; }
     .settings-msg.ok { color: #3fb950; }
     .settings-msg.err { color: #f85149; }
+    .token-tools { border-top: 1px solid #30363d; margin-top: 18px; padding-top: 18px; }
+    .token-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 10px 0 12px; }
+    .token-form input {
+      background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;
+      padding:6px 10px;font-size:0.88rem;min-width:220px;
+    }
+    .token-form input:focus { outline: none; border-color: #58a6ff; }
+    .token-secret { background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px;margin:10px 0;color:#e6edf3;font-size:0.84rem;word-break:break-all; }
   </style>
 </head>
 <body>
@@ -1291,8 +1299,19 @@
             <button class="btn btn-primary btn-sm" id="st-apply" disabled title="Save changed settings to the .env file and apply hot-reloadable ones immediately">Apply Settings</button>
             <span id="st-msg" class="settings-msg"></span>
           </div>
+          <div class="token-tools">
+            <h3 style="margin:0 0 6px;color:#e6edf3;font-size:1rem">Bearer Tokens</h3>
+            <div class="token-form">
+              <input type="text" id="bt-alias" placeholder="alias, e.g. codex-laptop" autocomplete="off" title="Use letters, numbers, dash, underscore, or dot">
+              <button class="btn btn-primary btn-sm" id="bt-create" title="Create a bearer token and reveal the secret once">Create Token</button>
+              <span id="bt-msg" class="settings-msg"></span>
+            </div>
+            <div id="bt-secret"></div>
+            <div id="bt-table"></div>
+          </div>
         `;
         wireSettingsControls(settings);
+        loadBearerTokens();
       })
       .catch(err => errBox(el, err.message));
   }
@@ -1397,6 +1416,107 @@
   function updateApplyButton() {
     const btn = document.getElementById('st-apply');
     if (btn) btn.disabled = _settingsDirty.size === 0;
+  }
+
+  function loadBearerTokens() {
+    const tableEl = document.getElementById('bt-table');
+    if (!tableEl) return;
+    spinner(tableEl);
+    api('/dashboard/api/bearer-tokens')
+      .then(tokens => renderBearerTokens(tokens || []))
+      .catch(err => { tableEl.innerHTML = `<div class="error-state">${esc(err.message)}</div>`; });
+
+    const createBtn = document.getElementById('bt-create');
+    const aliasInput = document.getElementById('bt-alias');
+    if (createBtn && aliasInput && !createBtn.dataset.wired) {
+      createBtn.dataset.wired = '1';
+      createBtn.addEventListener('click', () => createBearerToken());
+      aliasInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') createBearerToken();
+      });
+    }
+  }
+
+  function renderBearerTokens(tokens) {
+    const tableEl = document.getElementById('bt-table');
+    if (!tableEl) return;
+    if (!tokens.length) {
+      tableEl.innerHTML = '<div class="empty-state">No bearer tokens yet.</div>';
+      return;
+    }
+    tableEl.innerHTML = `
+      <div class="table-wrap"><table>
+        <thead><tr><th>Alias</th><th>Status</th><th>Created</th><th>Last Used</th><th>Revoked</th><th></th></tr></thead>
+        <tbody>
+          ${tokens.map(token => {
+            const active = token.status === 'active';
+            return `<tr>
+              <td class="mono">${esc(token.alias)}</td>
+              <td>${statusBadge(token.status)}</td>
+              <td>${esc(fmtDate(token.created_at))}</td>
+              <td>${esc(fmtDate(token.last_used_at))}</td>
+              <td>${esc(fmtDate(token.revoked_at))}</td>
+              <td style="text-align:right">
+                <button class="btn btn-sm ${active ? 'btn-danger' : ''}" data-bt-revoke="${esc(token.alias)}" ${active ? '' : 'disabled'} title="Revoke this token">Revoke</button>
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table></div>
+    `;
+    tableEl.querySelectorAll('[data-bt-revoke]').forEach(btn => {
+      btn.addEventListener('click', () => revokeBearerToken(btn.getAttribute('data-bt-revoke')));
+    });
+  }
+
+  function createBearerToken() {
+    const aliasInput = document.getElementById('bt-alias');
+    const msgEl = document.getElementById('bt-msg');
+    const secretEl = document.getElementById('bt-secret');
+    const btn = document.getElementById('bt-create');
+    const alias = (aliasInput?.value || '').trim();
+    if (!alias) {
+      msgEl.textContent = 'Enter an alias.';
+      msgEl.className = 'settings-msg err';
+      return;
+    }
+    btn.disabled = true;
+    msgEl.textContent = 'Creating...';
+    msgEl.className = 'settings-msg';
+    api('/dashboard/api/bearer-tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alias })
+    })
+      .then(result => {
+        aliasInput.value = '';
+        msgEl.textContent = `Created ${result.alias}.`;
+        msgEl.className = 'settings-msg ok';
+        secretEl.innerHTML = `<div class="token-secret"><div style="color:#8b949e;margin-bottom:4px">Token secret shown once:</div><code>${esc(result.token)}</code></div>`;
+        loadBearerTokens();
+      })
+      .catch(err => {
+        msgEl.textContent = err.message || 'Create failed.';
+        msgEl.className = 'settings-msg err';
+      })
+      .finally(() => { btn.disabled = false; });
+  }
+
+  function revokeBearerToken(alias) {
+    if (!alias) return;
+    const msgEl = document.getElementById('bt-msg');
+    msgEl.textContent = `Revoking ${alias}...`;
+    msgEl.className = 'settings-msg';
+    api(`/dashboard/api/bearer-tokens/${encodeURIComponent(alias)}`, { method: 'DELETE' })
+      .then(() => {
+        msgEl.textContent = `Revoked ${alias}.`;
+        msgEl.className = 'settings-msg ok';
+        loadBearerTokens();
+      })
+      .catch(err => {
+        msgEl.textContent = err.message || 'Revoke failed.';
+        msgEl.className = 'settings-msg err';
+      });
   }
 
   // =====================================================================

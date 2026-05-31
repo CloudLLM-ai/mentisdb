@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use axum::{body::Body, http::Request};
 use dashmap::DashMap;
+pub use mentisdb::auth;
 pub use mentisdb::search;
 pub use mentisdb::{
     chain_storage_filename, deregister_chain, load_registered_chains, AgentStatus,
@@ -46,6 +47,7 @@ fn dashboard_router_with_chains(
         dashboard_pin: None,
         default_storage_adapter: StorageAdapterKind::Binary,
         auto_flush: Arc::new(AtomicBool::new(true)),
+        bearer_token_access: Arc::new(AtomicBool::new(false)),
     })
 }
 
@@ -192,6 +194,72 @@ async fn dashboard_serves_skill_edit_controls() {
     assert!(html.contains("normalized.startsWith('javascript:')"));
     assert!(html.contains("rel=\"noopener noreferrer\""));
     assert!(!html.contains(r#"<a href="$2" target="_blank" rel="noopener">$1</a>"#));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn dashboard_bearer_token_api_creates_lists_and_revokes_tokens() {
+    let dir = unique_chain_dir();
+    let router = dashboard_router_for_dir(&dir);
+
+    let create = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/dashboard/api/bearer-tokens")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"alias":"codex-laptop"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let token = created["token"].as_str().unwrap();
+    assert_eq!(created["alias"], "codex-laptop");
+    assert!(token.starts_with("mdb_live_"));
+
+    let list = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/bearer-tokens")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(list.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let tokens: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(tokens[0]["alias"], "codex-laptop");
+    assert_eq!(tokens[0]["status"], "active");
+    assert!(!tokens.to_string().contains(token));
+
+    let revoke = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/dashboard/api/bearer-tokens/codex-laptop")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revoke.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(revoke.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let revoked: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(revoked["status"], "revoked");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -789,6 +857,7 @@ async fn deleting_a_cached_chain_does_not_reregister_it_on_last_drop() {
         dashboard_pin: None,
         default_storage_adapter: StorageAdapterKind::Binary,
         auto_flush: Arc::new(AtomicBool::new(true)),
+        bearer_token_access: Arc::new(AtomicBool::new(false)),
     };
     state.chains.insert("source".to_string(), live);
     let router = dashboard_impl::dashboard_router(state.clone());
@@ -847,6 +916,7 @@ async fn dashboard_skips_deleted_cached_chains_after_external_removal() {
         dashboard_pin: None,
         default_storage_adapter: StorageAdapterKind::Binary,
         auto_flush: Arc::new(AtomicBool::new(true)),
+        bearer_token_access: Arc::new(AtomicBool::new(false)),
     };
     state.chains.insert("source".to_string(), Arc::clone(&live));
     let router = dashboard_impl::dashboard_router(state.clone());

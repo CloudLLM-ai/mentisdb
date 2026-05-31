@@ -17,6 +17,10 @@
 //! If neither is present the request is redirected to `/dashboard/login`.
 
 use crate::{
+    auth::{
+        parse_bearer_token_access, BearerTokenError, BearerTokenRecord, BearerTokenStore,
+        MENTISDB_BEARER_TOKEN_ACCESS_ENV,
+    },
     deregister_chain, load_registered_chains, AgentStatus, ManagedVectorProviderKind, MentisDb,
     PublicKeyAlgorithm, RankedSearchGraph, RankedSearchQuery, SkillFormat, SkillRegistry,
     SkillUpload, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelationKind,
@@ -74,6 +78,8 @@ pub(crate) struct DashboardState {
     pub default_storage_adapter: StorageAdapterKind,
     /// Whether newly opened chains should flush immediately on each append.
     pub auto_flush: Arc<AtomicBool>,
+    /// Whether MCP HTTP endpoints require bearer-token authorization.
+    pub bearer_token_access: Arc<AtomicBool>,
     /// Optional TUI state so the dashboard can push live config updates back
     /// to the terminal UI when settings are edited from the web interface.
     #[cfg(not(test))]
@@ -186,7 +192,13 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
         // Version
         .route("/version", get(api_version))
         // Settings
-        .route("/settings", get(api_settings).post(api_update_settings));
+        .route("/settings", get(api_settings).post(api_update_settings))
+        // Bearer-token management
+        .route(
+            "/bearer-tokens",
+            get(api_bearer_tokens).post(api_create_bearer_token),
+        )
+        .route("/bearer-tokens/{alias}", delete(api_revoke_bearer_token));
 
     // ── Protected surface (PIN-gated when pin is set) ─────────────────────
     let protected = Router::new()
@@ -2562,6 +2574,107 @@ async fn api_branch_chain(
 
 // ── Settings API ──────────────────────────────────────────────────────────────
 
+/// Dashboard view of one bearer-token registry record.
+#[derive(Serialize)]
+struct DashboardBearerToken {
+    alias: String,
+    status: String,
+    created_at: String,
+    last_used_at: Option<String>,
+    revoked_at: Option<String>,
+}
+
+impl From<BearerTokenRecord> for DashboardBearerToken {
+    fn from(record: BearerTokenRecord) -> Self {
+        let status = if record.is_active() {
+            "active"
+        } else {
+            "revoked"
+        };
+        Self {
+            alias: record.alias,
+            status: status.to_string(),
+            created_at: record.created_at.to_rfc3339(),
+            last_used_at: record.last_used_at.map(|timestamp| timestamp.to_rfc3339()),
+            revoked_at: record.revoked_at.map(|timestamp| timestamp.to_rfc3339()),
+        }
+    }
+}
+
+/// Request body for creating a bearer token from the dashboard.
+#[derive(Deserialize)]
+struct CreateBearerTokenRequest {
+    alias: String,
+}
+
+/// Response body for a newly created bearer token.
+#[derive(Serialize)]
+struct CreateBearerTokenResponse {
+    alias: String,
+    token: String,
+}
+
+/// `GET /dashboard/api/bearer-tokens`
+///
+/// Returns bearer-token metadata. Raw token values are never persisted and are
+/// therefore not available after creation.
+async fn api_bearer_tokens(
+    State(state): State<DashboardState>,
+) -> Result<Json<Vec<DashboardBearerToken>>, (StatusCode, Json<Value>)> {
+    let store = BearerTokenStore::new(&state.mentisdb_dir);
+    let records = store
+        .list()
+        .map_err(map_bearer_token_error)?
+        .into_iter()
+        .map(DashboardBearerToken::from)
+        .collect();
+    Ok(Json(records))
+}
+
+/// `POST /dashboard/api/bearer-tokens`
+///
+/// Creates an active bearer token and returns its raw secret exactly once.
+async fn api_create_bearer_token(
+    State(state): State<DashboardState>,
+    Json(body): Json<CreateBearerTokenRequest>,
+) -> Result<Json<CreateBearerTokenResponse>, (StatusCode, Json<Value>)> {
+    let store = BearerTokenStore::new(&state.mentisdb_dir);
+    let created = store
+        .create(body.alias.trim())
+        .map_err(map_bearer_token_error)?;
+    Ok(Json(CreateBearerTokenResponse {
+        alias: created.record.alias,
+        token: created.token,
+    }))
+}
+
+/// `DELETE /dashboard/api/bearer-tokens/{alias}`
+///
+/// Revokes a bearer token by alias. The record stays in the registry for audit
+/// visibility, but it can no longer authorize MCP requests.
+async fn api_revoke_bearer_token(
+    State(state): State<DashboardState>,
+    Path(alias): Path<String>,
+) -> Result<Json<DashboardBearerToken>, (StatusCode, Json<Value>)> {
+    let store = BearerTokenStore::new(&state.mentisdb_dir);
+    let record = store.revoke(&alias).map_err(map_bearer_token_error)?;
+    Ok(Json(DashboardBearerToken::from(record)))
+}
+
+fn map_bearer_token_error(error: BearerTokenError) -> (StatusCode, Json<Value>) {
+    match error {
+        BearerTokenError::InvalidAlias(_) | BearerTokenError::AliasExists(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": error.to_string() })),
+        ),
+        BearerTokenError::AliasNotFound(_) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": error.to_string() })),
+        ),
+        BearerTokenError::Io(_) | BearerTokenError::Json(_) => internal_error(error),
+    }
+}
+
 /// Metadata for one dashboard-exposed setting.
 #[derive(Serialize)]
 struct DashboardSetting {
@@ -2705,6 +2818,15 @@ async fn api_settings(
             hot_reload: false,
         },
         DashboardSetting {
+            name: MENTISDB_BEARER_TOKEN_ACCESS_ENV.to_string(),
+            value: std::env::var(MENTISDB_BEARER_TOKEN_ACCESS_ENV)
+                .unwrap_or_else(|_| "false".to_string()),
+            default_value: "false".to_string(),
+            description: "Require bearer tokens for MCP HTTP and HTTPS access.".to_string(),
+            kind: "boolean".to_string(),
+            hot_reload: true,
+        },
+        DashboardSetting {
             name: "MENTISDB_UPDATE_CHECK".to_string(),
             value: std::env::var("MENTISDB_UPDATE_CHECK").unwrap_or_else(|_| "true".to_string()),
             default_value: "true".to_string(),
@@ -2784,6 +2906,11 @@ async fn api_update_settings(
                     "1" | "true" | "yes" | "on"
                 );
                 state.auto_flush.store(new_bool, Ordering::Relaxed);
+            }
+            MENTISDB_BEARER_TOKEN_ACCESS_ENV => {
+                state
+                    .bearer_token_access
+                    .store(parse_bearer_token_access(value), Ordering::Relaxed);
             }
             "MENTISDB_VERBOSE"
             | "MENTISDB_UPDATE_CHECK"
