@@ -1990,6 +1990,7 @@ impl MentisDbMcpProtocol {
 struct MentisDbBearerAuthorizer {
     access_enabled: Arc<AtomicBool>,
     store: BearerTokenStore,
+    default_chain_key: String,
 }
 
 impl MentisDbBearerAuthorizer {
@@ -1997,6 +1998,7 @@ impl MentisDbBearerAuthorizer {
         Self {
             access_enabled: config.bearer_token_access.clone(),
             store: config.bearer_token_store.clone(),
+            default_chain_key: config.default_chain_key.clone(),
         }
     }
 }
@@ -2006,12 +2008,186 @@ impl BearerTokenAuthorizer for MentisDbBearerAuthorizer {
         !self.access_enabled.load(Ordering::Relaxed)
     }
 
-    fn authorize_bearer_token(&self, token: &str, _context: &BearerAuthContext) -> bool {
+    fn authorize_bearer_token(&self, token: &str, context: &BearerAuthContext) -> bool {
         if !self.access_enabled.load(Ordering::Relaxed) {
             return true;
         }
-        self.store.authorize(token)
+        match bearer_auth_target(context, &self.default_chain_key) {
+            BearerAuthTarget::AnyActiveToken => self.store.authorize(token),
+            BearerAuthTarget::Chains(chain_keys) => {
+                self.store.authorize_for_chains(token, &chain_keys)
+            }
+            BearerAuthTarget::GlobalOnly => self.store.authorize_global(token),
+        }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BearerAuthTarget {
+    AnyActiveToken,
+    Chains(Vec<String>),
+    GlobalOnly,
+}
+
+fn bearer_auth_target(context: &BearerAuthContext, default_chain_key: &str) -> BearerAuthTarget {
+    match context.action.as_str() {
+        "tools/list" | "resources/list" | "resources/read" | "initialize" => {
+            BearerAuthTarget::AnyActiveToken
+        }
+        "tools/call" | "tools/execute" => context
+            .payload
+            .as_ref()
+            .and_then(|payload| tool_call_auth_target(payload, default_chain_key))
+            .unwrap_or(BearerAuthTarget::GlobalOnly),
+        _ => BearerAuthTarget::AnyActiveToken,
+    }
+}
+
+fn tool_call_auth_target(payload: &Value, default_chain_key: &str) -> Option<BearerAuthTarget> {
+    let tool_name = payload
+        .get("name")
+        .or_else(|| payload.get("tool"))
+        .and_then(Value::as_str)
+        .map(canonical_tool_name)?;
+    let parameters = payload
+        .get("arguments")
+        .or_else(|| payload.get("parameters"))
+        .unwrap_or(&Value::Null);
+
+    if global_only_mcp_tool(tool_name) {
+        return Some(BearerAuthTarget::GlobalOnly);
+    }
+
+    if tool_name == "mentisdb_register_webhook" {
+        let chain_key_filter = parameters
+            .get("chain_key_filter")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|chain_key| !chain_key.is_empty());
+        return Some(match chain_key_filter {
+            Some(chain_key) => BearerAuthTarget::Chains(vec![chain_key.to_string()]),
+            None => BearerAuthTarget::GlobalOnly,
+        });
+    }
+
+    let mut chain_keys = extract_explicit_chain_keys(parameters);
+    if chain_keys.is_empty() && default_chain_mcp_tool(tool_name) {
+        chain_keys.insert(default_chain_key.to_string());
+    }
+
+    if chain_keys.is_empty() {
+        Some(BearerAuthTarget::GlobalOnly)
+    } else {
+        Some(BearerAuthTarget::Chains(chain_keys.into_iter().collect()))
+    }
+}
+
+fn extract_explicit_chain_keys(parameters: &Value) -> BTreeSet<String> {
+    let mut chain_keys = BTreeSet::new();
+    collect_chain_keys(parameters, &mut chain_keys);
+    chain_keys
+}
+
+fn collect_chain_keys(value: &Value, chain_keys: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, value) in map {
+                if chain_key_field_name(key) {
+                    add_chain_key_value(chain_keys, value);
+                } else {
+                    collect_chain_keys(value, chain_keys);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_chain_keys(value, chain_keys);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn chain_key_field_name(key: &str) -> bool {
+    matches!(
+        key,
+        "chain_key"
+            | "source_chain_key"
+            | "target_chain_key"
+            | "branch_chain_key"
+            | "chain_key_filter"
+            | "chain_keys"
+    )
+}
+
+fn add_chain_key_value(chain_keys: &mut BTreeSet<String>, value: &Value) {
+    match value {
+        Value::String(chain_key) => add_nonempty_chain_key(chain_keys, chain_key),
+        Value::Array(values) => {
+            for value in values {
+                add_chain_key_value(chain_keys, value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn add_nonempty_chain_key(chain_keys: &mut BTreeSet<String>, chain_key: &str) {
+    let chain_key = chain_key.trim();
+    if !chain_key.is_empty() {
+        chain_keys.insert(chain_key.to_string());
+    }
+}
+
+fn global_only_mcp_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "mentisdb_list_chains"
+            | "mentisdb_skill_md"
+            | "mentisdb_list_skills"
+            | "mentisdb_skill_manifest"
+            | "mentisdb_list_webhooks"
+            | "mentisdb_delete_webhook"
+    )
+}
+
+fn default_chain_mcp_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "mentisdb_bootstrap"
+            | "mentisdb_append"
+            | "mentisdb_append_retrospective"
+            | "mentisdb_search"
+            | "mentisdb_lexical_search"
+            | "mentisdb_ranked_search"
+            | "mentisdb_context_bundles"
+            | "mentisdb_summary_candidates"
+            | "mentisdb_list_agents"
+            | "mentisdb_get_agent"
+            | "mentisdb_list_agent_registry"
+            | "mentisdb_upsert_agent"
+            | "mentisdb_set_agent_description"
+            | "mentisdb_add_agent_alias"
+            | "mentisdb_add_agent_key"
+            | "mentisdb_revoke_agent_key"
+            | "mentisdb_disable_agent"
+            | "mentisdb_list_entity_types"
+            | "mentisdb_upsert_entity_type"
+            | "mentisdb_recent_context"
+            | "mentisdb_memory_markdown"
+            | "mentisdb_import_memory_markdown"
+            | "mentisdb_get_thought"
+            | "mentisdb_get_genesis_thought"
+            | "mentisdb_traverse_thoughts"
+            | "mentisdb_upload_skill"
+            | "mentisdb_search_skill"
+            | "mentisdb_read_skill"
+            | "mentisdb_skill_versions"
+            | "mentisdb_deprecate_skill"
+            | "mentisdb_revoke_skill"
+            | "mentisdb_head"
+            | "mentisdb_extract_memories"
+    )
 }
 
 fn standard_and_legacy_mcp_router(
@@ -5594,7 +5770,7 @@ async fn mcp_list_tools_handler(
     State(service): State<Arc<MentisDbService>>,
     headers: HeaderMap,
 ) -> (StatusCode, Json<Value>) {
-    if !authorize_embedded_mcp(&service, &headers, "/tools/list", "tools/list") {
+    if !authorize_embedded_mcp(&service, &headers, "/tools/list", "tools/list", None) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Unauthorized"})),
@@ -5611,7 +5787,17 @@ async fn mcp_execute_handler(
     headers: HeaderMap,
     Json(request): Json<McpExecuteRequest>,
 ) -> (StatusCode, Json<Value>) {
-    if !authorize_embedded_mcp(&service, &headers, "/tools/execute", "tools/execute") {
+    let payload = json!({
+        "tool": request.tool.clone(),
+        "parameters": request.parameters.clone()
+    });
+    if !authorize_embedded_mcp(
+        &service,
+        &headers,
+        "/tools/execute",
+        "tools/execute",
+        Some(payload),
+    ) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Unauthorized"})),
@@ -5634,12 +5820,14 @@ fn authorize_embedded_mcp(
     headers: &HeaderMap,
     route: &str,
     action: &str,
+    payload: Option<Value>,
 ) -> bool {
     let authorizer = MentisDbBearerAuthorizer::new(&service.config);
     let context = BearerAuthContext {
         client_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
         route: route.to_string(),
         action: action.to_string(),
+        payload,
     };
     let Some(token) = headers
         .get("Authorization")

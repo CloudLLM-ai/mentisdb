@@ -408,6 +408,17 @@
       padding:6px 10px;font-size:0.88rem;min-width:220px;
     }
     .token-form input:focus { outline: none; border-color: #58a6ff; }
+    .token-chain-picker {
+      background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;
+      padding:6px 8px;min-width:260px;max-width:420px;max-height:120px;overflow:auto;
+      display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+    }
+    .token-chain-picker.disabled { opacity:0.55; }
+    .token-chain-option {
+      display:inline-flex;align-items:center;gap:5px;border:1px solid rgba(88,166,255,0.2);
+      border-radius:6px;padding:4px 7px;font-size:0.82rem;white-space:nowrap;cursor:pointer;
+    }
+    .token-chain-option input { min-width:0;width:auto;margin:0; }
     .token-secret { background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px;margin:10px 0;color:#e6edf3;font-size:0.84rem;word-break:break-all; }
   </style>
 </head>
@@ -1303,6 +1314,13 @@
             <h3 style="margin:0 0 6px;color:#e6edf3;font-size:1rem">Bearer Tokens</h3>
             <div class="token-form">
               <input type="text" id="bt-alias" placeholder="alias, e.g. codex-laptop" autocomplete="off" title="Use letters, numbers, dash, underscore, or dot">
+              <select id="bt-scope" title="Choose whether this token can access every chain or selected chains" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:0.88rem">
+                <option value="chain">Chains</option>
+                <option value="global">Global</option>
+              </select>
+              <div id="bt-chain-picker" class="token-chain-picker" title="Select one or more chains this token can access">
+                <span style="color:#8b949e;font-size:0.84rem">Loading chains...</span>
+              </div>
               <button class="btn btn-primary btn-sm" id="bt-create" title="Create a bearer token and reveal the secret once">Create Token</button>
               <span id="bt-msg" class="settings-msg"></span>
             </div>
@@ -1428,13 +1446,72 @@
 
     const createBtn = document.getElementById('bt-create');
     const aliasInput = document.getElementById('bt-alias');
+    const scopeInput = document.getElementById('bt-scope');
+    const chainPicker = document.getElementById('bt-chain-picker');
+    loadBearerTokenChainOptions();
     if (createBtn && aliasInput && !createBtn.dataset.wired) {
       createBtn.dataset.wired = '1';
       createBtn.addEventListener('click', () => createBearerToken());
       aliasInput.addEventListener('keydown', e => {
         if (e.key === 'Enter') createBearerToken();
       });
+      scopeInput?.addEventListener('change', () => {
+        const chainScoped = scopeInput.value === 'chain';
+        setBearerTokenChainPickerEnabled(chainScoped);
+      });
+      scopeInput?.dispatchEvent(new Event('change'));
     }
+  }
+
+  function loadBearerTokenChainOptions() {
+    const picker = document.getElementById('bt-chain-picker');
+    if (!picker) return;
+    if (_chainListCache.length) {
+      renderBearerTokenChainOptions(_chainListCache);
+      return;
+    }
+    picker.innerHTML = '<span style="color:#8b949e;font-size:0.84rem">Loading chains...</span>';
+    api('/dashboard/api/chains')
+      .then(chains => {
+        _chainListCache = chains || [];
+        renderBearerTokenChainOptions(_chainListCache);
+      })
+      .catch(err => {
+        picker.innerHTML = `<span style="color:#f85149;font-size:0.84rem">${esc(err.message || 'Failed to load chains')}</span>`;
+      });
+  }
+
+  function renderBearerTokenChainOptions(chains) {
+    const picker = document.getElementById('bt-chain-picker');
+    if (!picker) return;
+    const sorted = (chains || [])
+      .map(c => c.chain_key || c)
+      .filter(Boolean)
+      .sort((a, b) => String(a).localeCompare(String(b)));
+    if (!sorted.length) {
+      picker.innerHTML = '<span style="color:#8b949e;font-size:0.84rem">No chains available</span>';
+      return;
+    }
+    picker.innerHTML = sorted.map(chainKey => `
+      <label class="token-chain-option" title="Allow this token to access ${esc(chainKey)}">
+        <input type="checkbox" data-bt-chain="${esc(chainKey)}">
+        <span class="mono">${esc(chainKey)}</span>
+      </label>
+    `).join('');
+    setBearerTokenChainPickerEnabled((document.getElementById('bt-scope')?.value || 'chain') === 'chain');
+  }
+
+  function setBearerTokenChainPickerEnabled(enabled) {
+    const picker = document.getElementById('bt-chain-picker');
+    if (!picker) return;
+    picker.classList.toggle('disabled', !enabled);
+    picker.querySelectorAll('input[data-bt-chain]').forEach(input => { input.disabled = !enabled; });
+  }
+
+  function selectedBearerTokenChains() {
+    return Array.from(document.querySelectorAll('#bt-chain-picker input[data-bt-chain]:checked'))
+      .map(input => input.getAttribute('data-bt-chain'))
+      .filter(Boolean);
   }
 
   function renderBearerTokens(tokens) {
@@ -1446,12 +1523,13 @@
     }
     tableEl.innerHTML = `
       <div class="table-wrap"><table>
-        <thead><tr><th>Alias</th><th>Status</th><th>Created</th><th>Last Used</th><th>Revoked</th><th></th></tr></thead>
+        <thead><tr><th>Alias</th><th>Scope</th><th>Status</th><th>Created</th><th>Last Used</th><th>Revoked</th><th></th></tr></thead>
         <tbody>
           ${tokens.map(token => {
             const active = token.status === 'active';
             return `<tr>
               <td class="mono">${esc(token.alias)}</td>
+              <td class="mono">${esc(token.scope || 'global')}</td>
               <td>${statusBadge(token.status)}</td>
               <td>${esc(fmtDate(token.created_at))}</td>
               <td>${esc(fmtDate(token.last_used_at))}</td>
@@ -1474,9 +1552,17 @@
     const msgEl = document.getElementById('bt-msg');
     const secretEl = document.getElementById('bt-secret');
     const btn = document.getElementById('bt-create');
+    const scopeInput = document.getElementById('bt-scope');
     const alias = (aliasInput?.value || '').trim();
+    const scope = scopeInput?.value || 'chain';
+    const chain_keys = selectedBearerTokenChains();
     if (!alias) {
       msgEl.textContent = 'Enter an alias.';
+      msgEl.className = 'settings-msg err';
+      return;
+    }
+    if (scope === 'chain' && !chain_keys.length) {
+      msgEl.textContent = 'Enter at least one chain key.';
       msgEl.className = 'settings-msg err';
       return;
     }
@@ -1486,11 +1572,12 @@
     api('/dashboard/api/bearer-tokens', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ alias })
+      body: JSON.stringify({ alias, scope, chain_keys: scope === 'chain' ? chain_keys : [] })
     })
       .then(result => {
         aliasInput.value = '';
-        msgEl.textContent = `Created ${result.alias}.`;
+        document.querySelectorAll('#bt-chain-picker input[data-bt-chain]').forEach(input => { input.checked = false; });
+        msgEl.textContent = `Created ${result.alias} (${result.scope}).`;
         msgEl.className = 'settings-msg ok';
         secretEl.innerHTML = `<div class="token-secret"><div style="color:#8b949e;margin-bottom:4px">Token secret shown once:</div><code>${esc(result.token)}</code></div>`;
         loadBearerTokens();

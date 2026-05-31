@@ -193,6 +193,11 @@ async fn dashboard_serves_skill_edit_controls() {
     assert!(html.contains("function safeMarkdownHref(rawHref)"));
     assert!(html.contains("normalized.startsWith('javascript:')"));
     assert!(html.contains("rel=\"noopener noreferrer\""));
+    assert!(html.contains("id=\"bt-alias\""));
+    assert!(html.contains("id=\"bt-scope\""));
+    assert!(html.contains("id=\"bt-chain-picker\""));
+    assert!(html.contains("function selectedBearerTokenChains()"));
+    assert!(html.contains("data-bt-revoke"));
     assert!(!html.contains(r#"<a href="$2" target="_blank" rel="noopener">$1</a>"#));
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -210,7 +215,9 @@ async fn dashboard_bearer_token_api_creates_lists_and_revokes_tokens() {
                 .method("POST")
                 .uri("/dashboard/api/bearer-tokens")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"alias":"codex-laptop"}"#))
+                .body(Body::from(
+                    r#"{"alias":"codex-laptop","scope":"chain","chain_keys":["mentisdb","gubatron"]}"#,
+                ))
                 .unwrap(),
         )
         .await
@@ -222,6 +229,7 @@ async fn dashboard_bearer_token_api_creates_lists_and_revokes_tokens() {
     let created: Value = serde_json::from_slice(&body).unwrap();
     let token = created["token"].as_str().unwrap();
     assert_eq!(created["alias"], "codex-laptop");
+    assert_eq!(created["scope"], "chains:gubatron,mentisdb");
     assert!(token.starts_with("mdb_live_"));
 
     let list = router
@@ -240,6 +248,7 @@ async fn dashboard_bearer_token_api_creates_lists_and_revokes_tokens() {
         .unwrap();
     let tokens: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(tokens[0]["alias"], "codex-laptop");
+    assert_eq!(tokens[0]["scope"], "chains:gubatron,mentisdb");
     assert_eq!(tokens[0]["status"], "active");
     assert!(!tokens.to_string().contains(token));
 
@@ -260,6 +269,22 @@ async fn dashboard_bearer_token_api_creates_lists_and_revokes_tokens() {
         .unwrap();
     let revoked: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(revoked["status"], "revoked");
+
+    let invalid = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/dashboard/api/bearer-tokens")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"alias":"empty-chain","scope":"chain","chain_keys":[]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), axum::http::StatusCode::BAD_REQUEST);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

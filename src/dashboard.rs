@@ -18,8 +18,8 @@
 
 use crate::{
     auth::{
-        parse_bearer_token_access, BearerTokenError, BearerTokenRecord, BearerTokenStore,
-        MENTISDB_BEARER_TOKEN_ACCESS_ENV,
+        parse_bearer_token_access, BearerTokenError, BearerTokenRecord, BearerTokenScope,
+        BearerTokenStore, MENTISDB_BEARER_TOKEN_ACCESS_ENV,
     },
     deregister_chain, load_registered_chains, AgentStatus, ManagedVectorProviderKind, MentisDb,
     PublicKeyAlgorithm, RankedSearchGraph, RankedSearchQuery, SkillFormat, SkillRegistry,
@@ -2578,6 +2578,7 @@ async fn api_branch_chain(
 #[derive(Serialize)]
 struct DashboardBearerToken {
     alias: String,
+    scope: String,
     status: String,
     created_at: String,
     last_used_at: Option<String>,
@@ -2593,6 +2594,7 @@ impl From<BearerTokenRecord> for DashboardBearerToken {
         };
         Self {
             alias: record.alias,
+            scope: record.scope.to_string(),
             status: status.to_string(),
             created_at: record.created_at.to_rfc3339(),
             last_used_at: record.last_used_at.map(|timestamp| timestamp.to_rfc3339()),
@@ -2605,12 +2607,17 @@ impl From<BearerTokenRecord> for DashboardBearerToken {
 #[derive(Deserialize)]
 struct CreateBearerTokenRequest {
     alias: String,
+    scope: String,
+    chain_key: Option<String>,
+    #[serde(default)]
+    chain_keys: Vec<String>,
 }
 
 /// Response body for a newly created bearer token.
 #[derive(Serialize)]
 struct CreateBearerTokenResponse {
     alias: String,
+    scope: String,
     token: String,
 }
 
@@ -2639,11 +2646,13 @@ async fn api_create_bearer_token(
     Json(body): Json<CreateBearerTokenRequest>,
 ) -> Result<Json<CreateBearerTokenResponse>, (StatusCode, Json<Value>)> {
     let store = BearerTokenStore::new(&state.mentisdb_dir);
+    let scope = dashboard_bearer_token_scope(&body)?;
     let created = store
-        .create(body.alias.trim())
+        .create(body.alias.trim(), scope)
         .map_err(map_bearer_token_error)?;
     Ok(Json(CreateBearerTokenResponse {
         alias: created.record.alias,
+        scope: created.record.scope.to_string(),
         token: created.token,
     }))
 }
@@ -2663,7 +2672,10 @@ async fn api_revoke_bearer_token(
 
 fn map_bearer_token_error(error: BearerTokenError) -> (StatusCode, Json<Value>) {
     match error {
-        BearerTokenError::InvalidAlias(_) | BearerTokenError::AliasExists(_) => (
+        BearerTokenError::InvalidAlias(_)
+        | BearerTokenError::InvalidChainKey(_)
+        | BearerTokenError::InvalidScope(_)
+        | BearerTokenError::AliasExists(_) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": error.to_string() })),
         ),
@@ -2672,6 +2684,27 @@ fn map_bearer_token_error(error: BearerTokenError) -> (StatusCode, Json<Value>) 
             Json(json!({ "error": error.to_string() })),
         ),
         BearerTokenError::Io(_) | BearerTokenError::Json(_) => internal_error(error),
+    }
+}
+
+fn dashboard_bearer_token_scope(
+    body: &CreateBearerTokenRequest,
+) -> Result<BearerTokenScope, (StatusCode, Json<Value>)> {
+    match body.scope.trim() {
+        "global" => Ok(BearerTokenScope::Global),
+        "chain" => {
+            let chain_keys = body
+                .chain_key
+                .iter()
+                .chain(body.chain_keys.iter())
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            BearerTokenScope::chains(chain_keys).map_err(map_bearer_token_error)
+        }
+        other => Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("unknown bearer token scope '{other}'") })),
+        )),
     }
 }
 

@@ -223,6 +223,44 @@ fn server_config_parses_mentisdb_verbose_env_values() {
 }
 
 #[test]
+fn server_config_parses_bearer_token_access_env_values() {
+    let _guard = env_mutex().lock().unwrap();
+    let original = std::env::var("MENTISDB_BEARER_TOKEN_ACCESS").ok();
+
+    for (raw_value, expected) in [
+        ("1", true),
+        ("true", true),
+        ("yes", true),
+        ("on", true),
+        ("TRUE", true),
+        ("0", false),
+        ("false", false),
+        ("off", false),
+        ("unexpected", false),
+    ] {
+        std::env::set_var("MENTISDB_BEARER_TOKEN_ACCESS", raw_value);
+        let config = MentisDbServerConfig::from_env();
+        assert_eq!(
+            config.service.bearer_token_access.load(Ordering::Relaxed),
+            expected,
+            "raw value {raw_value:?} should parse to {expected}"
+        );
+    }
+
+    std::env::remove_var("MENTISDB_BEARER_TOKEN_ACCESS");
+    assert!(!MentisDbServerConfig::from_env()
+        .service
+        .bearer_token_access
+        .load(Ordering::Relaxed));
+
+    if let Some(original) = original {
+        std::env::set_var("MENTISDB_BEARER_TOKEN_ACCESS", original);
+    } else {
+        std::env::remove_var("MENTISDB_BEARER_TOKEN_ACCESS");
+    }
+}
+
+#[test]
 fn server_config_parses_mentisdb_log_file_env_values() {
     let _guard = env_mutex().lock().unwrap();
     let original = std::env::var("MENTISDB_LOG_FILE").ok();
@@ -2467,7 +2505,9 @@ async fn standard_mcp_router_requires_active_bearer_token_when_enabled() {
     let config = MentisDbServiceConfig::new(dir.clone(), "server-test", StorageAdapterKind::Binary)
         .with_bearer_token_access(true);
     let store = config.bearer_token_store.clone();
-    let created = store.create("codex").unwrap();
+    let created = store
+        .create("codex", mentisdb::auth::BearerTokenScope::Global)
+        .unwrap();
     let (router, _broadcaster) =
         standard_mcp_router(config, std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     let client_addr = std::net::SocketAddr::from(([127, 0, 0, 1], 49001));
@@ -2519,6 +2559,296 @@ async fn standard_mcp_router_requires_active_bearer_token_when_enabled() {
         .await
         .unwrap();
     assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn standard_mcp_router_allows_missing_and_wrong_bearer_tokens_when_disabled() {
+    let dir = unique_chain_dir();
+    let config = MentisDbServiceConfig::new(dir.clone(), "server-test", StorageAdapterKind::Binary)
+        .with_bearer_token_access(false);
+    let (router, _broadcaster) =
+        standard_mcp_router(config, std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    let client_addr = std::net::SocketAddr::from(([127, 0, 0, 1], 49003));
+
+    let request = |auth: Option<&str>| {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("content-type", "application/json");
+        if let Some(auth) = auth {
+            builder = builder.header("Authorization", auth);
+        }
+        let mut request = builder
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "mentisdb_head",
+                        "arguments": {
+                            "chain_key": "private"
+                        }
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(client_addr));
+        request
+    };
+
+    let missing = router.clone().oneshot(request(None)).await.unwrap();
+    assert_eq!(missing.status(), StatusCode::OK);
+
+    let wrong = router
+        .clone()
+        .oneshot(request(Some("Bearer wrong")))
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), StatusCode::OK);
+
+    let malformed = router
+        .clone()
+        .oneshot(request(Some("not-a-bearer-token")))
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), StatusCode::OK);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn standard_mcp_router_enforces_chain_scoped_bearer_tokens() {
+    let dir = unique_chain_dir();
+    let config = MentisDbServiceConfig::new(dir.clone(), "allowed", StorageAdapterKind::Binary)
+        .with_bearer_token_access(true);
+    let store = config.bearer_token_store.clone();
+    let scoped = store
+        .create(
+            "alice",
+            mentisdb::auth::BearerTokenScope::chains(["allowed", "shared"]).unwrap(),
+        )
+        .unwrap();
+    let global = store
+        .create("admin", mentisdb::auth::BearerTokenScope::Global)
+        .unwrap();
+    let (router, _broadcaster) =
+        standard_mcp_router(config, std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    let client_addr = std::net::SocketAddr::from(([127, 0, 0, 1], 49002));
+
+    let request = |token: &str, chain_key: &str| {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("content-type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "mentisdb_head",
+                        "arguments": {
+                            "chain_key": chain_key
+                        }
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(client_addr));
+        request
+    };
+    let global_tool_request = |token: &str| {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("content-type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "mentisdb_list_chains",
+                        "arguments": {}
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(client_addr));
+        request
+    };
+    let nested_chain_request = |token: &str| {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("content-type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "mentisdb_append",
+                        "arguments": {
+                            "chain_key": "allowed",
+                            "thought_type": "Insight",
+                            "content": "scoped auth nested chain regression",
+                            "relations": [{
+                                "kind": "References",
+                                "target_id": uuid::Uuid::new_v4().to_string(),
+                                "chain_key": "private"
+                            }]
+                        }
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(client_addr));
+        request
+    };
+
+    let allowed = router
+        .clone()
+        .oneshot(request(&scoped.token, "allowed"))
+        .await
+        .unwrap();
+    assert_eq!(allowed.status(), StatusCode::OK);
+
+    let shared = router
+        .clone()
+        .oneshot(request(&scoped.token, "shared"))
+        .await
+        .unwrap();
+    assert_eq!(shared.status(), StatusCode::OK);
+
+    let denied = router
+        .clone()
+        .oneshot(request(&scoped.token, "private"))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+
+    let admin = router
+        .clone()
+        .oneshot(request(&global.token, "private"))
+        .await
+        .unwrap();
+    assert_eq!(admin.status(), StatusCode::OK);
+
+    let scoped_global_tool = router
+        .clone()
+        .oneshot(global_tool_request(&scoped.token))
+        .await
+        .unwrap();
+    assert_eq!(scoped_global_tool.status(), StatusCode::UNAUTHORIZED);
+
+    let admin_global_tool = router
+        .clone()
+        .oneshot(global_tool_request(&global.token))
+        .await
+        .unwrap();
+    assert_eq!(admin_global_tool.status(), StatusCode::OK);
+
+    let nested_denied = router
+        .clone()
+        .oneshot(nested_chain_request(&scoped.token))
+        .await
+        .unwrap();
+    assert_eq!(nested_denied.status(), StatusCode::UNAUTHORIZED);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn legacy_mcp_router_enforces_chain_scoped_bearer_tokens() {
+    let dir = unique_chain_dir();
+    let config = MentisDbServiceConfig::new(dir.clone(), "allowed", StorageAdapterKind::Binary)
+        .with_bearer_token_access(true);
+    let store = config.bearer_token_store.clone();
+    let scoped = store
+        .create(
+            "alice",
+            mentisdb::auth::BearerTokenScope::chain("allowed").unwrap(),
+        )
+        .unwrap();
+    let router = mcp_router(config);
+
+    let request = |chain_key: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/tools/execute")
+            .header("content-type", "application/json")
+            .header("Authorization", format!("Bearer {}", scoped.token))
+            .body(Body::from(
+                json!({
+                    "tool": "mentisdb_head",
+                    "parameters": {
+                        "chain_key": chain_key
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+    let unauthenticated_request = || {
+        Request::builder()
+            .method("POST")
+            .uri("/tools/execute")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "tool": "mentisdb_head",
+                    "parameters": {
+                        "chain_key": "allowed"
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+    let wrong_token_request = || {
+        Request::builder()
+            .method("POST")
+            .uri("/tools/execute")
+            .header("content-type", "application/json")
+            .header("Authorization", "Bearer wrong")
+            .body(Body::from(
+                json!({
+                    "tool": "mentisdb_head",
+                    "parameters": {
+                        "chain_key": "allowed"
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+
+    let allowed = router.clone().oneshot(request("allowed")).await.unwrap();
+    assert_eq!(allowed.status(), StatusCode::OK);
+
+    let denied = router.clone().oneshot(request("private")).await.unwrap();
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+
+    let missing = router
+        .clone()
+        .oneshot(unauthenticated_request())
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+    let wrong = router.clone().oneshot(wrong_token_request()).await.unwrap();
+    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
