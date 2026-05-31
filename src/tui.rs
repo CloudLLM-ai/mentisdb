@@ -977,11 +977,13 @@ fn render_logs(frame: &mut Frame, state: &TuiState, area: Rect) {
 
 /// Renders a contextual hint bar showing keyboard shortcuts for the focused pane.
 fn render_hint_bar(frame: &mut Frame, state: &TuiState, area: Rect) {
+    let bar_style = Style::default().bg(Color::Black).fg(Color::White);
     let key_style = Style::default()
-        .fg(Color::Yellow)
+        .fg(Color::Black)
+        .bg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
-    let sep_style = Style::default().fg(Color::DarkGray);
-    let desc_style = Style::default().add_modifier(Modifier::DIM);
+    let sep_style = bar_style.fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let desc_style = bar_style.fg(Color::White);
 
     let sep = Span::styled(" │ ", sep_style);
 
@@ -1002,7 +1004,8 @@ fn render_hint_bar(frame: &mut Frame, state: &TuiState, area: Rect) {
         Span::styled(
             format!(" {pane_label} "),
             Style::default()
-                .fg(Color::Green)
+                .fg(Color::Black)
+                .bg(Color::Green)
                 .add_modifier(Modifier::BOLD),
         ),
         sep.clone(),
@@ -1062,8 +1065,7 @@ fn render_hint_bar(frame: &mut Frame, state: &TuiState, area: Rect) {
     ]);
 
     let hint_line = Line::from(spans);
-    let paragraph =
-        Paragraph::new(hint_line).style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    let paragraph = Paragraph::new(hint_line).style(bar_style);
     frame.render_widget(paragraph, area);
 }
 
