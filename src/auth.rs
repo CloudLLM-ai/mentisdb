@@ -79,18 +79,13 @@ const BEARER_TOKEN_REGISTRY_FILENAME: &str = "bearer-tokens.json";
 /// assert!(!team.allows_chain("private"));
 /// # Ok::<(), mentisdb::auth::BearerTokenError>(())
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum BearerTokenScope {
     /// Token may authorize requests for any chain.
+    #[default]
     Global,
     /// Token may authorize requests for one or more explicit chain keys.
     Chains(Vec<String>),
-}
-
-impl Default for BearerTokenScope {
-    fn default() -> Self {
-        Self::Global
-    }
 }
 
 impl BearerTokenScope {
