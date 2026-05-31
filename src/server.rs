@@ -59,6 +59,7 @@
 //! - `POST /v1/extract-memories`
 //! - `POST /v1/admin/flush`
 
+use crate::auth::{bearer_token_access_from_env, BearerTokenStore};
 use crate::search::thesaurus;
 use crate::webhooks::{WebhookManager, WebhookRegistration};
 use crate::{
@@ -73,7 +74,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{header::CONTENT_TYPE, StatusCode};
+use axum::http::{header::CONTENT_TYPE, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -81,9 +82,10 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use mcp::http::axum_router as shared_mcp_router;
 use mcp::{
-    streamable_http_router_with_sse, HttpServerConfig, IpFilter, ResourceError, ResourceMetadata,
-    SseBroadcaster, SseEventHandler, StreamableHttpConfig, ToolError, ToolMetadata, ToolParameter,
-    ToolParameterType, ToolProtocol, ToolResult,
+    streamable_http_router_with_sse, BearerAuthContext, BearerTokenAuthorizer, HttpServerConfig,
+    IpFilter, ResourceError, ResourceMetadata, SseBroadcaster, SseEventHandler,
+    StreamableHttpConfig, ToolError, ToolMetadata, ToolParameter, ToolParameterType, ToolProtocol,
+    ToolResult,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -96,7 +98,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use axum_server::tls_rustls::RustlsConfig;
 use rcgen::{date_time_ymd, CertificateParams, DistinguishedName, DnType, KeyPair, SanType};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, RwLock};
@@ -259,6 +261,10 @@ pub struct MentisDbServiceConfig {
     /// Maximum number of recent thoughts to scan during dedup checking.
     /// Defaults to 64. Only relevant when `dedup_threshold` is `Some`.
     pub dedup_scan_window: usize,
+    /// Runtime switch for bearer-token enforcement on MCP HTTP endpoints.
+    pub bearer_token_access: Arc<AtomicBool>,
+    /// Durable bearer-token registry used by MCP HTTP endpoints.
+    pub bearer_token_store: BearerTokenStore,
 }
 
 impl std::fmt::Debug for MentisDbServiceConfig {
@@ -280,6 +286,11 @@ impl std::fmt::Debug for MentisDbServiceConfig {
             )
             .field("dedup_threshold", &self.dedup_threshold)
             .field("dedup_scan_window", &self.dedup_scan_window)
+            .field(
+                "bearer_token_access",
+                &self.bearer_token_access.load(Ordering::Relaxed),
+            )
+            .field("bearer_token_store", &self.bearer_token_store.path())
             .finish()
     }
 }
@@ -318,7 +329,7 @@ impl MentisDbServiceConfig {
         default_storage_adapter: StorageAdapterKind,
     ) -> Self {
         Self {
-            chain_dir,
+            chain_dir: chain_dir.clone(),
             default_chain_key: default_chain_key.into(),
             default_storage_adapter,
             verbose: false,
@@ -328,6 +339,8 @@ impl MentisDbServiceConfig {
             on_read_logged: None,
             dedup_threshold: None,
             dedup_scan_window: 64,
+            bearer_token_access: Arc::new(AtomicBool::new(false)),
+            bearer_token_store: BearerTokenStore::new(chain_dir),
         }
     }
 
@@ -506,6 +519,12 @@ impl MentisDbServiceConfig {
         self.dedup_scan_window = window.max(1);
         self
     }
+
+    /// Enable or disable bearer-token enforcement for MCP HTTP endpoints.
+    pub fn with_bearer_token_access(self, enabled: bool) -> Self {
+        self.bearer_token_access.store(enabled, Ordering::Relaxed);
+        self
+    }
 }
 
 /// Full runtime configuration for the standalone `mentisdb` daemon process.
@@ -530,6 +549,7 @@ impl MentisDbServiceConfig {
 /// | `MENTISDB_AUTO_FLUSH` | `true` | Set `false` for batched binary writes (higher throughput, reduced durability). |
 /// | `MENTISDB_DEDUP_THRESHOLD` | *(none)* | Jaccard threshold for auto-dedup on append (0.0–1.0). Disabled when unset. |
 /// | `MENTISDB_DEDUP_SCAN_WINDOW` | `64` | Number of recent thoughts to scan for dedup. |
+/// | `MENTISDB_BEARER_TOKEN_ACCESS` | `false` | Require a valid MentisDB bearer token for MCP HTTP/HTTPS access. |
 /// | `MENTISDB_BIND_HOST` | `127.0.0.1` | IP address for all server sockets. |
 /// | `MENTISDB_MCP_PORT` | `9471` | Port for the HTTP MCP server. |
 /// | `MENTISDB_REST_PORT` | `9472` | Port for the HTTP REST server. |
@@ -737,7 +757,8 @@ impl MentisDbServerConfig {
                     .and_then(|v| v.trim().parse::<usize>().ok())
                     .unwrap_or(64)
                     .max(1),
-            ),
+            )
+            .with_bearer_token_access(bearer_token_access_from_env()),
             mcp_addr: SocketAddr::new(bind_host, mcp_port),
             rest_addr: SocketAddr::new(bind_host, rest_port),
             https_mcp_addr,
@@ -1443,6 +1464,7 @@ pub async fn start_servers(
             dashboard_pin: config.dashboard_pin.clone(),
             default_storage_adapter: config.service.default_storage_adapter,
             auto_flush: Arc::new(AtomicBool::new(config.service.auto_flush)),
+            bearer_token_access: config.service.bearer_token_access.clone(),
             #[cfg(not(test))]
             tui_state,
         };
@@ -1734,11 +1756,13 @@ pub fn standard_mcp_router(
 ) -> (Router, SseBroadcaster) {
     let service = Arc::new(MentisDbService::new(config));
     let (event_handler, broadcaster) = SseEventHandler::new(256);
+    let bearer_authorizer = Arc::new(MentisDbBearerAuthorizer::new(&service.config));
     let router = standard_mcp_only_router(
         service,
         SocketAddr::new(bind_host, 0),
         Some(broadcaster.clone()),
         Some(Arc::new(event_handler)),
+        bearer_authorizer,
     );
     (router, broadcaster)
 }
@@ -1948,7 +1972,7 @@ impl InteractionLogSink {
 /// MCP protocol implementation for MentisDB over streamable HTTP.
 ///
 /// This type wraps [`MentisDbService`] and implements the MCP
-    /// [`mcp::ToolProtocol`] so it can be used with the
+/// [`mcp::ToolProtocol`] so it can be used with the
 /// `streamable_http_router` from the `mcp` crate.
 #[derive(Clone)]
 pub struct MentisDbMcpProtocol {
@@ -1962,22 +1986,53 @@ impl MentisDbMcpProtocol {
     }
 }
 
+#[derive(Clone)]
+struct MentisDbBearerAuthorizer {
+    access_enabled: Arc<AtomicBool>,
+    store: BearerTokenStore,
+}
+
+impl MentisDbBearerAuthorizer {
+    fn new(config: &MentisDbServiceConfig) -> Self {
+        Self {
+            access_enabled: config.bearer_token_access.clone(),
+            store: config.bearer_token_store.clone(),
+        }
+    }
+}
+
+impl BearerTokenAuthorizer for MentisDbBearerAuthorizer {
+    fn allow_missing_bearer_token(&self, _context: &BearerAuthContext) -> bool {
+        !self.access_enabled.load(Ordering::Relaxed)
+    }
+
+    fn authorize_bearer_token(&self, token: &str, _context: &BearerAuthContext) -> bool {
+        if !self.access_enabled.load(Ordering::Relaxed) {
+            return true;
+        }
+        self.store.authorize(token)
+    }
+}
+
 fn standard_and_legacy_mcp_router(
     service: Arc<MentisDbService>,
     addr: SocketAddr,
     sse_broadcaster: Option<SseBroadcaster>,
     event_handler: Option<Arc<dyn mcp::McpEventHandler>>,
 ) -> Router {
+    let bearer_authorizer = Arc::new(MentisDbBearerAuthorizer::new(&service.config));
     standard_mcp_only_router(
         service.clone(),
         addr,
         sse_broadcaster,
         event_handler.clone(),
+        bearer_authorizer.clone(),
     )
     .merge(shared_mcp_router(
         &HttpServerConfig {
             addr,
             bearer_token: None,
+            bearer_authorizer: Some(bearer_authorizer),
             ip_filter: IpFilter::new(),
             event_handler,
         },
@@ -1990,6 +2045,7 @@ fn standard_mcp_only_router(
     addr: SocketAddr,
     sse_broadcaster: Option<SseBroadcaster>,
     event_handler: Option<Arc<dyn mcp::McpEventHandler>>,
+    bearer_authorizer: Arc<dyn BearerTokenAuthorizer>,
 ) -> Router {
     let skip_origin = addr.ip().is_unspecified();
     Router::new()
@@ -1998,6 +2054,7 @@ fn standard_mcp_only_router(
             &HttpServerConfig {
                 addr,
                 bearer_token: None,
+                bearer_authorizer: Some(bearer_authorizer),
                 ip_filter: IpFilter::new(),
                 event_handler,
             },
@@ -5533,14 +5590,34 @@ async fn health_handler() -> Json<Value> {
     }))
 }
 
-async fn mcp_list_tools_handler() -> Json<Value> {
-    Json(json!({ "tools": mcp_tool_metadata() }))
+async fn mcp_list_tools_handler(
+    State(service): State<Arc<MentisDbService>>,
+    headers: HeaderMap,
+) -> (StatusCode, Json<Value>) {
+    if !authorize_embedded_mcp(&service, &headers, "/tools/list", "tools/list") {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Unauthorized"})),
+        );
+    }
+    (
+        StatusCode::OK,
+        Json(json!({ "tools": mcp_tool_metadata() })),
+    )
 }
 
 async fn mcp_execute_handler(
     State(service): State<Arc<MentisDbService>>,
+    headers: HeaderMap,
     Json(request): Json<McpExecuteRequest>,
 ) -> (StatusCode, Json<Value>) {
+    if !authorize_embedded_mcp(&service, &headers, "/tools/execute", "tools/execute") {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Unauthorized"})),
+        );
+    }
+
     let protocol = MentisDbMcpProtocol::new(service);
 
     match protocol.execute(&request.tool, request.parameters).await {
@@ -5550,6 +5627,28 @@ async fn mcp_execute_handler(
             Json(json!({ "result": ToolResult::failure(error.to_string()) })),
         ),
     }
+}
+
+fn authorize_embedded_mcp(
+    service: &MentisDbService,
+    headers: &HeaderMap,
+    route: &str,
+    action: &str,
+) -> bool {
+    let authorizer = MentisDbBearerAuthorizer::new(&service.config);
+    let context = BearerAuthContext {
+        client_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+        route: route.to_string(),
+        action: action.to_string(),
+    };
+    let Some(token) = headers
+        .get("Authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+    else {
+        return authorizer.allow_missing_bearer_token(&context);
+    };
+    authorizer.authorize_bearer_token(token, &context)
 }
 
 async fn rest_bootstrap_handler(

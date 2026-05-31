@@ -2461,6 +2461,93 @@ async fn live_mcp_server_supports_standard_initialize_and_tools_list() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[tokio::test]
+async fn standard_mcp_router_requires_active_bearer_token_when_enabled() {
+    let dir = unique_chain_dir();
+    let config = MentisDbServiceConfig::new(dir.clone(), "server-test", StorageAdapterKind::Binary)
+        .with_bearer_token_access(true);
+    let store = config.bearer_token_store.clone();
+    let created = store.create("codex").unwrap();
+    let (router, _broadcaster) =
+        standard_mcp_router(config, std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    let client_addr = std::net::SocketAddr::from(([127, 0, 0, 1], 49001));
+
+    let request = |auth: Option<String>| {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("content-type", "application/json");
+        if let Some(auth) = auth {
+            builder = builder.header("Authorization", auth);
+        }
+        let mut request = builder
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/list",
+                    "params": {}
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(client_addr));
+        request
+    };
+
+    let missing = router.clone().oneshot(request(None)).await.unwrap();
+    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+    let wrong = router
+        .clone()
+        .oneshot(request(Some("Bearer wrong".to_string())))
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+
+    let ok = router
+        .clone()
+        .oneshot(request(Some(format!("Bearer {}", created.token))))
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+
+    store.revoke("codex").unwrap();
+    let revoked = router
+        .clone()
+        .oneshot(request(Some(format!("Bearer {}", created.token))))
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn legacy_mcp_router_allows_missing_bearer_token_when_disabled() {
+    let dir = unique_chain_dir();
+    let router = mcp_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        "server-test",
+        StorageAdapterKind::Binary,
+    ));
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tools/list")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // Test 7: rest_upload_skill_with_signature_verification
 // ---------------------------------------------------------------------------
