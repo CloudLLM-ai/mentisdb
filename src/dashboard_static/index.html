@@ -430,7 +430,13 @@
     }
     .token-chain-option input { min-width:0;width:auto;margin:0;accent-color:#58a6ff; }
     .token-chain-option .mono { overflow:hidden;text-overflow:ellipsis; }
-    .token-secret { background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px;margin:10px 0;color:#e6edf3;font-size:0.84rem;word-break:break-all; }
+    .token-secret { position:relative;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px 44px 10px 10px;margin:10px 0;color:#e6edf3;font-size:0.84rem;word-break:break-all; }
+    .token-secret-copy {
+      position:absolute;top:8px;right:8px;background:#161b22;border:1px solid #30363d;
+      border-radius:6px;color:#8b949e;cursor:pointer;font-size:0.9rem;line-height:1;
+      width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;
+    }
+    .token-secret-copy:hover { color:#e6edf3;border-color:#58a6ff; }
     @media (max-width: 760px) {
       .token-form { grid-template-columns: 1fr; }
       .token-form input { width:100%;box-sizing:border-box; }
@@ -1740,7 +1746,13 @@
         document.querySelectorAll('#bt-chain-picker input[data-bt-chain]').forEach(input => { input.checked = false; });
         msgEl.textContent = `Created ${result.alias} (${result.scope}).`;
         msgEl.className = 'settings-msg ok';
-        secretEl.innerHTML = `<div class="token-secret"><div style="color:#8b949e;margin-bottom:4px">Token secret shown once:</div><code>${esc(result.token)}</code></div>`;
+        secretEl.innerHTML = `
+          <div class="token-secret">
+            <button class="token-secret-copy" id="bt-copy-secret" title="Copy token to clipboard" aria-label="Copy token to clipboard">⎘</button>
+            <div style="color:#8b949e;margin-bottom:4px">Token secret shown once:</div>
+            <code>${esc(result.token)}</code>
+          </div>`;
+        document.getElementById('bt-copy-secret')?.addEventListener('click', () => copyBearerTokenSecret(result.token));
         loadBearerTokens();
       })
       .catch(err => {
@@ -1748,6 +1760,35 @@
         msgEl.className = 'settings-msg err';
       })
       .finally(() => { btn.disabled = false; });
+  }
+
+  function copyBearerTokenSecret(token) {
+    const btn = document.getElementById('bt-copy-secret');
+    const markCopied = () => {
+      if (!btn) return;
+      btn.textContent = '✓';
+      btn.title = 'Copied';
+      setTimeout(() => {
+        btn.textContent = '⎘';
+        btn.title = 'Copy token to clipboard';
+      }, 1400);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(token).then(markCopied).catch(() => copyBearerTokenSecretFallback(token, markCopied));
+    } else {
+      copyBearerTokenSecretFallback(token, markCopied);
+    }
+  }
+
+  function copyBearerTokenSecretFallback(token, onCopied) {
+    const textarea = document.createElement('textarea');
+    textarea.value = token;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try { document.execCommand('copy'); onCopied(); } finally { textarea.remove(); }
   }
 
   function revokeBearerToken(alias) {

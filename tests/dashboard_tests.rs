@@ -219,6 +219,9 @@ async fn dashboard_serves_skill_edit_controls() {
     assert!(html.contains("grid-column:1 / -1"));
     assert!(html.contains("class=\"token-chain-table\""));
     assert!(html.contains("function selectedBearerTokenChains()"));
+    assert!(html.contains("id=\"bt-copy-secret\""));
+    assert!(html.contains("function copyBearerTokenSecret(token)"));
+    assert!(html.contains("function copyBearerTokenSecretFallback(token, onCopied)"));
     assert!(html.contains("data-bt-revoke"));
     assert!(!html.contains(r#"<a href="$2" target="_blank" rel="noopener">$1</a>"#));
 
