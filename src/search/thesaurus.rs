@@ -105,10 +105,11 @@ pub fn lookup_lemmatized(token: &str) -> Option<Vec<String>> {
 ///
 /// # Example
 /// ```
-/// let map = thesaurus::expand_text("fast retrieval debugging");
+/// let map = mentisdb::search::thesaurus::expand_text("fast search debugging");
 /// assert!(map.contains_key("fast"));
-/// assert!(map.contains_key("search"));   // from "retrieval" synonym
-/// assert!(map.contains_key("debug"));    // lemmatized from "debugging"
+/// assert!(map["fast"].iter().any(|term| term == "quick"));
+/// assert!(map["search"].iter().any(|term| term == "query"));
+/// assert!(map["debugging"].iter().any(|term| term == "diagnose"));
 /// ```
 pub fn expand_text(text: &str) -> HashMap<String, Vec<String>> {
     let mut result = HashMap::new();
