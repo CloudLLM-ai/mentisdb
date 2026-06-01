@@ -304,6 +304,63 @@ fn bearertoken_cli_lists_and_filters_global_single_and_multi_chain_tokens() {
 }
 
 #[test]
+fn bearertoken_list_aligns_columns_for_global_and_chain_scopes() {
+    let dir = tempdir().unwrap();
+    let dir_arg = dir.path().to_string_lossy().into_owned();
+    let mut input = Cursor::new(Vec::<u8>::new());
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+
+    for args in [
+        vec![
+            "mentisdb",
+            "bearertoken",
+            "create",
+            "--global",
+            "gubatron-global",
+            "--dir",
+            &dir_arg,
+        ],
+        vec![
+            "mentisdb",
+            "bearertoken",
+            "create",
+            "--chain",
+            "mentisdb",
+            "gubatron-mentisdb",
+            "--dir",
+            &dir_arg,
+        ],
+    ] {
+        output.clear();
+        let code = run_with_io(args, &mut input, &mut output, &mut errors);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    output.clear();
+    let list = run_with_io(
+        ["mentisdb", "bearertoken", "list", "--dir", &dir_arg],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+    assert_eq!(list, ExitCode::SUCCESS);
+    let list_output = String::from_utf8(output.clone()).unwrap();
+    let lines = list_output.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 3);
+
+    let created_at_column = lines[0].find("created_at").unwrap();
+    for row in &lines[1..] {
+        assert_eq!(
+            row.find("20").unwrap(),
+            created_at_column,
+            "created_at column should align in row: {row}"
+        );
+    }
+    assert!(errors.is_empty());
+}
+
+#[test]
 fn bearertoken_without_action_prints_subcommand_help() {
     let mut input = Cursor::new(Vec::<u8>::new());
     let mut output = Vec::new();

@@ -141,29 +141,48 @@ fn run_bearer_token(
                 writeln!(out, "No bearer tokens.").map_err(|e| e.to_string())?;
                 return Ok(());
             }
+            let rows = records
+                .iter()
+                .map(|record| {
+                    let status = if record.is_active() {
+                        "active"
+                    } else {
+                        "revoked"
+                    };
+                    (
+                        record.alias.clone(),
+                        status.to_string(),
+                        record.scope.to_string(),
+                        record.created_at.to_rfc3339(),
+                        record
+                            .last_used_at
+                            .map(|ts| ts.to_rfc3339())
+                            .unwrap_or_else(|| "-".to_string()),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let alias_width = table_width("alias", rows.iter().map(|row| row.0.as_str()));
+            let status_width = table_width("status", rows.iter().map(|row| row.1.as_str()));
+            let scope_width = table_width("scope", rows.iter().map(|row| row.2.as_str()));
+            let created_width = table_width("created_at", rows.iter().map(|row| row.3.as_str()));
+            let last_used_width =
+                table_width("last_used_at", rows.iter().map(|row| row.4.as_str()));
+
             writeln!(
                 out,
-                "{:<24} {:<8} {:<24} {:<25} {:<25}",
+                "{:<alias_width$} {:<status_width$} {:<scope_width$} {:<created_width$} {:<last_used_width$}",
                 "alias", "status", "scope", "created_at", "last_used_at"
             )
             .map_err(|e| e.to_string())?;
-            for record in records {
-                let status = if record.is_active() {
-                    "active"
-                } else {
-                    "revoked"
-                };
+            for (alias, status, scope, created_at, last_used_at) in rows {
                 writeln!(
                     out,
-                    "{:<24} {:<8} {:<24} {:<25} {:<25}",
-                    record.alias,
+                    "{:<alias_width$} {:<status_width$} {:<scope_width$} {:<created_width$} {:<last_used_width$}",
+                    alias,
                     status,
-                    record.scope,
-                    record.created_at.to_rfc3339(),
-                    record
-                        .last_used_at
-                        .map(|ts| ts.to_rfc3339())
-                        .unwrap_or_else(|| "-".to_string())
+                    scope,
+                    created_at,
+                    last_used_at
                 )
                 .map_err(|e| e.to_string())?;
             }
@@ -175,6 +194,10 @@ fn run_bearer_token(
             writeln!(out, "revoked bearer token: {}", record.alias).map_err(|e| e.to_string())
         }
     }
+}
+
+fn table_width<'a>(header: &str, values: impl Iterator<Item = &'a str>) -> usize {
+    values.map(str::len).max().unwrap_or(0).max(header.len())
 }
 
 fn scope_matches_filter(scope: &BearerTokenScope, filter: &Option<BearerTokenScope>) -> bool {
