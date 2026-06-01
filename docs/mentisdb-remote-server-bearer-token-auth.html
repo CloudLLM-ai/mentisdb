@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Running MentisDB on an AWS EC2 Ubuntu Server with Bearer Token MCP Auth</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; line-height: 1.25; }
+    h2 { font-size: 1.35rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.1rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.92rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    .callout { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .callout p:last-child { margin-bottom: 0; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">May 31, 2026</div>
+
+<h1>Running MentisDB on an AWS EC2 Ubuntu Server with Bearer Token MCP Auth</h1>
+
+<p>
+  MentisDB works well as a local daemon, but the more interesting deployment is a
+  remote memory server: one EC2 instance, many coding agents, shared durable chains,
+  and MCP clients connecting from laptops or other hosts.
+</p>
+
+<p>
+  A remote deployment changes the security model. If the MCP port is reachable from
+  the internet, every request must authenticate before it can read or mutate memory.
+  This guide walks through a simple Ubuntu EC2 setup, the AWS security group rules,
+  the systemd service, and global or chain-scoped bearer tokens.
+</p>
+
+<div class="callout">
+  <p>
+    Short version: expose only TLS ports, restrict security-group sources to your own
+    IPs, set <code>MENTISDB_BEARER_TOKEN_ACCESS=true</code>, create scoped tokens for
+    users and agents, and keep global tokens for administrators.
+  </p>
+</div>
+
+<h2 id="architecture">Target Architecture</h2>
+
+<table>
+  <thead>
+    <tr><th>Surface</th><th>Default Port</th><th>Expose Publicly?</th><th>Use</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>SSH</td><td><code>22</code></td><td>Admin IP only</td><td>Server maintenance</td></tr>
+    <tr><td>HTTPS MCP</td><td><code>9473</code></td><td>Client IPs only</td><td>Remote MCP clients such as Codex, Claude Code, or mcp-remote</td></tr>
+    <tr><td>HTTPS REST</td><td><code>9474</code></td><td>Optional, trusted IPs only</td><td>Direct REST integrations</td></tr>
+    <tr><td>HTTPS Dashboard</td><td><code>9475</code></td><td>Admin IP only</td><td>Chains, agents, skills, bearer tokens, settings</td></tr>
+    <tr><td>HTTP MCP</td><td><code>9471</code></td><td>No</td><td>Local-only or private-network use</td></tr>
+    <tr><td>HTTP REST</td><td><code>9472</code></td><td>No</td><td>Local-only or private-network use</td></tr>
+  </tbody>
+</table>
+
+<p>
+  You can run HTTP and HTTPS at the same time, but on a public cloud host the
+  security group should normally expose only the TLS ports you actually need.
+</p>
+
+<h2 id="launch-ec2">1. Launch an Ubuntu EC2 Instance</h2>
+
+<ol>
+  <li>Create an Ubuntu LTS EC2 instance.</li>
+  <li>Attach an SSH key pair you control.</li>
+  <li>Choose a small instance first; MentisDB's storage footprint is modest for normal agent memory workloads.</li>
+  <li>Allocate an Elastic IP or stable DNS name if MCP clients will keep this server in config.</li>
+</ol>
+
+<p>
+  SSH into the instance:
+</p>
+
+<pre><code>ssh -i ~/.ssh/your-key.pem ubuntu@YOUR_EC2_PUBLIC_IP</code></pre>
+
+<h2 id="security-group">2. Open the AWS Security Group</h2>
+
+<p>
+  In the EC2 console, open the instance security group and add inbound rules like
+  this. Replace the source CIDRs with your real office, home, VPN, or client IPs.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Type</th><th>Protocol</th><th>Port</th><th>Source</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>SSH</td><td>TCP</td><td><code>22</code></td><td><code>YOUR_ADMIN_IP/32</code></td><td>Admin access</td></tr>
+    <tr><td>Custom TCP</td><td>TCP</td><td><code>9473</code></td><td><code>YOUR_CLIENT_IP/32</code></td><td>HTTPS MCP</td></tr>
+    <tr><td>Custom TCP</td><td>TCP</td><td><code>9475</code></td><td><code>YOUR_ADMIN_IP/32</code></td><td>HTTPS dashboard</td></tr>
+    <tr><td>Custom TCP</td><td>TCP</td><td><code>9474</code></td><td><code>TRUSTED_API_IP/32</code></td><td>Optional HTTPS REST</td></tr>
+  </tbody>
+</table>
+
+<p>
+  Do not open <code>9471</code> or <code>9472</code> to <code>0.0.0.0/0</code>. If you need
+  wide access while traveling, put a VPN or SSH tunnel in front of the instance
+  instead of publishing unauthenticated local-development ports.
+</p>
+
+<h2 id="install">3. Install MentisDB</h2>
+
+<p>
+  Install Rust and MentisDB from crates.io:
+</p>
+
+<pre><code>sudo apt-get update
+sudo apt-get install -y build-essential pkg-config libssl-dev curl
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+cargo install mentisdb --features local-embeddings</code></pre>
+
+<p>
+  Install the binary somewhere systemd can find it:
+</p>
+
+<pre><code>sudo install -m 0755 "$HOME/.cargo/bin/mentisdb" /usr/local/bin/mentisdb
+mentisdb --version</code></pre>
+
+<h2 id="service-user">4. Create a Service User and Data Directory</h2>
+
+<pre><code>sudo useradd -r -s /usr/sbin/nologin -m -d /var/lib/mentisdb mentisdb || true
+sudo mkdir -p /var/lib/mentisdb /etc/mentisdb
+sudo chown -R mentisdb:mentisdb /var/lib/mentisdb</code></pre>
+
+<h2 id="env">5. Configure the Daemon</h2>
+
+<p>
+  Create <code>/etc/mentisdb/mentisdb.env</code>. The important remote-server settings are
+  <code>MENTISDB_BIND_HOST=0.0.0.0</code>, the TLS MCP/dashboard ports, and
+  <code>MENTISDB_BEARER_TOKEN_ACCESS=true</code>.
+</p>
+
+<pre><code>sudo tee /etc/mentisdb/mentisdb.env &gt; /dev/null &lt;&lt;'EOF'
+MENTISDB_DIR=/var/lib/mentisdb
+MENTISDB_DEFAULT_CHAIN_KEY=mentisdb
+MENTISDB_BIND_HOST=0.0.0.0
+
+# Keep HTTP available only if the security group blocks it from the internet.
+MENTISDB_MCP_PORT=9471
+MENTISDB_REST_PORT=9472
+
+# Expose these through the security group.
+MENTISDB_HTTPS_MCP_PORT=9473
+MENTISDB_HTTPS_REST_PORT=9474
+MENTISDB_DASHBOARD_PORT=9475
+MENTISDB_DASHBOARD_PIN=change-this-admin-pin
+
+# Required for remote or multi-user MCP servers.
+MENTISDB_BEARER_TOKEN_ACCESS=true
+
+MENTISDB_VERBOSE=true
+MENTISDB_AUTO_FLUSH=true
+RUST_LOG=info
+EOF
+
+sudo chown root:mentisdb /etc/mentisdb/mentisdb.env
+sudo chmod 640 /etc/mentisdb/mentisdb.env</code></pre>
+
+<p>
+  If you do not need REST from remote clients, set <code>MENTISDB_HTTPS_REST_PORT=0</code>
+  and omit port <code>9474</code> from the security group.
+</p>
+
+<h2 id="systemd">6. Run MentisDB with systemd</h2>
+
+<pre><code>sudo tee /etc/systemd/system/mentisdb.service &gt; /dev/null &lt;&lt'EOF'
+[Unit]
+Description=MentisDB Daemon - Durable Semantic Memory Engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mentisdb
+Group=mentisdb
+EnvironmentFile=/etc/mentisdb/mentisdb.env
+ExecStart=/usr/local/bin/mentisdb
+Restart=always
+RestartSec=10
+WorkingDirectory=/var/lib/mentisdb
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mentisdb
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mentisdb /etc/mentisdb
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable mentisdb
+sudo systemctl start mentisdb
+sudo systemctl status mentisdb --no-pager</code></pre>
+
+<p>
+  MentisDB generates a self-signed TLS certificate if one does not already exist.
+  For production browser ergonomics you can later replace it with your own
+  certificate and set <code>MENTISDB_TLS_CERT</code> and <code>MENTISDB_TLS_KEY</code>.
+</p>
+
+<h2 id="verify">7. Verify the Server</h2>
+
+<pre><code>sudo journalctl -u mentisdb -n 80 --no-pager
+ss -tlnp | grep -E '9471|9472|9473|9474|9475'
+curl -k https://127.0.0.1:9473/health</code></pre>
+
+<p>
+  From your laptop, test the remote TLS MCP health endpoint:
+</p>
+
+<pre><code>curl -k https://YOUR_EC2_PUBLIC_DNS:9473/health</code></pre>
+
+<h2 id="tokens">8. Create Bearer Tokens</h2>
+
+<p>
+  With <code>MENTISDB_BEARER_TOKEN_ACCESS=true</code>, MCP requests must include an
+  active token. Tokens are shown only once at creation time, so paste them into
+  your password manager or MCP client config immediately.
+</p>
+
+<h3>Global Admin Token</h3>
+
+<p>
+  A global token can access every chain and server-wide MCP tools such as chain
+  listing. Use it for administrators and trusted automation.
+</p>
+
+<pre><code>sudo -u mentisdb env MENTISDB_DIR=/var/lib/mentisdb \
+  mentisdb bearertoken create --global admin-laptop</code></pre>
+
+<h3>Single-Chain User Token</h3>
+
+<p>
+  A chain-scoped token can only interact with the chains it was granted. Use this
+  when each user or agent should work inside a dedicated memory chain.
+</p>
+
+<pre><code>sudo -u mentisdb env MENTISDB_DIR=/var/lib/mentisdb \
+  mentisdb bearertoken create --chain alice alice-agent</code></pre>
+
+<h3>Multi-Chain Team Token</h3>
+
+<p>
+  A single token can also allow more than one chain. Pass <code>--chain</code> more
+  than once.
+</p>
+
+<pre><code>sudo -u mentisdb env MENTISDB_DIR=/var/lib/mentisdb \
+  mentisdb bearertoken create team-agent --chain alice --chain shared</code></pre>
+
+<h3>List and Revoke Tokens</h3>
+
+<pre><code>sudo -u mentisdb env MENTISDB_DIR=/var/lib/mentisdb mentisdb bearertoken list
+sudo -u mentisdb env MENTISDB_DIR=/var/lib/mentisdb mentisdb bearertoken list --chain alice
+sudo -u mentisdb env MENTISDB_DIR=/var/lib/mentisdb mentisdb bearertoken remove alice-agent</code></pre>
+
+<p>
+  Removing a token revokes it. Existing MCP clients using that token should fail
+  on their next request.
+</p>
+
+<h2 id="dashboard">9. Manage Tokens in the Dashboard</h2>
+
+<p>
+  Open the dashboard at <code>https://YOUR_EC2_PUBLIC_DNS:9475</code>. The header includes:
+</p>
+
+<pre><code>Chains | Agents | Skills | Bearer Tokens | Settings</code></pre>
+
+<p>
+  On the <strong>Bearer Tokens</strong> page you can:
+</p>
+
+<ul>
+  <li>turn bearer-token access on or off</li>
+  <li>create a global token</li>
+  <li>create a token scoped to one or more chains</li>
+  <li>copy the one-time secret immediately after creation</li>
+  <li>revoke old tokens</li>
+</ul>
+
+<p>
+  The <strong>Settings</strong> page also shows <code>MENTISDB_BEARER_TOKEN_ACCESS</code>
+  alongside the other daemon environment variables, plus a restart button for settings
+  that require a process restart.
+</p>
+
+<h2 id="codex">10. Connect Codex to the Remote MCP Server</h2>
+
+<p>
+  In your local Codex <code>config.toml</code>, point the MCP server at the HTTPS MCP
+  endpoint and include the bearer token in the request headers.
+</p>
+
+<pre><code>[mcp_servers.mentisdb]
+url = "https://YOUR_EC2_PUBLIC_DNS:9473"
+headers = { Authorization = "Bearer mentisdb_replace_me" }</code></pre>
+
+<p>
+  Use a global token for an administrator Codex profile. Use a chain-scoped or
+  multi-chain token for agents that should only see particular memory chains.
+</p>
+
+<h2 id="other-clients">11. Connect Other MCP Clients</h2>
+
+<p>
+  Any remote MCP client must be able to send this HTTP header:
+</p>
+
+<pre><code>Authorization: Bearer mentisdb_replace_me</code></pre>
+
+<p>
+  Prefer native streamable-HTTP MCP clients that support request headers directly.
+  If your client uses a stdio bridge such as <code>mcp-remote</code>, confirm the bridge
+  version and client configuration support custom headers before giving that client
+  access to a bearer-token-protected remote server. With MentisDB's self-signed
+  certificate, Node-based bridges may also need the MentisDB certificate trusted by
+  the operating system or certificate verification disabled for that bridge process
+  only.
+</p>
+
+<h2 id="operational-checklist">Operational Checklist</h2>
+
+<ul>
+  <li>Use security-group source CIDRs; do not expose remote MCP to the whole internet casually.</li>
+  <li>Prefer HTTPS MCP port <code>9473</code> for remote clients.</li>
+  <li>Keep <code>MENTISDB_BEARER_TOKEN_ACCESS=true</code> for remote and multi-user servers.</li>
+  <li>Issue global tokens only to administrators.</li>
+  <li>Issue chain-scoped or multi-chain tokens to users and agents.</li>
+  <li>Rotate tokens by creating a replacement, updating clients, then removing the old alias.</li>
+  <li>Back up <code>/var/lib/mentisdb</code> before upgrades.</li>
+  <li>Watch logs with <code>sudo journalctl -u mentisdb -f</code>.</li>
+</ul>
+
+<p>
+  That is the whole shape: an Ubuntu service, tight firewall rules, TLS for remote
+  transport, and bearer tokens as the MCP authorization boundary. From there you can
+  add DNS, a trusted certificate, backups, monitoring, and eventually per-token usage
+  stats as the deployment grows.
+</p>
+
+<footer>
+  <p>— The MentisDB team</p>
+</footer>
+</body>
+</html>
