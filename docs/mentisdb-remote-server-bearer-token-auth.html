@@ -345,6 +345,95 @@ headers = { Authorization = "Bearer mentisdb_replace_me" }</code></pre>
 
 <p>
   Prefer native streamable-HTTP MCP clients that support request headers directly.
+  Here are the common harness shapes.
+</p>
+
+<h3>Claude Code</h3>
+
+<pre><code>claude mcp add-json mentisdb \
+  '{"type":"http","url":"https://YOUR_EC2_PUBLIC_DNS:9473","headers":{"Authorization":"Bearer mentisdb_replace_me"}}' \
+  --scope user</code></pre>
+
+<h3>Qwen Code</h3>
+
+<pre><code>qwen mcp add --scope user --transport http mentisdb https://YOUR_EC2_PUBLIC_DNS:9473 \
+  --header "Authorization: Bearer mentisdb_replace_me"</code></pre>
+
+<p>Or edit <code>~/.qwen/settings.json</code>:</p>
+
+<pre><code>{
+  "mcpServers": {
+    "mentisdb": {
+      "httpUrl": "https://YOUR_EC2_PUBLIC_DNS:9473",
+      "headers": {
+        "Authorization": "Bearer mentisdb_replace_me"
+      }
+    }
+  }
+}</code></pre>
+
+<h3>GitHub Copilot CLI</h3>
+
+<p>Edit <code>~/.copilot/mcp-config.json</code>:</p>
+
+<pre><code>{
+  "mcpServers": {
+    "mentisdb": {
+      "type": "http",
+      "url": "https://YOUR_EC2_PUBLIC_DNS:9473",
+      "headers": {
+        "Authorization": "Bearer mentisdb_replace_me"
+      },
+      "tools": ["*"]
+    }
+  }
+}</code></pre>
+
+<h3>VS Code + Copilot</h3>
+
+<p>Edit <code>.vscode/mcp.json</code> or your user-level <code>mcp.json</code>:</p>
+
+<pre><code>{
+  "servers": {
+    "mentisdb": {
+      "type": "http",
+      "url": "https://YOUR_EC2_PUBLIC_DNS:9473",
+      "headers": {
+        "Authorization": "Bearer mentisdb_replace_me"
+      }
+    }
+  }
+}</code></pre>
+
+<h3>OpenCode</h3>
+
+<p>Edit <code>~/.config/opencode/opencode.json</code>:</p>
+
+<pre><code>{
+  "mcp": {
+    "mentisdb": {
+      "type": "remote",
+      "url": "https://YOUR_EC2_PUBLIC_DNS:9473",
+      "enabled": true,
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer mentisdb_replace_me"
+      }
+    }
+  }
+}</code></pre>
+
+<h3>Hermes Agent</h3>
+
+<p>Edit <code>~/.hermes/config.yaml</code>:</p>
+
+<pre><code>mcp_servers:
+  mentisdb:
+    url: "https://YOUR_EC2_PUBLIC_DNS:9473"
+    headers:
+      Authorization: "Bearer mentisdb_replace_me"</code></pre>
+
+<p>
   If your client uses a stdio bridge such as <code>mcp-remote</code>, confirm the bridge
   version and client configuration support custom headers before giving that client
   access to a bearer-token-protected remote server. With MentisDB's self-signed

@@ -1378,12 +1378,114 @@ can call tools for any chain in their configured set, including requests that
 omit `chain_key` when the daemon default chain is in their scope. Tools that
 expose server-wide state, such as `mentisdb_list_chains`, require a global token.
 
-For Codex, include the token as an HTTP header in `~/.codex/config.toml`:
+#### Bearer Token MCP Client Config Examples
+
+For every remote MCP harness, the important part is the same:
+
+```http
+Authorization: Bearer mentisdb_replace_me
+```
+
+Use a global token for administrators. Use a chain-scoped or multi-chain token
+for agents that should only see specific memory chains.
+
+**Codex** (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.mentisdb]
 url = "https://my.mentisdb.com:9473"
 headers = { Authorization = "Bearer mentisdb_replace_me" }
+```
+
+**Claude Code**:
+
+```bash
+claude mcp add-json mentisdb \
+  '{"type":"http","url":"https://my.mentisdb.com:9473","headers":{"Authorization":"Bearer mentisdb_replace_me"}}' \
+  --scope user
+```
+
+**Qwen Code**:
+
+```bash
+qwen mcp add --scope user --transport http mentisdb https://my.mentisdb.com:9473 \
+  --header "Authorization: Bearer mentisdb_replace_me"
+```
+
+Or edit `~/.qwen/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "mentisdb": {
+      "httpUrl": "https://my.mentisdb.com:9473",
+      "headers": {
+        "Authorization": "Bearer mentisdb_replace_me"
+      }
+    }
+  }
+}
+```
+
+**GitHub Copilot CLI** (`~/.copilot/mcp-config.json`):
+
+```json
+{
+  "mcpServers": {
+    "mentisdb": {
+      "type": "http",
+      "url": "https://my.mentisdb.com:9473",
+      "headers": {
+        "Authorization": "Bearer mentisdb_replace_me"
+      },
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+**VS Code + Copilot** (`.vscode/mcp.json` or your user `mcp.json`):
+
+```json
+{
+  "servers": {
+    "mentisdb": {
+      "type": "http",
+      "url": "https://my.mentisdb.com:9473",
+      "headers": {
+        "Authorization": "Bearer mentisdb_replace_me"
+      }
+    }
+  }
+}
+```
+
+**OpenCode** (`~/.config/opencode/opencode.json`):
+
+```json
+{
+  "mcp": {
+    "mentisdb": {
+      "type": "remote",
+      "url": "https://my.mentisdb.com:9473",
+      "enabled": true,
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer mentisdb_replace_me"
+      }
+    }
+  }
+}
+```
+
+**Hermes Agent** (`~/.hermes/config.yaml`):
+
+```yaml
+mcp_servers:
+  mentisdb:
+    url: "https://my.mentisdb.com:9473"
+    headers:
+      Authorization: "Bearer mentisdb_replace_me"
 ```
 
 You can also manage tokens in the dashboard Settings screen: enter an alias,
