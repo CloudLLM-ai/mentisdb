@@ -116,10 +116,14 @@ Run persistently after closing your SSH session:
 nohup mentisdb &
 ```
 
-**Headless mode.** To run the HTTP/MCP/REST servers without the interactive
-TUI — for example on a headless server, in a CI job, or whenever you want
-to test the headless code path on a machine that has a TTY — pass the
-explicit flag:
+**Headless mode.** The daemon now auto-promotes to headless HTTP mode
+whenever stdin or stdout is not a TTY — so every common non-interactive
+launch (Docker without `-t`, `nohup mentisdb &`, `systemd` without
+`StandardInput=tty`, `cron`, an SSH session that was disconnected) gets
+the right behavior automatically without you having to remember the
+flag. To force the headless code path on a machine that does have a
+TTY (for testing, or to suppress the dashboard), pass the explicit
+flag:
 
 ```bash
 mentisdb --headless               # HTTP/MCP/REST only, no TUI
