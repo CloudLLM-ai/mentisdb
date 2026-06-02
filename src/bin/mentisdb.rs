@@ -1335,6 +1335,22 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "server")]
     let _ = rustls::crypto::ring::default_provider().install_default();
     raise_fd_limit();
+
+    // If we cannot render the TUI (no controlling TTY: `docker run` without
+    // `-t`, `nohup mentisdb &`, `systemd` without `StandardInput=tty`, an
+    // SSH session that was disconnected, etc.), behave as the headless
+    // HTTP server. Without this branch the TUI thread would still be
+    // spawned, return `Ok(())` immediately (see `tui::tui_can_run` /
+    // `tui::run_tui`), and `tui_handle.join()` at the bottom of this
+    // function would unblock — taking the whole process (and the freshly
+    // started HTTP servers) down with it. Delegating to `run_headless`
+    // makes the daemon do the right thing automatically for every
+    // non-interactive launch without requiring operators to know about
+    // the `--headless` flag.
+    if !mentisdb::tui::tui_can_run() {
+        return run_headless().await;
+    }
+
     let log_rx = tui::init_tui_logger();
 
     // Build initial TUI state immediately so the TUI renders right away.
