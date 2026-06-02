@@ -2124,10 +2124,12 @@ mentisdb daemon
 
 Usage:
   mentisdb
+  mentisdb --headless
   mentisdb --force-update
   mentisdb --help
   mentisdb --mode stdio
   mentisdb --mode http
+  mentisdb --mode http --headless
   mentisdb --mode both
   mentisdb update
   mentisdb force-update
@@ -2140,6 +2142,13 @@ Usage:
   mentisdb restore <archive.mbak> [--dir <path>] [--overwrite] [--yes]
 
 Flags:
+  --headless
+    Start the HTTP/MCP/REST servers without the interactive terminal UI.
+    Use this when running mentisdb as a background daemon, inside Docker
+    without `-t`, from systemd, under nohup, in CI, or whenever you want to
+    test the headless code path. Pairs with `--mode http`
+    (`--mode http --headless`) for the stdio proxy auto-launch; the
+    standalone `--headless` form is equivalent.
   --force-update
     Show the update dialog even if already at the latest release.
     Useful for testing the update flow.
@@ -2335,6 +2344,16 @@ where
                 ))
             }
         }
+    }
+
+    // Standalone `--headless`: skip the TUI even when `--mode` is not set.
+    // This is the public-CLI form of the flag, introduced so operators can
+    // disable the TUI from the shell without going through the stdio
+    // proxy's auto-launch path. The pre-existing proxy invocation
+    // (`--mode http --headless`) is handled inside the `--mode http` arm
+    // above and is not affected by this branch.
+    if headless {
+        return Ok(DaemonArgMode::RunHeadless);
     }
 
     // Also accept --stdio-mcp as an alias for --mode stdio

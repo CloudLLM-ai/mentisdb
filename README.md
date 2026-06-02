@@ -110,11 +110,24 @@ log. On an interactive first run with no configured client integrations, it
 offers to launch the setup wizard immediately after startup so you do not have
 to guess the next command.
 
-Run persistently after closing your SSH session (no TUI in background mode):
+Run persistently after closing your SSH session:
 
 ```bash
 nohup mentisdb &
 ```
+
+**Headless mode.** To run the HTTP/MCP/REST servers without the interactive
+TUI — for example on a headless server, in a CI job, or whenever you want
+to test the headless code path on a machine that has a TTY — pass the
+explicit flag:
+
+```bash
+mentisdb --headless               # HTTP/MCP/REST only, no TUI
+mentisdb --mode http --headless   # equivalent; the stdio-proxy form
+```
+
+Both forms are accepted in either flag order. `mentisdb --help` lists the
+flag in the Usage block and gives a full description under Flags.
 
 Modern MCP clients bootstrap themselves from the MCP handshake:
 

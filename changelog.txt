@@ -1,4 +1,9 @@
 0.10.1.46 UNRELEASED
+  - feat(cli): `--headless` is now a real top-level flag. `mentisdb --headless`
+    starts the HTTP/MCP/REST servers without the interactive terminal UI,
+    matching the long-standing `--mode http --headless` invocation that the
+    stdio proxy has used internally since 2ae780f. `--help` now lists the
+    flag in both the Usage block and the Flags section.
   - feat(auth): built-in bearer-token authentication for remote MCP servers.
     `MENTISDB_BEARER_TOKEN_ACCESS=true` now protects standard Streamable HTTP
     MCP and legacy HTTP MCP routes with `Authorization: Bearer ...`; when the

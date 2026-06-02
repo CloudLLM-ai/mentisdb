@@ -117,6 +117,19 @@ fn mentisdb_help_lists_native_setup_and_wizard_subcommands() {
 }
 
 #[test]
+fn mentisdb_help_documents_the_headless_flag() {
+    // Regression test: `--headless` has been a real flag since 2ae780f
+    // (April 30) but was never advertised in `--help` because it was
+    // designed as an internal stdio-proxy flag. After the binary rename
+    // (fb94a93, May 6) it became user-discoverable, so the help must list it.
+    let help = mentisdb_impl::daemon_help_text();
+    assert!(
+        help.contains("--headless"),
+        "missing --headless from daemon help; users would not learn it exists"
+    );
+}
+
+#[test]
 fn parse_daemon_args_accepts_only_help_or_no_args() {
     assert_eq!(
         mentisdb_impl::parse_daemon_args(Vec::<OsString>::new()).unwrap(),
@@ -174,6 +187,92 @@ fn parse_daemon_args_rejects_other_unexpected_arguments() {
     let error = mentisdb_impl::parse_daemon_args([OsString::from("--version")]).unwrap_err();
     assert!(error.contains("Unexpected arguments"));
     assert!(error.contains("--version"));
+}
+
+#[test]
+fn parse_daemon_args_accepts_headless_as_a_standalone_flag() {
+    // Regression test: --headless was added in commit 2ae780f as an internal
+    // stdio-proxy coordination flag, but the binary rename in fb94a93 made
+    // `mentisdb` a name humans type, so `mentisdb --headless` became a
+    // discoverable-but-broken invocation. The standalone form must return
+    // `RunHeadless` so operators can disable the TUI from the CLI.
+    assert_eq!(
+        mentisdb_impl::parse_daemon_args([OsString::from("--headless")]).unwrap(),
+        mentisdb_impl::DaemonArgMode::RunHeadless
+    );
+}
+
+#[test]
+fn parse_daemon_args_headless_before_mode_http_returns_run_headless() {
+    // Locks the post-fix behavior: the user is free to order flags.
+    assert_eq!(
+        mentisdb_impl::parse_daemon_args([
+            OsString::from("--headless"),
+            OsString::from("--mode"),
+            OsString::from("http"),
+        ])
+        .unwrap(),
+        mentisdb_impl::DaemonArgMode::RunHeadless
+    );
+}
+
+#[test]
+fn parse_daemon_args_headless_after_mode_http_still_returns_run_headless() {
+    // The pre-existing stdio-proxy invocation
+    // (`nohup <exe> --mode http --headless`) must keep working unchanged.
+    assert_eq!(
+        mentisdb_impl::parse_daemon_args([
+            OsString::from("--mode"),
+            OsString::from("http"),
+            OsString::from("--headless"),
+        ])
+        .unwrap(),
+        mentisdb_impl::DaemonArgMode::RunHeadless
+    );
+}
+
+#[test]
+fn parse_daemon_args_mode_http_without_headless_returns_run() {
+    // Locks the pre-existing TUI-by-default behavior for `--mode http`.
+    assert_eq!(
+        mentisdb_impl::parse_daemon_args([
+            OsString::from("--mode"),
+            OsString::from("http"),
+        ])
+        .unwrap(),
+        mentisdb_impl::DaemonArgMode::Run
+    );
+}
+
+#[test]
+fn parse_daemon_args_mode_stdio_with_headless_returns_stdio() {
+    // `--headless` is a TUI concern; in stdio mode there is no TUI to
+    // disable, so the mode wins and the flag is silently ignored.
+    assert_eq!(
+        mentisdb_impl::parse_daemon_args([
+            OsString::from("--mode"),
+            OsString::from("stdio"),
+            OsString::from("--headless"),
+        ])
+        .unwrap(),
+        mentisdb_impl::DaemonArgMode::Stdio
+    );
+}
+
+#[test]
+fn parse_daemon_args_mode_both_with_headless_returns_both() {
+    // `--mode both` runs both the stdio proxy and the TUI-enabled HTTP
+    // servers. The TUI part is a separate concern; today the flag is
+    // silently ignored. Document and lock that behavior.
+    assert_eq!(
+        mentisdb_impl::parse_daemon_args([
+            OsString::from("--mode"),
+            OsString::from("both"),
+            OsString::from("--headless"),
+        ])
+        .unwrap(),
+        mentisdb_impl::DaemonArgMode::Both
+    );
 }
 
 #[test]
