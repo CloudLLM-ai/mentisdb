@@ -30,6 +30,7 @@
 
 use env_logger::Env;
 use mcp::ToolProtocol;
+use mentisdb::auth::MENTISDB_BEARER_TOKEN_ACCESS_ENV;
 use mentisdb::integrations::detect::{detect_integrations_with_environment, DetectionStatus};
 use mentisdb::paths::{HostPlatform, PathEnvironment};
 use mentisdb::server::{
@@ -2827,7 +2828,10 @@ pub(crate) fn build_endpoint_catalog(
 }
 
 /// Build configuration display lines for the TUI top-left pane.
-fn build_config_lines(config: &MentisDbServerConfig, update_config: &UpdateConfig) -> Vec<String> {
+pub(crate) fn build_config_lines(
+    config: &MentisDbServerConfig,
+    update_config: &UpdateConfig,
+) -> Vec<String> {
     let mut lines = Vec::new();
 
     let mut add_var = |name: &str, raw: Option<String>, default: String| {
@@ -2929,6 +2933,16 @@ fn build_config_lines(config: &MentisDbServerConfig, update_config: &UpdateConfi
         } else {
             "not set".to_string()
         },
+    );
+    add_var(
+        MENTISDB_BEARER_TOKEN_ACCESS_ENV,
+        std::env::var(MENTISDB_BEARER_TOKEN_ACCESS_ENV).ok(),
+        "false (default)".to_string(),
+    );
+    add_var(
+        "MENTISDB_GROUP_COMMIT_MS",
+        std::env::var("MENTISDB_GROUP_COMMIT_MS").ok(),
+        "2 ms (default)".to_string(),
     );
     add_var(
         "MENTISDB_UPDATE_CHECK",
@@ -3046,4 +3060,126 @@ fn build_endpoint_lines(
     }
 
     lines
+}
+
+#[cfg(test)]
+mod tui_config_lines_tests {
+    use super::*;
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn fixture_config() -> MentisDbServerConfig {
+        MentisDbServerConfig {
+            mcp_addr: SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 9471),
+            rest_addr: SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 9472),
+            https_mcp_addr: None,
+            https_rest_addr: None,
+            tls_cert_path: PathBuf::from("/tmp/cert.pem"),
+            tls_key_path: PathBuf::from("/tmp/key.pem"),
+            dashboard_addr: None,
+            dashboard_pin: None,
+            service: mentisdb::server::MentisDbServiceConfig::new(
+                PathBuf::from("/tmp/mentisdb"),
+                "test",
+                mentisdb::StorageAdapterKind::Binary,
+            ),
+        }
+    }
+
+    /// The TUI's "Configuration:" pane must list every `MENTISDB_*` env var
+    /// that the daemon consumes so an operator can verify their `.env` is in
+    /// effect without grepping the source. This test guards against drift
+    /// when new env vars are added.
+    #[test]
+    fn tui_config_lines_list_every_mentisdb_env_var() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Unset everything we care about so we observe defaults only.
+        for name in [
+            "MENTISDB_DIR",
+            "MENTISDB_DEFAULT_CHAIN_KEY",
+            "MENTISDB_DEFAULT_KEY",
+            "MENTISDB_STORAGE_ADAPTER",
+            "MENTISDB_AUTO_FLUSH",
+            "MENTISDB_VERBOSE",
+            "MENTISDB_LOG_FILE",
+            "MENTISDB_BIND_HOST",
+            "MENTISDB_MCP_PORT",
+            "MENTISDB_REST_PORT",
+            "MENTISDB_HTTPS_MCP_PORT",
+            "MENTISDB_HTTPS_REST_PORT",
+            "MENTISDB_TLS_CERT",
+            "MENTISDB_TLS_KEY",
+            "MENTISDB_DASHBOARD_PORT",
+            "MENTISDB_DASHBOARD_PIN",
+            "MENTISDB_BEARER_TOKEN_ACCESS",
+            "MENTISDB_GROUP_COMMIT_MS",
+            "MENTISDB_UPDATE_CHECK",
+            "MENTISDB_UPDATE_REPO",
+        ] {
+            std::env::remove_var(name);
+        }
+
+        let config = fixture_config();
+        let update_config = update_config_from_env();
+        let lines = build_config_lines(&config, &update_config);
+
+        // The TUI must list every env var that gates a behaviour change.
+        for required in [
+            "MENTISDB_DIR=",
+            "MENTISDB_DEFAULT_CHAIN_KEY=",
+            "MENTISDB_STORAGE_ADAPTER=",
+            "MENTISDB_AUTO_FLUSH=",
+            "MENTISDB_VERBOSE=",
+            "MENTISDB_LOG_FILE=",
+            "MENTISDB_BIND_HOST=",
+            "MENTISDB_MCP_PORT=",
+            "MENTISDB_REST_PORT=",
+            "MENTISDB_HTTPS_MCP_PORT=",
+            "MENTISDB_HTTPS_REST_PORT=",
+            "MENTISDB_TLS_CERT=",
+            "MENTISDB_TLS_KEY=",
+            "MENTISDB_DASHBOARD_PORT=",
+            "MENTISDB_DASHBOARD_PIN=",
+            "MENTISDB_BEARER_TOKEN_ACCESS=",
+            "MENTISDB_GROUP_COMMIT_MS=",
+            "MENTISDB_UPDATE_CHECK=",
+            "MENTISDB_UPDATE_REPO=",
+        ] {
+            assert!(
+                lines.iter().any(|l| l.contains(required)),
+                "TUI config pane is missing {required}; lines were {lines:?}"
+            );
+        }
+    }
+
+    /// When `MENTISDB_BEARER_TOKEN_ACCESS=true`, the TUI must reflect that
+    /// value verbatim so users can see at a glance whether bearer tokens are
+    /// required.
+    #[test]
+    fn tui_config_lines_reflect_bearer_token_access_value() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::var("MENTISDB_BEARER_TOKEN_ACCESS").ok();
+        std::env::set_var("MENTISDB_BEARER_TOKEN_ACCESS", "true");
+
+        let config = fixture_config();
+        let lines = build_config_lines(&config, &update_config_from_env());
+
+        let bearer_line = lines
+            .iter()
+            .find(|l| l.contains("MENTISDB_BEARER_TOKEN_ACCESS="))
+            .expect("bearer-token-access line");
+        assert!(
+            bearer_line.contains("=true"),
+            "expected the env-var value `true` in the rendered line, got: {bearer_line}"
+        );
+
+        match original {
+            Some(v) => std::env::set_var("MENTISDB_BEARER_TOKEN_ACCESS", v),
+            None => std::env::remove_var("MENTISDB_BEARER_TOKEN_ACCESS"),
+        }
+    }
 }
