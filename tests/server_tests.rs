@@ -4287,3 +4287,226 @@ async fn start_servers_headless_without_tui_state() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+/// Helper: read the entire response body as a JSON `Value`.
+async fn read_json_body(body: axum::body::Body) -> serde_json::Value {
+    serde_json::from_slice(&axum::body::to_bytes(body, usize::MAX).await.unwrap()).unwrap()
+}
+
+/// REST endpoints must reject requests with HTTP 401 + a descriptive body
+/// when `MENTISDB_BEARER_TOKEN_ACCESS=true` and no token is supplied.
+#[tokio::test]
+async fn rest_router_rejects_request_without_bearer_token() {
+    let dir = unique_chain_dir();
+    let chain_key = "rest-no-bearer";
+
+    let mut config = MentisDbServiceConfig::new(dir.clone(), chain_key, StorageAdapterKind::Binary);
+    config = config.with_bearer_token_access(true);
+    let router = rest_router(config);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/thoughts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": chain_key,
+                        "agent_id": "astro",
+                        "thought_type": "Insight",
+                        "content": "should not be stored",
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = read_json_body(response.into_body()).await;
+    assert_eq!(body["error"], "Unauthorized");
+    // The body must explain the requirement and the CLI hint so an Agent
+    // harness can surface a useful message to the user.
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("Bearer token"),
+        "missing bearer-token hint in error body: {message}"
+    );
+    assert!(
+        message.contains("MENTISDB_BEARER_TOKEN_ACCESS=false"),
+        "missing disable hint in error body: {message}"
+    );
+    assert!(
+        body["hint"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("mentisdb bearertoken create"),
+        "missing CLI hint in error body: {body}"
+    );
+    // No thoughts should have been persisted.
+    let storage_file = chain_storage_filename(chain_key, StorageAdapterKind::Binary);
+    assert!(!dir.join(&storage_file).exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REST endpoints must accept requests with a valid bearer token issued by
+/// the in-process `BearerTokenStore` when `MENTISDB_BEARER_TOKEN_ACCESS=true`.
+#[tokio::test]
+async fn rest_router_accepts_valid_bearer_token() {
+    use mentisdb::auth::{BearerTokenScope, BearerTokenStore};
+
+    let dir = unique_chain_dir();
+    let chain_key = "rest-with-bearer";
+
+    let mut config = MentisDbServiceConfig::new(dir.clone(), chain_key, StorageAdapterKind::Binary);
+    config = config.with_bearer_token_access(true);
+    // Reuse the default token-store directory created by MentisDbServiceConfig.
+    let store = BearerTokenStore::new(&dir);
+    let created = store
+        .create("test", BearerTokenScope::Global)
+        .expect("create token");
+    let router = rest_router(config);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/thoughts")
+                .header("content-type", "application/json")
+                .header("Authorization", format!("Bearer {}", created.token))
+                .body(Body::from(
+                    json!({
+                        "chain_key": chain_key,
+                        "agent_id": "astro",
+                        "thought_type": "Insight",
+                        "content": "stored with valid token",
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REST endpoints must reject requests with a syntactically correct but
+/// unknown bearer token.
+#[tokio::test]
+async fn rest_router_rejects_invalid_bearer_token() {
+    let dir = unique_chain_dir();
+    let chain_key = "rest-bad-bearer";
+
+    let mut config = MentisDbServiceConfig::new(dir.clone(), chain_key, StorageAdapterKind::Binary);
+    config = config.with_bearer_token_access(true);
+    let router = rest_router(config);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/thoughts")
+                .header("content-type", "application/json")
+                .header(
+                    "Authorization",
+                    "Bearer mentisdb_definitely_not_a_real_token",
+                )
+                .body(Body::from(
+                    json!({
+                        "chain_key": chain_key,
+                        "agent_id": "astro",
+                        "thought_type": "Insight",
+                        "content": "should be rejected",
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = read_json_body(response.into_body()).await;
+    assert_eq!(body["error"], "Unauthorized");
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Bearer token"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// When `MENTISDB_BEARER_TOKEN_ACCESS=false` (the default), REST endpoints
+/// must remain open even with no `Authorization` header — the new middleware
+/// is a no-op in the common single-tenant localhost case.
+#[tokio::test]
+async fn rest_router_does_not_require_bearer_when_disabled() {
+    let dir = unique_chain_dir();
+    let chain_key = "rest-no-bearer-disabled";
+
+    let config = MentisDbServiceConfig::new(dir.clone(), chain_key, StorageAdapterKind::Binary);
+    assert!(!config.bearer_token_access.load(Ordering::SeqCst));
+    let router = rest_router(config);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/thoughts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": chain_key,
+                        "agent_id": "astro",
+                        "thought_type": "Insight",
+                        "content": "stored when bearer enforcement is off",
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The legacy `/tools/list` and `/tools/execute` endpoints (used by
+/// CloudLLM-era clients) must also return a helpful body when a request is
+/// rejected for missing the bearer token.
+#[tokio::test]
+async fn mcp_router_rejects_request_without_bearer_token() {
+    let dir = unique_chain_dir();
+    let chain_key = "mcp-no-bearer";
+
+    let mut config = MentisDbServiceConfig::new(dir.clone(), chain_key, StorageAdapterKind::Binary);
+    config = config.with_bearer_token_access(true);
+    let router = mcp_router(config);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tools/list")
+                .header("content-type", "application/json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = read_json_body(response.into_body()).await;
+    assert_eq!(body["error"], "Unauthorized");
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Bearer token"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

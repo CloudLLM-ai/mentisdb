@@ -75,6 +75,7 @@ use crate::{
 use async_trait::async_trait;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header::CONTENT_TYPE, HeaderMap, StatusCode};
+use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -1625,7 +1626,11 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         .route("/v1/webhooks", post(rest_register_webhook_handler))
         .route("/v1/webhooks/{id}", delete(rest_delete_webhook_handler))
         .route("/v1/extract-memories", post(rest_extract_memories_handler))
-        .with_state(service)
+        .with_state(service.clone())
+        .layer(middleware::from_fn_with_state(
+            service,
+            rest_bearer_auth_middleware,
+        ))
 }
 
 /// Build the legacy CloudLLM-compatible MCP router without binding a socket.
@@ -1895,7 +1900,11 @@ pub fn rest_router(config: MentisDbServiceConfig) -> Router {
         .route("/v1/webhooks", post(rest_register_webhook_handler))
         .route("/v1/webhooks/{id}", delete(rest_delete_webhook_handler))
         .route("/v1/extract-memories", post(rest_extract_memories_handler))
-        .with_state(service)
+        .with_state(service.clone())
+        .layer(middleware::from_fn_with_state(
+            service,
+            rest_bearer_auth_middleware,
+        ))
 }
 
 /// Core service state shared by the MCP and REST servers.
@@ -5771,10 +5780,7 @@ async fn mcp_list_tools_handler(
     headers: HeaderMap,
 ) -> (StatusCode, Json<Value>) {
     if !authorize_embedded_mcp(&service, &headers, "/tools/list", "tools/list", None) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error": "Unauthorized"})),
-        );
+        return bearer_token_required_response("/tools/list");
     }
     (
         StatusCode::OK,
@@ -5798,10 +5804,7 @@ async fn mcp_execute_handler(
         "tools/execute",
         Some(payload),
     ) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error": "Unauthorized"})),
-        );
+        return bearer_token_required_response("/tools/execute");
     }
 
     let protocol = MentisDbMcpProtocol::new(service);
@@ -5837,6 +5840,82 @@ fn authorize_embedded_mcp(
         return authorizer.allow_missing_bearer_token(&context);
     };
     authorizer.authorize_bearer_token(token, &context)
+}
+
+/// Standard JSON body returned when a request is rejected because
+/// `MENTISDB_BEARER_TOKEN_ACCESS=true` and the caller did not present a valid
+/// bearer token in the `Authorization: Bearer <token>` header.
+///
+/// The body mirrors RFC 6750's `error_description` field and adds a `hint`
+/// with the exact CLI command an operator can run to issue a new token. The
+/// goal is for an Agent harness that surfaces the response body to show the
+/// user a clear remediation path instead of a bare "Unauthorized" string.
+pub const MENTISDB_BEARER_TOKEN_REQUIRED_MESSAGE: &str =
+    "This mentisdb endpoint requires a Bearer token in the `Authorization: Bearer <token>` header. \
+     Either supply a valid token, or restart mentisdb with `MENTISDB_BEARER_TOKEN_ACCESS=false` \
+     to disable bearer-token enforcement for the daemon.";
+
+/// Build the JSON response body for a bearer-token rejection on a given route.
+fn bearer_token_required_response(route: &str) -> (StatusCode, Json<Value>) {
+    let body = json!({
+        "error": "Unauthorized",
+        "error_description": MENTISDB_BEARER_TOKEN_REQUIRED_MESSAGE,
+        "message": MENTISDB_BEARER_TOKEN_REQUIRED_MESSAGE,
+        "hint": "Send `Authorization: Bearer <token>` with a token issued by `mentisdb bearertoken create --alias <name>`. \
+                 Alternatively, restart the daemon with `MENTISDB_BEARER_TOKEN_ACCESS=false` to disable enforcement.",
+        "route": route,
+    });
+    (StatusCode::UNAUTHORIZED, Json(body))
+}
+
+/// Axum middleware that enforces `MENTISDB_BEARER_TOKEN_ACCESS=true` for REST
+/// endpoints. Pass-through when the env-var is unset or `false` (the default),
+/// so existing single-tenant local deployments see no behaviour change.
+///
+/// When enforcement is enabled, requests that do not present a valid bearer
+/// token in the `Authorization: Bearer <token>` header receive
+/// [`bearer_token_required_response`]. The body explains the requirement and
+/// the exact CLI command an operator can use to issue a token.
+///
+/// The auth context uses the request's HTTP route and method (e.g.
+/// `action = "rest:get"`, `route = "/v1/chains"`) so log lines and future
+/// per-route policies can distinguish traffic without parsing the body.
+pub(crate) async fn rest_bearer_auth_middleware(
+    State(service): State<Arc<MentisDbService>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if !service.config.bearer_token_access.load(Ordering::Relaxed) {
+        return next.run(request).await;
+    }
+
+    let route = request.uri().path().to_string();
+    let action = format!("rest:{}", request.method().as_str().to_ascii_lowercase());
+    let authorizer = MentisDbBearerAuthorizer::new(&service.config);
+    let context = BearerAuthContext {
+        client_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+        route: route.clone(),
+        action,
+        payload: None,
+    };
+
+    let provided = request
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+
+    let authorized = match provided {
+        Some(token) => authorizer.authorize_bearer_token(token, &context),
+        None => authorizer.allow_missing_bearer_token(&context),
+    };
+
+    if !authorized {
+        let (status, body) = bearer_token_required_response(&route);
+        return (status, body).into_response();
+    }
+
+    next.run(request).await
 }
 
 async fn rest_bootstrap_handler(
