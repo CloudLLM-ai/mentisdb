@@ -235,11 +235,8 @@ fn parse_daemon_args_headless_after_mode_http_still_returns_run_headless() {
 fn parse_daemon_args_mode_http_without_headless_returns_run() {
     // Locks the pre-existing TUI-by-default behavior for `--mode http`.
     assert_eq!(
-        mentisdb_impl::parse_daemon_args([
-            OsString::from("--mode"),
-            OsString::from("http"),
-        ])
-        .unwrap(),
+        mentisdb_impl::parse_daemon_args([OsString::from("--mode"), OsString::from("http"),])
+            .unwrap(),
         mentisdb_impl::DaemonArgMode::Run
     );
 }
