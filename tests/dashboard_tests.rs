@@ -204,12 +204,24 @@ async fn dashboard_serves_skill_edit_controls() {
     assert!(bearer_tokens_nav < settings_nav);
     assert!(html.contains("href=\"#bearer-tokens\""));
     assert!(html.contains("function renderBearerTokensPage()"));
-    assert!(html.contains("id=\"bt-access-toggle\""));
-    assert!(html.contains("function updateBearerTokenAccess(enabled)"));
+    // The bearer-token access control is a radio group with two options
+    // (Enabled / Disabled) plus a status pill — not a single checkbox.
+    assert!(html.contains("name=\"bt-access\""));
+    assert!(html.contains("id=\"bt-access-enabled\""));
+    assert!(html.contains("id=\"bt-access-disabled\""));
+    assert!(html.contains("id=\"bt-access-current\""));
+    assert!(html.contains("class=\"status-pill status-pill-muted\""));
+    assert!(html.contains("function applyBearerTokenAccessChange(enabled)"));
     assert!(html.contains("MENTISDB_BEARER_TOKEN_ACCESS: enabled ? 'true' : 'false'"));
+    assert!(html.contains("r.restart_required"));
+    assert!(html.contains("function restartBearerTokenDaemon()"));
     assert!(html.contains("id=\"st-restart\""));
     assert!(html.contains("function restartDaemon()"));
     assert!(html.contains("api('/dashboard/api/restart', { method: 'POST' })"));
+    // Make sure the old single-checkbox UI is gone.
+    assert!(!html.contains("id=\"bt-access-toggle\""));
+    assert!(!html.contains("function updateBearerTokenAccess(enabled)"));
+    assert!(!html.contains("function updateBearerTokenAccessLabel()"));
     assert!(html.contains("id=\"bt-alias\""));
     assert!(html.contains("id=\"bt-scope\""));
     assert!(html.contains("type=\"radio\" name=\"bt-scope\" value=\"global\" checked"));
@@ -1514,6 +1526,66 @@ async fn dashboard_html_includes_chain_search_scaffolding() {
     assert!(html.contains("/dashboard/api/chains/${encodeURIComponent(chainKey)}/vectors/${encodeURIComponent(key)}/rebuild"));
     assert!(html.contains("Context Bundles"));
     assert!(html.contains("updateExplorerOrderUi"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn dashboard_bearer_token_access_uses_radio_group_with_status_pill() {
+    // Regression test for the previous single-checkbox UI: the new
+    // "MCP Access Control" card on the Bearer Tokens page must expose two
+    // radio buttons (Enabled / Disabled) plus a "Current" status pill so
+    // users can see at a glance what the daemon is enforcing.
+    let dir = unique_chain_dir();
+    let router = dashboard_router_for_dir(&dir);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8(body.to_vec()).unwrap();
+
+    // The two radios must be grouped under the same name and must NOT be
+    // the previous single checkbox.
+    let enabled_idx = html
+        .find("id=\"bt-access-enabled\"")
+        .expect("bt-access-enabled radio");
+    let disabled_idx = html
+        .find("id=\"bt-access-disabled\"")
+        .expect("bt-access-disabled radio");
+    let group_idx = html
+        .find("name=\"bt-access\"")
+        .expect("name=\"bt-access\" radio group");
+    assert!(group_idx < enabled_idx);
+    assert!(enabled_idx < disabled_idx);
+    assert!(!html.contains("id=\"bt-access-toggle\""));
+    assert!(!html.contains("id=\"bt-access-label\""));
+
+    // The status pill must use the new CSS class and the radios must
+    // announce the chosen mode via the .status-pill colour.
+    assert!(html.contains("class=\"status-pill status-pill-muted\""));
+    assert!(html.contains("id=\"bt-access-current\""));
+
+    // The "Current" badge is set by the same code path that posts the
+    // change; the function names below are part of the wired UI.
+    assert!(html.contains("function applyBearerTokenAccessState("));
+    assert!(html.contains("function applyBearerTokenAccessChange(enabled)"));
+    assert!(html.contains("function restartBearerTokenDaemon()"));
+    // The change submission still uses the right env-var name.
+    assert!(html.contains("MENTISDB_BEARER_TOKEN_ACCESS: enabled ? 'true' : 'false'"));
+    // The response from /dashboard/api/settings carries a
+    // `restart_required` flag that the new UI reads to decide whether to
+    // surface the Restart Daemon button.
+    assert!(html.contains("r.restart_required"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

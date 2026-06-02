@@ -133,6 +133,21 @@
     .btn-success:hover:not(:disabled)   { background: rgba(63,185,80,0.12); border-color: #3fb950; }
     .btn-sm { padding: 3px 10px; font-size: 0.8rem; }
 
+    /* === Status pills (used by Bearer Tokens "Current" badge) === */
+    .status-pill {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 10px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      line-height: 1.6;
+      white-space: nowrap;
+    }
+    .status-pill-ok    { background: rgba(63,185,80,0.15);  color: #3fb950; border: 1px solid rgba(63,185,80,0.35); }
+    .status-pill-muted { background: rgba(139,148,158,0.15); color: #8b949e; border: 1px solid rgba(139,148,158,0.35); }
+    .status-pill-err   { background: rgba(248,81,73,0.15);  color: #f85149; border: 1px solid rgba(248,81,73,0.35); }
+    .visually-hidden   { position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden; }
+
     /* === Forms === */
     .form-group { margin-bottom: 12px; }
     .form-group label { display: block; font-size: 0.82rem; color: #8b949e; margin-bottom: 4px; font-weight: 600; }
@@ -1480,17 +1495,32 @@
         <h1 title="Manage MCP bearer-token authentication and scoped access">Bearer Tokens</h1>
       </div>
       <div class="card">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-          <div>
-            <div class="section-label" style="margin:0 0 6px">MCP Access Control</div>
-            <div style="color:#8b949e;font-size:0.88rem;line-height:1.4">Require bearer tokens for remote MCP HTTP and HTTPS clients.</div>
-          </div>
-          <label style="display:flex;align-items:center;gap:8px;color:#c9d1d9;cursor:pointer" title="Hot-reload MENTISDB_BEARER_TOKEN_ACCESS">
-            <input type="checkbox" id="bt-access-toggle" style="width:auto;margin:0;accent-color:#58a6ff">
-            <span id="bt-access-label">Loading...</span>
-          </label>
+        <div class="section-label" style="margin:0 0 6px">MCP Access Control</div>
+        <div style="color:#8b949e;font-size:0.88rem;line-height:1.4;margin-bottom:14px">
+          Require bearer tokens for remote MCP HTTP and HTTPS clients. Every
+          method exposed by mentisdb (MCP <em>and</em> REST) checks the
+          <code>Authorization: Bearer &lt;token&gt;</code> header when access is
+          enabled.
         </div>
-        <div id="bt-access-msg" class="settings-msg" style="margin-top:8px"></div>
+        <fieldset id="bt-access-fieldset" style="border:0;padding:0;margin:0;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+          <legend class="visually-hidden" style="position:absolute;left:-9999px">Bearer-token access mode</legend>
+          <div class="token-scope-options" id="bt-access-options" role="radiogroup" aria-label="Bearer-token access">
+            <label class="token-scope-option" id="bt-access-enabled-label" title="Require Authorization: Bearer <token> on every MCP and REST request">
+              <input type="radio" name="bt-access" value="enabled" id="bt-access-enabled" disabled>
+              <span>Enabled</span>
+            </label>
+            <label class="token-scope-option" id="bt-access-disabled-label" title="Allow any client to invoke MCP and REST without a bearer token">
+              <input type="radio" name="bt-access" value="disabled" id="bt-access-disabled" disabled>
+              <span>Disabled</span>
+            </label>
+          </div>
+          <div id="bt-access-current-wrap" style="display:flex;align-items:center;gap:6px;color:#8b949e;font-size:0.88rem">
+            <span>Current:</span>
+            <span id="bt-access-current" class="status-pill status-pill-muted" style="font-weight:600">Loading…</span>
+          </div>
+          <div id="bt-access-action" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"></div>
+        </fieldset>
+        <div id="bt-access-msg" class="settings-msg" style="margin-top:10px"></div>
       </div>
       <div class="card">
         ${bearerTokenToolsHtml()}
@@ -1529,58 +1559,130 @@
   }
 
   function loadBearerTokenAccessToggle() {
-    const toggle = document.getElementById('bt-access-toggle');
-    const label = document.getElementById('bt-access-label');
+    const enabledRadio = document.getElementById('bt-access-enabled');
+    const disabledRadio = document.getElementById('bt-access-disabled');
+    const currentEl = document.getElementById('bt-access-current');
+    const actionEl = document.getElementById('bt-access-action');
     const msg = document.getElementById('bt-access-msg');
-    if (!toggle || !label || !msg) return;
-    toggle.disabled = true;
+    if (!enabledRadio || !disabledRadio || !currentEl || !actionEl || !msg) return;
+
     api('/dashboard/api/settings')
       .then(settings => {
         const setting = (settings || []).find(s => s.name === 'MENTISDB_BEARER_TOKEN_ACCESS');
         const rawValue = setting ? (setting.value || setting.default_value || 'false') : 'false';
-        toggle.checked = ['1','true','yes','on'].includes(rawValue.toLowerCase());
-        updateBearerTokenAccessLabel();
-        toggle.disabled = false;
-        toggle.addEventListener('change', () => updateBearerTokenAccess(toggle.checked));
+        const enabled = ['1','true','yes','on'].includes(rawValue.toLowerCase());
+        const hotReload = setting ? !!setting.hot_reload : true;
+
+        applyBearerTokenAccessState(enabled, hotReload);
+
+        enabledRadio.disabled = false;
+        disabledRadio.disabled = false;
+        enabledRadio.addEventListener('change', () => {
+          if (enabledRadio.checked) applyBearerTokenAccessChange(true);
+        });
+        disabledRadio.addEventListener('change', () => {
+          if (disabledRadio.checked) applyBearerTokenAccessChange(false);
+        });
       })
       .catch(err => {
-        label.textContent = 'Unavailable';
+        currentEl.textContent = 'Unavailable';
+        currentEl.className = 'status-pill status-pill-err';
         msg.textContent = err.message || 'Failed to load bearer-token access setting.';
         msg.className = 'settings-msg err';
       });
   }
 
-  function updateBearerTokenAccessLabel() {
-    const toggle = document.getElementById('bt-access-toggle');
-    const label = document.getElementById('bt-access-label');
-    if (!toggle || !label) return;
-    label.textContent = toggle.checked ? 'Enabled' : 'Disabled';
+  /// Render the radios + status pill + restart button to reflect the current
+  /// server state. Hot-reloadable settings show no restart button.
+  function applyBearerTokenAccessState(enabled, hotReload) {
+    const enabledRadio = document.getElementById('bt-access-enabled');
+    const disabledRadio = document.getElementById('bt-access-disabled');
+    const currentEl = document.getElementById('bt-access-current');
+    const actionEl = document.getElementById('bt-access-action');
+    if (!enabledRadio || !disabledRadio || !currentEl || !actionEl) return;
+
+    enabledRadio.checked = enabled;
+    disabledRadio.checked = !enabled;
+    currentEl.textContent = enabled ? 'Enabled' : 'Disabled';
+    currentEl.className = 'status-pill ' + (enabled ? 'status-pill-ok' : 'status-pill-muted');
+    actionEl.innerHTML = '';
   }
 
-  function updateBearerTokenAccess(enabled) {
-    const toggle = document.getElementById('bt-access-toggle');
+  /// Send a setting change to the server, surface a clear success / restart-needed
+  /// message, and show a Restart button only when the response requires one.
+  function applyBearerTokenAccessChange(enabled) {
+    const enabledRadio = document.getElementById('bt-access-enabled');
+    const disabledRadio = document.getElementById('bt-access-disabled');
+    const currentEl = document.getElementById('bt-access-current');
+    const actionEl = document.getElementById('bt-access-action');
     const msg = document.getElementById('bt-access-msg');
-    if (!toggle || !msg) return;
-    toggle.disabled = true;
-    msg.textContent = enabled ? 'Enabling bearer-token access...' : 'Disabling bearer-token access...';
+    if (!enabledRadio || !disabledRadio || !currentEl || !actionEl || !msg) return;
+
+    const revert = () => {
+      enabledRadio.checked = !enabled;
+      disabledRadio.checked = enabled;
+    };
+
+    enabledRadio.disabled = true;
+    disabledRadio.disabled = true;
+    msg.textContent = enabled
+      ? 'Enabling bearer-token access on all MCP and REST endpoints…'
+      : 'Disabling bearer-token access on all MCP and REST endpoints…';
     msg.className = 'settings-msg';
+
     api('/dashboard/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ settings: { MENTISDB_BEARER_TOKEN_ACCESS: enabled ? 'true' : 'false' } })
     })
       .then(r => {
-        updateBearerTokenAccessLabel();
-        msg.textContent = r.message || 'Settings saved.';
+        currentEl.textContent = enabled ? 'Enabled' : 'Disabled';
+        currentEl.className = 'status-pill ' + (enabled ? 'status-pill-ok' : 'status-pill-muted');
+        actionEl.innerHTML = '';
+        if (r && r.restart_required) {
+          msg.innerHTML = `<span style="color:#f0883e">⚠ Change saved to <code>.env</code> but the daemon must be restarted before <strong>${esc(enabled ? 'Enabled' : 'Disabled')}</strong> takes effect.</span>`;
+          const btn = document.createElement('button');
+          btn.className = 'btn btn-danger btn-sm';
+          btn.textContent = 'Restart Daemon';
+          btn.title = 'Restart mentisdb so the new bearer-token setting takes effect';
+          btn.addEventListener('click', () => restartBearerTokenDaemon());
+          actionEl.appendChild(btn);
+        } else {
+          msg.innerHTML = `<span style="color:#3fb950">✓ Applied immediately — ${esc(enabled ? 'Bearer tokens are now required on all MCP and REST endpoints.' : 'Bearer tokens are no longer required; the daemon is open.')}</span>`;
+        }
         msg.className = 'settings-msg ok';
       })
       .catch(err => {
-        toggle.checked = !enabled;
-        updateBearerTokenAccessLabel();
-        msg.textContent = err.message || 'Save failed.';
+        revert();
+        msg.innerHTML = `<span style="color:#f85149">${esc(err.message || 'Save failed.')}</span>`;
         msg.className = 'settings-msg err';
       })
-      .finally(() => { toggle.disabled = false; });
+      .finally(() => {
+        enabledRadio.disabled = false;
+        disabledRadio.disabled = false;
+      });
+  }
+
+  function restartBearerTokenDaemon() {
+    const actionEl = document.getElementById('bt-access-action');
+    const msg = document.getElementById('bt-access-msg');
+    if (!actionEl || !msg) return;
+    if (!confirm('Restart the MentisDB daemon now? The dashboard will briefly disconnect.')) return;
+    const btn = actionEl.querySelector('button');
+    if (btn) btn.disabled = true;
+    msg.textContent = 'Restarting daemon…';
+    msg.className = 'settings-msg';
+    api('/dashboard/api/restart', { method: 'POST' })
+      .then(r => {
+        msg.innerHTML = `<span style="color:#3fb950">✓ ${esc(r.message || 'Restart scheduled.')}</span>`;
+        msg.className = 'settings-msg ok';
+        actionEl.innerHTML = '';
+      })
+      .catch(err => {
+        msg.innerHTML = `<span style="color:#f85149">${esc(err.message || 'Restart failed.')}</span>`;
+        msg.className = 'settings-msg err';
+        if (btn) btn.disabled = false;
+      });
   }
 
   function loadBearerTokens() {
