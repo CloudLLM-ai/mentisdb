@@ -5662,6 +5662,101 @@ async fn start_router(
     Ok(ServerHandle::new(local_addr, shutdown_tx))
 }
 
+/// Build the SAN list for the auto-generated self-signed TLS certificate.
+///
+/// Every interface address on the host is added so the cert is valid for
+/// every IP the VPS / LAN exposes — not just loopback. The well-known
+/// `my.mentisdb.com` DNS name and `localhost` are always included. The
+/// `MENTISDB_BIND_HOST` value, if it is a hostname (not an IP and not the
+/// wildcard `0.0.0.0`), is also added as a DNS SAN.
+pub fn build_tls_sans<I>(extra_bind_host: Option<&str>, interface_ips: I) -> Vec<SanType>
+where
+    I: IntoIterator<Item = std::net::IpAddr>,
+{
+    use std::net::IpAddr;
+
+    let mut sans: Vec<SanType> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let push_dns =
+        |name: &str, sans: &mut Vec<SanType>, seen: &mut std::collections::HashSet<String>| {
+            if name.is_empty() {
+                return;
+            }
+            let key = format!("dns:{name}");
+            if seen.insert(key) {
+                if let Ok(dns) = name.to_string().try_into() {
+                    sans.push(SanType::DnsName(dns));
+                }
+            }
+        };
+
+    let push_ip =
+        |ip: IpAddr, sans: &mut Vec<SanType>, seen: &mut std::collections::HashSet<String>| {
+            let key = format!("ip:{ip}");
+            if seen.insert(key) {
+                sans.push(SanType::IpAddress(ip));
+            }
+        };
+
+    push_dns("my.mentisdb.com", &mut sans, &mut seen);
+    push_dns("localhost", &mut sans, &mut seen);
+    push_ip(
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+        &mut sans,
+        &mut seen,
+    );
+
+    // Honour MENTISDB_BIND_HOST when it is a DNS name (e.g. vps.example.com).
+    // IP literals are also accepted and added as IPAddress SANs.
+    if let Some(bind_host) = extra_bind_host {
+        let trimmed = bind_host.trim();
+        if !trimmed.is_empty() && trimmed != "0.0.0.0" && trimmed != "::" {
+            if let Ok(ip) = trimmed.parse::<IpAddr>() {
+                push_ip(ip, &mut sans, &mut seen);
+            } else {
+                push_dns(trimmed, &mut sans, &mut seen);
+            }
+        }
+    }
+
+    // Add every local interface IP so the cert covers any VPS / LAN address
+    // the operator might connect from. Duplicate SAN entries (e.g. loopback
+    // also returned by the OS) are de-duplicated by `seen`.
+    for ip in interface_ips {
+        push_ip(ip, &mut sans, &mut seen);
+    }
+
+    sans
+}
+
+/// Enumerate every unicast IP on every network interface on the host.
+///
+/// Returns an empty vector when interface enumeration fails or the platform
+/// has no interfaces (e.g. some minimal containers). The caller treats that
+/// as "no extra SANs" rather than an error so cert generation still succeeds.
+pub fn enumerate_interface_ips() -> Vec<std::net::IpAddr> {
+    let mut ips = Vec::new();
+    let Ok(interfaces) = if_addrs::get_if_addrs() else {
+        return ips;
+    };
+    for interface in interfaces {
+        let ip = interface.addr.ip();
+        // Skip unspecified / multicast / broadcast / document / reserved
+        // ranges — they cannot be a meaningful SAN target.
+        if ip.is_unspecified() || ip.is_multicast() {
+            continue;
+        }
+        if let IpAddr::V4(v4) = ip {
+            if v4.is_broadcast() || v4.is_documentation() || v4.is_unspecified() {
+                continue;
+            }
+        }
+        ips.push(ip);
+    }
+    ips
+}
+
 /// Generate a self-signed TLS certificate and private key if the PEM files do
 /// not yet exist, then return without doing anything if they already do.
 ///
@@ -5674,7 +5769,12 @@ async fn start_router(
 /// | Property | Value |
 /// |---|---|
 /// | Common Name | `MentisDB Local` |
-/// | Subject Alternative Names | `my.mentisdb.com` (DNS), `localhost` (DNS), `127.0.0.1` (IP) |
+/// | Subject Alternative Names | `my.mentisdb.com` (DNS), `localhost` (DNS), `127.0.0.1` (IP), every unicast IP on every host interface, plus `MENTISDB_BIND_HOST` if it is a DNS name |
+/// The auto-generated cert is bound to *specific* IPs — X.509 v3 SAN entries
+/// cannot be wildcards. To pick up a new interface (e.g. a new IP attached
+/// to a VPS) delete `~/.cloudllm/mentisdb/tls/cert.pem` and restart; the
+/// daemon will regenerate the cert with the new SAN set.
+///
 /// | Validity | 2025-01-01 → 2027-01-01 |
 ///
 /// Both `cert_path` and `key_path` are written as PEM files. The parent
@@ -5688,7 +5788,10 @@ async fn start_router(
 ///
 /// Returns an error if key-pair generation, certificate self-signing, or any
 /// file-system operation (directory creation, file write) fails.
-fn ensure_tls_cert(cert_path: &Path, key_path: &Path) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub fn ensure_tls_cert(
+    cert_path: &Path,
+    key_path: &Path,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     if cert_path.exists() && key_path.exists() {
         return Ok(());
     }
@@ -5700,11 +5803,8 @@ fn ensure_tls_cert(cert_path: &Path, key_path: &Path) -> Result<(), Box<dyn Erro
     dn.push(DnType::CommonName, "MentisDB Local");
     params.distinguished_name = dn;
 
-    params.subject_alt_names = vec![
-        SanType::DnsName("my.mentisdb.com".try_into()?),
-        SanType::DnsName("localhost".try_into()?),
-        SanType::IpAddress(std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
-    ];
+    let bind_host = std::env::var("MENTISDB_BIND_HOST").ok();
+    params.subject_alt_names = build_tls_sans(bind_host.as_deref(), enumerate_interface_ips());
 
     params.not_before = date_time_ymd(2025, 1, 1);
     params.not_after = date_time_ymd(2027, 1, 1);

@@ -10,8 +10,9 @@ use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use chrono::DateTime;
 use mentisdb::server::{
-    adopt_legacy_default_mentisdb_dir, mcp_router, rest_router, standard_mcp_router, start_servers,
-    MentisDbServerConfig, MentisDbServiceConfig,
+    adopt_legacy_default_mentisdb_dir, build_tls_sans, ensure_tls_cert, enumerate_interface_ips,
+    mcp_router, rest_router, standard_mcp_router, start_servers, MentisDbServerConfig,
+    MentisDbServiceConfig,
 };
 use mentisdb::{chain_storage_filename, MentisDb, StorageAdapterKind, MENTISDB_CURRENT_VERSION};
 use serde_json::json;
@@ -4287,6 +4288,7 @@ async fn start_servers_headless_without_tui_state() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
 /// Helper: read the entire response body as a JSON `Value`.
 async fn read_json_body(body: axum::body::Body) -> serde_json::Value {
     serde_json::from_slice(&axum::body::to_bytes(body, usize::MAX).await.unwrap()).unwrap()
@@ -4507,6 +4509,201 @@ async fn mcp_router_rejects_request_without_bearer_token() {
         .as_str()
         .unwrap_or_default()
         .contains("Bearer token"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── TLS SAN tests ────────────────────────────────────────────────────────────
+//
+// The auto-generated self-signed cert must cover every IP the daemon is
+// likely to be reached on so a fresh VPS deployment works without manual
+// cert re-issuance. These tests pin the SAN list contract.
+
+use rcgen::SanType as RcgenSanType;
+
+fn sans_to_strings(sans: &[RcgenSanType]) -> Vec<String> {
+    sans.iter()
+        .map(|san| match san {
+            RcgenSanType::DnsName(name) => format!("dns:{}", name.as_str()),
+            RcgenSanType::IpAddress(ip) => format!("ip:{ip}"),
+            _ => format!("other:{san:?}"),
+        })
+        .collect()
+}
+
+/// Parse the raw bytes of an X.509 GeneralName IPAddress entry as either
+/// 4-byte IPv4 or 16-byte IPv6. RFC 5280 forbids other lengths.
+fn parse_ip_from_der(bytes: &[u8]) -> Option<std::net::IpAddr> {
+    use std::net::IpAddr;
+    match bytes.len() {
+        4 => Some(IpAddr::V4(std::net::Ipv4Addr::new(
+            bytes[0], bytes[1], bytes[2], bytes[3],
+        ))),
+        16 => {
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(bytes);
+            Some(IpAddr::V6(std::net::Ipv6Addr::from(octets)))
+        }
+        _ => None,
+    }
+}
+
+#[test]
+fn build_tls_sans_always_includes_loopback_names() {
+    // The SAN list must always carry the three well-known names so a fresh
+    // VPS deployment works on loopback immediately, even if interface
+    // enumeration fails or the host has no non-loopback interfaces.
+    let sans = build_tls_sans(None::<&str>, std::iter::empty());
+    let strs = sans_to_strings(&sans);
+    assert!(strs.iter().any(|s| s == "dns:my.mentisdb.com"), "{strs:?}");
+    assert!(strs.iter().any(|s| s == "dns:localhost"), "{strs:?}");
+    assert!(strs.iter().any(|s| s == "ip:127.0.0.1"), "{strs:?}");
+}
+
+#[test]
+fn build_tls_sans_includes_every_interface_ip() {
+    // Every interface IP passed in must appear in the SAN list. This is
+    // what allows the cert to be valid for any VPS / LAN IP the operator
+    // might connect from.
+    let vps_ip: std::net::IpAddr = "203.0.113.42".parse().unwrap(); // RFC 5737 documentation range
+    let lan_ip: std::net::IpAddr = "192.168.1.10".parse().unwrap();
+    let sans = build_tls_sans(Some("0.0.0.0"), [vps_ip, lan_ip, vps_ip /* duplicate */]);
+    let strs = sans_to_strings(&sans);
+    assert!(strs.iter().any(|s| s == "ip:203.0.113.42"), "{strs:?}");
+    assert!(strs.iter().any(|s| s == "ip:192.168.1.10"), "{strs:?}");
+    // The duplicate `vps_ip` must not produce duplicate SAN entries.
+    assert_eq!(
+        strs.iter().filter(|s| *s == "ip:203.0.113.42").count(),
+        1,
+        "duplicate interface IP must be de-duplicated, got {strs:?}"
+    );
+}
+
+#[test]
+fn build_tls_sans_honours_bind_host_in_every_form() {
+    // MENTISDB_BIND_HOST may be a hostname, an IP, or the wildcard
+    // `0.0.0.0` / `::`. Only hostnames add a DNS SAN; IPs add an IP SAN;
+    // wildcards are ignored (every interface IP already covers them).
+
+    // hostname → DNS SAN
+    let sans = build_tls_sans(Some("vps.example.com"), std::iter::empty());
+    let strs = sans_to_strings(&sans);
+    assert!(strs.iter().any(|s| s == "dns:vps.example.com"), "{strs:?}");
+
+    // IPv4 literal → IP SAN
+    let sans = build_tls_sans(Some("10.0.0.5"), std::iter::empty());
+    let strs = sans_to_strings(&sans);
+    assert!(strs.iter().any(|s| s == "ip:10.0.0.5"), "{strs:?}");
+
+    // IPv6 literal → IP SAN
+    let sans = build_tls_sans(Some("2001:db8::1"), std::iter::empty());
+    let strs = sans_to_strings(&sans);
+    assert!(strs.iter().any(|s| s == "ip:2001:db8::1"), "{strs:?}");
+
+    // Wildcard `0.0.0.0` must not add a SAN
+    let sans = build_tls_sans(Some("0.0.0.0"), std::iter::empty());
+    let strs = sans_to_strings(&sans);
+    assert!(
+        !strs.iter().any(|s| s.starts_with("ip:0.0.0.0")),
+        "wildcard 0.0.0.0 should be skipped, got {strs:?}"
+    );
+    assert!(
+        !strs.iter().any(|s| s == "dns:0.0.0.0"),
+        "wildcard 0.0.0.0 should be skipped, got {strs:?}"
+    );
+
+    // Wildcard `::` must not add a SAN either.
+    let sans = build_tls_sans(Some("::"), std::iter::empty());
+    let strs = sans_to_strings(&sans);
+    assert!(!strs.iter().any(|s| s == "dns:::") && !strs.iter().any(|s| s == "ip:::"));
+
+    // Whitespace-only strings must be tolerated.
+    let sans = build_tls_sans(Some("   "), std::iter::empty());
+    let strs = sans_to_strings(&sans);
+    assert!(!strs.iter().any(|s| s.starts_with("dns:   ")));
+}
+
+#[test]
+fn enumerate_interface_ips_skips_non_unicast_addresses() {
+    // `enumerate_interface_ips` must return a Vec — empty if enumeration
+    // fails — and must skip non-unicast ranges (multicast, broadcast,
+    // unspecified, documentation).
+    for ip in enumerate_interface_ips() {
+        assert!(!ip.is_unspecified(), "unspecified IP leaked: {ip}");
+        assert!(!ip.is_multicast(), "multicast IP leaked: {ip}");
+        if let std::net::IpAddr::V4(v4) = ip {
+            assert!(!v4.is_broadcast(), "broadcast IP leaked: {v4}");
+            assert!(!v4.is_documentation(), "documentation IP leaked: {v4}");
+        }
+    }
+}
+
+#[test]
+fn ensure_tls_cert_generated_pem_carries_every_loopback_name() {
+    // End-to-end: call the real `ensure_tls_cert`, parse the resulting
+    // PEM, and assert the SAN list contains the well-known loopback names
+    // and every local interface IP. This is the test that catches drift
+    // between `build_tls_sans` and the actual cert the daemon ships.
+    let dir = unique_chain_dir();
+    let cert_path = dir.join("tls").join("cert.pem");
+    let key_path = dir.join("tls").join("key.pem");
+    let _ = std::fs::remove_file(&cert_path);
+    let _ = std::fs::remove_file(&key_path);
+
+    ensure_tls_cert(&cert_path, &key_path).expect("ensure_tls_cert");
+    assert!(cert_path.exists(), "cert.pem was not written");
+    assert!(key_path.exists(), "key.pem was not written");
+
+    let pem = std::fs::read_to_string(&cert_path).unwrap();
+    assert!(pem.contains("BEGIN CERTIFICATE"));
+
+    let cert_der = rustls_pemfile::certs(&mut pem.as_bytes())
+        .next()
+        .expect("at least one certificate in PEM")
+        .expect("rustls_pemfile parse error");
+
+    use x509_parser::prelude::FromDer;
+    let (_, cert) =
+        x509_parser::certificate::X509Certificate::from_der(&cert_der).expect("DER parse");
+    let san_ext = cert
+        .subject_alternative_name()
+        .expect("SAN extension present")
+        .expect("SAN extension parsed");
+
+    let mut dns: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut ip_sans: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for gn in &san_ext.value.general_names {
+        match gn {
+            x509_parser::extensions::GeneralName::DNSName(name) => {
+                dns.insert((*name).to_string());
+            }
+            x509_parser::extensions::GeneralName::IPAddress(bytes) => {
+                if let Some(ip) = parse_ip_from_der(bytes) {
+                    ip_sans.insert(ip.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Well-known DNS names must always be present so `my.mentisdb.com` and
+    // `https://localhost:9473` work out of the box.
+    assert!(dns.contains("my.mentisdb.com"), "dns sans were {dns:?}");
+    assert!(dns.contains("localhost"), "dns sans were {dns:?}");
+
+    // 127.0.0.1 must always be in the IP SANs.
+    assert!(ip_sans.contains("127.0.0.1"), "ip sans were {ip_sans:?}");
+
+    // Every IP that `enumerate_interface_ips()` returned on this host
+    // must also appear in the IP SANs, so the cert is valid for any VPS
+    // or LAN address the operator might connect from.
+    for iface_ip in enumerate_interface_ips() {
+        let s = iface_ip.to_string();
+        assert!(
+            ip_sans.contains(&s),
+            "interface IP {iface_ip} (string `{s}`) missing from SAN list: {ip_sans:?}"
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&dir);
 }
