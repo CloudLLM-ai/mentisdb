@@ -1411,7 +1411,7 @@ for agents that should only see specific memory chains.
 ```toml
 [mcp_servers.mentisdb]
 url = "https://my.mentisdb.com:9473"
-headers = { Authorization = "Bearer mentisdb_replace_me" }
+http_headers = { Authorization = "Bearer mentisdb_replace_me" }
 ```
 
 **Claude Code**:
