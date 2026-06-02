@@ -23,6 +23,7 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::io;
+use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -1316,11 +1317,39 @@ impl Drop for TerminalCleanup {
     }
 }
 
+/// Returns `true` if the TUI can be safely driven in the current process:
+/// both stdin and stdout must be a TTY. Used by [`run_tui`] as an early
+/// bail-out for non-interactive contexts (containers, daemons, CI, etc.),
+/// and by the binary's `run()` entry point to decide whether to delegate to
+/// the headless HTTP server.
+pub fn tui_can_run() -> bool {
+    io::stdin().is_terminal() && io::stdout().is_terminal()
+}
+
 pub fn run_tui(
     state: Arc<std::sync::Mutex<TuiState>>,
     running: Arc<AtomicBool>,
     log_rx: mpsc::Receiver<String>,
 ) -> io::Result<()> {
+    // The TUI cannot be safely driven when stdin/stdout are not TTYs
+    // (`docker run` without `-t`, `nohup mentisdb &`, SSH session
+    // disconnected, `cron`, systemd without `StandardInput=tty`).
+    //
+    // On Linux, crossterm's `enable_raw_mode` and `Terminal::new` succeed
+    // against a closed or redirected TTY, so the loop would otherwise be
+    // entered. Once running, `event::poll(Duration::from_millis(100))`
+    // returns `Ok(false)` immediately on EOF stdin instead of honouring
+    // the timeout, and the loop re-renders the full ratatui UI on every
+    // iteration. On a 2-core cloud VM that pins one core at 100% CPU
+    // indefinitely. macOS fails earlier (`ENXIO`), masking the bug, but
+    // Linux servers running the published binary hit it.
+    //
+    // Bailing out here lets `run()` continue with HTTP servers only and
+    // the daemon idles near 0% CPU.
+    if !tui_can_run() {
+        return Ok(());
+    }
+
     let mut stdout = io::stdout();
     crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
     crossterm::execute!(stdout, EnableMouseCapture)?;
@@ -1671,4 +1700,28 @@ fn tab_index_from_click(titles: &[&str], tabs_area: Rect, click_x: u16) -> Optio
         x += tab_width + 1; // +1 for "|" divider
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tui_can_run;
+
+    /// `cargo test` runs without a controlling terminal, so `is_terminal`
+    /// returns `false` for both stdin and stdout in the test process.
+    /// The TUI must therefore refuse to run — this is the path that
+    /// protects non-interactive contexts (CI, Docker, nohup, cron,
+    /// disconnected SSH) from entering the event loop and pegging CPU.
+    #[test]
+    fn tui_refuses_to_run_when_stdin_is_not_a_tty() {
+        // Belt + suspenders: also assert each half independently so a
+        // future refactor that, say, swaps the AND for an OR fails
+        // loudly rather than silently re-introducing the spin.
+        assert!(
+            !tui_can_run(),
+            "tui_can_run() returned true under cargo test; \
+             if a CI host ever allocates a TTY to cargo test, this \
+             guard is no longer being exercised — move the check earlier \
+             or wire an explicit env override"
+        );
+    }
 }
