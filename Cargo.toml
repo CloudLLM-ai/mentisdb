@@ -14,7 +14,7 @@ exclude = ["data/", "docs/", "lme-benches/", ".fastembed_cache/", ".github/", "s
 
 [features]
 default = ["server", "startup-sound", "llm-extraction"]
-server = ["dep:axum", "dep:env_logger", "dep:log", "dep:tokio", "mcp/server", "dep:rcgen", "dep:axum-server", "dep:rustls-pemfile", "dep:reqwest", "dep:rustls"]
+server = ["dep:axum", "dep:env_logger", "dep:if-addrs", "dep:log", "dep:tokio", "mcp/server", "dep:rcgen", "dep:axum-server", "dep:rustls-pemfile", "dep:reqwest", "dep:rustls"]
 startup-sound = ["dep:rodio"]
 local-embeddings = ["dep:fastembed", "dep:rustls"]
 llm-extraction = ["dep:openai-rust2", "dep:anyhow"]
@@ -36,9 +36,10 @@ crossterm = "0.28"
 ratatui = "0.30.0"
 toml_edit = "0.22.27"
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
-mcp = { package = "cloudllm_mcp", version = "0.3.4" }
+mcp = { package = "cloudllm_mcp", version = "0.3.5" }
 axum = { version = "0.8.8", optional = true }
 axum-server = { version = "0.8", features = ["tls-rustls"], optional = true }
+if-addrs = { version = "0.15", optional = true }
 env_logger = { version = "0.11.8", optional = true }
 log = { version = "0.4.28", optional = true }
 rcgen = { version = "0.14", optional = true }
@@ -76,6 +77,7 @@ sha2 = "0.10.9"
 tempfile = "3"
 tower = { version = "0.5.3", features = ["util"] }
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
+x509-parser = "0.18"
 
 [[bench]]
 name = "thought_chain"
