@@ -2164,7 +2164,11 @@ Flags:
     without `-t`, from systemd, under nohup, in CI, or whenever you want to
     test the headless code path. Pairs with `--mode http`
     (`--mode http --headless`) for the stdio proxy auto-launch; the
-    standalone `--headless` form is equivalent.
+    standalone `--headless` form is equivalent. If neither form is given
+    but stdin/stdout are not TTYs, the daemon also auto-promotes to
+    headless mode rather than entering the TUI event loop (which would
+    otherwise spin at 100% CPU on EOF stdin on Linux — see
+    `tui_can_run` in src/tui.rs).
   --force-update
     Show the update dialog even if already at the latest release.
     Useful for testing the update flow.
