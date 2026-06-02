@@ -4,6 +4,18 @@
     matching the long-standing `--mode http --headless` invocation that the
     stdio proxy has used internally since 2ae780f. `--help` now lists the
     flag in both the Usage block and the Flags section.
+  - fix(tui): the daemon auto-promotes to headless HTTP mode when stdin or
+    stdout is not a TTY. Previously the TUI main loop was entered with an
+    already-EOF stdin; crossterm's `event::poll(100ms)` returned `Ok(false)`
+    immediately instead of honouring the timeout, and the loop re-rendered
+    the full ratatui UI on every iteration — pinning one CPU core at 100%
+    on a 2-core cloud VM. The new `tui_can_run()` guard in `src/tui.rs`
+    detects the non-TTY case at startup and `run()` then delegates to the
+    existing `run_headless()` so the HTTP servers come up and the process
+    idles near 0% CPU. Affects every non-interactive launch: `docker run`
+    without `-t`, `nohup mentisdb &`, `systemd` without
+    `StandardInput=tty`, `cron`, and the SSH-disconnect scenario that
+    produced the original report.
   - feat(auth): built-in bearer-token authentication for remote MCP servers.
     `MENTISDB_BEARER_TOKEN_ACCESS=true` now protects standard Streamable HTTP
     MCP and legacy HTTP MCP routes with `Authorization: Bearer ...`; when the
