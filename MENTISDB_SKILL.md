@@ -42,11 +42,59 @@ After every call to `mentisdb_skill_md`, **write the returned content to your ha
 
 This gives you the skill across every project without re-fetching.
 
+## 🔎 SEARCH BEFORE YOU WRITE (READ THIS BEFORE EVERY APPEND)
+
+Appending is the most expensive thing you do to a chain — every thought is a forever-record that pollutes retrieval forever after. So **before** you call `mentisdb_append`, take 5–15 seconds and search the chain for related memory. The point of searching first is **not** to find citations; the point is to make a better decision about whether and how to write.
+
+Run this routine **every time** you are about to write, regardless of `thought_type`:
+
+1. **Quick scan** — `mentisdb_recent_context(last_n=20)` to see what was just thought.
+2. **Targeted search** — `mentisdb_ranked_search(text="<your proposed memory, paraphrased>", limit=10)`. Use the thesaurus-expanded default; it costs the same as lexical but finds more.
+3. **Tighten if needed** — narrow with `tags_any`, `thought_types`, `concepts_any`, `since`, or `entity_type` to find the precise neighbourhood of the new memory.
+
+Use what you find to make **three** decisions, in this order:
+
+### Decision 1: Do I actually need to write at all?
+
+Don't write when the answer is "I already know this." Common cases where the right action is **no append**:
+
+- The fact / decision / lesson is already in the chain (perhaps in a recent `Summary` or `LessonLearned`). Add a `DerivedFrom` edge to a *new* thought only if you genuinely have something to add; otherwise stop.
+- It is short-lived, ephemeral, or session-scoped (a transient variable value, a half-formed hunch, a debug breadcrumb that won't matter tomorrow). Skip it. Use `scope: session` only if you genuinely might need it within the same session.
+- It is restated boilerplate ("user wants the project to work", "I should be careful") that adds no information beyond what every other thought already implies. Skip it.
+- The chain already has a `Constraint` or `LessonLearned` covering this; you can `Corrects` or `Supersedes` it instead of writing a parallel thought.
+
+**Rule of thumb:** if the new thought wouldn't change a future `mentisdb_ranked_search` answer for any plausible query, do not write it. A smaller, denser chain is dramatically more useful than a larger, noisy one.
+
+### Decision 2: Do I need to update a previous assumption or lesson?
+
+Real work invalidates prior memory. Search first to surface candidates:
+
+- A new `Correction` or `AssumptionInvalidated` only makes sense if there is an existing thought to correct. Search for the original lesson / decision / assumption and link the new thought to it with a typed edge (`Corrects`, `Invalidates`, `Supersedes`).
+- If a `LessonLearned` from months ago no longer holds (the framework changed, the bug was in our code not theirs, the workaround is now standard), prefer `AssumptionInvalidated` over a parallel new `LessonLearned` — future agents reading the old lesson will follow the edge to the correction.
+- If your new memory *narrows* an existing broad one (e.g. "X is fast" → "X is fast for read-heavy workloads but slow for batch writes"), use `Supersedes` with a short note about the narrower scope. Future search hits the narrower one and ranks it higher.
+
+### Decision 3: Which existing memories should I link to?
+
+The search above also produces the `refs` / `relations` for the new thought. This is what makes the chain a *graph* instead of a *log*:
+
+- Pick **1–3** of the highest-signal neighbours (the ones a future reader of the new thought would most want to see). Use the typed edge that actually fits (`DerivedFrom`, `CausedBy`, `References`, `Supports`, `Corrects`, `ContinuesFrom`, …). Avoid 10+ weak edges — they dilute the signal.
+- For a brand-new decision, prefer `DerivedFrom` to the `LessonLearned` / `Question` / `Wonder` that motivated it. Future readers can replay the reasoning.
+- For a new task or milestone, link `ContinuesFrom` the most recent `Checkpoint` / `Summary` so a future traversal pulls both in one chunk.
+- For a fresh insight, `Supports` one or two existing `Hypothesis` thoughts — you have just turned a hypothesis into a stronger signal.
+
+### Why this matters in practice
+
+Benchmarks love naive appends. Real chains do not: after a few hundred unconnected thoughts, `mentisdb_ranked_search` starts returning noise, the agent re-derives the same lesson three times, and the human operator loses trust. The 5–15 seconds you spend searching before you write is the single highest-leverage habit in this skill — it is the difference between a memory chain that *helps* you on the 1000th turn and one that gets in the way.
+
+If `MENTISDB_DEDUP_THRESHOLD` is set, the daemon will already auto-emit `Supersedes` for near-duplicates. Search-first is the upstream half of the same discipline: catch the duplicates *before* you spend the bytes.
+
 ## ✍️ WRITE TRIGGERS
 
 Write **immediately** when any becomes true: LessonLearned (bug cause, framework trap), Decision (architectural choice, convention), Constraint (security boundary), Correction/AssumptionInvalidated, Summary/Checkpoint (restart point), TaskComplete, Question/Wonder, Hypothesis.
 
 **One strong memory > many weak ones.** Many chains overuse standalone notes and generic `References` edges — don't.
+
+**Search-first rule (see §Search Before You Write above):** every append must be preceded by a `mentisdb_ranked_search` for related thoughts. Use the results to decide whether to write at all, whether to update a prior thought, and which `refs` / `relations` to set.
 
 **Minimum graph rule:** if a thought is not a pure standalone observation, add at least one backlink. Prefer 1–3 high-signal `refs` or `relations` over many weak links. When `MENTISDB_DEDUP_THRESHOLD` is set, near-duplicate content auto-emits `Supersedes`.
 
@@ -148,7 +196,7 @@ Scopes stored as `scope:{variant}` tags:
 
 ## ❌ ANTI-PATTERNS
 
-Raw-log writes instead of rules. **New agent IDs for the same role** — see §Agent Identity Rule above; this is the #1 chain pollution vector. Skipping `recent_context` at start. Vague summaries. Redundant bootstraps. Unfiltered full-chain loads. No checkpoint before compaction. Sub-agents spawned without shared-memory pre-warm or dying without flushing memories. Writing near-duplicates when dedup is on. **Deferring memory writes** — save `TaskComplete` and `LessonLearned` the moment they happen, not when prompted.
+Raw-log writes instead of rules. **New agent IDs for the same role** — see §Agent Identity Rule above; this is the #1 chain pollution vector. Skipping `recent_context` at start. Vague summaries. Redundant bootstraps. Unfiltered full-chain loads. No checkpoint before compaction. Sub-agents spawned without shared-memory pre-warm or dying without flushing memories. Writing near-duplicates when dedup is on. **Deferring memory writes** — save `TaskComplete` and `LessonLearned` the moment they happen, not when prompted. **Blind appends** — writing a new thought without first running `mentisdb_ranked_search` to check whether the chain already says it, whether an old lesson needs to be invalidated, or which neighbours to link to (see §Search Before You Write above).
 
 ### Sub-agents & Agent Identity
 
