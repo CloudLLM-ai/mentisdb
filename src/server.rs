@@ -962,11 +962,25 @@ pub fn default_mentisdb_dir() -> PathBuf {
     crate::paths::default_mentisdb_dir()
 }
 
-/// Return the default on-disk TLS directory for `mentisdb` self-signed certificates.
+/// Return the default on-disk TLS directory for `mentisdb` self-signed
+/// certificates.
 ///
-/// The default is `$HOME/.mentisdb/tls` when `HOME` is available,
-/// otherwise `./.mentisdb/tls`.
-fn default_tls_dir() -> PathBuf {
+/// The default is `<MENTISDB_DIR>/tls`, where `MENTISDB_DIR` itself
+/// resolves through the standard chain in
+/// [`crate::paths::default_mentisdb_dir`]. The daemon writes its
+/// `cert.pem` and `key.pem` here when neither `MENTISDB_TLS_CERT` nor
+/// `MENTISDB_TLS_KEY` is set, and the `mentisdb cert` CLI reuses the
+/// same path so its output is a drop-in replacement for the
+/// auto-generated material.
+///
+/// # Examples
+///
+/// ```no_run
+/// use mentisdb::server::default_tls_dir;
+/// let dir = default_tls_dir();
+/// assert!(dir.ends_with("tls"));
+/// ```
+pub fn default_tls_dir() -> PathBuf {
     default_mentisdb_dir().join("tls")
 }
 
@@ -5757,12 +5771,35 @@ pub fn enumerate_interface_ips() -> Vec<std::net::IpAddr> {
     ips
 }
 
+/// Result of a successful [`ensure_tls_cert_with_sans`] invocation.
+///
+/// Returned to CLI callers (notably the `mentisdb cert` subcommand) so they
+/// can print the resulting SAN set, certificate fingerprint, and on-disk
+/// locations to the operator.
+#[derive(Debug, Clone)]
+pub struct TlsCertArtifacts {
+    /// Absolute path to the written certificate PEM file.
+    pub cert_path: PathBuf,
+    /// Absolute path to the written private-key PEM file.
+    pub key_path: PathBuf,
+    /// Subject Alternative Names embedded in the certificate, in the order
+    /// they were inserted. Each entry is either a `dns:<name>` or `ip:<addr>`
+    /// string so it is straightforward to print.
+    pub sans: Vec<String>,
+    /// Lower-case hex SHA-256 fingerprint of the DER-encoded certificate.
+    /// Useful for `openssl x509 -noout -fingerprint -sha256 -in cert.pem`
+    /// cross-checks when an operator is trusting the cert in a browser.
+    pub sha256_fingerprint: String,
+}
+
 /// Generate a self-signed TLS certificate and private key if the PEM files do
 /// not yet exist, then return without doing anything if they already do.
 ///
-/// This is called by [`start_servers`] before any HTTPS or dashboard server
-/// is started. It uses the [`rcgen`] crate to produce an ECDSA self-signed
-/// certificate in PEM format.
+/// This is the daemon-startup path. It uses the [`rcgen`] crate to produce
+/// an ECDSA self-signed certificate in PEM format and only acts when the
+/// files are absent. Pass an explicit `overwrite=true` (or call
+/// [`ensure_tls_cert_with_sans`] directly) when you need to mint a fresh
+/// cert unconditionally — for example from the `mentisdb cert` subcommand.
 ///
 /// ## Certificate properties
 ///
@@ -5792,8 +5829,53 @@ pub fn ensure_tls_cert(
     cert_path: &Path,
     key_path: &Path,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    if cert_path.exists() && key_path.exists() {
-        return Ok(());
+    ensure_tls_cert_with_sans(cert_path, key_path, Vec::new(), false).map(|_| ())
+}
+
+/// Generate a self-signed TLS certificate and private key, optionally
+/// overwriting an existing cert and optionally appending extra Subject
+/// Alternative Names to the auto-generated SAN set.
+///
+/// Unlike [`ensure_tls_cert`], this function:
+///
+/// - Returns a [`TlsCertArtifacts`] describing the on-disk paths, the SAN
+///   list, and the certificate's SHA-256 fingerprint. This makes the
+///   function usable from CLI flows that need to print or report the
+///   resulting state.
+/// - Accepts `extra_sans`, which are appended to (and de-duplicated
+///   against) the standard set built by [`build_tls_sans`]. The CLI
+///   uses this to add the operator-supplied `<ip|domain>` argument as a
+///   custom SAN entry.
+/// - Honours `overwrite`. When `false` (the default), the function
+///   returns the existing artifacts without regenerating — matching
+///   the existing daemon-startup behaviour. When `true`, the existing
+///   cert and key are replaced unconditionally. Existing files are
+///   atomically replaced (no partial writes).
+///
+/// The Common Name, validity window, and standard SAN set match
+/// [`ensure_tls_cert`].
+///
+/// # Errors
+///
+/// Returns an error if key-pair generation, certificate self-signing, or
+/// any file-system operation (directory creation, file write, read of an
+/// existing cert for fingerprinting) fails.
+pub fn ensure_tls_cert_with_sans(
+    cert_path: &Path,
+    key_path: &Path,
+    extra_sans: Vec<SanType>,
+    overwrite: bool,
+) -> Result<TlsCertArtifacts, Box<dyn Error + Send + Sync>> {
+    if !overwrite && cert_path.exists() && key_path.exists() {
+        let existing_pem = fs::read_to_string(cert_path)?;
+        let sans = extract_sans_from_pem(&existing_pem);
+        let fingerprint = sha256_fingerprint_of_pem(&existing_pem);
+        return Ok(TlsCertArtifacts {
+            cert_path: cert_path.to_path_buf(),
+            key_path: key_path.to_path_buf(),
+            sans,
+            sha256_fingerprint: fingerprint,
+        });
     }
 
     let key_pair = KeyPair::generate()?;
@@ -5804,21 +5886,140 @@ pub fn ensure_tls_cert(
     params.distinguished_name = dn;
 
     let bind_host = std::env::var("MENTISDB_BIND_HOST").ok();
-    params.subject_alt_names = build_tls_sans(bind_host.as_deref(), enumerate_interface_ips());
+    let mut sans: Vec<SanType> =
+        build_tls_sans(bind_host.as_deref(), enumerate_interface_ips());
+    for san in extra_sans {
+        if !sans_contains(&sans, &san) {
+            sans.push(san);
+        }
+    }
+    params.subject_alt_names = sans.clone();
 
     params.not_before = date_time_ymd(2025, 1, 1);
     params.not_after = date_time_ymd(2027, 1, 1);
 
     let cert = params.self_signed(&key_pair)?;
+    let cert_pem = cert.pem();
+    let key_pem = key_pair.serialize_pem();
 
     if let Some(parent) = cert_path.parent() {
-        fs::create_dir_all(parent)?;
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
     }
 
-    fs::write(cert_path, cert.pem())?;
-    fs::write(key_path, key_pair.serialize_pem())?;
+    fs::write(cert_path, &cert_pem)?;
+    fs::write(key_path, &key_pem)?;
 
-    Ok(())
+    let san_strings = sans.iter().map(san_to_string).collect::<Vec<_>>();
+    let fingerprint = sha256_fingerprint_of_pem(&cert_pem);
+
+    Ok(TlsCertArtifacts {
+        cert_path: cert_path.to_path_buf(),
+        key_path: key_path.to_path_buf(),
+        sans: san_strings,
+        sha256_fingerprint: fingerprint,
+    })
+}
+
+/// Render a [`SanType`] as a human-readable `dns:<name>` or `ip:<addr>`
+/// string. The format is stable so it is suitable for printing and tests.
+fn san_to_string(san: &SanType) -> String {
+    match san {
+        SanType::DnsName(name) => format!("dns:{name}"),
+        SanType::IpAddress(ip) => format!("ip:{ip}"),
+        other => format!("other:{other:?}"),
+    }
+}
+
+/// Return `true` if `existing` already contains an entry equivalent to
+/// `candidate`. Comparison is by `san_to_string` so DNS and IP variants are
+/// matched exactly.
+fn sans_contains(existing: &[SanType], candidate: &SanType) -> bool {
+    let needle = san_to_string(candidate);
+    existing.iter().any(|e| san_to_string(e) == needle)
+}
+
+/// Re-derive the SAN list from an already-written certificate PEM.
+///
+/// We cannot import `rcgen`'s private `Certificate` type from PEM, so the
+/// implementation parses the certificate with `x509-parser` (a dependency
+/// of this crate when the `server` feature is on) and walks the SAN
+/// extension. This keeps the function self-contained and avoids depending
+/// on `rcgen`'s internal state.
+///
+/// The output format mirrors the `dns:<name>` / `ip:<addr>` style used by
+/// the SAN strings produced at cert-generation time, so a CLI caller can
+/// print them to an operator and a downstream consumer can grep for an
+/// IP or hostname. Unknown SAN variants fall back to the `x509-parser`
+/// `Debug` representation prefixed with `other:`.
+fn extract_sans_from_pem(pem: &str) -> Vec<String> {
+    use x509_parser::prelude::FromDer;
+    let mut out = Vec::new();
+    for pem_block in rustls_pemfile::certs(&mut pem.as_bytes()) {
+        let Ok(cert_der) = pem_block else { continue };
+        let Ok((_rest, cert)) =
+            x509_parser::certificate::X509Certificate::from_der(&cert_der)
+        else {
+            continue;
+        };
+        if let Ok(Some(san_ext)) = cert.subject_alternative_name() {
+            for name in &san_ext.value.general_names {
+                if let Some(formatted) = sans_general_name_to_string(name) {
+                    out.push(formatted);
+                } else {
+                    out.push(format!("other:{name:?}"));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Render an [`x509_parser::extensions::GeneralName`] in the same shape
+/// the SAN strings take when the cert is built. Returns `None` for
+/// variants we don't surface; the caller falls back to `Debug` printing.
+fn sans_general_name_to_string(
+    name: &x509_parser::extensions::GeneralName<'_>,
+) -> Option<String> {
+    use x509_parser::extensions::GeneralName as G;
+    match name {
+        G::DNSName(s) => Some(format!("dns:{}", s)),
+        G::IPAddress(bytes) => match bytes.len() {
+            4 => Some(format!(
+                "ip:{}.{}.{}.{}",
+                bytes[0], bytes[1], bytes[2], bytes[3]
+            )),
+            16 => {
+                let mut octets = [0u8; 16];
+                octets.copy_from_slice(bytes);
+                Some(format!("ip:{}", std::net::IpAddr::from(octets)))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Compute the lower-case hex SHA-256 fingerprint of the DER bytes of the
+/// first certificate embedded in `pem`.
+fn sha256_fingerprint_of_pem(pem: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    if let Some(cert_der) = rustls_pemfile::certs(&mut pem.as_bytes())
+        .flatten()
+        .next()
+    {
+        hasher.update(&cert_der);
+    }
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2 + 2);
+    out.push_str("SHA256:");
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
 }
 
 /// Bind a TLS-encrypted (HTTPS) TCP socket to `addr`, serve `router` with

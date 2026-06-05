@@ -2157,6 +2157,7 @@ Usage:
   mentisdb agents [--chain <key>] [--url <url>]
   mentisdb backup [--dir <path>] [--output <path>] [--flush] [--include-tls]
   mentisdb restore <archive.mbak> [--dir <path>] [--overwrite] [--yes]
+  mentisdb cert [<ip-address-or-domain>] [--force] [--out-dir <path>] [--env-file <path>] [--no-env-update]
 
 Flags:
   --headless
@@ -2316,7 +2317,7 @@ where
     let first = args[0].to_string_lossy();
     if matches!(
         first.as_ref(),
-        "setup" | "wizard" | "add" | "search" | "agents" | "backup" | "restore" | "bearertoken"
+        "setup" | "wizard" | "add" | "search" | "agents" | "backup" | "restore" | "bearertoken" | "cert"
     ) {
         let mut command = vec![OsString::from("mentisdb")];
         command.extend(args);

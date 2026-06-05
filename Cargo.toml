@@ -14,7 +14,7 @@ exclude = ["data/", "docs/", "lme-benches/", ".fastembed_cache/", ".github/", "s
 
 [features]
 default = ["server", "startup-sound", "llm-extraction"]
-server = ["dep:axum", "dep:env_logger", "dep:if-addrs", "dep:log", "dep:tokio", "mcp/server", "dep:rcgen", "dep:axum-server", "dep:rustls-pemfile", "dep:reqwest", "dep:rustls"]
+server = ["dep:axum", "dep:env_logger", "dep:if-addrs", "dep:log", "dep:tokio", "mcp/server", "dep:rcgen", "dep:axum-server", "dep:rustls-pemfile", "dep:x509-parser", "dep:reqwest", "dep:rustls"]
 startup-sound = ["dep:rodio"]
 local-embeddings = ["dep:fastembed", "dep:rustls"]
 llm-extraction = ["dep:openai-rust2", "dep:anyhow"]
@@ -44,6 +44,7 @@ env_logger = { version = "0.11.8", optional = true }
 log = { version = "0.4.28", optional = true }
 rcgen = { version = "0.14", optional = true }
 rustls-pemfile = { version = "2", optional = true }
+x509-parser = { version = "0.18", optional = true }
 rodio = { version = "0.22", optional = true }
 tokio = { version = "1.50.0", features = ["full"], optional = true }
 fastembed = { version = "5.13.1", optional = true }

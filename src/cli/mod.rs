@@ -4,6 +4,7 @@
 //! this module so the command logic stays directly testable.
 
 mod args;
+mod cert;
 mod prompt;
 mod setup;
 mod wizard;
@@ -15,8 +16,12 @@ use crate::backup::{
 use crate::paths::default_mentisdb_dir;
 
 pub use args::{
-    parse_args, AddCommand, AgentsCommand, BackupCommand, BearerTokenCommand, CliCommand,
-    RestoreCommand, SearchCommand, SetupCommand, WizardCommand,
+    parse_args, AddCommand, AgentsCommand, BackupCommand, BearerTokenCommand, CertCommand,
+    CliCommand, RestoreCommand, SearchCommand, SetupCommand, WizardCommand,
+};
+pub use cert::{
+    build_extra_sans, help_text as cert_help_text, resolve_paths, run_cert, update_env_file,
+    CERT_FILENAME, KEY_FILENAME, MENTISDB_TLS_CERT_ENV, MENTISDB_TLS_KEY_ENV,
 };
 pub use prompt::{boxed_apply_summary, boxed_skip_notice, boxed_text_prompt, boxed_yn_prompt};
 pub use setup::{parse_node_major, render_setup_plan};
@@ -99,6 +104,13 @@ where
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 let _ = writeln!(err, "bearertoken failed: {error}");
+                ExitCode::from(1)
+            }
+        },
+        Ok(CliCommand::Cert(command)) => match cert::run_cert(&command, out, err) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                let _ = writeln!(err, "cert failed: {error}");
                 ExitCode::from(1)
             }
         },

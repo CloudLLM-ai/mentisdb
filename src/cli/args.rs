@@ -122,6 +122,40 @@ pub enum BearerTokenCommand {
     },
 }
 
+/// Parsed `cert` subcommand arguments.
+///
+/// Mints a self-signed certificate (and private key) and makes it the
+/// active TLS material for the HTTPS MCP and REST servers by writing
+/// `cert.pem` and `key.pem` to the location held in `MENTISDB_TLS_CERT`
+/// (or the default `<MENTISDB_DIR>/tls/` path) and persisting those
+/// paths into the `.env` file so the next daemon start picks them up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertCommand {
+    /// Optional IP address or DNS hostname to add as a Subject Alternative
+    /// Name on top of the standard set (loopback, interface IPs, the
+    /// well-known `my.mentisdb.com`, and `MENTISDB_BIND_HOST`).
+    ///
+    /// IPv4 and IPv6 literals are added as IP SANs; everything else is
+    /// added as a DNS SAN. The standard set is always included.
+    pub host: Option<String>,
+    /// When `true`, replace an existing cert and key on disk. When `false`
+    /// (the default), the command refuses to overwrite an existing cert so
+    /// operators do not accidentally invalidate an already-trusted cert.
+    pub overwrite: bool,
+    /// Override the output directory for `cert.pem` and `key.pem`. When
+    /// `None`, the directory is resolved from `MENTISDB_TLS_CERT` (or its
+    /// default).
+    pub output_dir: Option<String>,
+    /// Path to the `.env` file to update. When `None`, the dispatcher
+    /// defaults to `.env` in the current working directory; if no such
+    /// file exists the dispatcher simply prints the values to copy.
+    pub env_file: Option<String>,
+    /// Do not write anything to the `.env` file. The cert is still
+    /// generated and printed, but operators are responsible for updating
+    /// the environment themselves.
+    pub no_env_update: bool,
+}
+
 /// Supported top-level commands for `mentisdb` CLI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
@@ -145,6 +179,8 @@ pub enum CliCommand {
     Restore(RestoreCommand),
     /// Manage bearer tokens for MCP access.
     BearerToken(BearerTokenCommand),
+    /// Mint a fresh self-signed TLS certificate for the HTTPS servers.
+    Cert(CertCommand),
 }
 
 /// Parse command-line arguments for the embedded `mentisdb` setup and wizard CLI.
@@ -176,12 +212,26 @@ where
         "backup" => parse_backup(parts),
         "restore" => parse_restore(parts),
         "bearertoken" => parse_bearer_token(parts),
+        "cert" => parse_cert(parts),
         other => Err(format!("Unknown subcommand '{other}'")),
     }
 }
 
-pub(crate) fn help_text() -> &'static str {
-    "\
+/// Return the full `mentisdb --help` text. Composed from a static
+/// header / subcommand index and the per-subcommand help blocks
+/// exposed by [`super::cert::help_text`], [`bearer_token_help_text`],
+/// etc. The function returns an owned [`String`] because the cert
+/// block is appended at runtime so the source of truth for its
+/// wording stays in the cert module.
+#[must_use]
+pub(crate) fn help_text() -> String {
+    let mut text = String::from(HELP_HEADER);
+    text.push_str(super::cert::help_text());
+    text.push_str(HELP_FOOTER);
+    text
+}
+
+const HELP_HEADER: &str = "\
 mentisdb CLI
 
 Usage:
@@ -201,6 +251,7 @@ Usage:
   mentisdb bearertoken create --chain <chain_key> [--chain <chain_key> ...] <alias> [--dir <path>]
   mentisdb bearertoken list [--global | --chain <chain_key> [--chain <chain_key> ...]] [--dir <path>]
   mentisdb bearertoken remove <alias> [--dir <path>]
+  mentisdb cert [<ip-address-or-domain>] [--force] [--out-dir <path>] [--env-file <path>] [--no-env-update]
 
 Daemon modes (start HTTP servers by default):
   --mode stdio     Start MCP server over stdio (for Claude Desktop subprocess)
@@ -261,9 +312,9 @@ Commands:
     Add a thought to a running MentisDB daemon via REST.
 
     Examples:
-      mentisdb add \"The sky is blue\"
-      mentisdb add \"Session fact\" --scope session --tag important
-      mentisdb add \"Insight\" --type insight --agent my-agent
+      mentisdb add \\\"The sky is blue\\\"
+      mentisdb add \\\"Session fact\\\" --scope session --tag important
+      mentisdb add \\\"Insight\\\" --type insight --agent my-agent
 
     Options:
       --type <type>    Thought type (default: fact-learned)
@@ -278,8 +329,8 @@ Commands:
     Search thoughts on a running MentisDB daemon via ranked search.
 
     Examples:
-      mentisdb search \"cache invalidation\"
-      mentisdb search \"performance\" --limit 5 --scope session
+      mentisdb search \\\"cache invalidation\\\"
+      mentisdb search \\\"performance\\\" --limit 5 --scope session
 
     Options:
       --limit <n>      Maximum results (default: 10)
@@ -369,14 +420,16 @@ Commands:
       --dir <path>       Path to MENTISDB_DIR (default: platform default)
       --help             Show this help text
 
+";
+
+const HELP_FOOTER: &str = "\
 Notes:
   - `mentisdb` with no subcommand starts the daemon.
   - `mentisdb --help` shows daemon help; subcommand --help shows subcommand help.
   - `setup` writes config files; it is not scaffold-only.
   - `add`, `search`, and `agents` require a running daemon.
   - `backup` and `restore` operate on the MENTISDB_DIR directly and do not require a running daemon.
- "
-}
+";
 
 pub(crate) fn bearer_token_help_text() -> &'static str {
     "\
@@ -891,5 +944,82 @@ fn parse_restore(args: Vec<String>) -> Result<CliCommand, String> {
         target_dir,
         overwrite,
         yes,
+    }))
+}
+
+fn parse_cert(args: Vec<String>) -> Result<CliCommand, String> {
+    if matches!(
+        args.get(1).map(|s| s.as_str()),
+        Some("-h" | "--help" | "help")
+    ) {
+        return Ok(CliCommand::Help);
+    }
+
+    let mut host: Option<String> = None;
+    let mut overwrite = false;
+    let mut output_dir: Option<String> = None;
+    let mut env_file: Option<String> = None;
+    let mut no_env_update = false;
+    let mut index = 1;
+
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if arg.starts_with('-') {
+            match arg {
+                "--force" | "--overwrite" => {
+                    overwrite = true;
+                    index += 1;
+                }
+                "--out-dir" | "--out" => {
+                    let value = args
+                        .get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| format!("{arg} requires a value"))?;
+                    if value.trim().is_empty() {
+                        return Err(format!("{arg} requires a non-empty value"));
+                    }
+                    output_dir = Some(value);
+                    index += 2;
+                }
+                "--env-file" => {
+                    let value = args
+                        .get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| "--env-file requires a value".to_string())?;
+                    if value.trim().is_empty() {
+                        return Err("--env-file requires a non-empty value".to_string());
+                    }
+                    env_file = Some(value);
+                    index += 2;
+                }
+                "--no-env-update" => {
+                    no_env_update = true;
+                    index += 1;
+                }
+                "-h" | "--help" => return Ok(CliCommand::Help),
+                other => return Err(format!("Unexpected argument '{other}' for cert")),
+            }
+        } else if host.is_none() {
+            host = Some(arg.to_string());
+            index += 1;
+        } else {
+            return Err(format!(
+                "cert accepts at most one positional <ip-or-domain> argument; got '{arg}'"
+            ));
+        }
+    }
+
+    if let Some(value) = host.as_ref() {
+        if value.trim().is_empty() {
+            return Err("cert <ip-or-domain> cannot be empty".to_string());
+        }
+    }
+
+    Ok(CliCommand::Cert(CertCommand {
+        host,
+        overwrite,
+        output_dir,
+        env_file,
+        no_env_update,
     }))
 }
