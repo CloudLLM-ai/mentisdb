@@ -1,4 +1,4 @@
-0.10.1.46 UNRELEASED
+0.10.1.46 JUN/05/2026
   - feat(auth): built-in bearer-token authentication for remote MCP servers.
     `MENTISDB_BEARER_TOKEN_ACCESS=true` now protects standard Streamable HTTP
     MCP and legacy HTTP MCP routes with `Authorization: Bearer ...`; when the
