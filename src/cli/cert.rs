@@ -72,6 +72,7 @@ pub const KEY_FILENAME: &str = "key.pem";
 /// let cmd = CertCommand {
 ///     host: Some("vps.example.com".to_string()),
 ///     overwrite: false,
+///     reset: false,
 ///     output_dir: None,
 ///     env_file: Some("/tmp/x/.env".to_string()),
 ///     no_env_update: true,
@@ -89,6 +90,17 @@ pub fn run_cert(
     err: &mut dyn Write,
 ) -> Result<(), String> {
     let (cert_path, key_path) = resolve_paths(cmd).map_err(|e| e.to_string())?;
+
+    // If --reset is specified, delete existing cert and key files first
+    // to ensure a clean factory-default certificate is generated.
+    if cmd.reset {
+        if cert_path.exists() {
+            fs::remove_file(&cert_path).map_err(|e| format!("failed to remove existing cert: {e}"))?;
+        }
+        if key_path.exists() {
+            fs::remove_file(&key_path).map_err(|e| format!("failed to remove existing key: {e}"))?;
+        }
+    }
 
     // Snapshot the on-disk state before delegating to the server module
     // so we can tell the user whether the cert was just minted or was
@@ -137,7 +149,20 @@ fn write_status(
     artifacts: &crate::server::TlsCertArtifacts,
     cert_existed_before: bool,
 ) -> Result<(), String> {
-    if cmd.overwrite || !cert_existed_before {
+    if cmd.reset {
+        writeln!(
+            out,
+            "Reset to factory defaults: deleted existing cert and key, generated new self-signed TLS cert: {}",
+            artifacts.cert_path.display()
+        )
+        .map_err(|e| e.to_string())?;
+        writeln!(
+            out,
+            "Wrote new TLS private key:   {}",
+            artifacts.key_path.display()
+        )
+        .map_err(|e| e.to_string())?;
+    } else if cmd.overwrite || !cert_existed_before {
         writeln!(
             out,
             "Wrote new self-signed TLS cert: {}",
@@ -277,6 +302,7 @@ fn write_or_warn_env_update(
 /// let cmd = CertCommand {
 ///     host: None,
 ///     overwrite: false,
+///     reset: false,
 ///     output_dir: Some("/etc/mentisdb/tls".to_string()),
 ///     env_file: None,
 ///     no_env_update: false,
@@ -497,29 +523,36 @@ pub fn help_text() -> &'static str {
       #    reuses the existing material.
       mentisdb cert 192.0.2.10 --force
 
-      # 5. Write the cert to a non-default directory (useful in
+      # 5. Reset to factory defaults: delete any existing cert/key
+      #    files first, then generate a fresh cert with the standard
+      #    SAN set. Useful if certs were corrupted or manually edited.
+      mentisdb cert --reset
+
+      # 6. Write the cert to a non-default directory (useful in
       #    container / systemd / packager deployments) and update a
       #    .env file that lives outside the current working dir.
       mentisdb cert 192.0.2.10 \\
           --out-dir /etc/mentisdb/tls \\
           --env-file /etc/mentisdb/mentisdb.env
 
-      # 6. Print the values to copy into your shell rc, without
+      # 7. Print the values to copy into your shell rc, without
       #    touching any .env on disk. Useful for ephemeral hosts.
       mentisdb cert --no-env-update
 
     Options:
       <ip-or-domain>     Optional IP or DNS hostname to add as a SAN. IPv4
-                         and IPv6 literals are added as IP SANs; everything
-                         else as a DNS SAN.
+                          and IPv6 literals are added as IP SANs; everything
+                          else as a DNS SAN.
       --force            Overwrite an existing cert and key on disk.
+      --reset            Delete existing cert/key files first, then generate
+                          a fresh factory-default certificate. Implies --force.
       --out-dir <path>   Directory to write cert.pem and key.pem into.
-                         Defaults to the directory of MENTISDB_TLS_CERT
-                         (or the platform default).
+                          Defaults to the directory of MENTISDB_TLS_CERT
+                          (or the platform default).
       --env-file <path>  Path to the .env file to update. Defaults to
-                         .env in the current working directory.
+                          .env in the current working directory.
       --no-env-update    Skip updating the .env file; just print the
-                         values to copy into your environment.
+                          values to copy into your environment.
       --help             Show this help text.
 
 "
@@ -690,6 +723,7 @@ mod tests {
         let cmd = CertCommand {
             host: None,
             overwrite: false,
+            reset: false,
             output_dir: None,
             env_file: Some("/custom/.env".to_string()),
             no_env_update: false,
@@ -702,6 +736,7 @@ mod tests {
         let cmd = CertCommand {
             host: None,
             overwrite: false,
+            reset: false,
             output_dir: None,
             env_file: None,
             no_env_update: false,
@@ -716,6 +751,7 @@ mod tests {
         let cmd = CertCommand {
             host: None,
             overwrite: false,
+            reset: false,
             output_dir: Some("/tmp/custom-tls".to_string()),
             env_file: None,
             no_env_update: false,

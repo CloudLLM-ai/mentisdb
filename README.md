@@ -1061,12 +1061,15 @@ mentisdb cert vps.example.com
 # 4. Regenerate an existing cert (e.g. after adding a new IP to the box)
 mentisdb cert 192.0.2.10 --force
 
-# 5. Write to a non-default directory and update a custom .env file
+# 5. Reset to factory defaults: delete existing cert/key, then generate fresh
+mentisdb cert --reset
+
+# 6. Write to a non-default directory and update a custom .env file
 mentisdb cert 192.0.2.10 \
     --out-dir /etc/mentisdb/tls \
     --env-file /etc/mentisdb/mentisdb.env
 
-# 6. Print the values without touching any .env (for ephemeral hosts)
+# 7. Print the values without touching any .env (for ephemeral hosts)
 mentisdb cert --no-env-update
 ```
 
@@ -1076,6 +1079,7 @@ mentisdb cert --no-env-update
 |---|---|
 | `<ip-or-domain>`   | Optional IP literal or DNS hostname to add as a SAN. IPv4 and IPv6 literals become IP SANs; everything else becomes a DNS SAN. Omit to mint a cert with only the standard SAN set. |
 | `--force`          | Overwrite an existing `cert.pem` / `key.pem` on disk. Without this flag the command refuses to clobber a pre-existing cert so operators do not accidentally invalidate an already-trusted one. |
+| `--reset`          | Delete existing `cert.pem` / `key.pem` files first, then generate a fresh factory-default certificate. Implies `--force`. |
 | `--out-dir <path>` | Directory to write `cert.pem` and `key.pem` into. Defaults to the directory of `MENTISDB_TLS_CERT` (or `<MENTISDB_DIR>/tls/`). |
 | `--env-file <path>`| Path to the `.env` file to update with the new cert paths. Defaults to `./.env`. |
 | `--no-env-update`  | Skip updating the `.env` file. The cert is still minted, the SAN list and SHA-256 fingerprint are still printed, and the command prints the `export MENTISDB_TLS_CERT=...` lines for you to paste into a shell rc. |

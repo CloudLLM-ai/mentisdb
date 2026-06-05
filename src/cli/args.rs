@@ -142,6 +142,11 @@ pub struct CertCommand {
     /// (the default), the command refuses to overwrite an existing cert so
     /// operators do not accidentally invalidate an already-trusted cert.
     pub overwrite: bool,
+    /// When `true`, delete any existing cert and key files before
+    /// generating a new one. This ensures a clean factory-default
+    /// certificate is produced even if the files were corrupted or
+    /// manually edited. Implies `--force`.
+    pub reset: bool,
     /// Override the output directory for `cert.pem` and `key.pem`. When
     /// `None`, the directory is resolved from `MENTISDB_TLS_CERT` (or its
     /// default).
@@ -159,10 +164,26 @@ pub struct CertCommand {
 /// Supported top-level commands for `mentisdb` CLI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
-    /// Print CLI help.
+    /// Print CLI help (comprehensive: daemon + all subcommands).
     Help,
+    /// Print setup subcommand help.
+    SetupHelp,
+    /// Print wizard subcommand help.
+    WizardHelp,
+    /// Print add subcommand help.
+    AddHelp,
+    /// Print search subcommand help.
+    SearchHelp,
+    /// Print agents subcommand help.
+    AgentsHelp,
+    /// Print backup subcommand help.
+    BackupHelp,
+    /// Print restore subcommand help.
+    RestoreHelp,
     /// Print bearer-token CLI help.
     BearerTokenHelp,
+    /// Print cert subcommand help.
+    CertHelp,
     /// Print a setup scaffold for one target agent.
     Setup(SetupCommand),
     /// Run the interactive setup wizard.
@@ -202,8 +223,22 @@ where
         return Ok(CliCommand::Help);
     };
 
+    // Check for subcommand-specific help flags
+    let has_help_flag = parts.iter().skip(1).any(|arg| {
+        matches!(arg.as_str(), "-h" | "--help" | "help")
+    });
+
     match subcommand.as_str() {
         "-h" | "--help" | "help" => Ok(CliCommand::Help),
+        "setup" if has_help_flag => Ok(CliCommand::SetupHelp),
+        "wizard" if has_help_flag => Ok(CliCommand::WizardHelp),
+        "add" if has_help_flag => Ok(CliCommand::AddHelp),
+        "search" if has_help_flag => Ok(CliCommand::SearchHelp),
+        "agents" if has_help_flag => Ok(CliCommand::AgentsHelp),
+        "backup" if has_help_flag => Ok(CliCommand::BackupHelp),
+        "restore" if has_help_flag => Ok(CliCommand::RestoreHelp),
+        "bearertoken" if has_help_flag => Ok(CliCommand::BearerTokenHelp),
+        "cert" if has_help_flag => Ok(CliCommand::CertHelp),
         "setup" => parse_setup(parts),
         "wizard" => parse_wizard(parts),
         "add" => parse_add(parts),
@@ -224,7 +259,7 @@ where
 /// block is appended at runtime so the source of truth for its
 /// wording stays in the cert module.
 #[must_use]
-pub(crate) fn help_text() -> String {
+pub fn help_text() -> String {
     let mut text = String::from(HELP_HEADER);
     text.push_str(super::cert::help_text());
     text.push_str(HELP_FOOTER);
@@ -431,7 +466,8 @@ Notes:
   - `backup` and `restore` operate on the MENTISDB_DIR directly and do not require a running daemon.
 ";
 
-pub(crate) fn bearer_token_help_text() -> &'static str {
+/// Return the help text for the `bearertoken` subcommand.
+pub fn bearer_token_help_text() -> &'static str {
     "\
 Manage bearer tokens for MCP access.
 
@@ -461,6 +497,193 @@ Options:
   --dir <path>         Path to MENTISDB_DIR (default: platform default)
   --help               Show this help text
 "
+}
+
+/// Return the help text for the `setup` subcommand.
+pub fn setup_help_text() -> &'static str {
+    "\
+mentisdb setup — Write the canonical MentisDB MCP configuration for one supported agent, or for every supported integration with `all`.
+
+Usage:
+  mentisdb setup <agent|all> [--url <url>] [--dry-run] [--yes]
+
+Supported agents:
+  codex, claude-code, claude-desktop, gemini, opencode, qwen, copilot, vscode-copilot
+
+Options:
+  --url <url>     Override the default MentisDB MCP endpoint for the selected target(s)
+  --dry-run       Print the setup plan without modifying files
+  --yes           Apply the rendered plan without the final confirmation prompt
+  --help          Show this help text
+
+Examples:
+  mentisdb setup codex
+  mentisdb setup claude-desktop
+  mentisdb setup all --dry-run
+  mentisdb setup all --yes
+  mentisdb setup qwen --url http://127.0.0.1:9471
+"
+}
+
+/// Return the help text for the `wizard` subcommand.
+pub fn wizard_help_text() -> &'static str {
+    "\
+mentisdb wizard — Scan the local machine for supported clients, show detection status, let you choose integrations to configure, and apply changes interactively.
+
+Usage:
+  mentisdb wizard [--url <url>] [--yes]
+
+Behavior:
+  - Detects whether a mentisdb integration already exists per client
+  - Lets you skip or overwrite existing mentisdb entries
+  - `--yes` accepts default selections but still skips existing mentisdb entries
+  - Uses per-integration default URLs unless you override them
+  - For Claude Desktop, checks for npm and installs mcp-remote if needed
+
+Options:
+  --url <url>   Override the default URL for all selected integrations
+  --yes         Accept the wizard defaults without confirmation prompts
+  --help        Show this help text
+
+Examples:
+  mentisdb wizard
+  mentisdb wizard --yes
+  mentisdb wizard --url https://my.mentisdb.com:9473
+"
+}
+
+/// Return the help text for the `add` subcommand.
+pub fn add_help_text() -> &'static str {
+    "\
+mentisdb add — Add a thought to a running MentisDB daemon via REST.
+
+Usage:
+  mentisdb add <content> [--type <type>] [--scope <scope>] [--tag <tag>] [--agent <id>] [--chain <key>] [--url <url>]
+
+Options:
+  --type <type>    Thought type (default: fact-learned)
+  --scope <scope>  Memory scope: user, session, or agent
+  --tag <tag>      Add a tag (repeatable)
+  --agent <id>     Agent ID for the thought
+  --chain <key>    Chain key (uses daemon default if omitted)
+  --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
+  --help           Show this help text
+
+Examples:
+  mentisdb add \"The sky is blue\"
+  mentisdb add \"Session fact\" --scope session --tag important
+  mentisdb add \"Insight\" --type insight --agent my-agent
+"
+}
+
+/// Return the help text for the `search` subcommand.
+pub fn search_help_text() -> &'static str {
+    "\
+mentisdb search — Search thoughts on a running MentisDB daemon via ranked search.
+
+Usage:
+  mentisdb search <query> [--limit <n>] [--scope <scope>] [--chain <key>] [--url <url>]
+
+Options:
+  --limit <n>      Maximum results (default: 10)
+  --scope <scope>  Filter by memory scope: user, session, or agent
+  --chain <key>    Chain key (uses daemon default if omitted)
+  --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
+  --help           Show this help text
+
+Examples:
+  mentisdb search \"cache invalidation\"
+  mentisdb search \"performance\" --limit 5 --scope session
+"
+}
+
+/// Return the help text for the `agents` subcommand.
+pub fn agents_help_text() -> &'static str {
+    "\
+mentisdb agents — List registered agents on a running MentisDB daemon.
+
+Usage:
+  mentisdb agents [--chain <key>] [--url <url>]
+
+Options:
+  --chain <key>    Chain key (uses daemon default if omitted)
+  --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
+  --help           Show this help text
+
+Examples:
+  mentisdb agents
+  mentisdb agents --chain my-chain
+"
+}
+
+/// Return the help text for the `backup` subcommand.
+pub fn backup_help_text() -> &'static str {
+    "\
+mentisdb backup — Create a .mentis backup archive of the MENTISDB_DIR.
+
+Usage:
+  mentisdb backup [-o <path>] [--dir <path>] [--flush] [--include-tls]
+
+The backup includes all chain data files (*.tcbin, *.agents.json,
+*.entity-types.json, *.vectors.*.json), the global registry, and
+optionally TLS certificates and keys.
+
+If the daemon is running, all chains are flushed before reading files
+for a consistent backup. If the daemon is not running, files are captured
+as-is.
+
+Options:
+  -o <path>          Path for the .mentis archive (default: ./mentisdb-YYYY-MM-DD-HH-MM-SS.mentis)
+  --dir <path>       Path to MENTISDB_DIR (default: platform default)
+  --flush            Flush all storage adapters before backing up (recommended if daemon is running)
+  --include-tls      Include TLS certificates and keys in the backup
+  --help             Show this help text
+
+Examples:
+  mentisdb backup
+  mentisdb backup -o /backups/mentisdb-2026-04-14.mentis
+  mentisdb backup --dir ~/.cloudllm/mentisdb --flush --include-tls
+"
+}
+
+/// Return the help text for the `restore` subcommand.
+pub fn restore_help_text() -> &'static str {
+    "\
+mentisdb restore — Restore a MENTISDB_DIR from a .mentis backup archive.
+
+Usage:
+  mentisdb restore <archive.mentis> [--dir <path>] [--overwrite] [--yes]
+
+Restores all chain data, registry, skills, and optionally TLS files.
+Empty targets receive a full instance restore. Non-empty targets preserve
+the local registry, add newly discovered backup chains, append verified
+same-key suffixes, and import divergent same-name chains under a renamed key.
+
+The daemon must not be running during restore. If mentisdb is detected,
+the restore aborts with a message to stop the daemon first. This prevents
+the daemon's in-memory state from overwriting restored files.
+
+--overwrite is chain-scoped: it can replace same-path chain files when a
+safe suffix merge is not possible. It does not blindly replace the local
+registry, skills, webhooks, TLS, or unrelated chains.
+
+Options:
+  <archive.mentis>   Path to the .mentis backup archive (required)
+  --dir <path>       Path to MENTISDB_DIR (default: platform default)
+  --overwrite        Allow same-path chain files to be replaced when needed
+  --yes              Skip interactive confirmation prompts
+  --help             Show this help text
+
+Examples:
+  mentisdb restore mentisdb-2026-04-14.mentis
+  mentisdb restore /backups/mentisdb-2026-04-14.mentis --dir ~/.cloudllm/mentisdb
+  mentisdb restore /backups/mentisdb-2026-04-14.mentis --overwrite
+"
+}
+
+/// Return the help text for the `cert` subcommand.
+pub fn cert_help_text() -> &'static str {
+    super::cert::help_text()
 }
 
 fn parse_bearer_token(parts: Vec<String>) -> Result<CliCommand, String> {
@@ -957,6 +1180,7 @@ fn parse_cert(args: Vec<String>) -> Result<CliCommand, String> {
 
     let mut host: Option<String> = None;
     let mut overwrite = false;
+    let mut reset = false;
     let mut output_dir: Option<String> = None;
     let mut env_file: Option<String> = None;
     let mut no_env_update = false;
@@ -968,6 +1192,11 @@ fn parse_cert(args: Vec<String>) -> Result<CliCommand, String> {
             match arg {
                 "--force" | "--overwrite" => {
                     overwrite = true;
+                    index += 1;
+                }
+                "--reset" => {
+                    reset = true;
+                    overwrite = true; // --reset implies --force
                     index += 1;
                 }
                 "--out-dir" | "--out" => {
@@ -1018,6 +1247,7 @@ fn parse_cert(args: Vec<String>) -> Result<CliCommand, String> {
     Ok(CliCommand::Cert(CertCommand {
         host,
         overwrite,
+        reset,
         output_dir,
         env_file,
         no_env_update,

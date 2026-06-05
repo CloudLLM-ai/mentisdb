@@ -405,7 +405,7 @@ fn setup_help_uses_the_embedded_mentisdb_cli_surface() {
 
     let stdout = String::from_utf8(output).unwrap();
     assert!(stdout.contains("mentisdb setup <agent|all>"));
-    assert!(stdout.contains("Supported agents (setup/wizard):"));
+    assert!(stdout.contains("Supported agents:"));
     assert!(!stdout.contains("mentisdb daemon"));
 }
 

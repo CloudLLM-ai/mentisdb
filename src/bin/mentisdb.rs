@@ -42,6 +42,7 @@ use mentisdb::{
     load_registered_chains, migrate_chain_hash_algorithm, migrate_registered_chains_with_adapter,
     migrate_skill_registry, refresh_registered_chain_counts, MentisDb, MentisDbMigrationEvent,
     MentisDbMigrationReport, SkillRegistry, ThoughtType,
+    cli::help_text as cli_help_text,
 };
 use serde::Deserialize;
 use std::ffi::OsString;
@@ -2519,6 +2520,7 @@ async fn main() -> ExitCode {
     match parse_daemon_args(std::env::args_os().skip(1)) {
         Ok(DaemonArgMode::Help) => {
             println!("{}", daemon_help_text());
+            println!("\n{}", cli_help_text());
             ExitCode::SUCCESS
         }
         Ok(DaemonArgMode::Run) => match run().await {
@@ -2581,6 +2583,7 @@ async fn main() -> ExitCode {
             eprintln!("{message}");
             eprintln!();
             eprintln!("{}", daemon_help_text());
+            eprintln!("\n{}", cli_help_text());
             ExitCode::from(2)
         }
     }

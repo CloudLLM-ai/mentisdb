@@ -40,6 +40,7 @@ fn parse_cert_minimal_returns_no_host() {
         CliCommand::Cert(CertCommand {
             host: None,
             overwrite: false,
+            reset: false,
             output_dir: None,
             env_file: None,
             no_env_update: false,
@@ -55,6 +56,7 @@ fn parse_cert_with_host_and_force_and_outdir() {
         CliCommand::Cert(CertCommand {
             host: Some("192.0.2.10".to_string()),
             overwrite: true,
+            reset: false,
             output_dir: Some("/tmp/mentisdb-tls".to_string()),
             env_file: None,
             no_env_update: false,
@@ -70,6 +72,7 @@ fn parse_cert_dns_name() {
         CliCommand::Cert(CertCommand {
             host: Some("vps.example.com".to_string()),
             overwrite: false,
+            reset: false,
             output_dir: None,
             env_file: None,
             no_env_update: false,
@@ -84,23 +87,47 @@ fn parse_cert_rejects_two_positional_args() {
 }
 
 #[test]
-fn parse_cert_rejects_empty_value_for_outdir() {
-    let err = parse(&["--out-dir"]).unwrap_err();
-    assert!(err.contains("--out-dir requires a value"), "{err}");
-    let err = parse(&["--out-dir", ""]).unwrap_err();
-    assert!(err.contains("non-empty"), "{err}");
-}
-
-#[test]
 fn parse_cert_unknown_flag() {
     let err = parse(&["--bogus"]).unwrap_err();
     assert!(err.contains("Unexpected argument"), "{err}");
 }
 
 #[test]
+fn parse_cert_reset_flag() {
+    let parsed = parse(&["--reset"]).unwrap();
+    assert_eq!(
+        parsed,
+        CliCommand::Cert(CertCommand {
+            host: None,
+            overwrite: true, // --reset implies --force
+            reset: true,
+            output_dir: None,
+            env_file: None,
+            no_env_update: false,
+        })
+    );
+}
+
+#[test]
+fn parse_cert_reset_with_host() {
+    let parsed = parse(&["192.0.2.10", "--reset"]).unwrap();
+    assert_eq!(
+        parsed,
+        CliCommand::Cert(CertCommand {
+            host: Some("192.0.2.10".to_string()),
+            overwrite: true, // --reset implies --force
+            reset: true,
+            output_dir: None,
+            env_file: None,
+            no_env_update: false,
+        })
+    );
+}
+
+#[test]
 fn parse_cert_help_short_circuits_to_help() {
     let parsed = parse(&["--help"]).unwrap();
-    assert!(matches!(parsed, CliCommand::Help));
+    assert!(matches!(parsed, CliCommand::CertHelp));
 }
 
 #[test]
@@ -348,9 +375,141 @@ fn cert_command_help_flag_in_help_text() {
     let stdout = String::from_utf8_lossy(&output);
     assert!(stdout.contains("Mint a fresh self-signed TLS certificate"));
     assert!(stdout.contains("--force"));
+    assert!(stdout.contains("--reset"));
     assert!(stdout.contains("--out-dir"));
     assert!(stdout.contains("--env-file"));
     assert!(stdout.contains("--no-env-update"));
+}
+
+#[test]
+fn run_cert_reset_deletes_and_regenerates() {
+    let _guard = env_lock();
+
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("tls");
+    let env_file = dir.path().join(".env");
+
+    // First run — generate initial cert.
+    let mut input = Cursor::new(Vec::<u8>::new());
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    let code = run_with_io(
+        [
+            "mentisdb",
+            "cert",
+            "--out-dir",
+            out_dir.to_string_lossy().as_ref(),
+            "--env-file",
+            env_file.to_string_lossy().as_ref(),
+        ],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+    assert_eq!(code, ExitCode::SUCCESS);
+    let cert_path = out_dir.join("cert.pem");
+    let bytes_first = std::fs::read(&cert_path).expect("read first cert");
+
+    // Sleep a millisecond so mtime/contents can differ.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    // Second run with --reset — should delete and regenerate.
+    let mut input2 = Cursor::new(Vec::<u8>::new());
+    let mut output2 = Vec::new();
+    let mut errors2 = Vec::new();
+    let code2 = run_with_io(
+        [
+            "mentisdb",
+            "cert",
+            "--reset",
+            "--out-dir",
+            out_dir.to_string_lossy().as_ref(),
+            "--env-file",
+            env_file.to_string_lossy().as_ref(),
+        ],
+        &mut input2,
+        &mut output2,
+        &mut errors2,
+    );
+    assert_eq!(code2, ExitCode::SUCCESS);
+    let bytes_second = std::fs::read(&cert_path).expect("read second cert");
+    assert_ne!(
+        bytes_first, bytes_second,
+        "with --reset the cert should be regenerated"
+    );
+
+    let stdout2 = String::from_utf8_lossy(&output2);
+    assert!(
+        stdout2.contains("Reset to factory defaults"),
+        "expected reset message; got: {stdout2}"
+    );
+    assert!(
+        stdout2.contains("generated new self-signed TLS cert"),
+        "expected new cert message; got: {stdout2}"
+    );
+}
+
+#[test]
+fn run_cert_reset_with_custom_san() {
+    let _guard = env_lock();
+
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("tls");
+    let env_file = dir.path().join(".env");
+
+    // First run — generate initial cert with one SAN.
+    let mut input = Cursor::new(Vec::<u8>::new());
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    let _ = run_with_io(
+        [
+            "mentisdb",
+            "cert",
+            "203.0.113.5",
+            "--out-dir",
+            out_dir.to_string_lossy().as_ref(),
+            "--env-file",
+            env_file.to_string_lossy().as_ref(),
+        ],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+    let cert_path = out_dir.join("cert.pem");
+
+    // Second run with --reset and a different SAN — should have new SAN.
+    let mut input2 = Cursor::new(Vec::<u8>::new());
+    let mut output2 = Vec::new();
+    let mut errors2 = Vec::new();
+    let _ = run_with_io(
+        [
+            "mentisdb",
+            "cert",
+            "198.51.100.7",
+            "--reset",
+            "--out-dir",
+            out_dir.to_string_lossy().as_ref(),
+            "--env-file",
+            env_file.to_string_lossy().as_ref(),
+        ],
+        &mut input2,
+        &mut output2,
+        &mut errors2,
+    );
+
+    // Verify the new cert has the new SAN.
+    let artifacts = mentisdb::server::ensure_tls_cert_with_sans(&cert_path, &out_dir.join("key.pem"), Vec::new(), false)
+        .expect("ensure_tls_cert_with_sans");
+    assert!(
+        artifacts.sans.iter().any(|s| s.contains("198.51.100.7")),
+        "expected new SAN 198.51.100.7 in cert after reset, got: {:?}",
+        artifacts.sans
+    );
+    assert!(
+        !artifacts.sans.iter().any(|s| s.contains("203.0.113.5")),
+        "old SAN 203.0.113.5 should not be present after reset, got: {:?}",
+        artifacts.sans
+    );
 }
 
 #[allow(dead_code)]

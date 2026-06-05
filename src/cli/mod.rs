@@ -18,9 +18,12 @@ use crate::paths::default_mentisdb_dir;
 pub use args::{
     parse_args, AddCommand, AgentsCommand, BackupCommand, BearerTokenCommand, CertCommand,
     CliCommand, RestoreCommand, SearchCommand, SetupCommand, WizardCommand,
+    help_text, setup_help_text, wizard_help_text, add_help_text, search_help_text,
+    agents_help_text, backup_help_text, restore_help_text, cert_help_text,
+    bearer_token_help_text,
 };
 pub use cert::{
-    build_extra_sans, help_text as cert_help_text, resolve_paths, run_cert, update_env_file,
+    build_extra_sans, resolve_paths, run_cert, update_env_file,
     CERT_FILENAME, KEY_FILENAME, MENTISDB_TLS_CERT_ENV, MENTISDB_TLS_KEY_ENV,
 };
 pub use prompt::{boxed_apply_summary, boxed_skip_notice, boxed_text_prompt, boxed_yn_prompt};
@@ -47,8 +50,40 @@ where
             let _ = write!(out, "{}", args::help_text());
             ExitCode::SUCCESS
         }
+        Ok(CliCommand::SetupHelp) => {
+            let _ = write!(out, "{}", setup_help_text());
+            ExitCode::SUCCESS
+        }
+        Ok(CliCommand::WizardHelp) => {
+            let _ = write!(out, "{}", wizard_help_text());
+            ExitCode::SUCCESS
+        }
+        Ok(CliCommand::AddHelp) => {
+            let _ = write!(out, "{}", add_help_text());
+            ExitCode::SUCCESS
+        }
+        Ok(CliCommand::SearchHelp) => {
+            let _ = write!(out, "{}", search_help_text());
+            ExitCode::SUCCESS
+        }
+        Ok(CliCommand::AgentsHelp) => {
+            let _ = write!(out, "{}", agents_help_text());
+            ExitCode::SUCCESS
+        }
+        Ok(CliCommand::BackupHelp) => {
+            let _ = write!(out, "{}", backup_help_text());
+            ExitCode::SUCCESS
+        }
+        Ok(CliCommand::RestoreHelp) => {
+            let _ = write!(out, "{}", restore_help_text());
+            ExitCode::SUCCESS
+        }
         Ok(CliCommand::BearerTokenHelp) => {
-            let _ = write!(out, "{}", args::bearer_token_help_text());
+            let _ = write!(out, "{}", bearer_token_help_text());
+            ExitCode::SUCCESS
+        }
+        Ok(CliCommand::CertHelp) => {
+            let _ = write!(out, "{}", cert_help_text());
             ExitCode::SUCCESS
         }
         Ok(CliCommand::Setup(command)) => match setup::run_setup(&command, input, out) {

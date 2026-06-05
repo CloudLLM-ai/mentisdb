@@ -40,6 +40,8 @@
       `mentisdb cert`
       `mentisdb cert <ip-or-domain>` (IPv4/IPv6 literal → IP SAN, DNS name → DNS SAN)
       `mentisdb cert --force` (regenerate an existing cert)
+      `mentisdb cert --reset` (delete existing cert/key first, then generate a
+        fresh factory-default certificate; implies `--force`)
       `mentisdb cert --out-dir <path>` (write to a non-default directory)
       `mentisdb cert --env-file <path>` (point at a non-default .env)
       `mentisdb cert --no-env-update` (print the export lines, leave .env alone)
@@ -51,6 +53,13 @@
     operator to restart the daemon so the next HTTPS request serves the
     new cert. Full help lives in `mentisdb cert --help` and the
     "Minting a Custom Certificate" section of the User Guide.
+  - feat(cli): comprehensive `--help` output. `mentisdb --help` now prints both
+    the daemon help AND the full CLI subcommand help in one view, so users can
+    discover all commands and flags at once. Subcommand-specific help works as
+    expected: `mentisdb cert --help`, `mentisdb setup --help`, `mentisdb wizard --help`,
+    `mentisdb add --help`, `mentisdb search --help`, `mentisdb agents --help`,
+    `mentisdb backup --help`, `mentisdb restore --help`,
+    `mentisdb bearertoken --help` each show only that subcommand's focused help.
   - feat(skill): MENTISDB_SKILL.md adds a prominent "🔎 SEARCH BEFORE YOU
     WRITE" section between MANDATORY STARTUP and WRITE TRIGGERS. The routine
     (`recent_context` → `ranked_search` → tighten with `tags_any` /
@@ -161,10 +170,11 @@
     idempotent rewrite), `resolve_env_file` (override vs. fallback),
     `resolve_paths` (out-dir vs. env-var vs. default), and the
     help-text content (every flag mentioned, at least 5 example
-    invocations). 12 new `tests/cert_tests.rs` integration tests cover
-    parsing (positional, --force, --out-dir, --env-file, --no-env-update,
+    invocations). 15 new `tests/cert_tests.rs` integration tests cover
+    parsing (positional, --force, --reset, --out-dir, --env-file, --no-env-update,
     error paths, --help), end-to-end PEM write + SAN verification via
     `x509-parser`, reuse without --force, regeneration with --force,
+    --reset that deletes and regenerates, --reset with custom SAN,
     --no-env-update that leaves the .env alone, and the help-text
     roundtrip. All tests are isolated via `tempfile::tempdir` (unique
     per test) and a global `env_lock` mutex that serialises env-touching

@@ -391,7 +391,7 @@ fn bearertoken_create_requires_explicit_scope() {
 #[test]
 fn parse_setup_help_returns_help_command() {
     let parsed = parse_args(["mentisdb", "setup", "--help"]).unwrap();
-    assert_eq!(parsed, CliCommand::Help);
+    assert_eq!(parsed, CliCommand::SetupHelp);
 }
 
 #[test]
