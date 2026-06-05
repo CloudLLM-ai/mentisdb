@@ -1,27 +1,12 @@
 0.10.1.46 UNRELEASED
-  - feat(cli): `--headless` is now a real top-level flag. `mentisdb --headless`
-    starts the HTTP/MCP/REST servers without the interactive terminal UI,
-    matching the long-standing `--mode http --headless` invocation that the
-    stdio proxy has used internally since 2ae780f. `--help` now lists the
-    flag in both the Usage block and the Flags section.
-  - fix(tui): the daemon auto-promotes to headless HTTP mode when stdin or
-    stdout is not a TTY. Previously the TUI main loop was entered with an
-    already-EOF stdin; crossterm's `event::poll(100ms)` returned `Ok(false)`
-    immediately instead of honouring the timeout, and the loop re-rendered
-    the full ratatui UI on every iteration — pinning one CPU core at 100%
-    on a 2-core cloud VM. The new `tui_can_run()` guard in `src/tui.rs`
-    detects the non-TTY case at startup and `run()` then delegates to the
-    existing `run_headless()` so the HTTP servers come up and the process
-    idles near 0% CPU. Affects every non-interactive launch: `docker run`
-    without `-t`, `nohup mentisdb &`, `systemd` without
-    `StandardInput=tty`, `cron`, and the SSH-disconnect scenario that
-    produced the original report.
   - feat(auth): built-in bearer-token authentication for remote MCP servers.
     `MENTISDB_BEARER_TOKEN_ACCESS=true` now protects standard Streamable HTTP
     MCP and legacy HTTP MCP routes with `Authorization: Bearer ...`; when the
     flag is disabled, local/default deployments keep the old unauthenticated
     behavior. Tokens are stored in `bearer-tokens.json` as SHA-256 hashes only,
-    never as plaintext.
+    never as plaintext. This is the headline change in 0.10.1.46 — it is the
+    prerequisite for any non-loopback deployment of the HTTPS MCP / REST
+    surfaces and unlocks the rest of the auth work in this release.
   - feat(auth): scoped bearer-token registry and CLI. Operators can issue global
     tokens or tokens limited to one or more chains with:
       `mentisdb bearertoken create --global <alias>`
@@ -47,14 +32,113 @@
   - feat(mcp): updated `cloudllm_mcp` integration to support dynamic bearer
     authorization context, including request payload/params so MentisDB can make
     chain/global authorization decisions inside the MentisDB auth policy layer.
+  - feat(cli): new `mentisdb cert [<ip-address-or-domain>]` subcommand mints a
+    self-signed TLS certificate for the HTTPS MCP and REST surfaces and the
+    web dashboard, makes it the active cert on disk, and persists
+    `MENTISDB_TLS_CERT` / `MENTISDB_TLS_KEY` into the local `.env` so the next
+    daemon start picks the new paths up automatically. Supports:
+      `mentisdb cert`
+      `mentisdb cert <ip-or-domain>` (IPv4/IPv6 literal → IP SAN, DNS name → DNS SAN)
+      `mentisdb cert --force` (regenerate an existing cert)
+      `mentisdb cert --out-dir <path>` (write to a non-default directory)
+      `mentisdb cert --env-file <path>` (point at a non-default .env)
+      `mentisdb cert --no-env-update` (print the export lines, leave .env alone)
+    The standard SAN set (my.mentisdb.com, localhost, 127.0.0.1, every unicast
+    IP on every host interface, plus MENTISDB_BIND_HOST when it is a DNS name)
+    is always included; the user-supplied host is appended. Refuses to
+    overwrite without `--force`, prints the SAN list and SHA-256 fingerprint
+    for `openssl x509 -fingerprint -sha256` cross-check, and tells the
+    operator to restart the daemon so the next HTTPS request serves the
+    new cert. Full help lives in `mentisdb cert --help` and the
+    "Minting a Custom Certificate" section of the User Guide.
+  - feat(skill): MENTISDB_SKILL.md adds a prominent "🔎 SEARCH BEFORE YOU
+    WRITE" section between MANDATORY STARTUP and WRITE TRIGGERS. The routine
+    (`recent_context` → `ranked_search` → tighten with `tags_any` /
+    `thought_types` / `concepts_any` / `since`) plus three decisions per
+    append — do I need to write at all, do I need to update a prior lesson,
+    which 1–3 neighbours to link via typed edges — and a new "Blind appends"
+    anti-pattern. Search-first is the upstream half of the dedup discipline:
+    5–15 seconds of search before write is the single highest-leverage
+    habit for keeping `ranked_search` useful as chains grow past a few
+    hundred thoughts.
+  - feat(server): expose `ensure_tls_cert_with_sans(cert, key, extra_sans,
+    overwrite) -> TlsCertArtifacts` and the matching `TlsCertArtifacts {
+    cert_path, key_path, sans, sha256_fingerprint }` so library consumers
+    and the new `mentisdb cert` CLI can mint or inspect certs with custom
+    SAN sets without re-implementing the `rcgen` + `x509-parser` dance. The
+    existing `ensure_tls_cert` is now a one-line wrapper (overwrite=false,
+    no extra SANs), so no behaviour change for existing callers. The
+    `sans` field in `TlsCertArtifacts` is extracted from the freshly
+    written cert with `x509-parser` (newly wired under the `server`
+    feature in `Cargo.toml`) and rendered in the same `dns:<name>` /
+    `ip:<addr>` style the cert was built with, so a CLI caller can print
+    them and a downstream consumer can grep for an IP or hostname.
+  - feat(cli): `--headless` is now a real top-level flag. `mentisdb --headless`
+    starts the HTTP/MCP/REST servers without the interactive terminal UI,
+    matching the long-standing `--mode http --headless` invocation that the
+    stdio proxy has used internally since 2ae780f. `--help` now lists the
+    flag in both the Usage block and the Flags section.
+  - fix(tui): the daemon auto-promotes to headless HTTP mode when stdin or
+    stdout is not a TTY. Previously the TUI main loop was entered with an
+    already-EOF stdin; crossterm's `event::poll(100ms)` returned `Ok(false)`
+    immediately instead of honouring the timeout, and the loop re-rendered
+    the full ratatui UI on every iteration — pinning one CPU core at 100%
+    on a 2-core cloud VM. The new `tui_can_run()` guard in `src/tui.rs`
+    detects the non-TTY case at startup and `run()` then delegates to the
+    existing `run_headless()` so the HTTP servers come up and the process
+    idles near 0% CPU. Affects every non-interactive launch: `docker run`
+    without `-t`, `nohup mentisdb &`, `systemd` without
+    `StandardInput=tty`, `cron`, and the SSH-disconnect scenario that
+    produced the original report.
+  - fix(restore): preserve local registries during cross-instance restores,
+    append verified same-chain suffixes, and import divergent same-name chains
+    under renamed keys. Restores are now idempotent and chain-scope-safe:
+    the local `mentisdb-registry.json` is merged, not replaced, and
+    `--overwrite` only allows same-path chain file replacement when a safe
+    suffix merge is not possible.
   - fix(auth): generated token secrets now use the clearer `mentisdb_` prefix
     instead of `mdb_live_`; README, tests, docs site, and the demo script were
     updated to match.
+  - fix(cli): `mentisdb cert` snapshots the on-disk existence of the cert
+    + key before delegating to `ensure_tls_cert_with_sans`, so the
+    human-readable report correctly distinguishes "Wrote new self-signed
+    TLS cert" from "Reusing existing TLS cert" on a brand-new tempdir.
+    The helper writes the files in the no-overwrite path, so a post-call
+    existence check would always return true and the CLI would print
+    "Reusing existing TLS cert" on a fresh cert. The `cert_existed_before`
+    snapshot in `cli::cert::run_cert` is the reliable signal.
   - fix(tui): increased contrast for the bottom instruction/hint bar so
     navigation hints remain readable on low-contrast terminal themes.
-  - fix(restore): preserve local registries during cross-instance restores,
-    append verified same-chain suffixes, and import divergent same-name chains
-    under renamed keys.
+  - refactor(cli): collapse the duplicated `writeln!` blocks in
+    `cli::cert::run_cert` into small named helpers (`write_status`,
+    `write_sans`, `write_fingerprint`, `write_export_instructions`,
+    `write_or_warn_env_update`) so the report is composed in one place
+    and every section can be tweaked without copy-paste. Help text is
+    one source of truth: `cli::cert::help_text()` is consumed by
+    `args::help_text()` and the binary's `daemon_help_text()`, so
+    `mentisdb cert --help` and `mentisdb --help` always show the same
+    wording. The shared help covers 6 worked examples (IP, DNS,
+    `--force`, `--out-dir`, `--env-file`, `--no-env-update`), a flag
+    table, a "when the new cert takes effect" paragraph, and the
+    `openssl s_client` cross-check callout.
+  - refactor(server): promote `default_tls_dir` to `pub` in `server.rs`
+    and remove the duplicate `default_tls_dir` helper from
+    `src/cli/cert.rs`. The `cert` module now reuses the canonical
+    `crate::server::default_tls_dir()` for its fallback path, so the
+    default TLS directory is defined in one place and library consumers
+    can read the constant directly.
+  - docs: new "TLS Certificates" section in README.md between Web
+    Dashboard and Backup and Restore, with six worked examples, a full
+    options table, the restart-required note, the `openssl s_client`
+    cross-check snippet, and a "When the auto-generated SAN set is not
+    enough" subsection. docs.mentisdb.com user_docs.rs gains a "Minting
+    a Custom Certificate" subsection inside HTTPS & TLS with the SAN set
+    contents, six worked examples, the options table, and the cross-check
+    callout. docs.mentisdb.com agent_docs.rs gains a "When the Operator
+    Needs a New TLS Certificate" section that helps agents recognize the
+    symptoms (remote IP, custom hostname, new interface, key rotation,
+    machine migration) and point the user at
+    `mentisdb cert <ip-or-domain> --force` plus a daemon restart.
   - docs: expanded remote bearer-token documentation in README and
     docs.mentisdb.com, including server activation, CLI token management,
     dashboard management, scoped access behavior, Codex `config.toml` header
@@ -69,6 +153,23 @@
     scores: LoCoMo-10P overall R@10 72.6% (1436/1977), single-hop R@10 76.8%,
     multi-hop R@10 57.4%, weak-vector baseline 44.9% R@10, and ~317 queries/s
     evaluation throughput with the `fastembed-all-minilm-l6-v2` vector sidecar.
+  - test: 9 new `cli::cert` unit tests cover the SAN builder across
+    IPv4 / IPv6 / DNS / empty / invalid / None inputs, the env-line
+    replacement (in-place update, append-when-missing, similar-prefix
+    preservation, comment pass-through, mtime idempotence), the env
+    file writer (create-when-missing, preserve-existing-entries,
+    idempotent rewrite), `resolve_env_file` (override vs. fallback),
+    `resolve_paths` (out-dir vs. env-var vs. default), and the
+    help-text content (every flag mentioned, at least 5 example
+    invocations). 12 new `tests/cert_tests.rs` integration tests cover
+    parsing (positional, --force, --out-dir, --env-file, --no-env-update,
+    error paths, --help), end-to-end PEM write + SAN verification via
+    `x509-parser`, reuse without --force, regeneration with --force,
+    --no-env-update that leaves the .env alone, and the help-text
+    roundtrip. All tests are isolated via `tempfile::tempdir` (unique
+    per test) and a global `env_lock` mutex that serialises env-touching
+    tests, so no test depends on inherited `MENTISDB_TLS_CERT`,
+    `MENTISDB_DIR`, or `HOME` values.
   - chore: ignore generated LaTeX build artifacts and LME benchmark pycache
     files to keep future working trees cleaner.
 
