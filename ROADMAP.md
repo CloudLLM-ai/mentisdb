@@ -1,6 +1,23 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 -> 0.9.9)
+## Shipped (0.8.2 -> 0.10.1.46)
+
+### 0.10.1.46 - Built-in Bearer Token Auth, TLS Cert CLI, and Search-First Discipline
+- **Built-in bearer-token authentication** — `MENTISDB_BEARER_TOKEN_ACCESS=true` protects Streamable HTTP MCP and legacy HTTP MCP routes with `Authorization: Bearer ...`; tokens stored as SHA-256 hashes only. Prerequisite for any non-loopback HTTPS MCP/REST deployment.
+- **Scoped bearer-token registry and CLI** — operators issue global tokens (`mentisdb bearertoken create --global <alias>`) or chain-scoped tokens (`--chain <chain>...`); chain-scoped tokens restricted to their chain set; server-wide tools require global token.
+- **Dashboard Bearer Tokens page** — dedicated nav page with feature toggle, alias input, Global/Chains radio controls, multi-chain selector, one-time token display with copy-to-clipboard, token table, and revoke action.
+- **Settings page enhancements** — edits `MENTISDB_BEARER_TOKEN_ACCESS` and adds Restart Daemon button for environment changes requiring restart.
+- **`mentisdb cert` CLI** — mints self-signed TLS certificates with custom SAN sets, writes `MENTISDB_TLS_CERT`/`MENTISDB_TLS_KEY` to `.env`, supports `--force`, `--reset`, `--out-dir`, `--env-file`, `--no-env-update`; prints SAN list and SHA-256 fingerprint for `openssl` cross-check.
+- **Comprehensive `--help`** — `mentisdb --help` prints daemon + all subcommand help in one view; subcommand-specific help works as expected.
+- **Search-first discipline in MENTISDB_SKILL.md** — prominent "🔎 SEARCH BEFORE YOU WRITE" section with routine (`recent_context` → `ranked_search` → tighten with filters) and three decisions per append; "Blind appends" anti-pattern documented.
+- **Library TLS cert API** — `ensure_tls_cert_with_sans(cert, key, extra_sans, overwrite) -> TlsCertArtifacts` exposed for library consumers and CLI; `ensure_tls_cert` is now a one-line wrapper.
+- **`--headless` top-level flag** — `mentisdb --headless` starts HTTP/MCP/REST servers without TUI; listed in `--help`.
+- **TUI auto-headless fix** — daemon auto-promotes to headless HTTP mode when stdin/stdout not a TTY, eliminating 100% CPU spin on `docker run` without `-t`, `nohup`, `systemd` without `StandardInput=tty`, `cron`, and SSH disconnect.
+- **Restore idempotency** — local registries preserved during cross-instance restores; verified same-chain suffixes appended; divergent same-name chains imported under renamed keys; `--overwrite` only for same-path chain file replacement when safe suffix merge not possible.
+- **Token prefix cleanup** — generated token secrets use `mentisdb_` prefix instead of `mdb_live_`.
+- **Refactored cert CLI** — collapsed duplicated `writeln!` blocks into named helpers; help text single source of truth consumed by both `mentisdb cert --help` and `mentisdb --help`.
+- **Docs: TLS Certificates section** — new README section with six worked examples, options table, restart note, `openssl s_client` cross-check; docs.mentisdb.com user_docs.rs and agent_docs.rs updated.
+- **Full release engineering pipeline followed** — Phases 1–5 with benchmarks skipped per operator request, Phase 4 code review, granular docs commits.
 
 ### 0.9.9 - Automatic Thesaurus + Validated Retrieval Quality
 - **Thesaurus now applies automatically by default** to all ranked search (REST, MCP, dashboard, CLI, benchmarks) — no client changes required
