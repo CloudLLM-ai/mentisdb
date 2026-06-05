@@ -224,9 +224,10 @@ where
     };
 
     // Check for subcommand-specific help flags
-    let has_help_flag = parts.iter().skip(1).any(|arg| {
-        matches!(arg.as_str(), "-h" | "--help" | "help")
-    });
+    let has_help_flag = parts
+        .iter()
+        .skip(1)
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help" | "help"));
 
     match subcommand.as_str() {
         "-h" | "--help" | "help" => Ok(CliCommand::Help),

@@ -5886,8 +5886,7 @@ pub fn ensure_tls_cert_with_sans(
     params.distinguished_name = dn;
 
     let bind_host = std::env::var("MENTISDB_BIND_HOST").ok();
-    let mut sans: Vec<SanType> =
-        build_tls_sans(bind_host.as_deref(), enumerate_interface_ips());
+    let mut sans: Vec<SanType> = build_tls_sans(bind_host.as_deref(), enumerate_interface_ips());
     for san in extra_sans {
         if !sans_contains(&sans, &san) {
             sans.push(san);
@@ -5958,8 +5957,7 @@ fn extract_sans_from_pem(pem: &str) -> Vec<String> {
     let mut out = Vec::new();
     for pem_block in rustls_pemfile::certs(&mut pem.as_bytes()) {
         let Ok(cert_der) = pem_block else { continue };
-        let Ok((_rest, cert)) =
-            x509_parser::certificate::X509Certificate::from_der(&cert_der)
+        let Ok((_rest, cert)) = x509_parser::certificate::X509Certificate::from_der(&cert_der)
         else {
             continue;
         };
@@ -5979,9 +5977,7 @@ fn extract_sans_from_pem(pem: &str) -> Vec<String> {
 /// Render an [`x509_parser::extensions::GeneralName`] in the same shape
 /// the SAN strings take when the cert is built. Returns `None` for
 /// variants we don't surface; the caller falls back to `Debug` printing.
-fn sans_general_name_to_string(
-    name: &x509_parser::extensions::GeneralName<'_>,
-) -> Option<String> {
+fn sans_general_name_to_string(name: &x509_parser::extensions::GeneralName<'_>) -> Option<String> {
     use x509_parser::extensions::GeneralName as G;
     match name {
         G::DNSName(s) => Some(format!("dns:{}", s)),
@@ -6006,10 +6002,7 @@ fn sans_general_name_to_string(
 fn sha256_fingerprint_of_pem(pem: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
-    if let Some(cert_der) = rustls_pemfile::certs(&mut pem.as_bytes())
-        .flatten()
-        .next()
-    {
+    if let Some(cert_der) = rustls_pemfile::certs(&mut pem.as_bytes()).flatten().next() {
         hasher.update(&cert_der);
     }
     let digest = hasher.finalize();

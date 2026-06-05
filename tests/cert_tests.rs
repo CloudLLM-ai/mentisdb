@@ -162,27 +162,43 @@ fn run_cert_writes_pem_and_updates_env() {
         &mut errors,
     );
 
-    assert_eq!(code, ExitCode::SUCCESS, "stderr: {}", String::from_utf8_lossy(&errors));
+    assert_eq!(
+        code,
+        ExitCode::SUCCESS,
+        "stderr: {}",
+        String::from_utf8_lossy(&errors)
+    );
     let stderr_text = String::from_utf8_lossy(&errors);
     assert!(stderr_text.is_empty(), "stderr: {stderr_text}");
 
     let stdout_text = String::from_utf8_lossy(&output);
-    assert!(stdout_text.contains("Wrote new self-signed TLS cert"), "stdout was: {stdout_text}");
-    assert!(stdout_text.contains("192.0.2.10"), "stdout was: {stdout_text}");
+    assert!(
+        stdout_text.contains("Wrote new self-signed TLS cert"),
+        "stdout was: {stdout_text}"
+    );
+    assert!(
+        stdout_text.contains("192.0.2.10"),
+        "stdout was: {stdout_text}"
+    );
     assert!(stdout_text.contains("SHA256:"));
     assert!(stdout_text.contains("Restart the daemon"));
 
     let cert_path = out_dir.join("cert.pem");
     let key_path = out_dir.join("key.pem");
-    assert!(cert_path.exists(), "cert not written: {}", cert_path.display());
+    assert!(
+        cert_path.exists(),
+        "cert not written: {}",
+        cert_path.display()
+    );
     assert!(key_path.exists(), "key not written: {}", key_path.display());
 
     let cert_pem = std::fs::read_to_string(&cert_path).expect("read cert.pem");
     assert!(cert_pem.contains("BEGIN CERTIFICATE"));
 
     // Cross-check that 192.0.2.10 is in the SAN list by parsing the cert.
-    let sans = mentisdb::server::ensure_tls_cert_with_sans(&cert_path, &key_path, Vec::new(), false)
-        .expect("ensure_tls_cert_with_sans");
+    let sans =
+        mentisdb::server::ensure_tls_cert_with_sans(&cert_path, &key_path, Vec::new(), false)
+            .expect("ensure_tls_cert_with_sans");
     assert!(
         sans.sans.iter().any(|s| s.contains("192.0.2.10")),
         "expected 192.0.2.10 in SAN list, got: {:?}",
@@ -355,8 +371,14 @@ fn run_cert_no_env_update_skips_writing_dotenv() {
     assert_eq!(code, ExitCode::SUCCESS);
 
     let stdout = String::from_utf8_lossy(&output);
-    assert!(stdout.contains("export MENTISDB_TLS_CERT="), "stdout: {stdout}");
-    assert!(stdout.contains("export MENTISDB_TLS_KEY="), "stdout: {stdout}");
+    assert!(
+        stdout.contains("export MENTISDB_TLS_CERT="),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("export MENTISDB_TLS_KEY="),
+        "stdout: {stdout}"
+    );
 
     let env_after = std::fs::read_to_string(&env_file).expect("read .env");
     assert!(
@@ -370,7 +392,12 @@ fn cert_command_help_flag_in_help_text() {
     let mut input = Cursor::new(Vec::<u8>::new());
     let mut output = Vec::new();
     let mut errors = Vec::new();
-    let code = run_with_io(["mentisdb", "cert", "--help"], &mut input, &mut output, &mut errors);
+    let code = run_with_io(
+        ["mentisdb", "cert", "--help"],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
     assert_eq!(code, ExitCode::SUCCESS);
     let stdout = String::from_utf8_lossy(&output);
     assert!(stdout.contains("Mint a fresh self-signed TLS certificate"));
@@ -498,8 +525,13 @@ fn run_cert_reset_with_custom_san() {
     );
 
     // Verify the new cert has the new SAN.
-    let artifacts = mentisdb::server::ensure_tls_cert_with_sans(&cert_path, &out_dir.join("key.pem"), Vec::new(), false)
-        .expect("ensure_tls_cert_with_sans");
+    let artifacts = mentisdb::server::ensure_tls_cert_with_sans(
+        &cert_path,
+        &out_dir.join("key.pem"),
+        Vec::new(),
+        false,
+    )
+    .expect("ensure_tls_cert_with_sans");
     assert!(
         artifacts.sans.iter().any(|s| s.contains("198.51.100.7")),
         "expected new SAN 198.51.100.7 in cert after reset, got: {:?}",

@@ -84,21 +84,19 @@ pub const KEY_FILENAME: &str = "key.pem";
 /// let _ = run_cert(&cmd, &mut out, &mut err);
 /// # let _ = Cursor::new(Vec::<u8>::new());
 /// ```
-pub fn run_cert(
-    cmd: &CertCommand,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-) -> Result<(), String> {
+pub fn run_cert(cmd: &CertCommand, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), String> {
     let (cert_path, key_path) = resolve_paths(cmd).map_err(|e| e.to_string())?;
 
     // If --reset is specified, delete existing cert and key files first
     // to ensure a clean factory-default certificate is generated.
     if cmd.reset {
         if cert_path.exists() {
-            fs::remove_file(&cert_path).map_err(|e| format!("failed to remove existing cert: {e}"))?;
+            fs::remove_file(&cert_path)
+                .map_err(|e| format!("failed to remove existing cert: {e}"))?;
         }
         if key_path.exists() {
-            fs::remove_file(&key_path).map_err(|e| format!("failed to remove existing key: {e}"))?;
+            fs::remove_file(&key_path)
+                .map_err(|e| format!("failed to remove existing key: {e}"))?;
         }
     }
 
@@ -110,13 +108,9 @@ pub fn run_cert(
     let cert_existed_before = cert_path.exists() && key_path.exists();
     let extra_sans = build_extra_sans(cmd.host.as_deref()).map_err(|e| e.to_string())?;
 
-    let artifacts = crate::server::ensure_tls_cert_with_sans(
-        &cert_path,
-        &key_path,
-        extra_sans,
-        cmd.overwrite,
-    )
-    .map_err(|e| format!("failed to mint cert: {e}"))?;
+    let artifacts =
+        crate::server::ensure_tls_cert_with_sans(&cert_path, &key_path, extra_sans, cmd.overwrite)
+            .map_err(|e| format!("failed to mint cert: {e}"))?;
 
     write_status(out, cmd, &artifacts, cert_existed_before)?;
     write_sans(out, &artifacts)?;
@@ -225,11 +219,8 @@ fn write_export_instructions(
     key_value: &str,
 ) -> Result<(), String> {
     writeln!(out).map_err(|e| e.to_string())?;
-    writeln!(
-        out,
-        "Add the following to your environment / shell rc to"
-    )
-    .map_err(|e| e.to_string())?;
+    writeln!(out, "Add the following to your environment / shell rc to")
+        .map_err(|e| e.to_string())?;
     writeln!(out, "point the next daemon start at the new cert:").map_err(|e| e.to_string())?;
     writeln!(out, "  export {MENTISDB_TLS_CERT_ENV}={cert_value}").map_err(|e| e.to_string())?;
     writeln!(out, "  export {MENTISDB_TLS_KEY_ENV}={key_value}").map_err(|e| e.to_string())?;
@@ -272,8 +263,10 @@ fn write_or_warn_env_update(
                 "Set the following variables manually before the next daemon start:"
             )
             .map_err(|e| e.to_string())?;
-            writeln!(out, "  export {MENTISDB_TLS_CERT_ENV}={cert_value}").map_err(|e| e.to_string())?;
-            writeln!(out, "  export {MENTISDB_TLS_KEY_ENV}={key_value}").map_err(|e| e.to_string())?;
+            writeln!(out, "  export {MENTISDB_TLS_CERT_ENV}={cert_value}")
+                .map_err(|e| e.to_string())?;
+            writeln!(out, "  export {MENTISDB_TLS_KEY_ENV}={key_value}")
+                .map_err(|e| e.to_string())?;
         }
     }
     Ok(())
@@ -317,7 +310,9 @@ pub fn resolve_paths(cmd: &CertCommand) -> io::Result<(PathBuf, PathBuf)> {
         _ => match std::env::var(MENTISDB_TLS_CERT_ENV) {
             Ok(existing) if !existing.trim().is_empty() => {
                 let p = PathBuf::from(existing);
-                p.parent().map(Path::to_path_buf).unwrap_or_else(default_tls_dir)
+                p.parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(default_tls_dir)
             }
             _ => default_tls_dir(),
         },
@@ -360,15 +355,12 @@ pub fn build_extra_sans(host: Option<&str>) -> io::Result<Vec<SanType>> {
     if let Ok(ip) = trimmed.parse::<IpAddr>() {
         return Ok(vec![SanType::IpAddress(ip)]);
     }
-    let dns: rcgen::string::Ia5String = trimmed
-        .to_string()
-        .try_into()
-        .map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("invalid DNS name '{trimmed}': {e}"),
-            )
-        })?;
+    let dns: rcgen::string::Ia5String = trimmed.to_string().try_into().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid DNS name '{trimmed}': {e}"),
+        )
+    })?;
     Ok(vec![SanType::DnsName(dns)])
 }
 
@@ -414,11 +406,7 @@ fn resolve_env_file(cmd: &CertCommand) -> PathBuf {
 /// let _ = std::fs::remove_file(&path);
 /// let _ = PathBuf::new();
 /// ```
-pub fn update_env_file(
-    path: &Path,
-    cert_value: &str,
-    key_value: &str,
-) -> io::Result<()> {
+pub fn update_env_file(path: &Path, cert_value: &str, key_value: &str) -> io::Result<()> {
     let original = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
@@ -658,13 +646,19 @@ mod tests {
 
     #[test]
     fn env_line_starts_with_is_anchored() {
-        assert!(env_line_starts_with("MENTISDB_TLS_CERT=/x", "MENTISDB_TLS_CERT"));
+        assert!(env_line_starts_with(
+            "MENTISDB_TLS_CERT=/x",
+            "MENTISDB_TLS_CERT"
+        ));
         assert!(!env_line_starts_with(
             "MENTISDB_TLS_CERT_OTHER=/x",
             "MENTISDB_TLS_CERT"
         ));
         assert!(!env_line_starts_with("OTHER=/x", "MENTISDB_TLS_CERT"));
-        assert!(!env_line_starts_with("# MENTISDB_TLS_CERT=/x", "MENTISDB_TLS_CERT"));
+        assert!(!env_line_starts_with(
+            "# MENTISDB_TLS_CERT=/x",
+            "MENTISDB_TLS_CERT"
+        ));
     }
 
     // ── update_env_file (filesystem) ──────────────────────────────────

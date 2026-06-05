@@ -39,10 +39,10 @@ use mentisdb::server::{
 };
 use mentisdb::tui::{self, AgentInfo, ChainInfo, SkillInfo, TuiState};
 use mentisdb::{
-    load_registered_chains, migrate_chain_hash_algorithm, migrate_registered_chains_with_adapter,
-    migrate_skill_registry, refresh_registered_chain_counts, MentisDb, MentisDbMigrationEvent,
-    MentisDbMigrationReport, SkillRegistry, ThoughtType,
-    cli::help_text as cli_help_text,
+    cli::help_text as cli_help_text, load_registered_chains, migrate_chain_hash_algorithm,
+    migrate_registered_chains_with_adapter, migrate_skill_registry,
+    refresh_registered_chain_counts, MentisDb, MentisDbMigrationEvent, MentisDbMigrationReport,
+    SkillRegistry, ThoughtType,
 };
 use serde::Deserialize;
 use std::ffi::OsString;
@@ -2318,7 +2318,15 @@ where
     let first = args[0].to_string_lossy();
     if matches!(
         first.as_ref(),
-        "setup" | "wizard" | "add" | "search" | "agents" | "backup" | "restore" | "bearertoken" | "cert"
+        "setup"
+            | "wizard"
+            | "add"
+            | "search"
+            | "agents"
+            | "backup"
+            | "restore"
+            | "bearertoken"
+            | "cert"
     ) {
         let mut command = vec![OsString::from("mentisdb")];
         command.extend(args);
