@@ -1031,6 +1031,96 @@ outside localhost.
 
 ---
 
+## TLS Certificates
+
+The HTTPS MCP and REST servers and the web dashboard all serve a single
+self-signed certificate that the daemon auto-generates on first startup at
+`<MENTISDB_DIR>/tls/cert.pem` (and `key.pem`). The standard SAN set always
+includes `my.mentisdb.com` (DNS), `localhost` (DNS), `127.0.0.1` (IP), every
+unicast IP on every host interface, plus `MENTISDB_BIND_HOST` when it is a DNS
+name — that is enough for local-only use and for connecting to the daemon by
+its public DNS name.
+
+For remote / VPS / custom-hostname setups you may need to add a SAN that the
+daemon cannot infer on its own. The `mentisdb cert` subcommand mints a fresh
+self-signed certificate with an extra SAN of your choice, makes it the active
+cert on disk, and updates the local `.env` so the next daemon start serves the
+new cert automatically.
+
+```bash
+# 1. Standard cert into the default location
+#    (~/.cloudllm/mentisdb/tls/ and updates ./.env)
+mentisdb cert
+
+# 2. Add a public VPS IP as a SAN so the cert is valid for that IP
+mentisdb cert 192.0.2.10
+
+# 3. Add a custom DNS hostname
+mentisdb cert vps.example.com
+
+# 4. Regenerate an existing cert (e.g. after adding a new IP to the box)
+mentisdb cert 192.0.2.10 --force
+
+# 5. Write to a non-default directory and update a custom .env file
+mentisdb cert 192.0.2.10 \
+    --out-dir /etc/mentisdb/tls \
+    --env-file /etc/mentisdb/mentisdb.env
+
+# 6. Print the values without touching any .env (for ephemeral hosts)
+mentisdb cert --no-env-update
+```
+
+### Options
+
+| Argument / Flag   | Description |
+|---|---|
+| `<ip-or-domain>`   | Optional IP literal or DNS hostname to add as a SAN. IPv4 and IPv6 literals become IP SANs; everything else becomes a DNS SAN. Omit to mint a cert with only the standard SAN set. |
+| `--force`          | Overwrite an existing `cert.pem` / `key.pem` on disk. Without this flag the command refuses to clobber a pre-existing cert so operators do not accidentally invalidate an already-trusted one. |
+| `--out-dir <path>` | Directory to write `cert.pem` and `key.pem` into. Defaults to the directory of `MENTISDB_TLS_CERT` (or `<MENTISDB_DIR>/tls/`). |
+| `--env-file <path>`| Path to the `.env` file to update with the new cert paths. Defaults to `./.env`. |
+| `--no-env-update`  | Skip updating the `.env` file. The cert is still minted, the SAN list and SHA-256 fingerprint are still printed, and the command prints the `export MENTISDB_TLS_CERT=...` lines for you to paste into a shell rc. |
+
+### When the new cert takes effect
+
+The new `cert.pem` and `key.pem` are written immediately and `MENTISDB_TLS_CERT` /
+`MENTISDB_TLS_KEY` are updated on disk. The running daemon keeps using the cert
+it loaded at startup, so **restart the daemon** (`Ctrl-C` in the TUI or stop
+the background process) for the new cert to be served on the next HTTPS
+request. Subsequent calls to `mentisdb cert` without `--force` reuse the
+existing cert so the in-flight HTTPS fingerprint stays stable across restarts.
+
+Cross-check the new cert from any machine with:
+
+```bash
+openssl s_client -connect <host>:9473 -showcerts </dev/null 2>/dev/null \
+    | openssl x509 -fingerprint -sha256 -noout
+```
+
+…then compare against the `SHA-256 fingerprint:` line that `mentisdb cert`
+prints. If they match, the running daemon is serving the cert you just minted.
+
+### When the auto-generated SAN set is not enough
+
+The default SAN set covers local and most remote setups. The `mentisdb cert`
+subcommand is the right tool when:
+
+- You connect to the daemon over a remote / VPS IP (`https://<vps-ip>:9473`) and
+  the IP is not in the SAN set.
+- You use a custom hostname (`vps.example.com`) and want the cert to be valid
+  for that name.
+- You added a new network interface or new IP to the host and need the cert
+  to cover the new IP.
+- You rotated the private key for security reasons and want a new cert + key
+  pair.
+- You migrated the daemon to a new machine and the old cert (still on the old
+  box) needs to be regenerated locally.
+
+For all other situations the auto-generated cert is fine — there is no
+periodic renewal, no expiry alerts, and the daemon reuses the existing
+material across restarts unless you delete it or pass `--force`.
+
+---
+
 ## Backup and Restore
 
 MentisDB includes built-in backup and restore commands in the `mentisdb` CLI.
