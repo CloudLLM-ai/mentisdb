@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.10.1.46 — Built-in Bearer Token Auth, TLS Cert CLI, and Search-First Discipline</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article .meta { color: #888; font-size: 0.85rem; margin-bottom: 1rem; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="index.html">MentisDB Blog</a></h1>
+    <p>Durable memory for AI agents</p>
+  </header>
+
+  <article>
+    <h2>MentisDB 0.10.1.46 — Built-in Bearer Token Auth, TLS Cert CLI, and Search-First Discipline</h2>
+    <div class="meta">June 5, 2026</div>
+
+    <p>
+      This release is a security and operational milestone: <strong>built-in bearer-token authentication</strong> for remote MCP servers,
+      a <strong><code>mentisdb cert</code> CLI</strong> for TLS certificate management, and a <strong>search-first discipline</strong>
+      baked into the agent skill file. Together these changes make it practical to run MentisDB on a non-loopback interface —
+      the missing piece for production HTTPS MCP / REST deployments.
+    </p>
+
+    <h3>Bearer Token Authentication (Headline Feature)</h3>
+    <p>
+      Set <code>MENTISDB_BEARER_TOKEN_ACCESS=true</code> and every Streamable HTTP MCP and legacy HTTP MCP route now requires
+      <code>Authorization: Bearer &lt;token&gt;</code>. Tokens are stored as SHA-256 hashes only — never plaintext.
+      This is the prerequisite for any non-loopback deployment of the HTTPS MCP and REST surfaces.
+    </p>
+    <p>
+      Tokens can be <strong>global</strong> (access every chain + server-wide tools like <code>mentisdb_list_chains</code>) or
+      <strong>chain-scoped</strong> (restricted to an explicit chain set). The new CLI makes issuance explicit:
+    </p>
+    <pre><code># Global token
+mentisdb bearertoken create --global my-global-token
+
+# Chain-scoped token (one or more chains)
+mentisdb bearertoken create --chain chain-a --chain chain-b my-scoped-token
+
+# List / revoke
+mentisdb bearertoken list --global
+mentisdb bearertoken remove my-global-token
+</code></pre>
+
+    <h3>Dashboard: Bearer Tokens Page + Settings Enhancements</h3>
+    <p>
+      A new <strong>Bearer Tokens</strong> page joins the header navigation (<code>Chains | Agents | Skills | Bearer Tokens | Settings</code>).
+      It exposes the feature toggle, alias input, Global/Chains radio controls, a multi-chain selector table,
+      one-time token display with copy-to-clipboard, a token table, and revoke actions.
+    </p>
+    <p>
+      The <strong>Settings</strong> page now edits <code>MENTISDB_BEARER_TOKEN_ACCESS</code> and includes a
+      <strong>Restart Daemon</strong> button for environment changes that require a restart.
+    </p>
+
+    <h3><code>mentisdb cert</code> — TLS Certificate Management</h3>
+    <p>
+      A new subcommand mints self-signed TLS certificates for the HTTPS MCP / REST surfaces and the web dashboard.
+      It writes <code>MENTISDB_TLS_CERT</code> / <code>MENTISDB_TLS_KEY</code> into the local <code>.env</code> so the next daemon start picks them up automatically.
+    </p>
+    <pre><code>mentisdb cert                          # factory-default SAN set
+mentisdb cert 192.0.2.10               # add IP SAN
+mentisdb cert my.mentisdb.com           # add DNS SAN
+mentisdb cert --force                   # regenerate existing
+mentisdb cert --reset                   # delete + fresh factory cert
+mentisdb cert --out-dir /custom/path
+mentisdb cert --env-file /path/.env
+mentisdb cert --no-env-update           # print export lines only
+</code></pre>
+    <p>
+      The standard SAN set (<code>my.mentisdb.com</code>, <code>localhost</code>, <code>127.0.0.1</code>, every unicast interface IP, plus <code>MENTISDB_BIND_HOST</code> when it's a DNS name) is always included; the user-supplied host is appended.
+      The command prints the SAN list and SHA-256 fingerprint for <code>openssl x509 -fingerprint -sha256</code> cross-check and reminds you to restart the daemon.
+    </p>
+
+    <h3>Library TLS API: <code>ensure_tls_cert_with_sans</code></h3>
+    <p>
+      The cert logic is now exposed as a library function:
+    </p>
+    <pre><code>pub fn ensure_tls_cert_with_sans(
+    cert: &Path,
+    key: &Path,
+    extra_sans: Vec&lt;SanType&gt;,
+    overwrite: bool,
+) -&gt; Result&lt;TlsCertArtifacts, String&gt;
+
+pub struct TlsCertArtifacts {
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
+    pub sans: Vec&lt;String&gt;,           // dns:..., ip:...
+    pub sha256_fingerprint: String,
+}
+</code></pre>
+    <p>
+      The existing <code>ensure_tls_cert</code> is now a one-line wrapper (<code>overwrite=false</code>, no extra SANs), so no behaviour change for existing callers.
+      The <code>sans</code> field is extracted from the freshly written cert with <code>x509-parser</code> and rendered in the same <code>dns:&lt;name&gt;</code> / <code>ip:&lt;addr&gt;</code> style.
+    </p>
+
+    <h3>Comprehensive <code>--help</code></h3>
+    <p>
+      <code>mentisdb --help</code> now prints both the daemon help AND the full CLI subcommand help in one view.
+      Subcommand-specific help works as expected: <code>mentisdb cert --help</code>, <code>mentisdb setup --help</code>, <code>mentisdb wizard --help</code>, etc.
+    </p>
+
+    <h3>Search-First Discipline in <code>MENTISDB_SKILL.md</code></h3>
+    <p>
+      A prominent <strong>🔎 SEARCH BEFORE YOU WRITE</strong> section now sits between MANDATORY STARTUP and WRITE TRIGGERS.
+      The routine: <code>recent_context</code> → <code>ranked_search</code> → tighten with <code>tags_any</code> / <code>thought_types</code> / <code>concepts_any</code> / <code>since</code>.
+      Three decisions per append: do I need to write at all? do I need to update a prior lesson? which 1–3 neighbours to link via typed edges?
+      A new "Blind appends" anti-pattern is documented. Search-first is the upstream half of the dedup discipline: 5–15 seconds of search before write is the single highest-leverage habit for keeping <code>ranked_search</code> useful as chains grow past a few hundred thoughts.
+    </p>
+
+    <h3><code>--headless</code> Top-Level Flag + TUI Auto-Headless Fix</h3>
+    <p>
+      <code>mentisdb --headless</code> starts the HTTP/MCP/REST servers without the interactive terminal UI, matching the long-standing <code>--mode http --headless</code> invocation the stdio proxy uses internally.
+    </p>
+    <p>
+      The daemon now auto-promotes to headless HTTP mode when <code>stdin</code> or <code>stdout</code> is not a TTY. Previously the TUI main loop was entered with an already-EOF stdin; crossterm's <code>event::poll(100ms)</code> returned <code>Ok(false)</code> immediately and the loop re-rendered the full ratatui UI on every iteration — pinning one CPU core at 100% on a 2-core cloud VM. The new <code>tui_can_run()</code> guard in <code>src/tui.rs</code> detects the non-TTY case at startup and delegates to <code>run_headless()</code>. Affects every non-interactive launch: <code>docker run</code> without <code>-t</code>, <code>nohup mentisdb &amp;</code>, <code>systemd</code> without <code>StandardInput=tty</code>, <code>cron</code>, and the SSH-disconnect scenario.
+    </p>
+
+    <h3>Restore Idempotency + Chain-Scope Safety</h3>
+    <ul>
+      <li>Local <code>mentisdb-registry.json</code> is merged, not replaced</li>
+      <li>Verified same-chain suffixes are appended</li>
+      <li>Divergent same-name chains imported under renamed keys</li>
+      <li><code>--overwrite</code> only allows same-path chain file replacement when a safe suffix merge is not possible</li>
+    </ul>
+
+    <h3>Other Changes</h3>
+    <ul>
+      <li>Token secrets now use <code>mentisdb_</code> prefix (was <code>mdb_live_</code>)</li>
+      <li>Refactored cert CLI: collapsed duplicated <code>writeln!</code> blocks into named helpers; help text single source of truth</li>
+      <li>Promoted <code>default_tls_dir</code> to <code>pub</code> in <code>server.rs</code>, removed duplicate helper</li>
+      <li>Docs: new "TLS Certificates" section in README.md with six worked examples, options table, <code>openssl s_client</code> cross-check; docs.mentisdb.com updated</li>
+    </ul>
+
+    <h3>Upgrade</h3>
+    <pre><code>cargo install mentisdb --force</code></pre>
+
+    <h3>Links</h3>
+    <ul>
+      <li>GitHub Release: <a href="https://github.com/CloudLLM-ai/mentisdb/releases/tag/0.10.1.46">0.10.1.46</a></li>
+      <li>Changelog: <a href="https://github.com/CloudLLM-ai/mentisdb/blob/master/changelog.txt">changelog.txt</a></li>
+      <li>Documentation: <a href="https://docs.mentisdb.com">docs.mentisdb.com</a></li>
+    </ul>
+  </article>
+
+  <footer>
+    <a href="index.html">← Back to blog</a>
+  </footer>
+</body>
+</html>
