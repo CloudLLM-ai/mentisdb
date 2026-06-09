@@ -201,3 +201,58 @@ Raw-log writes instead of rules. **New agent IDs for the same role** — see §A
 ### Sub-agents & Agent Identity
 
 When spawning sub-agents, the coordinator MUST tell each sub-agent which `agent_id` to use. Sub-agents do NOT pick their own identity. Acceptable patterns: reuse the coordinator's `agent_id`; use a pre-existing, explicitly created agent ID; or ask the user to register a new agent ID first. A sub-agent that follows the Mandatory Startup sequence and finds itself missing MUST stop and ask — it must never auto-create.
+
+## 🐕 DOGFOODING — Use the Chain to Coordinate Your Own Work
+
+If you are a coordinator dispatching parallel sub-agents, or a single agent doing
+multi-step work, the chain should coordinate that work — not a markdown file, not
+a chat transcript, not free-text instructions. The seven patterns below are
+exactly the cookbook's own Part 1 / Part 2 patterns applied to the agent's
+production pipeline. They are also the lessons from the cookbook dogfooding
+experiment (see docs.mentisdb.com/cookbook/cookbook-0-5-dogfooding.html).
+
+1. **Plans belong in the chain, not in prompts.** When dispatching N parallel
+   tasks, write N `Plan` thoughts up front. Sub-agents `query_ranked` for
+   unclaimed plans, claim one with a `Subgoal` (`CausedBy` the plan), and write
+   a `TaskComplete` when done. Bookkeeping you can search is bookkeeping you
+   can verify.
+
+2. **Constraint thoughts persist across waves.** Style guides, size budgets,
+   "use the 1.1 HTML template exactly," API version pins — store these as
+   `Constraint` thoughts in the chain. The next sub-agent searches "constraints"
+   on spawn and finds them. Free-text prompt instructions are lost on context
+   reset; `Constraint` thoughts are not.
+
+3. **Typed relations catch what free text doesn't.** Cross-references between
+   chapters, tasks, decisions, and corrections belong as typed
+   `ThoughtRelation`s (`Corrects`, `Supersedes`, `DerivedFrom`), not as inline
+   prose. Graph expansion from one canonical thought surfaces every dependent
+   thought in one query. Free-text references force a linear grep.
+
+4. **Flag drift in your `TaskComplete`.** A `TaskComplete` thought should
+   include concerns, not just completions: "used `with_reranking(k)`, not the
+   stale `with_enable_reranking(true)` from chapter 1.1 — patch recommended."
+   The next coordinator pass (human or agent) gets the negative space for free.
+
+5. **API drift is the #1 hazard of parallel work.** N sub-agents each read the
+   docs independently will produce N slightly different APIs in their outputs.
+   Mitigations, in order of leverage:
+   (a) ship cookbook/code examples as `cargo test --doc` on CI;
+   (b) record canonical API names as a `Decision` thought at project start;
+   (c) require every `TaskComplete` to cite the source file:line for non-obvious
+   API choices.
+
+6. **Forward references need graph integrity.** If sub-agent A writes "see
+   chapter 1.4" and sub-agent B's chapter 1.4 doesn't exist, no one notices
+   until publication. With a chain, every forward link is a `ref` or
+   `with_cross_chain_relation` and a single query verifies the link resolves.
+
+7. **A markdown file is not a chain.** If your only shared memory is a shared
+   file, you have a journal, not a memory system. The journal records what
+   happened. The chain records what happened, why, what it relates to, what
+   supersedes it, and what the next agent should do about it. Use the chain.
+
+## 📖 COOKBOOK
+
+The full patterns and copy-paste recipes are at docs.mentisdb.com/cookbook.
+The cookbook itself is a worked example of every pattern in this skill.
