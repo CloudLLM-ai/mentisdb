@@ -40,3 +40,13 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-features
+
+      - name: Run cookbook-as-test (extract + compile every code example)
+        run: |
+          python3 scripts/extract_cookbook_examples.py docs/cookbook/
+          cargo test --test cookbook_tests --all-features
+
+# Cookbook-as-test: every Rust code example in docs/cookbook/*.html
+# is extracted and compiled. If a chapter claims the library does X,
+# this proves it. See scripts/extract_cookbook_examples.py and
+# chapter 0.5 of the cookbook.
