@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.6 Preference Learning — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 1 — Core Patterns · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>1.6 Preference Learning</h2>
+
+    <p>
+      Preference learning is not just saving "the user likes X." Real preferences change,
+      conflict, and depend on context. Store them as explicit <code>PreferenceUpdate</code> thoughts,
+      attach concepts that describe the context, and supersede older preferences when the user
+      gives a newer instruction.
+    </p>
+
+    <h3>The Pattern</h3>
+    <ul>
+      <li>Use <code>PreferenceUpdate</code> for direct preference statements.</li>
+      <li>Use concepts for the preference domain, such as <code>review-style</code>.</li>
+      <li>Use <code>Supersedes</code> when a newer preference replaces an older one.</li>
+      <li>Retrieve preferences with a type filter plus ranked text.</li>
+    </ul>
+
+    <pre><code>use mentisdb::{
+    BinaryStorageAdapter, MentisDb, RankedSearchQuery, ThoughtInput,
+    ThoughtQuery, ThoughtRelation, ThoughtRelationKind, ThoughtType,
+};
+
+fn learn_and_update_preferences() -&gt; io::Result&lt;()&gt; {
+    let dir = tempfile::tempdir()?;
+    let adapter = BinaryStorageAdapter::for_chain_key(
+        dir.path(),
+        "cookbook-preferences",
+    );
+    let mut chain = MentisDb::open_with_storage(Box::new(adapter))?;
+
+    chain.upsert_agent(
+        "assistant",
+        Some("Assistant"),
+        Some("dev-team"),
+        Some("Learns user preferences from direct feedback"),
+        None,
+    )?;
+
+    let first_preference = chain.append_thought(
+        "assistant",
+        ThoughtInput::new(
+            ThoughtType::PreferenceUpdate,
+            "For code review, the user prefers concise findings before summaries.",
+        )
+        .with_concepts(["review-style", "code-review"])
+        .with_tags(["preference", "user"])
+        .with_importance(0.8)
+        .with_confidence(0.9),
+    )?.id;
+
+    chain.append_thought(
+        "assistant",
+        ThoughtInput::new(
+            ThoughtType::PreferenceUpdate,
+            "For high-risk code review, the user now wants severity, file references, and test gaps before any summary.",
+        )
+        .with_relations(vec![ThoughtRelation::new(
+            ThoughtRelationKind::Supersedes,
+            first_preference,
+        )])
+        .with_concepts(["review-style", "code-review", "risk"])
+        .with_tags(["preference", "user", "current"])
+        .with_importance(0.9)
+        .with_confidence(0.95),
+    )?;
+
+    let query = RankedSearchQuery::new()
+        .with_text("How should I present a high-risk code review?")
+        .with_filter(
+            ThoughtQuery::new()
+                .with_types(vec![ThoughtType::PreferenceUpdate])
+                .with_concepts_any(["review-style"]),
+        )
+        .with_limit(3);
+
+    let results = chain.query_ranked(&amp;query);
+    assert!(!results.hits.is_empty());
+    assert!(results.hits[0].thought.content.contains("high-risk"));
+    Ok(())
+}</code></pre>
+
+    <div class="callout">
+      <strong>Do not delete old preferences.</strong> Superseding preserves auditability while
+      letting retrieval favor the newer, narrower instruction.
+    </div>
+
+    <h3>Conflict Handling</h3>
+    <p>
+      If two preferences both apply, prefer the one with the narrower concept set and higher
+      importance. If the conflict is real, ask the user and store the answer as a new
+      <code>PreferenceUpdate</code> that supersedes the ambiguous one.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-1-5-rag-over-agent-history.html">← 1.5 RAG Over Agent History</a> ·
+      <a href="cookbook-1-7-error-and-mistake-memory.html">1.7 Error and Mistake Memory →</a>
+    </nav>
+  </article>
+
+  <footer>MentisDB Cookbook · <a href="cookbook.html">Table of Contents</a></footer>
+</body>
+</html>

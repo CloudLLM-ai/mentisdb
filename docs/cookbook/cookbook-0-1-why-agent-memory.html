@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>0.1 Why Agent Memory Matters — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+    .callout-warn { background: #fff8f0; border-left: 3px solid #e67700; }
+    .callout-success { background: #f0fff4; border-left: 3px solid #2f855a; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 0 — Foundations · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>0.1 Why Agent Memory Matters</h2>
+
+    <p>
+      Every agent eventually faces the same wall: it forgets. Not because the LLM is broken, but because
+      the context window is finite, sessions end, processes restart, and the only thing the model "knows"
+      at the start of a new conversation is what you stuff into the prompt.
+    </p>
+
+    <p>
+      In practice, this means agents repeat mistakes, contradict prior decisions, fail to learn from
+      corrections, and force users to re-explain the same project for the tenth time. Memory is the missing
+      primitive that turns a stateless function call into a learning system.
+    </p>
+
+    <h3>The four problems memory solves</h3>
+    <ol>
+      <li><strong>Context continuity.</strong> The agent picks up where it left off — across sessions, days, or process restarts.</li>
+      <li><strong>Decision auditability.</strong> "Why did we choose Postgres over DynamoDB three months ago?" becomes answerable.</li>
+      <li><strong>Cross-agent state.</strong> Multiple agents (or agent + human) share a common ground truth without rebuilding it every time.</li>
+      <li><strong>Self-improvement.</strong> Mistakes become <code>LessonLearned</code> thoughts; corrections supersede prior beliefs; the agent gets measurably better at its job over time.</li>
+    </ol>
+
+    <h3>What "memory" is not</h3>
+    <p>
+      Memory is not just a vector database. Vectors are great for similarity search, but a memory system
+      also needs:
+    </p>
+    <ul>
+      <li><strong>Identity</strong> — who wrote this? which agent? which user?</li>
+      <li><strong>Structure</strong> — is this a decision, a fact, a question, a mistake?</li>
+      <li><strong>Time</strong> — when was this true? is it still true?</li>
+      <li><strong>Relations</strong> — does this contradict that? was this derived from that?</li>
+      <li><strong>Integrity</strong> — can I prove this hasn't been tampered with?</li>
+      <li><strong>Retrieval</strong> — not just vectors, but lexical + graph + hybrid rerank</li>
+    </ul>
+
+    <p>
+      A pure vector store gives you the last item. MentisDB gives you all six, with a single API and
+      an append-only, hash-chained log at its core.
+    </p>
+
+    <h3>The agent memory stack</h3>
+    <p>
+      Think of memory as a stack, from the LLM outward:
+    </p>
+    <ol>
+      <li><strong>Working memory</strong> — the prompt itself, what the model "sees" right now</li>
+      <li><strong>Short-term memory</strong> — the current session's scratchpad, conversation buffer, tool outputs</li>
+      <li><strong>Long-term memory</strong> — durable facts, decisions, preferences, lessons, episodic history</li>
+      <li><strong>Shared memory</strong> — what multiple agents or the user + agent co-author</li>
+    </ol>
+
+    <p>
+      MentisDB is a long-term and shared memory layer. You bring your own working/short-term
+      (typically LangChain's conversation buffer, or a simple in-process list). MentisDB is what
+      persists across sessions, survives crashes, and serves as the audit log when something goes wrong.
+    </p>
+
+    <h3>When you need it</h3>
+    <p>You need durable memory when your agent has any of:</p>
+    <ul>
+      <li>Sessions that span more than one turn</li>
+      <li>Tasks that span more than one session</li>
+      <li>Multiple agents that need to share state</li>
+      <li>A user who expects the agent to remember their preferences</li>
+      <li>A team that needs to audit what the agent decided and why</li>
+    </ul>
+
+    <div class="callout callout-warn">
+      <strong>When you don't need it:</strong> Single-turn Q&amp;A, stateless RAG over a fixed
+      document corpus (use a regular vector DB), or chat UIs where every conversation is fresh
+      by design. Memory adds a write path and a retrieval step; make sure the use case justifies it.
+    </div>
+
+    <h3>What this book assumes</h3>
+    <p>
+      You have an LLM application that needs to persist context. You have tried stuffing things
+      into the prompt and noticed it doesn't scale. You are evaluating memory systems and want to
+      understand the design space, not just the API surface.
+    </p>
+
+    <p>
+      The next chapter introduces the MentisDB mental model: chains, thoughts, agents, scopes, and
+      retrieval modes. If those terms are already familiar, skip to 0.3 for the quickstart.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-0-0-preface.html">← 0.0 Preface (draft)</a> ·
+      <a href="cookbook-0-2-mental-model.html">0.2 Mental Model →</a>
+    </nav>
+  </article>
+
+  <footer>
+    <p>MentisDB Cookbook · <a href="cookbook.html">↑ Table of Contents</a></p>
+  </footer>
+</body>
+</html>

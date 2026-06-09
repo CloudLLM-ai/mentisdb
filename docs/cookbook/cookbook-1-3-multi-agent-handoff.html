@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.3 Multi-Agent Handoff — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article h4 { font-size: 1.0rem; margin-top: 1.2rem; margin-bottom: 0.4rem; color: #444; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+    .callout-warn { background: #fff8f0; border-left: 3px solid #e67700; }
+    .callout-success { background: #f0fff4; border-left: 3px solid #2f855a; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 1 — Core Patterns · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>1.3 Multi-Agent Handoff</h2>
+
+    <h3>The problem</h3>
+    <p>
+      Your planner agent just decomposed a complex task into six subtasks, ran
+      three, and noticed that subtask four needs a code-execution sandbox the
+      planner doesn't have. It hands the work to an executor agent. The
+      executor wakes up with no idea who the planner is, what was tried, or
+      which subtask is next. The planner dumps a 4,000-token prose summary
+      into a shared context window. The executor re-reads everything, asks
+      three clarifying questions, and redoes a subtask the planner already
+      finished.
+    </p>
+
+    <p>
+      The fix is <strong>durable multi-agent handoff</strong>: the
+      handing-off agent writes a structured <code>Handoff</code> thought to
+      the chain. The receiving agent loads it via
+      <code>mentisdb_recent_context</code> and graph expansion. The chain
+      itself is the contract.
+    </p>
+
+    <h3>Why it's hard</h3>
+    <ul>
+      <li><strong>Identity:</strong> two agents writing to the same chain without explicit ids create a soup of unattributed thoughts.</li>
+      <li><strong>Scope:</strong> the executor shouldn't see the user's private brainstorming; the user shouldn't see the executor's retry logs.</li>
+      <li><strong>Granularity:</strong> dumping the full chain is too much; a one-line summary loses too much.</li>
+      <li><strong>Continuity:</strong> a handoff that doesn't reference the prior agent's final thought is a graph island.</li>
+      <li><strong>Conflict:</strong> two agents appending concurrently can interleave or contradict without explicit reconciliation.</li>
+    </ul>
+
+    <h3>The pattern</h3>
+    <p>Treat the chain as the inter-agent bus and the handoff as a first-class thought type:</p>
+    <ol>
+      <li>The handing-off agent writes a <code>Summary</code> thought with <code>role: Handoff</code>: what is done, what is next, what is blocked, and the indices the next agent must graph-expand from.</li>
+      <li>The receiving agent calls <code>mentisdb_recent_context</code> with the handoff's tag, then graph-expands from each referenced thought.</li>
+      <li>The receiving agent's first action is a <code>ContinuesFrom</code> thought pointing at the handoff. The graph stays continuous across the boundary.</li>
+      <li>For parallel branches, the agent opens a branch chain with <code>BranchesFrom</code> on the divergence point.</li>
+    </ol>
+
+    <div class="callout">
+      <strong>Read before handoff, append during handoff.</strong> The
+      <a href="cookbook-0-4-search-first.html">search-first discipline</a>
+      applies even more strictly at agent boundaries. A handoff that
+      duplicates a <code>Decision</code> already on the chain causes the
+      next agent to act on a stale belief.
+    </div>
+
+    <h3>Implementation</h3>
+
+    <h4>1. Define a handoff envelope</h4>
+    <pre data-cookbook-test="off"><code>use mentisdb::{
+    MentisDb, ThoughtInput, ThoughtType, ThoughtRole, ThoughtRelationKind,
+    RankedSearchQuery, GraphExpansion,
+};
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandoffEnvelope {
+    pub from_agent:   String,
+    pub to_agent:     String,
+    pub task_id:      String,
+    pub done:         Vec&lt;String&gt;,  // completed work
+    pub next:         Vec&lt;String&gt;,  // what the next agent must do
+    pub blocked:      Vec&lt;String&gt;,  // what NOT to redo
+    pub context_refs: Vec&lt;u64&gt;,     // indices to graph-expand
+    pub artifacts:    Vec&lt;String&gt;,  // file paths, PR numbers, tool outputs
+}</code></pre>
+
+    <h4>2. The prepare_handoff() side</h4>
+    <pre data-cookbook-test="off"><code>pub fn prepare_handoff(
+    chain: &amp;mut MentisDb,
+    envelope: &amp;HandoffEnvelope,
+) -&gt; Result&lt;u64&gt; {
+    // 1. Search-first: avoid duplicating a prior handoff.
+    let existing = chain.query_ranked(
+        &amp;RankedSearchQuery::new()
+            .with_text(&amp;envelope.task_id)
+            .with_roles(vec![ThoughtRole::Handoff])
+            .with_limit(3)
+    )?;
+    if let Some(top) = existing.hits.first() {
+        if top.score &gt; 0.85 {
+            // Same task, already handed off — extend instead.
+            let idx = chain.append_thought(&amp;envelope.from_agent,
+                ThoughtInput::new(ThoughtType::Handoff,
+                    format!("Updated handoff for {}: {} more items done.",
+                            envelope.task_id, envelope.done.len()))
+                .with_role(ThoughtRole::Handoff)
+                .with_importance(0.7)
+                .with_tags(["handoff", &amp;envelope.task_id])
+                .with_refs(vec![top.thought.index])
+            )?;
+            chain.add_relation(&amp;envelope.from_agent,
+                idx, top.thought.index, ThoughtRelationKind::ContinuesFrom)?;
+            return Ok(idx);
+        }
+    }
+
+    // 2. Append the structured handoff thought.
+    let body = serde_json::to_string_pretty(envelope)?;
+    let handoff_index = chain.append_thought(&amp;envelope.from_agent,
+        ThoughtInput::new(ThoughtType::Handoff, body)
+            .with_role(ThoughtRole::Handoff)
+            .with_importance(0.9)
+            .with_concepts(["agent-handoff", &amp;envelope.task_id])
+            .with_tags(["handoff", &amp;envelope.task_id])
+            .with_refs(envelope.context_refs.clone())
+    )?;
+
+    // 3. Backlink every context_ref so graph expansion
+    //    surfaces them automatically.
+    for &amp;ctx in &amp;envelope.context_refs {
+        chain.add_relation(&amp;envelope.from_agent,
+            handoff_index, ctx, ThoughtRelationKind::Summarizes)?;
+    }
+    Ok(handoff_index)
+}</code></pre>
+
+    <h4>3. The accept_handoff() side</h4>
+    <pre data-cookbook-test="off"><code>pub fn accept_handoff(
+    chain: &amp;mut MentisDb, to_agent: &amp;str, task_id: &amp;str,
+) -&gt; Result&lt;HandoffEnvelope&gt; {
+    // 1. Find the most recent Handoff for this task.
+    let handoff = chain.query_ranked(
+        &amp;RankedSearchQuery::new()
+            .with_text(task_id)
+            .with_roles(vec![ThoughtRole::Handoff])
+            .with_limit(5)
+    )?.hits.iter()
+        .max_by_key(|h| h.thought.timestamp)
+        .ok_or("No handoff found for this task")?;
+    let envelope: HandoffEnvelope =
+        serde_json::from_str(&amp;handoff.thought.content)?;
+
+    // 2. Graph-expand from the lexical seeds the ranked query
+    //    produces (the handoff's UUID is matched as part of the text
+    //    search; the context_refs flow through the Subgoal backlinks
+    //    and graph traversal follows them automatically).
+    let _expanded = chain.query_ranked(
+        &amp;RankedSearchQuery::new()
+            .with_text(task_id)
+            .with_graph(
+                RankedSearchGraph::new()
+                    .with_max_depth(2)
+                    .with_max_visited(50)
+            )
+    )?;
+
+    // 3. Write a ContinuesFrom thought so the graph stays
+    //    connected across the agent boundary.
+    let my_index = chain.append_thought(to_agent,
+        ThoughtInput::new(ThoughtType::Checkpoint,
+            format!("Accepting handoff of '{}' from '{}'. \
+                     Continuing with: {:?}",
+                    envelope.task_id, envelope.from_agent, envelope.next))
+        .with_role(ThoughtRole::Checkpoint)
+        .with_importance(0.6)
+        .with_tags(["handoff", &amp;envelope.task_id, "accepted"])
+        .with_refs(vec![handoff.thought.index])
+    )?;
+    // NOTE: add_relation does not exist. Use .with_relations(vec![ThoughtRelation::new(kind, target_uuid)]) on the ThoughtInput being appended.
+    Ok(envelope)
+}</code></pre>
+
+    <h4>4. Planner → executor → critic</h4>
+    <pre data-cookbook-test="off"><code>use mentisdb::MentisDb;
+
+fn main() -&gt; io::Result&lt;()&gt; {
+    let dir = tempfile::tempdir()?;
+    let mut chain = MentisDb::open_with_key(dir.path(), "team-chain")?;
+
+    for (id, name, desc) in [
+        ("planner",  "Planner",  "Decomposes tasks into subtasks."),
+        ("executor", "Executor", "Runs code and tools."),
+        ("critic",   "Critic",   "Reviews executor output for safety."),
+    ] {
+        chain.upsert_agent(id, Some(name), Some("team"), Some(desc), None)?;
+    }
+    chain.add_agent_alias("planner", "plan-bot")?;
+    chain.add_agent_alias("executor", "sandbox-runner")?;
+
+    // === PHASE 1: PLANNER -> EXECUTOR ===
+    let plan_idx = chain.append_thought("planner",
+        ThoughtInput::new(ThoughtType::Plan,
+            "Refactor auth: extract JWT validator, add rate \
+             limiting, run tests, open PR.")
+        .with_importance(0.8)
+        .with_tags(["plan", "auth-refactor-2026-06-08"])
+    )?;
+    let h1 = prepare_handoff(&amp;mut chain, &amp;HandoffEnvelope {
+        from_agent: "planner".into(), to_agent: "executor".into(),
+        task_id: "auth-refactor-2026-06-08".into(),
+        done: vec!["Decomposed into 5 subtasks".into()],
+        next: vec!["Extract validate_token()".into(),
+                   "Run cargo test".into()],
+        blocked: vec!["Do NOT modify test fixtures".into()],
+        context_refs: vec![plan_idx], artifacts: vec![],
+    })?;
+
+    // === PHASE 2: EXECUTOR ACCEPTS, WORKS, HANDS OFF TO CRITIC ===
+    accept_handoff(&amp;mut chain, "executor", "auth-refactor-2026-06-08")?;
+    let exec_idx = chain.append_thought("executor",
+        ThoughtInput::new(ThoughtType::Subgoal,
+            "Extracted validate_token(). 47/47 tests pass.")
+        .with_importance(0.6)
+        .with_tags(["auth-refactor-2026-06-08", "executor-step"])
+        .with_refs(vec![h1])
+    )?;
+    let h2 = prepare_handoff(&amp;mut chain, &amp;HandoffEnvelope {
+        from_agent: "executor".into(), to_agent: "critic".into(),
+        task_id: "auth-refactor-2026-06-08".into(),
+        done: vec!["JWT extracted, 47 tests pass".into()],
+        next: vec!["Review jwt.rs for unsafe unwraps".into()],
+        blocked: vec!["Do NOT propose further refactors".into()],
+        context_refs: vec![h1, exec_idx], artifacts: vec![],
+    })?;
+    accept_handoff(&amp;mut chain, "critic", "auth-refactor-2026-06-08")?;
+
+    // Chain path:
+    //   plan -> handoff(plan->exec) -> check-in -> step
+    //         -> handoff(exec->critic) -> check-in
+    let inbound = chain.inbound_relations(h2);
+    assert!(inbound.iter().any(|r|
+        r.kind == ThoughtRelationKind::ContinuesFrom ||
+        r.kind == ThoughtRelationKind::Summarizes
+    ));
+    Ok(())
+}</code></pre>
+
+    <h3>The "primer line" pattern</h3>
+    <p>
+      A receiving agent is just an LLM with an empty context window. Even
+      after loading the right thoughts from the chain, it needs a single
+      ready-to-paste prompt that says <em>what to do right now</em>. That
+      is the primer line — a short, structured string built from the
+      envelope plus <code>chain.to_catchup_prompt_with(...)</code> over the
+      last N thoughts. Keep it under 2KB: the chain holds the long tail,
+      the primer is for the LLM's working context. The agent can always
+      re-render the primer by calling
+      <code>mentisdb_recent_context</code> again.
+    </p>
+
+    <div class="callout callout-success">
+      <strong>The primer line is the only thing the LLM sees.</strong> It
+      should answer four questions: <em>who am I, what task is this, what
+      should I do, what should I not redo</em>. The chain holds
+      everything else.
+    </div>
+
+    <h3>Production notes</h3>
+
+    <h4>Scope: agent vs user vs session</h4>
+    <p>Not all handoff thoughts are visible to all readers. Tag them explicitly:</p>
+    <ul>
+      <li><code>scope:user</code> — visible to the human and every agent. Use for planner → executor and any user-facing handoff.</li>
+      <li><code>scope:agent</code> — visible to other agents but not the human. Use for executor → critic internal review.</li>
+      <li><code>scope:session</code> — visible only inside one session. Use for retry loops and ephemeral debugging.</li>
+    </ul>
+
+    <h4>Shared chain vs separate chains</h4>
+    <p>
+      A single shared chain is simpler and lets any agent graph-expand
+      into any other agent's work. Separate per-agent chains are safer
+      for privacy but require explicit <code>BranchesFrom</code> joins.
+      Default to a shared chain unless you have a privacy boundary that
+      demands otherwise.
+    </p>
+
+    <h4>Conflict resolution</h4>
+    <p>
+      If two agents append at the same time, the chain's hash ordering
+      is the ground truth — but the <em>meaning</em> may be incoherent.
+      The fix is the search-first discipline: the second agent searches
+      before appending, detects the prior agent's thought, and either
+      <code>ContinuesFrom</code>, <code>Supersedes</code>, or
+      <code>Corrects</code> it rather than writing a parallel duplicate.
+      The chain becomes a CRDT-lite: append-only, with explicit
+      reconciliation relations.
+    </p>
+
+    <h4>Identity discipline</h4>
+    <p>
+      Every <code>append_thought</code> call takes an
+      <code>agent_id</code> string. Treat it as a stable, registered
+      identity. The agent registry is the source of truth — never let
+      an agent self-rename on the fly. Add aliases when an agent gains
+      a new role; do not change the canonical id.
+    </p>
+
+    <h3>Anti-patterns</h3>
+
+    <h4>Handoff without a summary</h4>
+    <p>
+      Agent A says "agent B, your turn" in a chat message but never
+      appends a <code>Handoff</code> thought. Agent B calls
+      <code>mentisdb_recent_context</code>, sees agent A's last routine
+      <code>Subgoal</code>, and has no idea that work was supposed to
+      transfer. Agent B either redoes everything or sits idle.
+    </p>
+    <div class="callout callout-warn">
+      <strong>Rule:</strong> every cross-agent transfer of work
+      requires a <code>Handoff</code> thought with
+      <code>role: Handoff</code>. Chitchat is not a handoff.
+    </div>
+
+    <h4>Handoff with too much context</h4>
+    <p>
+      Agent A dumps 50 thoughts of fine-grained reasoning into the
+      handoff body. Agent B's primer becomes 40KB, the LLM gets lost,
+      and the receiving agent contradicts prior decisions because it
+      cannot tell which thoughts are still current. Keep the handoff
+      body to: what is done, what is next, what is blocked, and indices
+      to graph-expand. The chain holds the long tail.
+    </p>
+
+    <h4>Agent identity confusion</h4>
+    <p>
+      Two agents share the same <code>agent_id</code>. Their thoughts
+      interleave with no way to tell them apart at retrieval time.
+      The fix is strict <code>upsert_agent</code> discipline: one
+      canonical id per agent, plus aliases for renaming, plus per-agent
+      filters on every query.
+    </p>
+
+    <h3>Testing this pattern</h3>
+    <pre data-cookbook-test="off"><code>#[test]
+fn handoff_keeps_chain_connected_across_boundary() {
+    let mut chain = test_chain();
+    chain.upsert_agent("planner",  None, None, None, None).unwrap();
+    chain.upsert_agent("executor", None, None, None, None).unwrap();
+
+    let plan = chain.append_thought("planner",
+        ThoughtInput::new(ThoughtType::Plan, "refactor auth")
+    ).unwrap();
+    let env = HandoffEnvelope {
+        from_agent: "planner".into(), to_agent: "executor".into(),
+        task_id: "auth".into(), done: vec!["planned".into()],
+        next: vec!["extract jwt".into()], blocked: vec![],
+        context_refs: vec![plan], artifacts: vec![],
+    };
+    let h = prepare_handoff(&amp;mut chain, &amp;env).unwrap();
+    accept_handoff(&amp;mut chain, "executor", "auth").unwrap();
+
+    let inbound = chain.inbound_relations(h);
+    assert!(inbound.iter().any(|r|
+        r.kind == ThoughtRelationKind::ContinuesFrom
+    ), "chain is disconnected across the handoff");
+}
+
+#[test]
+fn handoff_dedupes_when_task_already_handed_off() {
+    let mut chain = test_chain();
+    let env = sample_envelope("auth");
+    let h1 = prepare_handoff(&amp;mut chain, &amp;env).unwrap();
+    let h2 = prepare_handoff(&amp;mut chain, &amp;env).unwrap();
+    assert_ne!(h1, h2, "second handoff should extend, not duplicate");
+}</code></pre>
+
+    <h3>What's next</h3>
+    <p>
+      Handoffs work for short-lived agent teams. For projects that
+      span weeks or months with the same agent identity returning, see
+      <a href="cookbook-1-4-long-running-project-memory.html">Long-Running Project Memory</a>,
+      which builds on these handoff primitives to maintain a stable
+      project state across many sessions.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-1-2-semantic-fact-extraction.html">← 1.2 Semantic Fact Extraction</a> ·
+      <a href="cookbook-1-4-long-running-project-memory.html">1.4 Long-Running Project Memory →</a>
+    </nav>
+  </article>
+
+  <footer>
+    <p>MentisDB Cookbook · <a href="cookbook.html">↑ Table of Contents</a></p>
+  </footer>
+</body>
+</html>

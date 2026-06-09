@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3.1 Embedding Provider Selection — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article h4 { font-size: 1.0rem; margin-top: 1.2rem; margin-bottom: 0.4rem; color: #444; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    article table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.92rem; }
+    article th, article td { border: 1px solid #e0e0e0; padding: 0.5rem 0.7rem; text-align: left; vertical-align: top; }
+    article th { background: #f5f5f5; font-weight: 600; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+    .callout-warn { background: #fff8f0; border-left: 3px solid #e67700; }
+    .callout-success { background: #f0fff4; border-left: 3px solid #2f855a; }
+    .flow { background: #fafafa; border: 1px solid #e0e0e0; padding: 1rem 1.2rem; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88rem; line-height: 1.6; white-space: pre; overflow-x: auto; margin: 1rem 0 1.5rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 3 — Embedding &amp; Vector Search · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>3.1 Embedding Provider Selection</h2>
+
+    <h3>The problem</h3>
+    <p>
+      A sidecar is what makes semantic search possible in MentisDB: a
+      per-chain vector index that lives next to the append-only log,
+      refreshed on every append, queried at retrieval time. The
+      provider turns thought text into vectors. Pick wrong and you
+      pay for it in cold-start latency, monthly cost, and retrieval
+      quality — all at once.
+    </p>
+    <p>
+      This chapter is the selection guide: the four built-in options
+      (Local, FastEmbed, OpenAI, and the no-provider / lexical-only
+      path), plus how to write a custom provider when none of them
+      fit. The
+      <a href="cookbook-3-2-vector-sidecar-management.html">next chapter</a>
+      covers the operational side: when to rebuild, when to sync,
+      when to ship a sidecar to a remote bucket.
+    </p>
+
+    <h3>The decision matrix</h3>
+    <p>
+      Four axes dominate: <strong>quality</strong>, <strong>cost</strong>,
+      <strong>latency</strong>, and <strong>offline capability</strong>.
+    </p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Provider</th>
+          <th>Dim</th>
+          <th>Quality</th>
+          <th>Cost</th>
+          <th>Latency</th>
+          <th>Offline</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>LocalTextEmbeddingProvider</code></td>
+          <td>256</td>
+          <td>Fair — token &amp; trigram hash, no learned semantics</td>
+          <td>$0</td>
+          <td>~0 ms cold start, sub-ms per doc</td>
+          <td>Yes</td>
+        </tr>
+        <tr>
+          <td><code>FastEmbedProvider</code> (AllMiniLML6V2)</td>
+          <td>384</td>
+          <td>Good — real semantic model, fine-tuned on 1B+ pairs</td>
+          <td>$0 (CPU inference, ~80 MB model)</td>
+          <td>~2-5 s cold start, ~5-20 ms per doc</td>
+          <td>Yes (after first download)</td>
+        </tr>
+        <tr>
+          <td>OpenAI <code>text-embedding-3-small</code></td>
+          <td>1536</td>
+          <td>Excellent — top-tier general purpose</td>
+          <td>$0.02 / 1M tokens</td>
+          <td>~200-500 ms per batch</td>
+          <td>No</td>
+        </tr>
+        <tr>
+          <td>OpenAI <code>text-embedding-3-large</code></td>
+          <td>3072</td>
+          <td>State of the art</td>
+          <td>$0.13 / 1M tokens</td>
+          <td>~300-800 ms per batch</td>
+          <td>No</td>
+        </tr>
+        <tr>
+          <td>No provider (lexical + graph only)</td>
+          <td>—</td>
+          <td>Depends on BM25 + graph coverage</td>
+          <td>$0</td>
+          <td>0 ms</td>
+          <td>Yes</td>
+        </tr>
+        <tr>
+          <td>Custom (your own model)</td>
+          <td>any</td>
+          <td>Whatever you can train or pay for</td>
+          <td>Your model, your bill</td>
+          <td>Your hardware, your profile</td>
+          <td>Up to you</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>When to use which</h3>
+
+    <h4>Local — the default</h4>
+    <p>
+      The built-in <code>LocalTextEmbeddingProvider</code> hashes
+      normalized tokens and trigrams into a fixed 256-d dense
+      vector. It has no learned semantics — "car" and "automobile"
+      are not close in this space — but it is fast, deterministic,
+      has zero dependencies, and requires no network. Use it for
+      CLIs, embedded agents, air-gapped deployments, and any
+      iteration loop where you want to defer the embedding-quality
+      question. It also shines on rare proper nouns, file paths,
+      error messages, and identifiers — text that semantic models
+      tend to wash out.
+    </p>
+    <p>
+      It is the daemon's default for a reason: 80% of the value of
+      semantic search with 0% of the operational pain. Upgrade when
+      lexical overlap stops carrying you ("how do I authenticate"
+      vs. "login flow").
+    </p>
+
+    <h4>FastEmbed — the upgrade</h4>
+    <p>
+      <code>FastEmbedProvider</code> wraps
+      <a href="https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2">all-MiniLM-L6-v2</a>
+      via the <code>fastembed</code> crate. It produces real 384-d
+      semantic vectors, fully on-device, with no API key and no
+      per-token cost. Use it when quality matters and you can absorb
+      an 80 MB model download and a 2-5 s cold start.
+    </p>
+    <div class="callout">
+      <strong>Feature flag:</strong> FastEmbed is gated behind the
+      <code>local-embeddings</code> Cargo feature (it pulls in an
+      ONNX runtime). The daemon activates it automatically when the
+      model can be loaded; library consumers add the feature to
+      their <code>Cargo.toml</code>.
+    </div>
+
+    <h4>OpenAI — the high-end</h4>
+    <p>
+      When "good enough" isn't good enough, OpenAI embeddings are
+      the practical ceiling. <code>text-embedding-3-small</code> is
+      competitive with much larger open models for retrieval and
+      cheap; <code>text-embedding-3-large</code> is the strongest
+      off-the-shelf model for English retrieval as of 2026. Use it
+      for online, multi-tenant services where retrieval quality is
+      a product surface and the per-token bill is a rounding error
+      — or a private Azure / Bedrock deployment that fits your
+      privacy story.
+    </p>
+    <div class="callout callout-warn">
+      <strong>Cost math:</strong> at $0.02 per 1M tokens,
+      <code>text-embedding-3-small</code> embeds ~4 million
+      200-token thoughts for one dollar. Most personal agents
+      never hit that. Most production agents on a busy day do.
+      The
+      <a href="cookbook-3-4-benchmarking-your-memory.html">benchmarking
+      chapter</a> shows how to measure whether the quality jump
+      is worth it for your chain.
+    </div>
+
+    <h4>No provider — the lexical-only path</h4>
+    <p>
+      You can run MentisDB with no sidecar at all. Retrieval is then
+      BM25-style lexical scoring (with per-field DF gating and the
+      built-in thesaurus expansion since 0.9.9), plus graph
+      expansion through relations and implicit edges. For many real
+      workloads — anything where the user types names of functions,
+      error strings, or specific identifiers — this beats a 256-d
+      hash and is competitive with a 384-d semantic model.
+    </p>
+    <p>
+      Use it when memory is dominated by code, error logs, file
+      paths, or configuration keys, you are in a constrained
+      environment where even 80 MB is too much, or you are doing
+      pure keyword/identifier search. There is no penalty: ranked
+      retrieval works identically; the only difference is the
+      absence of a vector similarity score. The chain, the log, the
+      relations, the graph — all of that lives outside the sidecar.
+    </p>
+
+    <h4>Custom — when the others don't fit</h4>
+    <p>A custom provider is the right answer when:</p>
+    <ul>
+      <li>You have a domain-specific model (code, biomedical, legal,
+        financial) that meaningfully beats the general-purpose
+        options on your data.</li>
+      <li>You need a non-standard dimension (e.g., a 768-d
+        CodeBERT-style model, or a 1024-d model fine-tuned on your
+        repo).</li>
+      <li>You need an embedding space shared with another system —
+        you already have vectors from another pipeline and want
+        the same space for cross-system retrieval.</li>
+      <li>You have a private model on your own infrastructure and
+        the privacy story forbids any third-party API.</li>
+    </ul>
+
+    <h3>Implementing the <code>EmbeddingProvider</code> trait</h3>
+    <p>
+      A provider is a struct that implements one trait with two
+      methods: <code>metadata</code> (describes the embedding space)
+      and <code>embed_batch</code> (turns a batch of inputs into a
+      batch of vectors).
+    </p>
+
+    <h4>The trait, in full</h4>
+    <pre data-cookbook-test="off"><code>pub trait EmbeddingProvider {
+    type Error: std::error::Error + Send + Sync + 'static;
+    fn metadata(&amp;self) -&gt; &amp;EmbeddingMetadata;
+    fn embed_batch(
+        &amp;self, inputs: &amp;[EmbeddingInput],
+    ) -&gt; Result&lt;Vec&lt;EmbeddingVector&gt;, Self::Error&gt;;
+}</code></pre>
+
+    <p>
+      <code>EmbeddingMetadata</code> is a <code>(model_id, dimension,
+      embedding_version)</code> tuple that uniquely identifies the
+      embedding space. Different metadata means different sidecars
+      on disk (see <em>Switching providers mid-chain</em> below).
+    </p>
+
+    <h4>A custom provider: tag-weighted local embeddings</h4>
+    <p>
+      Suppose you want the zero-dependency story of
+      <code>LocalTextEmbeddingProvider</code> but with a twist: in your
+      domain, certain tags (<code>auth</code>, <code>billing</code>,
+      <code>incident</code>) are more discriminating than the raw text.
+      A wrapper that boosts tag-derived features is a few dozen lines:
+    </p>
+    <pre data-cookbook-test="off"><code>use mentisdb::search::{
+    EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector,
+    LocalTextEmbeddingProvider,
+};
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+/// Wraps the local hashed-trigram provider and folds a tag-based
+/// signal into the same 256-d dense vector. Tag hints are passed via
+/// input_id ("doc-7|tag:auth|tag:billing") so the EmbeddingInput
+/// contract is unchanged.
+pub struct TagWeightedEmbeddingProvider {
+    inner: LocalTextEmbeddingProvider,
+    tag_slots: HashMap&lt;String, [usize; 8]&gt;,
+}
+
+impl TagWeightedEmbeddingProvider {
+    pub fn new(important_tags: &amp;[&amp;str]) -&gt; Self {
+        let mut tag_slots = HashMap::new();
+        for (idx, tag) in important_tags.iter().enumerate() {
+            let slots: [usize; 8] = core::array::from_fn(|i| (idx * 8 + i) % 256);
+            tag_slots.insert((*tag).to_string(), slots);
+        }
+        Self { inner: LocalTextEmbeddingProvider::new(), tag_slots }
+    }
+}
+
+#[derive(Debug)]
+pub struct TagProviderError(String);
+impl fmt::Display for TagProviderError {
+    fn fmt(&amp;self, f: &amp;mut fmt::Formatter) -&gt; fmt::Result {
+        f.write_str(&amp;self.0)
+    }
+}
+impl Error for TagProviderError {}
+
+impl EmbeddingProvider for TagWeightedEmbeddingProvider {
+    type Error = TagProviderError;
+
+    fn metadata(&amp;self) -&gt; &amp;EmbeddingMetadata {
+        // Inherit inner metadata so the sidecar path stays
+        // deterministic and comparable with the local-only index.
+        self.inner.metadata()
+    }
+
+    fn embed_batch(
+        &amp;self,
+        inputs: &amp;[EmbeddingInput],
+    ) -&gt; Result&lt;Vec&lt;EmbeddingVector&gt;, Self::Error&gt; {
+        let mut vectors = self.inner.embed_batch(inputs)
+            .map_err(|e| TagProviderError(e.to_string()))?;
+        for (input, vec) in inputs.iter().zip(vectors.iter_mut()) {
+            for tag in input.input_id.split('|').skip(1) {
+                let Some(tag) = tag.strip_prefix("tag:") else { continue };
+                let Some(slots) = self.tag_slots.get(tag) else { continue };
+                for slot in slots { vec.values[*slot] += 0.25; }
+            }
+        }
+        // Re-normalize so cosine similarity stays well-defined.
+        for vec in &amp;mut vectors {
+            let mag: f32 = vec.values.iter().map(|v| v * v).sum::&lt;f32&gt;().sqrt();
+            if mag &gt; 0.0 {
+                for v in &amp;mut vec.values { *v /= mag; }
+            }
+        }
+        Ok(vectors)
+    }
+}</code></pre>
+
+    <h4>Wiring it into a chain</h4>
+    <pre data-cookbook-test="off"><code>use mentisdb::{BinaryStorageAdapter, MentisDb};
+
+fn main() -&gt; io::Result&lt;()&gt; {
+    let dir = tempfile::tempdir()?;
+    let adapter = BinaryStorageAdapter::for_chain_key(
+        dir.path(), "auth-billing",
+    );
+    let mut chain = MentisDb::open_with_storage(Box::new(adapter))?;
+
+    let provider = TagWeightedEmbeddingProvider::new(&amp;[
+        "auth", "billing", "incident", "deploy",
+    ]);
+    chain.manage_vector_sidecar(provider)?;
+
+    chain.append("oncall", ThoughtType::Insight,
+        "Auth refresh tokens on /v2/login expire in 1h.")?;
+    Ok(())
+}</code></pre>
+
+    <p>
+      A query for "login session" now lands close to the auth
+      thought not just because the words overlap, but because the
+      tag signal pulls tag-related thoughts together. The same
+      pattern generalizes: a wrapper that takes the inner
+      provider's output, applies a domain transformation, and
+      returns vectors in the same dimension space.
+    </p>
+
+    <h3>Switching providers mid-chain</h3>
+    <p>
+      A chain is append-only and does not care which provider — or
+      how many providers — have ever been used to embed its
+      thoughts. The sidecar path is namespaced by the provider's
+      <code>EmbeddingMetadata</code> (model id + dimension +
+      version), so multiple sidecars can coexist on the same chain:
+    </p>
+    <pre data-cookbook-test="off"><code>my-chain.tcbin
+my-chain.vectors.mentisdb-local-text.v1.256d.json
+my-chain.vectors.fastembed-all-minilm-l6-v2.v1.384d.json
+my-chain.vectors.custom-bert-code.v2.768d.json</code></pre>
+
+    <p>
+      Each sidecar is a self-contained vector index over the same
+      append-only stream. When you switch from Local to FastEmbed,
+      the Local sidecar is preserved and the new FastEmbed sidecar
+      is built alongside. Ranked retrieval picks which sidecar to
+      consult at query time. This makes upgrade paths safe:
+      register a <code>FastEmbedProvider</code>, let it rebuild in
+      the background, and once it catches up ranked queries can
+      use it. Roll back any time — the Local sidecar is still
+      there. The
+      <a href="cookbook-3-2-vector-sidecar-management.html">sidecar
+      management chapter</a> covers the operational details.
+    </p>
+
+    <h3>Production notes</h3>
+
+    <h4>Cold start, footprint, batch sizes</h4>
+    <ul>
+      <li><strong>Local</strong>: ~0 ms cold start, ~4 KB static
+        state, sub-ms per doc.</li>
+      <li><strong>FastEmbed</strong>: ~2-5 s cold start for the
+        model load, ~80 MB on disk, ~200-300 MB resident. Plan a
+        3-5 second wait at first provider use; subsequent opens
+        reuse the cached ONNX file.</li>
+      <li><strong>OpenAI</strong>: ~200-500 ms per batch
+        round-trip, zero local footprint. The bill replaces the
+        disk cost.</li>
+      <li><strong>Custom</strong>: whatever your model and
+        hardware dictate. Document cold start and footprint in
+        the provider's <code>Debug</code> impl.</li>
+    </ul>
+    <p>
+      <code>embed_batch</code> takes a slice. The daemon and library
+      callers chunk appends into batches of 32 by default. Slow
+      per-call providers (remote APIs) benefit from 64-128; fast
+      providers (local hash, fastembed) get better progress feedback
+      at smaller batches.
+    </p>
+
+    <h4>The cost/quality frontier</h4>
+    <p>For most agents, the practical frontier is:</p>
+    <ol>
+      <li><strong>Local</strong> for prototyping, CLI tools, and
+        offline-first agents. Fair quality, operationally free.</li>
+      <li><strong>FastEmbed</strong> for production agents on a
+        single host. Good quality, zero per-token cost.</li>
+      <li><strong>OpenAI small</strong> for online, multi-tenant
+        services where the quality jump matters and a $0.02/1M
+        token bill is a rounding error.</li>
+      <li><strong>OpenAI large</strong> only when the gap to
+        <code>3-small</code> is measurable on your data. It often
+        isn't.</li>
+    </ol>
+    <p>
+      The default — what MentisDB uses out of the box — is Local.
+      Upgrade only when the
+      <a href="cookbook-3-4-benchmarking-your-memory.html">benchmark
+      numbers</a> say you should.
+    </p>
+
+    <h4>Decision flowchart</h4>
+    <p>Run this in your head at provider choice time:</p>
+    <div class="flow">Are you running offline / in a constrained env?
+├── Yes ─→ Use Local. (256-d, no deps, no network.)
+│
+└── No
+    │
+    Are retrieval quality gains worth >$0.02/1M tokens at your scale?
+    ├── No ─→ Use FastEmbed. (384-d, ~80 MB model, $0/token.)
+    │        Drop to Local if the model download is unacceptable.
+    │
+    └── Yes
+        │
+        Do you have a private model that beats OpenAI on your data?
+        ├── Yes ─→ Use your custom provider.
+        │         See "Implementing the EmbeddingProvider trait".
+        │
+        └── No ─→ Use OpenAI text-embedding-3-small.
+                  Bump to 3-large only after measuring the gap.
+
+(Or, if lexical + graph retrieval is enough, skip the sidecar entirely.)</div>
+
+    <h3>What's next</h3>
+    <p>
+      Picking a provider is the easy part. Keeping the sidecar fresh
+      as the chain grows, shipping it to a remote bucket, and
+      rebuilding from scratch when you switch providers is the
+      operational work. <a href="cookbook-3-2-vector-sidecar-management.html">3.2:
+      Vector Sidecar Management</a> covers that workflow.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-2-5-webhook-driven-workflows.html">← 2.5 Webhook-Driven Workflows</a> ·
+      <a href="cookbook-3-2-vector-sidecar-management.html">3.2 Vector Sidecar Management →</a>
+    </nav>
+  </article>
+
+  <footer>
+    <p>MentisDB Cookbook · <a href="cookbook.html">↑ Table of Contents</a></p>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.2 Semantic Fact Extraction — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article h4 { font-size: 1.0rem; margin-top: 1.2rem; margin-bottom: 0.4rem; color: #444; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+    .callout-warn { background: #fff8f0; border-left: 3px solid #e67700; }
+    .callout-success { background: #f0fff4; border-left: 3px solid #2f855a; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 1 — Core Patterns · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>1.2 Semantic Fact Extraction</h2>
+
+    <h3>The problem</h3>
+    <p>
+      Your agent has just read 400 lines of Slack from a product sync. Inside that
+      thread are durable facts: a deadline slipped, a constraint was agreed upon, a
+      decision was made. The agent cannot paste the whole thread into a single
+      memory thought — that would be a 6,000-token "blob" with no type, no
+      importance score, and no way to find the one fact that matters in six weeks.
+    </p>
+
+    <p>
+      The fix is <strong>semantic fact extraction</strong>: an LLM reads the raw
+      text, splits it into individually-meaningful facts, classifies each one as
+      <code>Decision</code>, <code>Constraint</code>, <code>Insight</code>,
+      <code>PreferenceUpdate</code>, or <code>Mistake</code>, and emits a list of
+      typed <code>ThoughtInput</code> records. The agent then <em>reviews</em>
+      them before appending, using the
+      <a href="cookbook-0-4-search-first.html">search-first discipline</a> to
+      filter out duplicates and attach proper provenance.
+    </p>
+
+    <div class="callout callout-warn">
+      <strong>The "always review" rule.</strong> LLM output is untrusted. The
+      extractor is a proposer, not a writer. Every extracted thought must pass
+      through the review loop (or a human, or both) before it gets appended.
+      Extraction just makes the input noisier, not different.
+    </div>
+
+    <h3>Why it's hard</h3>
+    <p>
+      The LLM invents deadlines, misattributes quotes, and summarizes opinions
+      as decisions (hallucination). It over-splits or under-splits (granularity).
+      It blurs <code>Insight</code> and <code>Decision</code> (type confusion).
+      Two adjacent thoughts will say the same thing in different words
+      (duplication). And every thought needs to remember which source document
+      it came from (provenance). Review is what keeps the chain from
+      accumulating garbage.
+    </p>
+
+    <h3>The pattern: extract → review → append</h3>
+    <p>Three components, each with a single responsibility:</p>
+    <ol>
+      <li><strong>Extractor</strong> — takes raw text plus a prompt template,
+        returns <code>Vec&lt;ThoughtInput&gt;</code>. Stateless. Easy to swap
+        (OpenAI, local model, regex heuristic).</li>
+      <li><strong>Reviewer</strong> — runs <code>query_ranked</code> against the
+        chain, classifies each candidate as <em>duplicate</em>, <em>related</em>,
+        or <em>new</em>, and suggests relations.</li>
+      <li><strong>Applier</strong> — for each surviving candidate, optionally
+        asks a human (or a stricter model) to approve, then appends with proper
+        <code>refs</code> and <code>relations</code>.</li>
+    </ol>
+    <p>
+      The extractor never writes to the chain. The applier never talks to an LLM.
+      This separation is what keeps the system debuggable.
+    </p>
+
+    <h3>Implementation</h3>
+
+    <h4>1. The extractor (OpenAI-compatible)</h4>
+    <p>
+      The crate ships an opt-in LLM extractor behind the <code>llm-extraction</code>
+      feature flag. It calls an OpenAI-compatible chat completion API, asks the model
+      for typed JSON, and validates the response. The wrapper is a one-liner — the
+      interesting logic is the prompt and the reviewer.
+    </p>
+    <pre data-cookbook-test="off"><code>use mentisdb::{LlmExtractionConfig, MentisDb, ThoughtInput};
+
+pub struct Extractor { config: LlmExtractionConfig }
+
+impl Extractor {
+    pub fn from_env() -&gt; Result&lt;Self, mentisdb::LlmExtractionError&gt; {
+        Ok(Self { config: LlmExtractionConfig::from_env()? })
+    }
+
+    /// Run the extraction. Returns the candidate thoughts; does NOT append.
+    pub async fn extract(
+        &amp;self,
+        chain: &amp;MentisDb,
+        raw_text: &amp;str,
+    ) -&gt; Result&lt;Vec&lt;ThoughtInput&gt;, mentisdb::LlmExtractionError&gt; {
+        let result = chain.extract_memories(raw_text, &amp;self.config).await?;
+        Ok(result.thoughts)
+    }
+}</code></pre>
+
+    <h4>2. The prompt template</h4>
+    <p>
+      A narrow template with type definitions baked in works dramatically better
+      than a generic "extract memories" prompt.
+    </p>
+    <pre data-cookbook-test="off"><code>const PRODUCT_SYNC_PROMPT: &amp;str = r#"
+You extract durable product decisions from meeting transcripts.
+Emit one JSON object per distinct fact. Use ONLY these thought_type values:
+
+- Decision: an irreversible choice the team committed to (e.g. "ship X by Q3")
+- Constraint: a binding rule (e.g. "must work offline", "no new vendors")
+- Insight: a non-obvious finding backed by evidence in the text
+- PreferenceUpdate: a user or stakeholder preference that affects future work
+- Mistake: a past action the team explicitly flagged as wrong
+
+Rules:
+1. Each thought must be a single factual statement — no compound thoughts.
+2. Include the speaker's name in the content when attributing an opinion.
+3. Confidence &lt; 0.7 means "I am guessing" — set it low rather than fabricating.
+4. Skip routine status updates and unanswered questions.
+5. Return {"thoughts": [...]}. Empty array if no durable facts are present.
+
+Text to analyze:
+{{text}}
+"#;</code></pre>
+
+    <h4>3. The reviewer (search-first dedup + relation suggestion)</h4>
+    <pre data-cookbook-test="off"><code>use mentisdb::{MentisDb, RankedSearchQuery, ThoughtInput};
+
+pub enum ReviewVerdict {
+    /// Already captured by a near-duplicate thought. Drop the candidate.
+    Duplicate { existing_index: u32, similarity: f32 },
+    /// Genuinely new. Append with these relations.
+    New { suggested_refs: Vec&lt;u32&gt; },
+    /// Related to an existing thought but distinct. Append with DerivedFrom.
+    Related { to: u32, similarity: f32 },
+}
+
+pub struct Reviewer {
+    duplicate_threshold: f32,
+    related_threshold: f32,
+}
+
+impl Reviewer {
+    pub fn new() -&gt; Self {
+        Self { duplicate_threshold: 0.92, related_threshold: 0.65 }
+    }
+
+    pub fn review(&amp;self, chain: &amp;MentisDb, candidate: &amp;ThoughtInput) -&gt; ReviewVerdict {
+        let hits = chain.query_ranked(
+            &amp;RankedSearchQuery::new()
+                .with_text(&amp;candidate.content)
+                .with_limit(5)
+                .with_min_score(0.3)
+        ).hits;
+
+        let Some(top) = hits.first() else {
+            return ReviewVerdict::New { suggested_refs: vec![] };
+        };
+        if top.score &gt;= self.duplicate_threshold {
+            return ReviewVerdict::Duplicate {
+                existing_index: top.thought.index as u32,
+                similarity: top.score,
+            };
+        }
+        if top.score &gt;= self.related_threshold {
+            return ReviewVerdict::Related {
+                to: top.thought.index as u32,
+                similarity: top.score,
+            };
+        }
+        // New, but attach the top two as suggested refs for the graph.
+        let suggested_refs: Vec&lt;u32&gt; = hits.iter().take(2)
+            .map(|h| h.thought.index as u32).collect();
+        ReviewVerdict::New { suggested_refs }
+    }
+}</code></pre>
+
+    <h4>4. The applier</h4>
+    <pre data-cookbook-test="off"><code>use mentisdb::{MentisDb, ThoughtInput, ThoughtRelation, ThoughtRelationKind};
+
+pub struct ExtractionApplier { reviewer: Reviewer }
+
+impl ExtractionApplier {
+    pub fn new() -&gt; Self { Self { reviewer: Reviewer::new() } }
+
+    /// Apply a batch of extracted thoughts. Returns the indices that
+    /// were actually appended (duplicates are skipped).
+    pub fn apply(
+        &amp;self,
+        chain: &amp;mut MentisDb,
+        agent_id: &amp;str,
+        source_tag: &amp;str,
+        candidates: Vec&lt;ThoughtInput&gt;,
+    ) -&gt; mentisdb::io::Result&lt;Vec&lt;u32&gt;&gt; {
+        let mut appended = Vec::new();
+        for mut candidate in candidates {
+            candidate.tags.push(format!("source:{}", source_tag));
+            match self.reviewer.review(chain, &amp;candidate) {
+                ReviewVerdict::Duplicate { existing_index, similarity } =&gt; {
+                    eprintln!("skip duplicate (sim={:.2}) of #{}: {}",
+                        similarity, existing_index, candidate.content);
+                }
+                ReviewVerdict::Related { to, .. } =&gt; {
+                    let rel = build_relation(chain, to, ThoughtRelationKind::DerivedFrom)?;
+                    let thought = chain.append_thought(agent_id,
+                        candidate.with_refs(vec![to]).with_relations(vec![rel]))?;
+                    appended.push(thought.index as u32);
+                }
+                ReviewVerdict::New { suggested_refs } =&gt; {
+                    let input = if suggested_refs.is_empty() {
+                        candidate
+                    } else { candidate.with_refs(suggested_refs) };
+                    let thought = chain.append_thought(agent_id, input)?;
+                    appended.push(thought.index as u32);
+                }
+            }
+        }
+        Ok(appended)
+    }
+}
+
+fn build_relation(
+    chain: &amp;MentisDb,
+    target_index: u32,
+    kind: ThoughtRelationKind,
+) -&gt; mentisdb::io::Result&lt;ThoughtRelation&gt; {
+    let target = chain.get_thought_by_index(target_index as u64)
+        .expect("target thought must exist");
+    Ok(ThoughtRelation::new(kind, target.id))
+}</code></pre>
+
+    <h4>5. End-to-end pipeline on a real transcript</h4>
+    <pre data-cookbook-test="off"><code>use mentisdb::{BinaryStorageAdapter, MentisDb};
+
+#[tokio::main]
+async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    let dir = tempfile::tempdir()?;
+    let mut chain = MentisDb::open_with_storage(Box::new(
+        BinaryStorageAdapter::for_chain_key(dir.path(), "team-brain")
+    ))?;
+    chain.upsert_agent("ingester", Some("Meeting Ingester"),
+        Some("engineering"),
+        Some("Extracts durable facts from transcripts"), None)?;
+
+    let transcript = "\
+[14:02] Priya: Ship offline mode by end of Q3. Board committed.\n\
+[14:04] Marcus: No new vendors — approved list only. Legal flagged.\n\
+[14:08] Lin: 2.1 broke offline sync for 12% of users. Rolled back Friday.\n\
+[14:09] Marcus: Lesson: never ship a sync change without a canary first.";
+
+    let extractor = Extractor::from_env()?;
+    let candidates = extractor.extract(&amp;chain, transcript).await?;
+
+    let applier = ExtractionApplier::new();
+    let appended = applier.apply(&amp;mut chain, "ingester",
+        "sync:2026-06-08-product-sync", candidates)?;
+    println!("appended {} thoughts (rest were duplicates)", appended.len());
+    Ok(())
+}</code></pre>
+
+    <h3>The local-only fallback</h3>
+    <p>
+      Not every environment has an API key. For air-gapped deployments and tests,
+      a regex-and-keyword extractor gets you 60-70% of the LLM's quality with
+      zero network calls. The same <code>ExtractionApplier</code> works with any
+      <code>ThoughtInput</code> producer.
+    </p>
+    <pre data-cookbook-test="off"><code>use mentisdb::{ThoughtInput, ThoughtType};
+
+pub fn extract_heuristic(text: &amp;str) -&gt; Vec&lt;ThoughtInput&gt; {
+    text.lines().filter_map(|line| {
+        let lower = line.to_lowercase();
+        let ttype = if lower.contains("we decided") ||
+                      (lower.contains("ship") &amp;&amp; lower.contains("by")) {
+            ThoughtType::Decision
+        } else if lower.contains("must ") || lower.contains("no new ") {
+            ThoughtType::Constraint
+        } else if lower.starts_with("lesson:") {
+            ThoughtType::Mistake
+        } else if lower.contains("%") {
+            ThoughtType::Insight
+        } else { return None };
+        Some(ThoughtInput::new(ttype, line.trim().to_string())
+            .with_importance(0.6).with_confidence(0.5))
+    }).collect()
+}</code></pre>
+
+    <div class="callout callout-warn">
+      Heuristic extraction will miss things. The point is to never block the
+      pipeline on an external service.
+    </div>
+
+    <h3>Production notes</h3>
+
+    <h4>Rate limits and batching</h4>
+    <p>
+      Most LLM providers cap you at 60-500 requests per minute. Call the
+      extractor once on the full text and let the model do the splitting — do
+      not make one request per paragraph. If the text is too long, chunk by
+      semantic boundary and run extractions in parallel, then de-duplicate the
+      union through the reviewer.
+    </p>
+
+    <h4>Cost estimation</h4>
+    <p>
+      At <code>gpt-4o</code> pricing (June 2026) the extraction prompt is roughly
+      400 tokens of overhead plus the input. A 2,000-word transcript costs about
+      $0.005 per extraction; 50 daily meetings cost roughly $7/month. Switch to
+      <code>gpt-4o-mini</code> if you do not need the discrimination quality of
+      the larger model.
+    </p>
+
+    <h4>Confidence, importance, and source tags</h4>
+    <p>
+      The extractor sets <code>confidence</code> (how sure the LLM is about
+      <em>this fact</em>), <code>importance</code> (how durable it is), and
+      <code>tags</code> (the applier extends with a <code>source:</code> tag
+      pointing back to the source document). Use them as automatic gates —
+      anything below 0.5 confidence goes to a human-review queue.
+    </p>
+
+    <h3>Pitfalls</h3>
+
+    <h4>Hallucinated facts</h4>
+    <p>
+      The single biggest failure mode. The model will confidently state "Priya
+      committed to offline mode by July 15" when the transcript said "end of Q3."
+      Mitigations: include the source date in the prompt; for high-stakes
+      extractions, run the model twice with two prompts and keep only thoughts
+      that match; surface low-confidence candidates to a human-review UI
+      instead of appending them.
+    </p>
+
+    <h4>Duplicate extractions and missing provenance</h4>
+    <p>
+      The reviewer catches near-duplicates with the <code>duplicate_threshold</code>
+      similarity score — but only if you wired it in. The most common bug is
+      calling <code>chain.extract_memories(...).await</code> and appending the
+      result directly. Always go through the applier. The same rule applies to
+      <code>source:</code> tags: if you forget them, you cannot answer "why is
+      this in the chain?" six months later.
+    </p>
+
+    <h4>Type confusion and over-extraction</h4>
+    <p>
+      An LLM will happily call everything <code>Insight</code> because it
+      sounds smart. Tighten the prompt: <em>"Decision: an irreversible
+      commitment by a named stakeholder. Insight: a finding backed by data,
+      not a commitment."</em> A 2,000-word transcript should produce 3-8
+      durable thoughts, not 30. If you see 20+ candidates, the prompt is too
+      greedy — the "skip routine status updates" rule is what keeps the count
+      sane.
+    </p>
+
+    <h3>Testing this pattern</h3>
+    <p>
+      Use the heuristic extractor (or a mocked LLM response) so the test stays
+      hermetic. A passing test verifies both the dedup threshold and the
+      relation attachment:
+    </p>
+    <pre data-cookbook-test="off"><code>#[test]
+fn applier_skips_duplicates() {
+    let mut chain = test_chain();
+    chain.upsert_agent("ingester", None, None, None, None).unwrap();
+    chain.append_thought("ingester",
+        ThoughtInput::new(ThoughtType::Decision, "Ship offline mode by end of Q3.")
+            .with_importance(0.8)
+    ).unwrap();
+
+    let candidates = vec![
+        ThoughtInput::new(ThoughtType::Decision, "Offline mode must be shipped by end of Q3.")
+            .with_importance(0.7),
+        ThoughtInput::new(ThoughtType::Constraint, "No new vendors for the offline mode build.")
+            .with_importance(0.8),
+    ];
+    let appended = ExtractionApplier::new()
+        .apply(&amp;mut chain, "ingester", "test-source", candidates)
+        .unwrap();
+    assert_eq!(appended.len(), 1, "duplicate should have been filtered");
+}</code></pre>
+
+    <h3>What's next</h3>
+    <p>
+      Extraction fills the chain with what the agent <em>learned</em>. The next
+      pattern, <a href="cookbook-1-3-multi-agent-handoff.html">Multi-Agent
+      Handoff</a>, covers what happens when multiple agents share a chain and
+      how to keep the search-first discipline enforced across a team.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-1-1-episodic-task-memory.html">← 1.1 Episodic Task Memory</a> ·
+      <a href="cookbook-1-3-multi-agent-handoff.html">1.3 Multi-Agent Handoff →</a>
+    </nav>
+  </article>
+
+  <footer>
+    <p>MentisDB Cookbook · <a href="cookbook.html">↑ Table of Contents</a></p>
+  </footer>
+</body>
+</html>

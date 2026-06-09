@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>0.2 MentisDB Mental Model — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 0 — Foundations · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>0.2 MentisDB Mental Model</h2>
+
+    <p>
+      MentisDB has six core concepts. Once you understand them, the entire API surface
+      becomes obvious. Most of the time, you'll work with four of them: <code>Thought</code>,
+      <code>Chain</code>, <code>Agent</code>, and <code>Retrieval</code>.
+    </p>
+
+    <h3>1. Thought</h3>
+    <p>
+      A <strong>thought</strong> is one durable memory record. It's the atomic unit of memory.
+      Every thought has:
+    </p>
+    <ul>
+      <li><strong>content</strong> — the actual memory text</li>
+      <li><strong>thought_type</strong> — a semantic type from a fixed ontology (<code>Decision</code>, <code>Insight</code>, <code>Mistake</code>, <code>Correction</code>, <code>Constraint</code>, <code>PreferenceUpdate</code>, <code>Summary</code>, <code>Question</code>, <code>Wonder</code>, <code>LessonLearned</code>, <code>StateSnapshot</code>, <code>Plan</code>, <code>Subgoal</code>, <code>TaskComplete</code>, <code>LLMExtracted</code>, <code>AssumptionInvalidated</code>)</li>
+      <li><strong>role</strong> — <code>Memory</code> (default), <code>Summary</code>, <code>Compression</code>, <code>Checkpoint</code>, <code>Handoff</code>, <code>Retrospective</code></li>
+      <li><strong>concepts</strong> — semantic concepts (free-form tags for ideas, e.g. "authentication", "rate-limiting")</li>
+      <li><strong>tags</strong> — short labels (e.g. "prod", "incident-2026-05-03")</li>
+      <li><strong>importance</strong> — 0.0 to 1.0, used for ranking and retention</li>
+      <li><strong>confidence</strong> — 0.0 to 1.0, used for trust weighting</li>
+      <li><strong>refs</strong> — pointers to prior thoughts (intra-chain indices or cross-chain UUIDs)</li>
+      <li><strong>valid_at</strong> / <strong>invalid_at</strong> — temporal bounds for facts that change over time</li>
+      <li><strong>entity_type</strong> — domain-specific categorization (e.g. "architecture_decision", "user_preference")</li>
+      <li><strong>source_episode</strong> — provenance: which session, turn, or external event produced this</li>
+    </ul>
+
+    <p>Example:</p>
+    <pre><code>ThoughtInput::new(ThoughtType::Decision,
+    "Use Postgres over DynamoDB for the user-events table. \
+     DynamoDB's single-region eventual consistency caused \
+     two production incidents in Q1."
+).with_concepts(["database", "consistency", "production"])
+ .with_importance(0.9)
+ .with_confidence(0.85)
+ .with_tags(["prod", "architecture"]);</code></pre>
+
+    <h3>2. Chain</h3>
+    <p>
+      A <strong>chain</strong> is the append-only, hash-chained log of thoughts. It's the
+      canonical source of truth. Every thought gets a stable UUID, a monotonic append-order
+      index, and a hash that includes the previous thought's hash.
+    </p>
+
+    <p>
+      This hash chain is the key integrity primitive. If anyone — including a buggy agent —
+      modifies or removes a thought, the chain becomes invalid. The library verifies integrity
+      on every load and provides explicit verification helpers.
+    </p>
+
+    <div class="callout">
+      <strong>Why append-only?</strong> Memory that can be silently edited isn't memory —
+      it's a journal that someone can rewrite. The append-only constraint is what makes
+      MentisDB an <em>audit log</em>, not just a key-value store. Corrections are new
+      thoughts that <code>Supersedes</code> the old ones; mistakes are <code>Mistake</code>
+      thoughts that point to the failing thought.
+    </div>
+
+    <p>Chains are identified by a <code>chain_key</code> string. One process can hold many chains.
+    A chain can be:</p>
+    <ul>
+      <li><strong>In-memory only</strong> — for tests and ephemeral agents</li>
+      <li><strong>File-backed</strong> — JSONL (legacy) or binary <code>.tcbin</code> (default) in a directory</li>
+      <li><strong>Federated</strong> — a branch chain with <code>BranchesFrom</code> pointing to a parent</li>
+    </ul>
+
+    <h3>3. Agent</h3>
+    <p>
+      An <strong>agent</strong> is a named writer to one or more chains. Agents have:
+    </p>
+    <ul>
+      <li><strong>agent_id</strong> — stable identifier (e.g. "planner", "executor", "critic")</li>
+      <li><strong>aliases</strong> — alternate names (e.g. "planner" might also be "architect")</li>
+      <li><strong>description</strong> — what this agent does</li>
+      <li><strong>owner</strong> — tenant or team identifier</li>
+      <li><strong>public keys</strong> — for future signed-thought workflows</li>
+      <li><strong>status</strong> — <code>active</code> or <code>revoked</code></li>
+    </ul>
+
+    <p>
+      Agents are first-class entities. When an agent writes a thought, the thought records
+      <em>who</em> wrote it. When you search, you can filter by agent. When you audit, you
+      can ask "what did the planner decide last week?"
+    </p>
+
+    <div class="callout">
+      <strong>Multi-agent mental model:</strong> Each agent is a peer, not a hierarchy. There's
+      no "primary" agent. The chain is the shared space. Agents can have scopes
+      (<code>agent</code>-scoped thoughts visible only to themselves, <code>user</code>-scoped
+      shared thoughts, <code>session</code>-scoped ephemeral).
+    </div>
+
+    <h3>4. Scope</h3>
+    <p>
+      Every thought has a <strong>scope</strong>, stored as a <code>scope:</code> tag:
+    </p>
+    <ul>
+      <li><code>scope:user</code> — shared with all agents on the chain. <strong>Default.</strong></li>
+      <li><code>scope:session</code> — visible only within the creating session (identified by source_episode)</li>
+      <li><code>scope:agent</code> — visible only to the creating agent</li>
+    </ul>
+
+    <p>
+      Scopes let you have private agent scratchpads alongside shared team memory on the same chain.
+      When in doubt, use <code>user</code>. Use <code>agent</code> for private notes, debugging, or
+      experimental reasoning. Use <code>session</code> for things that should expire with the conversation.
+    </p>
+
+    <h3>5. Retrieval</h3>
+    <p>
+      MentisDB has one ranked retrieval API that fuses three signals:
+    </p>
+
+    <h4>Lexical (BM25)</h4>
+    <p>
+      Classic BM25 over content, tags, concepts, agent ids, and agent registry metadata. Field-weighted:
+      content gets weight 1.0, tags 1.6, concepts 1.4, agent id 1.5, agent registry 1.5. Good for
+      exact matches, identifiers, proper nouns, and recall when the user knows the words they want.
+    </p>
+
+    <h4>Vector (cosine)</h4>
+    <p>
+      Cosine similarity over dense embeddings. MentisDB supports any embedding provider via the
+      <code>EmbeddingProvider</code> trait. Built-in providers: <code>LocalTextEmbeddingProvider</code>
+      (256d, zero-deps, hashed trigrams) and <code>FastEmbed</code> (384d, AllMiniLML6V2, downloads on first use).
+      Good for semantic match, paraphrasing, vocabulary mismatch, and "find ideas like this one."
+    </p>
+
+    <h4>Graph (BFS over relations + implicit edges)</h4>
+    <p>
+      BFS over explicit <code>refs</code> and typed <code>relations</code> (DerivedFrom, CausedBy,
+      Corrects, Supersedes, etc.), plus implicit <code>RelatedTo</code> edges derived from vector
+      cosine above a threshold. Good for multi-hop questions, "what else do I need to know about X?"
+      and following chains of reasoning.
+    </p>
+
+    <p>
+      The three are fused with <strong>Reciprocal Rank Fusion (RRF)</strong>: each thought's final
+      score is the sum of <code>1 / (k + rank_in_list)</code> across the lists it appears in. Default
+      <code>k = 60</code>. RRF is opt-in; you can also tune per-signal weights or use only one.
+    </p>
+
+    <h4>Hybrids and filters</h4>
+    <p>
+      Every retrieval accepts a <code>ThoughtQuery</code> filter: thought_type, role, tags, concepts,
+      agent ids, importance, confidence, time window, <code>as_of</code> timestamp, scope, and free-text.
+      Filters run first to reduce the candidate set; the three signals rank within that set.
+    </p>
+
+    <h3>6. Embedding provider (optional but recommended)</h3>
+    <p>
+      If you want semantic search, register an <code>EmbeddingProvider</code>. MentisDB will
+      automatically build and maintain a vector sidecar file, embed new thoughts on append,
+      and use the embeddings during ranked search. Without a provider, lexical and graph
+      retrieval still work fully.
+    </p>
+
+    <p>
+      See <a href="cookbook-3-1-embedding-providers.html">3.1 Embedding Provider Selection</a> for
+      the tradeoff matrix.
+    </p>
+
+    <h3>The full picture</h3>
+    <pre><code>┌─────────────────────────────────────────┐
+│  Agents (planner, executor, critic)     │
+└────────────────┬────────────────────────┘
+                 │ write (append)
+                 ▼
+┌─────────────────────────────────────────┐
+│  Chain (append-only, hash-chained)      │
+│  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐       │
+│  │ T₀  │→│ T₁  │→│ T₂  │→│ T₃  │ ...   │
+│  └─────┘ └─────┘ └─────┘ └─────┘       │
+│       (each thought: type, role,        │
+│        concepts, tags, refs, etc.)      │
+└────┬──────────────────────────┬─────────┘
+     │                          │
+     ▼ derive                  ▼ derive
+┌──────────────┐         ┌──────────────┐
+│ LexicalIndex │         │ VectorIndex  │
+│  (BM25)      │         │ (cosine)     │
+└──────┬───────┘         └──────┬───────┘
+       │                        │
+       └────────┬───────────────┘
+                ▼
+       ┌────────────────┐
+       │ Ranked Fusion  │
+       │ (RRF, opt-in)  │
+       └────────┬───────┘
+                ▼
+       Top-k results → Agent</code></pre>
+
+    <p>
+      That's the entire system. Patterns in Part 1 will use these primitives in different
+      ways. The next chapter gets you a working memory in under five minutes.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-0-1-why-agent-memory.html">← 0.1 Why Agent Memory Matters</a> ·
+      <a href="cookbook-0-3-quickstart.html">0.3 Quickstart →</a>
+    </nav>
+  </article>
+
+  <footer>
+    <p>MentisDB Cookbook · <a href="cookbook.html">↑ Table of Contents</a></p>
+  </footer>
+</body>
+</html>

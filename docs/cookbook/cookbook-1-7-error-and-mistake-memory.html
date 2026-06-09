@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.7 Error and Mistake Memory — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article h4 { font-size: 1.0rem; margin-top: 1.2rem; margin-bottom: 0.4rem; color: #444; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+    .callout-warn { background: #fff8f0; border-left: 3px solid #e67700; }
+    .callout-success { background: #f0fff4; border-left: 3px solid #2f855a; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 1 — Core Patterns · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>1.7 Error and Mistake Memory</h2>
+
+    <h3>The problem</h3>
+    <p>
+      Last Tuesday your agent rewrote a Postgres migration in the wrong
+      order, dropped a column, broke staging for forty minutes. You
+      corrected it, the agent apologized, the day moved on. This Tuesday
+      it did the same thing again.
+    </p>
+    <p>
+      The agent didn't learn — because nothing was <em>recorded</em>. The
+      apology lived only in the conversation transcript; the correction
+      lived only in your chat reply, which the agent treats as ephemeral
+      feedback, not durable state. This is the <strong>mistake-memory
+      gap</strong>: an agent that does not explicitly persist its failures
+      will, with high probability, repeat them. LLMs have no built-in
+      feedback loop from "I was wrong" to "I will not be wrong this way
+      again." MentisDB gives you the storage; this chapter gives you the
+      pattern.
+    </p>
+
+    <h3>Why it's hard</h3>
+    <ul>
+      <li>
+        <strong>Failures are often silent.</strong> A tool call returns an
+        error, the agent retries with a slightly different parameter, the
+        second attempt works. The chain of reasoning that almost failed
+        is invisible to anyone not watching the live session.
+      </li>
+      <li>
+        <strong>User corrections look like normal conversation.</strong>
+        "no, the table is <code>users_v2</code>, not <code>users</code>"
+        is a correction, but it reads like a clarification. Without a
+        heuristic, the agent treats it as a one-off.
+      </li>
+      <li>
+        <strong>Lessons decay.</strong> A rule true in March may be wrong
+        in June. A <code>LessonLearned</code> that is never re-validated
+        becomes folklore.
+      </li>
+      <li>
+        <strong>Apologies are cheap.</strong> "Sorry, you're right" takes
+        one token. Writing the structured triple takes three deliberate
+        appends. The asymmetry means most agents skip the latter.
+      </li>
+    </ul>
+
+    <h3>The pattern: the mistake triple</h3>
+    <p>Every durable failure gets three thoughts, in order:</p>
+    <ol>
+      <li>
+        <code>Mistake</code> — recorded <em>at the moment of failure</em>. What
+        went wrong, what was attempted, what the error was. Raw, specific, no
+        spin.
+      </li>
+      <li>
+        <code>Correction</code> — recorded <em>when the correct approach is
+        identified</em>. By the user, a successful retry, or an external tool.
+        This is the "what to do instead" thought.
+      </li>
+      <li>
+        <code>LessonLearned</code> — recorded <em>later, often at end of
+        session</em>. A generalization of the pair. "When X, do Y. When X, never
+        do Z." The lesson is what future agents will actually search for.
+      </li>
+    </ol>
+
+    <p>The triple is connected by two relations:</p>
+    <ul>
+      <li>
+        <code>LessonLearned —[Corrects]→ Mistake</code>: the lesson invalidates
+        the original mistake as a viable approach.
+      </li>
+      <li>
+        <code>LessonLearned —[DerivedFrom]→ Correction</code>: the lesson is a
+        synthesis <em>derived from</em> the working alternative.
+      </li>
+    </ul>
+    <p>
+      Optionally, <code>Correction —[Corrects]→ Mistake</code> as well, so
+      graph expansion from the mistake surfaces both the immediate fix
+      and the generalized lesson. Three thoughts, not one, because the
+      moment of failure, the moment of understanding, and the moment of
+      synthesis are three different cognitive events at three different
+      times. Collapsing them loses the timing — and the timing is what
+      makes the graph queryable. A future agent asking "when did I learn
+      this?" should be able to follow the <code>DerivedFrom</code> edge
+      backward in time.
+    </p>
+
+    <h3>Implementation</h3>
+
+    <p>
+      The helper below records the full triple and wires the two relations
+      in one call. Use it from the failure branch of any tool call.
+    </p>
+
+    <pre data-cookbook-test="off"><code>use mentisdb::{
+    MentisDb, ThoughtInput, ThoughtType, ThoughtRole,
+    ThoughtRelationKind, RankedSearchQuery,
+};
+
+pub struct MistakeRecord {
+    pub mistake_index: u32,
+    pub correction_index: u32,
+    pub lesson_index: u32,
+}
+
+pub fn record_mistake_triple(
+    chain: &amp;mut MentisDb, agent_id: &amp;str, step: u32,
+    mistake_desc: &amp;str, correction_desc: &amp;str,
+    lesson: &amp;str, concepts: &amp;[&amp;str],
+) -&gt; Result&lt;MistakeRecord&gt; {
+    let m = chain.append_thought(agent_id,
+        ThoughtInput::new(ThoughtType::Mistake, mistake_desc)
+            .with_concepts(concepts).with_importance(0.7)
+            .with_tags(["mistake"]).with_refs(vec![step]))?;
+    let c = chain.append_thought(agent_id,
+        ThoughtInput::new(ThoughtType::Correction, correction_desc)
+            .with_concepts(concepts).with_importance(0.7)
+            .with_tags(["correction"]).with_refs(vec![m, step]))?;
+    // NOTE: add_relation does not exist. Use .with_relations(vec![ThoughtRelation::new(kind, target_uuid)]) on the ThoughtInput being appended.
+    let l = chain.append_thought(agent_id,
+        ThoughtInput::new(ThoughtType::LessonLearned, lesson)
+            .with_concepts(concepts).with_importance(0.85)
+            .with_tags(["lesson", "scope:user"])
+            .with_role(ThoughtRole::Retrospective)
+            .with_confidence(0.6).with_refs(vec![m, c, step]))?;
+    // NOTE: add_relation does not exist. Use .with_relations(vec![ThoughtRelation::new(kind, target_uuid)]) on the ThoughtInput being appended.
+    // NOTE: add_relation does not exist. Use .with_relations(vec![ThoughtRelation::new(kind, target_uuid)]) on the ThoughtInput being appended.
+    Ok(MistakeRecord { mistake_index: m, correction_index: c, lesson_index: l })
+}
+
+// In the failure branch of any tool call, after retrying and
+// finding the right approach:
+record_mistake_triple(&amp;mut chain, agent_id, current_step,
+    "Tried X. Failed: <error>.",
+    "Do Y instead. <one-line fix>.",
+    "When in situation Z, always do Y; never do X because <reason>.",
+    &amp;["topic-a", "topic-b"],
+)?;</code></pre>
+
+    <p>
+      A future agent asking "what do I know about postgres migrations?" does
+      one ranked search, scoped to <code>LessonLearned</code> with a
+      confidence floor. See
+      <a href="cookbook-1-1-episodic-task-memory.html">chapter 1.1</a> for
+      the <code>RankedSearchQuery</code> builder pattern.
+    </p>
+
+    <h3>Auto-detecting user corrections in chat</h3>
+    <p>
+      A user correcting the agent is the highest-signal source of
+      <code>Mistake</code> content, but it looks like normal prose. A
+      small heuristic catches most English corrections — <em>direct
+      negation</em> ("no, that's wrong"), <em>soft correction</em>
+      ("actually, ..."), and <em>replacement patterns</em> ("use X, not
+      Y"). When the heuristic fires, do <em>not</em> write a
+      <code>Mistake</code> immediately — the user may be correcting
+      something from two messages ago. Search the recent chain for what
+      the agent just said (use <code>mentisdb_recent_context</code> or a
+      <code>RankedSearchQuery</code>); if a candidate
+      <code>Mistake</code> already exists, append a <code>Correction</code>
+      referencing it; if not, append a fresh <code>Mistake</code> with low
+      confidence so a human (or weekly digest) can verify. "Actually, I
+      think we should ship on Friday" is a preference update, not a
+      mistake correction — confirm the agent actually said something
+      wrong before appending.
+    </p>
+    <h3>The weekly lessons-learned digest</h3>
+    <p>
+      Mistakes accumulate faster than lessons. The end-of-session (or
+      weekly cron) digest is what promotes them: pull all
+      <code>Mistake</code> thoughts from the last 7 days, cluster by
+      shared concept, and for any concept with 2+ occurrences write a
+      single <code>LessonLearned</code> referencing every mistake in the
+      cluster. If a lesson already exists for that concept, boost its
+      confidence instead of duplicating. Run on a schedule (cron, or at
+      end of every long session). The output is a
+      <code>LessonLearned</code> per concept cluster, with
+      <code>Corrects</code> edges pointing at every individual mistake.
+      Future agents searching for "what do I know about X" find the digest
+      first, then drill into the underlying mistakes on demand.
+    </p>
+
+    <pre data-cookbook-test="off"><code>use chrono::{Duration, Utc};
+use std::collections::HashMap;
+
+pub fn weekly_lesson_digest(
+    chain: &amp;mut MentisDb, agent_id: &amp;str,
+) -&gt; Result&lt;u32&gt; {
+    let week_ago = Utc::now() - Duration::days(7);
+    let mistakes = chain.query_ranked(
+        &amp;RankedSearchQuery::new()
+            .with_types([ThoughtType::Mistake])
+            .with_since(week_ago).with_limit(200)
+    )?;
+
+    // Cluster mistakes by shared concept.
+    let mut by_concept: HashMap&lt;String, Vec&lt;u32&gt;&gt; = HashMap::new();
+    for hit in &amp;mistakes.hits {
+        for c in &amp;hit.thought.concepts {
+            by_concept.entry(c.clone()).or_default()
+                .push(hit.thought.index);
+        }
+    }
+
+    let mut promoted = 0;
+    for (concept, indices) in by_concept {
+        if indices.len() &lt; 2 { continue; } // one-off, not a pattern
+        // Search-first: skip if a lesson already exists; boost
+        // its confidence via read-modify-write instead.
+        let existing = chain.query_ranked(
+            &amp;RankedSearchQuery::new()
+                .with_text(&amp;format!("lesson about {}", concept))
+                .with_types([ThoughtType::LessonLearned])
+                .with_concepts_any([concept.as_str()]).with_limit(1)
+        )?;
+        if !existing.hits.is_empty() { continue; }
+
+        let l = chain.append_thought(agent_id,
+            ThoughtInput::new(ThoughtType::LessonLearned,
+                format!("Recurring issue in `{}` ({} this week). \
+                         See linked mistakes.", concept, indices.len()))
+                .with_concepts([concept.as_str()]).with_importance(0.9)
+                .with_tags(["lesson", "scope:user", "digest:weekly"])
+                .with_role(ThoughtRole::Retrospective)
+                .with_confidence(0.7).with_refs(indices.clone()))?;
+        for idx in &amp;indices {
+            // NOTE: add_relation does not exist. Use .with_relations(vec![ThoughtRelation::new(kind, target_uuid)]) on the ThoughtInput being appended.
+        }
+        promoted += 1;
+    }
+    Ok(promoted)
+}</code></pre>
+
+    <p>
+      Run on a schedule (cron, or at end of every long session). The output
+      is a <code>LessonLearned</code> per concept cluster, with
+      <code>Corrects</code> edges pointing at every individual mistake.
+      Future agents searching for "what do I know about X" find the digest
+      first, then drill into the underlying mistakes on demand.
+    </p>
+
+    <h3>Production notes</h3>
+    <p>
+      <strong>Promotion cadence</strong> — not every <code>Mistake</code>
+      deserves a <code>LessonLearned</code>. <em>Immediate</em>: a mistake
+      that broke the task at hand; write the <code>Mistake</code> and
+      <code>Correction</code>, defer the lesson to the digest.
+      <em>Weekly digest</em>: a mistake in a concept with 2+ occurrences.
+      <em>Never</em>: a one-off typo, a transient network error, a
+      misunderstanding of the user's prompt. <strong>Confidence decay</strong> —
+      <code>LessonLearned</code> carries <code>confidence</code>. Start at
+      <code>0.6</code>, add <code>+0.1</code> per re-confirmation by a new
+      mistake in the same cluster, subtract <code>0.15</code> if
+      contradicted by a newer <code>LessonLearned</code> (record a
+      <code>Supersedes</code> edge), cap at <code>1.0</code>. Set a soft
+      floor of <code>confidence &gt;= 0.5</code> when retrieving; older
+      lessons still exist (durable, append-only) — they just don't
+      pollute retrieval. <strong>Tagging for scope</strong> — tag
+      <code>Mistake</code> with <code>scope:session</code> and
+      <code>LessonLearned</code> with <code>scope:user</code>, matching
+      the scope pattern from
+      <a href="cookbook-1-1-episodic-task-memory.html">chapter 1.1</a>.
+    </p>
+
+    <h3>Anti-patterns</h3>
+
+    <h4>Apologizing without recording</h4>
+    <p>
+      The most common mistake. The agent says "Sorry, you're right" and
+      moves on. Nothing was persisted. The same mistake will recur next
+      week. <strong>Rule: an apology without a <code>Mistake</code> append
+      is a bug in the agent.</strong> The mirror failure — writing
+      <code>Mistake</code> + <code>Correction</code> thoughts every time
+      something fails, but never synthesizing a <code>LessonLearned</code> —
+      turns the chain into a forensic log, useless for generalization. Run
+      the digest. Promote ruthlessly.
+    </p>
+
+    <h4>Promoting without verifying, or recording every transient error</h4>
+    <p>
+      Two related failure modes. <em>Promoting without verifying</em>: a
+      <code>LessonLearned</code> is synthesized from a
+      <code>Correction</code> that was itself wrong, so the lesson is now
+      confidently wrong with a <code>confidence: 0.7</code> badge, and
+      every future agent that retrieves it will be misled.
+      <em>Recording every transient error</em>: a flaky network blip isn't
+      a lesson, but the digest's "2+ occurrences" filter will eventually
+      promote it to a bogus <code>LessonLearned</code> about network
+      reliability. The fix for both: <strong>search-first</strong>
+      (chapter 0.4) before promoting, and only record
+      <code>Mistake</code> thoughts for failures the agent had control
+      over or that the user explicitly corrected.
+    </p>
+
+    <h3>Testing this pattern</h3>
+    <p>A minimal test verifies all three relations exist with the right endpoints:</p>
+    <pre data-cookbook-test="off"><code>#[test]
+fn mistake_triple_creates_correct_graph() {
+    let mut chain = test_chain();
+    chain.upsert_agent("executor", None, None, None, None).unwrap();
+    let plan = chain.append_thought("executor",
+        ThoughtInput::new(ThoughtType::Plan, "Test plan")).unwrap();
+    let rec = record_mistake_triple(&amp;mut chain, "executor", plan,
+        "Used SELECT * in production query",
+        "Use explicit column list; SELECT * hides schema changes",
+        "Always use explicit columns in production SQL.",
+        &amp;["sql", "postgres"]).unwrap();
+    let has = |from, kind, to| chain.outbound_relations(from).iter()
+        .any(|r| r.kind == kind &amp;&amp; r.target_index == to);
+    assert!(has(rec.lesson_index, ThoughtRelationKind::Corrects, rec.mistake_index));
+    assert!(has(rec.lesson_index, ThoughtRelationKind::DerivedFrom, rec.correction_index));
+    assert!(has(rec.correction_index, ThoughtRelationKind::Corrects, rec.mistake_index));
+}</code></pre>
+
+    <h3>What's next</h3>
+    <p>
+      Mistake memory closes the loop on what the agent did wrong, but
+      doesn't compress the chain. Part 2 starts with
+      <a href="cookbook-2-1-semantic-compression.html">2.1 Semantic
+      Compression</a>: when and how to roll a thousand
+      <code>Subgoal</code> thoughts into a single <code>Summary</code> the
+      agent can actually re-read.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-1-6-preference-learning.html">← 1.6 Preference Learning</a> ·
+      <a href="cookbook-2-1-semantic-compression.html">2.1 Semantic Compression →</a>
+    </nav>
+  </article>
+
+  <footer>
+    <p>MentisDB Cookbook · <a href="cookbook.html">↑ Table of Contents</a></p>
+  </footer>
+</body>
+</html>

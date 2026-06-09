@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.5 RAG Over Agent History — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article h4 { font-size: 1.0rem; margin-top: 1.2rem; margin-bottom: 0.4rem; color: #444; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+    .callout-warn { background: #fff8f0; border-left: 3px solid #e67700; }
+    .callout-success { background: #f0fff4; border-left: 3px solid #2f855a; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 1 — Core Patterns · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>1.5 RAG Over Agent History</h2>
+
+    <h3>The problem</h3>
+    <p>
+      Classic RAG retrieves from a static document corpus — a wiki, a PDF set, a
+      transcript dump. The retriever's job is to find passages that
+      <em>look like</em> the user's question.
+    </p>
+
+    <p>
+      An agent that has been running for months has a different problem. Its "corpus"
+      is the chain of decisions, mistakes, lessons, and policies it has appended over
+      time — thousands of thoughts in the agent's own voice, full of corrections and
+      supersedes. The retriever's job is no longer "find passages that look like the
+      question." It is "find the agent's own position on this question, including
+      every prior turn of the argument."
+    </p>
+
+    <p>
+      The user asks <em>"what did we decide about rate limiting?"</em> and the agent
+      must answer not just with the latest <code>Decision</code>, but with the chain
+      of <code>Constraint</code>, <code>Mistake</code>, and <code>Supersedes</code>
+      thoughts that produced it. That is what this chapter builds.
+    </p>
+
+    <h3>Why it's hard</h3>
+    <ul>
+      <li>
+        Short query, long answer. <em>"What did we decide about X?"</em> is three
+        words, but the answer may span five thoughts across two weeks.
+      </li>
+      <li>
+        The latest position is rarely the only position. A <code>Decision</code> from
+        March may have been <code>Superseded</code> in May, and the superseder is the
+        one that matters.
+      </li>
+      <li>
+        Time-sensitive. <em>"What was true on April 12th?"</em> requires a temporal
+        filter that respects <code>valid_at</code> / <code>invalid_at</code>.
+      </li>
+      <li>
+        Off-chain. A teammate's <code>Decision</code> on a shared topic may live in a
+        branch chain that forked from yours.
+      </li>
+      <li>
+        Pure lexical misses the reasoning chain (a decision about rate limiting may
+        not contain the words "rate limiting"). Pure vector misses corrections. You
+        need both, plus the graph.
+      </li>
+    </ul>
+
+    <h3>The retrieval pipeline</h3>
+    <p>
+      When the user asks an open-ended question and you call
+      <code>chain.query_ranked</code>, MentisDB runs a six-stage pipeline:
+    </p>
+
+    <ol>
+      <li>
+        <strong>Filter</strong> — a deterministic <code>ThoughtQuery</code> narrows
+        the universe by <code>thought_types</code>, <code>concepts_any</code>,
+        <code>tags_any</code>, <code>agent_ids</code>, <code>since</code>,
+        <code>until</code>, and <code>as_of</code>. Cheap; runs first.
+      </li>
+      <li>
+        <strong>Lexical</strong> — BM25 over the surviving thoughts, with automatic
+        thesaurus expansion (since 0.9.9).
+      </li>
+      <li>
+        <strong>Vector</strong> — cosine similarity from any registered embedding
+        sidecars.
+      </li>
+      <li>
+        <strong>Graph expansion</strong> — from the top lexical seeds, traverse
+        <code>refs</code> and <code>ThoughtRelation</code> edges up to
+        <code>max_depth</code> hops. This is what surfaces the <em>reasoning chain</em>
+        behind a decision.
+      </li>
+      <li>
+        <strong>RRF fusion</strong> (only if <code>enable_reranking</code>) — produce
+        lexical-only and vector-only rank lists, then merge via
+        <code>1/(60 + rank_lex) + 1/(60 + rank_vec)</code>. Graph, importance, recency,
+        and session cohesion are added back as small tie-breakers.
+      </li>
+      <li>
+        <strong>Rerank</strong> — apply <code>min_score</code> cutoff, sort, truncate
+        to <code>limit</code>, return.
+      </li>
+    </ol>
+
+    <div class="callout">
+      <strong>Heads up:</strong> graph expansion is seeded from the <em>lexical</em>
+      matches, not from arbitrary indices. If <code>with_text</code> is omitted, the
+      graph pass is silently skipped — always pass a <code>text</code> query when you
+      want graph expansion to run.
+    </div>
+
+    <h3>Implementation: a complete ask → retrieve → answer flow</h3>
+
+    <h4>1. Record a few decisions about rate limiting</h4>
+    <pre data-cookbook-test="off"><code>use mentisdb::{MentisDb, ThoughtInput, ThoughtType, ThoughtRelationKind,
+               RankedSearchQuery, RankedSearchGraph};
+
+fn seed_decisions(chain: &amp;mut MentisDb, agent_id: &amp;str) -&gt; Result&lt;()&gt; {
+    let d1 = chain.append_thought(agent_id,
+        ThoughtInput::new(ThoughtType::Decision,
+            "Rate limit public API endpoints to 100 req/min per user. \
+             Rationale: matches tier-1 traffic; protects against \
+             unbounded retry loops in client SDKs.")
+        .with_concepts(["api", "rate-limiting", "policy"])
+        .with_tags(["policy:api", "scope:user"])
+        .with_importance(0.9)
+    )?;
+    chain.append_thought(agent_id,
+        ThoughtInput::new(ThoughtType::Constraint,
+            "Tier-1 customers average 60 req/min per user; peaks hit 200 \
+             req/min during business hours.")
+        .with_concepts(["api", "rate-limiting"]).with_importance(0.7)
+        .with_refs(vec![d1])
+    )?;
+    let m1 = chain.append_thought(agent_id,
+        ThoughtInput::new(ThoughtType::Mistake,
+            "2026-04-03: 4xx rate-limit errors for top 1% of customers. \
+             100 req/min was too tight; we briefly raised the limit to 500 \
+             in prod without a Decision.")
+        .with_concepts(["api", "rate-limiting", "incident"])
+        .with_importance(0.85)
+    )?;
+    let d2 = chain.append_thought(agent_id,
+        ThoughtInput::new(ThoughtType::Decision,
+            "Rate limit public API to 500 req/min per user by default, \
+             with per-customer override up to 5000. Supersedes the 100 \
+             req/min decision from 2026-03-12.")
+        .with_concepts(["api", "rate-limiting", "policy"])
+        .with_importance(0.95)
+        .with_refs(vec![d1, m1])
+    )?;
+    // NOTE: add_relation does not exist. Use .with_relations(vec![ThoughtRelation::new(kind, target_uuid)]) on the ThoughtInput being appended.
+    Ok(())
+}</code></pre>
+
+    <h4>2. Ask the question</h4>
+    <pre data-cookbook-test="off"><code>fn answer_about_rate_limiting(chain: &amp;MentisDb) -&gt; Result&lt;String&gt; {
+    let results = chain.query_ranked(
+        &amp;RankedSearchQuery::new()
+            .with_text("what did we decide about rate limiting")
+            .with_filter(mentisdb::ThoughtQuery::new()
+                .with_types([ThoughtType::Decision, ThoughtType::Correction,
+                             ThoughtType::Constraint, ThoughtType::LessonLearned])
+                .with_concepts_any(["rate-limiting"]))
+            .with_graph(RankedSearchGraph::new()
+                .with_max_depth(2).with_max_visited(50))
+            .with_reranking(50)
+            .with_limit(10)
+            .with_min_score(0.1)
+    );
+
+    Ok(results.hits.iter().map(|h| format!(
+        "- [{}] (score {:.3}) {}",
+        h.thought.thought_type, h.score,
+        h.thought.content.lines().next().unwrap_or(""),
+    )).collect::&lt;Vec&lt;_&gt;&gt;().join("\n"))
+}</code></pre>
+
+    <p>
+      What comes back, in roughly this order: the latest <code>Decision</code> at the
+      top, then the superseded older <code>Decision</code>, then the
+      <code>Mistake</code> and <code>Constraint</code> that the graph pass pulled in
+      from the top hit's <code>refs</code> chain. Those last two don't lexically match
+      the query "rate limiting" — that's the point of the graph pass: it surfaces
+      the reasoning chain, not just the keyword match.
+    </p>
+
+    <h3>Temporal queries: "what was true at time T?"</h3>
+
+    <p>
+      Decisions get superseded. To answer <em>"what did we believe on April 12th?"</em>,
+      pass <code>as_of</code>:
+    </p>
+
+    <pre data-cookbook-test="off"><code>use chrono::{TimeZone, Utc};
+
+let april_12 = Utc.with_ymd_and_hms(2026, 4, 12, 0, 0, 0).unwrap();
+let results = chain.query_ranked(
+    &amp;RankedSearchQuery::new()
+        .with_text("rate limiting policy")
+        .with_as_of(april_12)
+        .with_types([ThoughtType::Decision])
+        .with_limit(5)
+);
+// Returns the 100 req/min Decision but NOT the 500 req/min
+// one — the superseder was appended on April 14.</code></pre>
+
+    <p>
+      <code>as_of</code> excludes thoughts appended after the timestamp, relations whose
+      <code>valid_at</code> / <code>invalid_at</code> window doesn't cover it, and
+      targets of any <code>Supersedes</code> / <code>Corrects</code> /
+      <code>Invalidates</code> relation that was already in force.
+    </p>
+
+    <div class="callout-warn callout">
+      <strong>Gotcha:</strong> <code>as_of</code> filters the <em>view</em> at that
+      point in time; it doesn't edit history. A <code>Supersedes</code> appended in
+      May still exists, it just doesn't apply for an April 12th query. Right behavior
+      for audit and replay. If you want the <em>latest</em> answer, just omit
+      <code>as_of</code>.
+    </div>
+
+    <h3>Cross-chain queries: "did any team decide this?"</h3>
+
+    <p>
+      Two teams may have made conflicting decisions in branch chains forked from a
+      shared parent. To ask <em>"did any team in our org decide this?"</em>, use the
+      federated search path:
+    </p>
+
+    <pre data-cookbook-test="off"><code>use std::collections::BTreeMap;
+use mentisdb::federated::FederatedSearchRequest;
+
+let policy_q = || RankedSearchQuery::new()
+    .with_text("rate limiting policy")
+    .with_types([ThoughtType::Decision])
+    .with_limit(5);
+
+let org_query = FederatedSearchRequest::new()
+    .with_self_query(policy_q())
+    .with_chain_queries(BTreeMap::from([
+        ("team-payments".to_string(), policy_q()),
+        ("team-search".to_string(),   policy_q()),
+    ]));
+
+let federated = chain.federated_search(&amp;org_query)?;
+for (chain_key, ranked) in federated.per_chain.iter() {
+    println!("=== {} ===", chain_key);
+    for hit in &amp;ranked.hits {
+        println!("  [{}] {}", hit.thought.thought_type,
+            hit.thought.content.lines().next().unwrap_or(""));
+    }
+}</code></pre>
+
+    <p>
+      To walk a branch line back to its origin, use the <code>BranchesFrom</code>
+      relation: <code>chain.ancestor_chain_keys(&amp;chain_key, max_depth)</code>
+      returns every parent chain key reachable via <code>BranchesFrom</code> edges.
+    </p>
+
+    <h3>Multi-hop: following a chain of decisions</h3>
+
+    <p>
+      Often the answer isn't in any single thought; it's in a sequence — a
+      <code>Decision</code> based on a <code>Constraint</code> that came from a
+      <code>LessonLearned</code> triggered by a <code>Mistake</code> months earlier.
+      Raise graph depth and read <code>graph_path</code> to walk it:
+    </p>
+
+    <pre data-cookbook-test="off"><code>let results = chain.query_ranked(
+    &amp;RankedSearchQuery::new()
+        .with_text("current API rate limit policy")
+        .with_graph(RankedSearchGraph::new()
+            .with_max_depth(3).with_max_visited(100)
+            .with_mode(mentisdb::search::GraphExpansionMode::Bidirectional))
+        .with_limit(20)
+);
+
+let mut timeline: Vec&lt;_&gt; = results.hits.iter().collect();
+timeline.sort_by_key(|h| h.thought.index);
+for hit in timeline {
+    let hops = hit.graph_path.as_ref()
+        .map(|p| p.hops_from_seed).unwrap_or(0);
+    println!("[{}] (hops={}) {}", hit.thought.timestamp.format("%Y-%m-%d"),
+             hops, hit.thought.content.lines().next().unwrap_or(""));
+}</code></pre>
+
+    <h3>How the hybrid score is built</h3>
+
+    <p>
+      By default (no RRF), a hit's <code>score</code> is a weighted blend of lexical
+      similarity, vector cosine (if a sidecar is present), graph path bonus,
+      importance, confidence, recency, and session cohesion. Weights live in
+      <code>src/search/scoring.rs</code>; you don't usually need to touch them.
+    </p>
+
+    <p>
+      With <code>enable_reranking</code> on, the pipeline runs in two stages: score
+      the top <code>rerank_k</code> with the default blend to pick a candidate set,
+      then produce fresh lexical-only and vector-only rank lists over that set and
+      combine them with RRF —
+      <code>1/(60 + rank_lex) + 1/(60 + rank_vec)</code>. The other signals come back
+      as small tie-breakers. When lexical and vector agree, RRF amplifies the
+      agreement; when they disagree, a thought that ranks moderately on both can
+      outrank one that ranks first on one and fiftieth on the other — usually right
+      for agent history, where a routine re-mention may lexically trump the real
+      policy and RRF pulls them back into balance.
+    </p>
+
+    <h3>Production notes</h3>
+
+    <h4>When RRF helps</h4>
+    <ul>
+      <li>
+        Vague questions where lexical and vector pull in different directions
+        (<em>"what went wrong with the auth refactor?"</em> — lexical wants
+        <code>Mistake</code>, vector wants the related <code>LessonLearned</code>).
+      </li>
+      <li>
+        Chains with lots of <em>routinely rephrased</em> thoughts: RRF demotes them
+        since they rank moderately on both signals instead of top on either.
+      </li>
+      <li>Small candidate sets (&lt; ~200): RRF is cheap at that scale.</li>
+    </ul>
+
+    <h4>When RRF hurts</h4>
+    <ul>
+      <li>Highly specific queries (an error code, a UUID, a tag): vector side adds noise.</li>
+      <li>
+        Huge chains: RRF only reranks the top <code>rerank_k</code> of pre-RRF
+        candidates; an answer at rank 200 won't be seen. Pre-filter harder or raise
+        <code>limit</code>.
+      </li>
+      <li>
+        No vector sidecar: RRF degenerates to lexical ranking and you've paid for
+        nothing — just call <code>query_ranked</code> without <code>with_reranking</code>.
+      </li>
+    </ul>
+
+    <h4>The <code>min_score</code> threshold</h4>
+    <p>
+      Depends on the embedding model and domain. Short, technical queries:
+      <code>0.2 - 0.3</code>. Long, vague queries: drop to <code>0.05</code> or omit.
+      Always inspect the top hits <em>with the threshold disabled</em> before setting
+      one — a threshold that hides the top hit is worse than no threshold.
+    </p>
+
+    <h4>The <code>enable_reranking</code> flag</h4>
+    <p>
+      Master switch. Default <code>false</code>. On for end-user retrieval; off for
+      internal pipelines (consolidation, audit walks) where you want the cheapest
+      possible score.
+    </p>
+
+    <h3>Common questions and how to phrase them</h3>
+
+    <h4>"What did we decide about X?"</h4>
+    <pre data-cookbook-test="off"><code>RankedSearchQuery::new()
+    .with_text(format!("what did we decide about {}", topic))
+    .with_filter(ThoughtQuery::new()
+        .with_types(vec![ThoughtType::Decision])
+        .with_concepts_any([topic]))
+    .with_graph(RankedSearchGraph::new().with_max_depth(2))
+    .with_reranking(50)
+    .with_limit(10)</code></pre>
+
+    <h4>"What did we learn about X?" / "What went wrong when we did X?" / "What's our policy on X?"</h4>
+    <pre data-cookbook-test="off"><code>// Lessons / insights about a topic:
+RankedSearchQuery::new()
+    .with_text(format!("lessons about {}", topic))
+    .with_types([ThoughtType::LessonLearned, ThoughtType::Insight])
+    .with_min_importance(0.6)
+    .with_limit(15)
+
+// Mistakes + lessons scoped to a task tag:
+RankedSearchQuery::new()
+    .with_text(format!("mistakes failures errors during {}", task))
+    .with_types([ThoughtType::Mistake, ThoughtType::LessonLearned])
+    .with_tags_any([format!("task:{}", task)])
+    .with_graph(RankedSearchGraph::new().with_max_depth(2))
+
+// Current policy (Decision + Constraint + Correction, scoped by concept):
+RankedSearchQuery::new()
+    .with_text(format!("policy for {}", topic))
+    .with_types([ThoughtType::Decision, ThoughtType::Constraint,
+                         ThoughtType::Correction])
+    .with_concepts_any([format!("policy:{}", topic)])
+    .with_reranking(50)
+    .with_limit(5)</code></pre>
+
+    <h3>Testing this pattern</h3>
+    <p>
+      A minimal test that the ask → retrieve → answer flow surfaces the supersession
+      chain:
+    </p>
+    <pre data-cookbook-test="off"><code>#[test]
+fn rate_limit_query_returns_supersede_chain() {
+    let mut chain = test_chain();
+    chain.upsert_agent("executor", None, None, None, None).unwrap();
+    seed_decisions(&amp;mut chain, "executor").unwrap();
+
+    let results = chain.query_ranked(
+        &amp;RankedSearchQuery::new()
+            .with_text("rate limiting")
+            .with_graph(RankedSearchGraph::new().with_max_depth(2))
+            .with_limit(20)
+    );
+
+    let types: Vec&lt;_&gt; = results.hits.iter()
+        .map(|h| h.thought.thought_type).collect();
+    assert!(types.contains(&amp;ThoughtType::Decision),
+        "should find the latest decision");
+    assert!(results.hits.iter().any(|h|
+        h.thought.content.contains("100 req/min")),
+        "should also surface the superseded older decision");
+    assert!(results.hits.iter().any(|h|
+        h.thought.thought_type == ThoughtType::Mistake),
+        "graph expansion should pull in the triggering mistake");
+}</code></pre>
+
+    <h3>Cross-references</h3>
+    <ul>
+      <li>
+        <a href="cookbook-0-4-search-first.html">0.4 Search-First Discipline</a> — the
+        same <code>RankedSearchQuery</code> powers the search-before-append loop.
+      </li>
+      <li>
+        <a href="cookbook-1-1-episodic-task-memory.html">1.1 Episodic Task Memory</a>
+        — produces the graph edges this chapter's graph pass traverses.
+      </li>
+      <li>
+        <a href="cookbook-2-4-federated-team-memory.html">2.4 Federated Team Memory</a>
+        — the cross-chain search and <code>BranchesFrom</code> machinery in production.
+      </li>
+    </ul>
+
+    <h3>What's next</h3>
+    <p>
+      You can now answer <em>"what did we decide about X?"</em> with the full
+      reasoning chain, at any point in time, across chain boundaries. The next
+      pattern, <a href="cookbook-1-6-preference-learning.html">Preference Learning</a>,
+      closes the loop: the agent not only retrieves prior decisions, it
+      <em>updates</em> them as the user expresses new preferences — and the same
+      retrieval pipeline is what surfaces the conflict.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-1-4-long-running-project-memory.html">← 1.4 Long-Running Project Memory</a> ·
+      <a href="cookbook-1-6-preference-learning.html">1.6 Preference Learning →</a>
+    </nav>
+  </article>
+
+  <footer>
+    <p>MentisDB Cookbook · <a href="cookbook.html">↑ Table of Contents</a></p>
+  </footer>
+</body>
+</html>

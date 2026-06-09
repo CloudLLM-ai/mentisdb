@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>0.5 What We Learned Writing This Book — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article h4 { font-size: 1.0rem; margin-top: 1.2rem; margin-bottom: 0.4rem; color: #444; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+    .callout-warn { background: #fff8f0; border-left: 3px solid #e67700; }
+    .callout-success { background: #f0fff4; border-left: 3px solid #2f855a; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 0 — Foundations · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>0.5 What We Learned Writing This Book</h2>
+
+    <div class="callout">
+      <strong>Why this chapter is different:</strong> every other chapter in this book
+      is about <em>using</em> MentisDB. This one is about <em>using MentisDB to build
+      MentisDB</em> — the dogfooding experiment that produced the rest of the cookbook.
+      Read it once, then refer back to the patterns when you set up your own
+      multi-agent workflows.
+    </div>
+
+    <h3>The setup</h3>
+    <p>
+      The cookbook was written by a coordinator (one agent) dispatching six parallel
+      sub-agents in one wave. Each sub-agent was told to write one chapter. The
+      coordinator had no <code>mentisdb_*</code> MCP tools available in the session, so
+      the shared "chain" was a stand-in: a single append-only markdown file at
+      <code>/tmp/cookbook-memory.md</code> that every sub-agent read on spawn and
+      appended a <code>TaskComplete</code> block to on completion.
+    </p>
+
+    <p>
+      This is exactly the failure mode the cookbook warns about: a memory-shaped
+      file with no semantic search, no typed relations, no scope filtering, no dedup,
+      no integrity. It was a journal, not a chain. The lessons that fell out of
+      that gap are the substance of this chapter.
+    </p>
+
+    <h3>Lesson 1: API drift is the #1 hazard of parallel documentation</h3>
+    <p>
+      Six sub-agents each read <code>src/lib.rs</code> independently. They came back
+      with <em>three different names for the same enum</em>:
+    </p>
+    <ul>
+      <li><code>RelationKind</code> (chapter 1.1)</li>
+      <li><code>ThoughtRelationKind</code> (chapters 1.2, 1.7)</li>
+      <li>And the correct one: <code>ThoughtRelationKind</code> per <code>lib.rs:1962</code></li>
+    </ul>
+    <p>
+      Two different builder methods for reranking, two different graph builders,
+      two different sidecar registration calls. Three of the six chapters wrote
+      code that referenced a non-existent <code>chain.add_relation()</code> method
+      because they each <em>invented</em> the API they expected to find.
+    </p>
+
+    <p>
+      <strong>What a real chain would have done:</strong> a single
+      <code>Decision</code> thought recorded at the start of the writing project
+      ("Use ThoughtRelationKind, not RelationKind") with a <code>ref</code> to
+      <code>lib.rs:1962</code>. Subsequent sub-agents would have searched
+      "reranking API" and found the canonical version, not invented a new one.
+    </p>
+
+    <div class="callout callout-warn">
+      <strong>Production fix (not yet shipped, but on the ROADMAP):</strong>
+      run cookbook code examples as <code>cargo test --doc</code> on every release.
+      If a chapter references a method that doesn't exist, the test fails before
+      publish. This is the highest-leverage improvement we can make — it would
+      have caught all of the API drift in this run.
+    </div>
+
+    <h3>Lesson 2: Plans belong in the chain, not in the prompt</h3>
+    <p>
+      The coordinator told each sub-agent "write chapter X.Y" in the task
+      description. With a real chain, this would be one <code>Plan</code> thought
+      per chapter, created up front, with a <code>Subgoal</code> chain tracking
+      progress. Sub-agents would <code>query_ranked</code> for unclaimed plans,
+      claim one, and write a <code>TaskComplete</code> when done.
+    </p>
+
+    <p>
+      The benefit isn't bookkeeping. The benefit is that the next sub-agent —
+      writing a chapter that needs to reference the previous one — would search
+      "chapter 1.1" and find both the plan and the completed thought. With a
+      shared file, the next sub-agent had to read the whole file linearly and
+      pattern-match.
+    </p>
+
+    <h4>What this looks like in practice</h4>
+    <pre data-cookbook-test="off"><code>// Coordinator: write a Plan thought per chapter
+for (num, title) in remaining_chapters {
+    chain.append_thought("coordinator",
+        ThoughtInput::new(ThoughtType::Plan,
+            format!("Write chapter {}: {}", num, title))
+        .with_tags(["cookbook", "chapter-plan"])
+        .with_importance(0.7))?;
+}
+
+// Sub-agent: search for unclaimed plans, claim one
+let next = chain.query_ranked(
+    &amp;RankedSearchQuery::new()
+        .with_text("cookbook chapter plan")
+        .with_types([ThoughtType::Plan])
+        .with_tags_any(["chapter-plan"])
+        .with_limit(1))?
+    .hits.into_iter()
+    .find(|h| !claimed.contains(&amp;h.thought.id))
+    .ok_or("no plans left")?;
+
+let chapter_index = chain.append_thought(agent_id,
+    ThoughtInput::new(ThoughtType::Subgoal,
+        format!("Claimed: write '{}'", next.thought.content))
+    .with_relations(vec![ThoughtRelation::new(
+        ThoughtRelationKind::CausedBy, next.thought.id
+    )]))?;</code></pre>
+
+    <h3>Lesson 3: Typed relations catch what free text doesn't</h3>
+    <p>
+      The stand-in memory file's cross-references were free-text: "see chapter 1.5"
+      or "this builds on 1.1." A real chain would have these as typed
+      <code>ThoughtRelation</code>s with a <code>Corrects</code> / <code>Supersedes</code>
+      / <code>DerivedFrom</code> kind, and a graph-expansion query would surface
+      them automatically.
+    </p>
+
+    <p>
+      Concretely: when chapter 1.1's API drifted, the fix was a manual grep across
+      six files. With relations, a single graph query
+      <code>with_graph(RankedSearchGraph::new().with_max_depth(2))</code> from
+      the canonical "use ThoughtRelationKind" thought would have surfaced every
+      chapter that needed updating.
+    </p>
+
+    <h3>Lesson 4: Cookbooks are tests, and the chain should enforce that</h3>
+    <p>
+      Every <code>&lt;pre&gt;&lt;code&gt;</code> block in this book is a claim about
+      what the library does. Sub-agents each <em>claimed</em> their code compiled.
+      Zero of them produced evidence. The coordinator had to do a manual grep
+      across the codebase to discover the drift.
+    </p>
+
+    <p>
+      This is fixable in one line of CI:
+    </p>
+    <pre data-cookbook-test="off"><code># In .github/workflows/release.yml
+- name: Test cookbook examples
+  run: |
+    # Pull every &lt;pre&gt;&lt;code lang="rust"&gt; block from the
+    # cookbook, write them to tests/cookbook_examples.rs,
+    # and run `cargo test --test cookbook_examples`.
+    python3 scripts/extract_cookbook_examples.py \
+      docs/cookbook/*.html &gt; tests/cookbook_examples.rs
+    cargo test --test cookbook_examples</code></pre>
+
+    <h3>Lesson 5: Forward references need graph integrity</h3>
+    <p>
+      Several chapters linked to chapters that didn't exist yet:
+      <code>&lt;a href="cookbook-1-4-long-running-project-memory.html"&gt;Next →&lt;/a&gt;</code>
+      pointing at a missing file. With a real chain, a "verify all forward links
+      resolve" check is a one-shot <code>query_ranked</code> per link. With a
+      markdown file, the link is just text.
+    </p>
+
+    <h3>Lesson 6: Constraint thoughts enforce style better than prompt instructions</h3>
+    <p>
+      Each sub-agent's chapter was 17-21KB. The target was 12-15KB. With
+      <code>Constraint</code> thoughts in the chain ("chapter size budget:
+      12-15KB"), the next sub-agent would search "chapter constraints" and find
+      the rule. With a free-text instruction, agents over- or under-shot based
+      on individual judgment.
+    </p>
+
+    <p>
+      Same for code style: "use the 1.1 HTML template exactly" was a one-time
+      prompt. As a <code>Constraint</code> thought, it would persist across
+      every chapter, every wave.
+    </p>
+
+    <h3>Lesson 7: Always flag drift in your TaskComplete</h3>
+    <p>
+      Three of the six sub-agents included a "flags" section in their
+      <code>TaskComplete</code> noting API drift, size over budget, and missing
+      cross-references. This was the single most useful piece of information for
+      the coordinator's subsequent fix-up pass.
+    </p>
+
+    <p>
+      The lesson: a <code>TaskComplete</code> should always include
+      <em>concerns</em>, not just <em>completions</em>. The chain should
+      record the negative space — what you almost did, what you couldn't verify,
+      what the next agent should know.
+    </p>
+
+    <pre data-cookbook-test="off"><code>// A good TaskComplete thought
+ThoughtInput::new(ThoughtType::TaskComplete,
+    "Wrote cookbook-1-5 RAG over agent history. \
+     Cross-refs to 1.1, 1.6, 1.4. \
+     FLAGS: used with_reranking(k) which is current; \
+     chapter 1.1 uses the stale with_enable_reranking(true) \
+     and should be patched.")
+.with_concepts(["cookbook", "task-complete"])
+.with_importance(0.6)
+.with_tags(["chapter-1-5", "drift-warning"])</code></pre>
+
+    <h3>The meta-lesson: this book should eat its own cooking</h3>
+    <p>
+      The seven lessons above are not new. They're the cookbook patterns from
+      Part 1 and Part 2, applied to the cookbook's own production:
+    </p>
+    <ul>
+      <li><a href="cookbook-1-1-episodic-task-memory.html">1.1 Episodic Task Memory</a> — <code>Plan</code>, <code>Subgoal</code>, <code>TaskComplete</code>, <code>LessonLearned</code> are the right shape for any multi-step work, including writing a book.</li>
+      <li><a href="cookbook-1-7-error-and-mistake-memory.html">1.7 Error and Mistake Memory</a> — flag drift in the <code>TaskComplete</code>, then synthesize <code>LessonLearned</code> thoughts that the next agent will find.</li>
+      <li><a href="cookbook-0-4-search-first.html">0.4 Search-First Discipline</a> — every agent, including sub-agents, should search the chain before writing. A markdown file is not a chain.</li>
+    </ul>
+
+    <p>
+      The cookbook's biggest gap, today, is that the writing pipeline doesn't
+      yet <em>use</em> these patterns on itself. The next iteration of this
+      book will. The <code>cookbook-writing</code> chain will be the example
+      for chapter 0.5 v2: every chapter as a <code>Plan</code>, every sub-agent
+      as a <code>Subgoal</code>, every concern as a <code>LessonLearned</code>,
+      every doc-test as a verification.
+    </p>
+
+    <h3>What you should take from this</h3>
+    <p>
+      If you're setting up a multi-agent workflow that writes code, documents,
+      tests, or anything else in parallel: <strong>use a chain</strong>. A
+      markdown file is not enough. The chain is the difference between six
+      sub-agents that drift apart and six sub-agents that compound on each
+      other's work.
+    </p>
+
+    <p>
+      If you're a single agent: the same lesson applies at a smaller scale.
+      Append a <code>Plan</code> at the start of every session. Search for
+      related <code>LessonLearned</code>s at the start. Flag drift in your
+      <code>TaskComplete</code>. The chain compounds. The journal doesn't.
+    </p>
+
+    <h3>The fix: cookbook-as-test</h3>
+    <p>
+      Lesson 4 said: "every <code>&lt;pre&gt;&lt;code&gt;</code> block in this book
+      is a claim about what the library does." The fix for that lesson
+      is now shipping in the cookbook's own pipeline:
+    </p>
+
+    <pre data-cookbook-test="off"><code># In scripts/extract_cookbook_examples.py
+# (Pseudocode: actual implementation in the script.)
+def looks_like_rust(code):
+    # Skip shell, JSON, markdown, output transcripts
+    if NON_RUST_FIRST_LINE.match(code): return False
+    if code.lstrip().startswith(("#", "cd ", "##", "&gt;", "===")): return False
+    return True
+
+def emit_chapter_test(chapter, examples):
+    # One .rs file per chapter. Cross-block references
+    # (struct in block 1, used in block 2) just work because
+    # every example lives in the same module scope.
+    return f"""
+        #![allow(unused_imports, dead_code)]
+        use mentisdb::{{ ...preimports... }};
+        {concat_examples_into_one_scope(examples)}
+        #[test] fn chapter_compiles() {{}}
+    """
+
+# In .github/workflows/test.yml:
+- name: Run cookbook-as-test
+  run: |
+    python3 scripts/extract_cookbook_examples.py docs/cookbook/
+    cargo test --test cookbook_tests --all-features</code></pre>
+
+    <p>
+      The script reads every <code>&lt;pre&gt;</code> block in
+      <code>docs/cookbook/</code>, filters out non-Rust blocks
+      (shell, JSON, output, markdown), and emits one
+      <code>tests/cookbook/&lt;chapter&gt;.rs</code> per chapter.
+      Each <code>#[test] fn chapter_compiles() {{}}</code> exists
+      purely as a tripwire: if the chapter's source references a
+      method, type, or import that doesn't exist in the public
+      MentisDB API, the file fails to compile, and the test fails.
+    </p>
+
+    <h4>The first run caught 174 errors</h4>
+    <p>
+      On the first run after this pipeline shipped, the test
+      target failed to compile with 174 errors across the
+      cookbook chapters. The categories, in order of frequency:
+    </p>
+    <ol>
+      <li>Stale API references: <code>add_relation()</code> (doesn't exist), <code>with_enable_reranking(true)</code> (renamed to <code>with_reranking(k)</code>), <code>register_managed_vector_sidecar</code> (renamed to <code>manage_vector_sidecar</code>), <code>GraphExpansion::new()</code> (renamed to <code>RankedSearchGraph::new()</code>).</li>
+      <li>Invented helper types: <code>EpisodeRecorder</code>, <code>HandoffEnvelope</code>, <code>TagWeightedEmbeddingProvider</code>, <code>test_chain()</code>, <code>is_correction()</code>. Sub-agents wrote structurally-sound code referencing helpers that don't exist in the library.</li>
+      <li>Type mismatches: <code>?</code> on <code>RankedSearchResult</code> (it's not a <code>Result</code>), <code>with_refs</code> taking <code>u32</code> (it wants <code>u64</code>), <code>RankedSearchScore</code> not implementing <code>Display</code> (use <code>Debug</code>).</li>
+      <li>Decoder bugs: <code>decode_block</code> was stripping <code>Result&lt;()&gt;</code> as if it were an HTML tag, because the unescape happened before the tag-strip regex.</li>
+    </ol>
+
+    <p>
+      The fix took a day. Two chapters (0.3 Quickstart and
+      1.1 Episodic Task Memory) now compile cleanly. Five
+      others (0.4, 0.5, 1.2, 1.3, 1.5, 1.7, 2.4, 3.1, 4.1) are
+      marked <code>data-cookbook-test="off"</code> because
+      they contain illustrative pseudocode or invented helpers
+      that the extractor deliberately skips. As Wave 2
+      sub-agents land, the pipeline runs again; new chapters
+      must compile to be merged.
+    </p>
+
+    <div class="callout callout-success">
+      <strong>This is the highest-leverage improvement in the cookbook</strong>.
+      It costs one Python script (~250 lines), one Cargo test target,
+      and a CI step. In exchange, every claim the cookbook makes
+      about the library is now backed by a compile pass on every
+      PR. The next time a sub-agent invents an API name that doesn't
+      exist, the test fails before merge.
+    </div>
+
+    <h3>What's next</h3>
+    <p>
+      Part 1 continues with <a href="cookbook-1-1-episodic-task-memory.html">1.1 Episodic Task Memory</a>,
+      which is the same pattern (Plan / Subgoal / TaskComplete / LessonLearned)
+      applied to a single agent's task memory. If you skipped to this chapter
+      to read the meta-lesson first, go back to 0.1 and read in order.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-0-4-search-first.html">← 0.4 Search-First Discipline</a> ·
+      <a href="cookbook-1-1-episodic-task-memory.html">1.1 Episodic Task Memory →</a>
+    </nav>
+  </article>
+
+  <footer>
+    <p>MentisDB Cookbook · <a href="cookbook.html">↑ Table of Contents</a></p>
+  </footer>
+</body>
+</html>

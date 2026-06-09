@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>0.3 Quickstart: Your First Memory — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+    .callout-warn { background: #fff8f0; border-left: 3px solid #e67700; }
+    .callout-success { background: #f0fff4; border-left: 3px solid #2f855a; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 0 — Foundations · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>0.3 Quickstart: Your First Memory</h2>
+
+    <p>
+      This chapter gets you from zero to a working MentisDB chain with three thoughts and a
+      ranked search, in under five minutes. We'll use the Rust library directly. For
+      Python/TypeScript, see Part 4.
+    </p>
+
+    <h3>Prerequisites</h3>
+    <ul>
+      <li>Rust 1.75 or newer (<code>rustup update</code>)</li>
+      <li>A new or existing Rust project: <code>cargo new my_agent --bin</code></li>
+    </ul>
+
+    <h3>Step 1: Add the dependency</h3>
+    <pre><code>cd my_agent
+cargo add mentisdb</code></pre>
+
+    <p>
+      That's it. MentisDB has no required external services. The default feature set
+      includes the HTTP/MCP server and LLM extraction helpers. For a minimal library-only
+      integration, use:
+    </p>
+    <pre><code>cargo add mentisdb --no-default-features</code></pre>
+
+    <h3>Step 2: Open a chain</h3>
+    <p>
+      A chain is a directory on disk (or a subdirectory of <code>~/.mentisdb/chains/</code>).
+      For this quickstart we'll use a temp directory. In production, choose a stable path.
+    </p>
+    <pre><code>use mentisdb::{
+    BinaryStorageAdapter, MentisDb, ThoughtInput, ThoughtType,
+    RankedSearchQuery, ThoughtQuery,
+};
+use tempfile::TempDir;
+
+fn main() -> io::Result&lt;()&gt; {
+    // 1. Open a chain (auto-creates on first run)
+    let dir = tempfile::tempdir()?;
+    let adapter = BinaryStorageAdapter::for_chain_key(
+        dir.path(), "my-first-chain"
+    );
+    let mut chain = MentisDb::open_with_storage(Box::new(adapter))?;
+
+    // 2. Register an agent
+    chain.upsert_agent(
+        "planner",
+        Some("The Planner"),
+        Some("my-team"),
+        Some("Plans tasks and records decisions"),
+        None,
+    )?;
+
+    // 3. Write three thoughts
+    chain.append_thought("planner",
+        ThoughtInput::new(ThoughtType::Decision,
+            "Use Postgres for the events table. \
+             Need transactions and joins; DynamoDB's \
+             single-region eventual consistency bit us."
+        ).with_concepts(["database", "consistency"])
+         .with_importance(0.9)
+         .with_tags(["prod", "architecture"])
+    )?;
+
+    chain.append_thought("planner",
+        ThoughtInput::new(ThoughtType::Insight,
+            "Throttling at the API gateway is more reliable \
+             than per-service limits. We saw 3 incidents \
+             where per-service limits failed during deploys."
+        ).with_concepts(["reliability", "rate-limiting"])
+         .with_importance(0.7)
+         .with_tags(["prod", "lessons"])
+    )?;
+
+    chain.append_thought("planner",
+        ThoughtInput::new(ThoughtType::Constraint,
+            "All user PII must be encrypted at rest with \
+             envelope encryption. Compliance requirement."
+        ).with_concepts(["security", "compliance", "pii"])
+         .with_importance(0.95)
+         .with_tags(["security", "compliance"])
+    )?;
+
+    // 4. Search the chain (returns RankedSearchResult directly)
+    let results = chain.query_ranked(
+        &amp;RankedSearchQuery::new()
+            .with_text("how do we handle rate limiting?")
+            .with_limit(5)
+    );
+
+    for hit in results.hits {
+        // hit.score is RankedSearchScore (ordered_float); cast or use Debug.
+        println!("[{:?}] {}", hit.score, hit.thought.content);
+    }
+
+    Ok(())
+}</code></pre>
+
+    <h3>Step 3: Run it</h3>
+    <pre><code>cargo run</code></pre>
+
+    <p>You should see output similar to:</p>
+    <pre><code>[0.847] Throttling at the API gateway is more reliable...
+[0.312] Use Postgres for the events table...
+[0.104] All user PII must be encrypted at rest...</code></pre>
+
+    <div class="callout callout-success">
+      <strong>You just built an agent that remembers.</strong> The chain is on disk,
+      hash-chained, and queryable. Restart your process, open the same chain, and your
+      thoughts are still there.
+    </div>
+
+    <h3>What just happened</h3>
+    <ol>
+      <li><code>open_with_storage</code> opened (or created) a chain in the temp directory. The
+        <code>BinaryStorageAdapter</code> writes length-prefixed bincode records — fast and
+        append-only.</li>
+      <li><code>upsert_agent</code> registered an agent identity. Agents are persistent: their
+        metadata is part of the chain's registry.</li>
+      <li>Three <code>append_thought</code> calls wrote durable, hash-chained records. Each got
+        a UUID, an index, and a hash that includes the prior thought's hash.</li>
+      <li><code>query_ranked</code> did hybrid retrieval: BM25 lexical scoring ranked the
+        thoughts by keyword overlap with "how do we handle rate limiting?", and the "rate-limiting"
+        concept tag gave the throttling insight a strong signal.</li>
+    </ol>
+
+    <h3>Adding semantic search (vector)</h3>
+    <p>
+      The above used lexical search only. To add semantic similarity, register an
+      embedding provider. The simplest is the local one (no network, no model download):
+    </p>
+    <pre><code>// Register a local embedding provider. manage_vector_sidecar
+// loads or rebuilds the vector sidecar automatically.
+fn enable_semantic_search(chain: &amp;mut MentisDb) {
+    chain.manage_vector_sidecar(LocalTextEmbeddingProvider::new())
+        .expect("vector sidecar should register");
+}</code></pre>
+
+    <p>
+      Now every append embeds the new thought and updates the vector index automatically.
+      <code>query_ranked</code> will automatically use both lexical and vector signals.
+    </p>
+
+    <div class="callout">
+      <strong>For better quality embeddings</strong>, enable the FastEmbed feature
+      and use the AllMiniL6V2 model (384d, ~90MB download on first use):
+    </p>
+    <pre><code>cargo add mentisdb --features local-embeddings</code></pre>
+
+    <p>See <a href="cookbook-3-1-embedding-providers.html">3.1 Embedding Provider Selection</a> for when
+    local vs. FastEmbed vs. OpenAI makes sense.</p>
+
+    <h3>Inspecting the chain</h3>
+    <p>
+      After running, look at the directory:
+    </p>
+    <pre><code>ls -la /tmp/.tmpXXXX/my-first-chain/
+# my-first-chain.tcbin       # append-only thought log
+# my-first-chain.vectors.mentisdb-local-text.v1.256d.json  # vector sidecar</code></pre>
+
+    <p>
+      The <code>.tcbin</code> file is the canonical log. Open it with the CLI to inspect:
+    </p>
+    <pre><code>cargo install mentisdb --features server
+mentisdb list my-first-chain</code></pre>
+
+    <h3>What's next</h3>
+    <p>
+      You have a working chain. Before you add another thought, read the next chapter on
+      the <a href="cookbook-0-4-search-first.html">search-first discipline</a> — it will save you
+      from the most common mistake new users make.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-0-2-mental-model.html">← 0.2 Mental Model</a> ·
+      <a href="cookbook-0-4-search-first.html">0.4 Search-First Discipline →</a>
+    </nav>
+  </article>
+
+  <footer>
+    <p>MentisDB Cookbook · <a href="cookbook.html">↑ Table of Contents</a></p>
+  </footer>
+</body>
+</html>

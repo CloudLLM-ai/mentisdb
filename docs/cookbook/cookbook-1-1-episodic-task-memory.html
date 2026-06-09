@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.1 Episodic Task Memory — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article h4 { font-size: 1.0rem; margin-top: 1.2rem; margin-bottom: 0.4rem; color: #444; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+    .callout-warn { background: #fff8f0; border-left: 3px solid #e67700; }
+    .callout-success { background: #f0fff4; border-left: 3px solid #2f855a; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 1 — Core Patterns · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>1.1 Episodic Task Memory</h2>
+
+    <h3>The problem</h3>
+    <p>
+      Your agent just finished a 12-step task: refactor the authentication module, run the
+      test suite, fix three failing tests, update the docs, open a PR. Tomorrow, the user
+      asks "what did you do last week?" and the agent has no idea. Worse, next month when
+      the user asks the agent to refactor the same module again, the agent doesn't remember
+      that the previous attempt took 12 steps and hit three test failures.
+    </p>
+
+    <p>
+      The fix is <strong>episodic task memory</strong>: every time the agent starts a multi-step
+      task, it records the plan. After every step, it records what it did and why. At the end,
+      it records a summary with what worked, what failed, and what to remember next time.
+    </p>
+
+    <h3>Why it's hard</h3>
+    <ul>
+      <li>Episodes are by definition <em>long</em>. A 12-step task produces 12+ thoughts minimum.</li>
+      <li>Episodes are <em>nested</em>: a step might itself be a multi-step sub-task.</li>
+      <li>Episodes are <em>noisy</em>: most steps are routine. Recording everything pollutes the chain.</li>
+      <li>Episodes are <em>time-sensitive</em>: a "what did I do yesterday" query needs temporal filtering.</li>
+      <li>Episodes need <em>provenance</em>: which session, which user, which task ID?</li>
+    </ul>
+
+    <h3>The pattern</h3>
+    <p>
+      Use four thought types in a structured way:
+    </p>
+    <ol>
+      <li><code>Plan</code> — at task start, the high-level plan</li>
+      <li><code>Subgoal</code> — one per sub-step, with a <code>CausedBy</code> relation to the plan</li>
+      <li><code>TaskComplete</code> — at task end, the final result with a summary</li>
+      <li><code>LessonLearned</code> — only when something surprising failed; cross-link to the <code>Mistake</code> or <code>Subgoal</code> that produced it</li>
+    </ol>
+
+    <p>
+      Skip <code>Insight</code> and <code>Decision</code> unless the step produced a durable
+      fact. Most steps don't.
+    </p>
+
+    <h3>Implementation</h3>
+
+    <h4>1. Define an episode helper</h4>
+    <pre><code>use mentisdb::{
+    MentisDb, ThoughtInput, ThoughtQuery, ThoughtType, ThoughtRole,
+    ThoughtRelation, ThoughtRelationKind, RankedSearchQuery, RankedSearchGraph,
+};
+use uuid::Uuid;
+
+pub struct EpisodeRecorder&lt;'a&gt; {
+    chain: &amp;'a mut MentisDb,
+    agent_id: String,
+    task_id: String,
+    plan_uuid: Uuid,
+    plan_index: u64,
+    step_count: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AppendedThought {
+    pub thought_id: Uuid,
+    pub index: u64,
+}
+
+impl&lt;'a&gt; EpisodeRecorder&lt;'a&gt; {
+    pub fn start(
+        chain: &amp;'a mut MentisDb,
+        agent_id: impl Into&lt;String&gt;,
+        task_id: impl Into&lt;String&gt;,
+        plan_summary: &amp;str,
+    ) -&gt; io::Result&lt;Self&gt; {
+        let agent_id = agent_id.into();
+        let task_id = task_id.into();
+        let appended = append_with_id(chain, &amp;agent_id,
+            ThoughtInput::new(ThoughtType::Plan, plan_summary)
+                .with_concepts(["task-plan"])
+                .with_importance(0.8)
+                .with_tags(["episode", &amp;task_id])
+                .with_role(ThoughtRole::Memory)
+        )?;
+        Ok(Self {
+            chain, agent_id, task_id,
+            plan_uuid: appended.thought_id,
+            plan_index: appended.index,
+            step_count: 0,
+        })
+    }
+
+    pub fn record_step(
+        &amp;mut self,
+        action: &amp;str,
+        outcome: &amp;str,
+    ) -&gt; io::Result&lt;AppendedThought&gt; {
+        self.step_count += 1;
+        let plan_uuid = self.plan_uuid;
+        let plan_index = self.plan_index;
+        append_with_id(&amp;mut *self.chain, &amp;self.agent_id,
+            ThoughtInput::new(ThoughtType::Subgoal,
+                format!("Step {}: {}\nOutcome: {}",
+                        self.step_count, action, outcome)
+            )
+            .with_concepts(["task-step"])
+            .with_importance(0.4)
+            .with_tags(["episode", &amp;self.task_id])
+            .with_refs(vec![plan_index])
+            .with_relations(vec![ThoughtRelation::new(
+                ThoughtRelationKind::CausedBy, plan_uuid
+            )])
+        )
+    }
+
+    pub fn record_mistake(
+        &amp;mut self,
+        step: AppendedThought,
+        mistake: &amp;str,
+        lesson: &amp;str,
+    ) -&gt; io::Result&lt;()&gt; {
+        let mistake_appended = append_with_id(&amp;mut *self.chain, &amp;self.agent_id,
+            ThoughtInput::new(ThoughtType::Mistake, mistake)
+                .with_concepts(["task-error"])
+                .with_importance(0.7)
+                .with_tags(["episode", &amp;self.task_id])
+                .with_refs(vec![step.index])
+        )?;
+        append(&amp;mut *self.chain, &amp;self.agent_id,
+            ThoughtInput::new(ThoughtType::LessonLearned, lesson)
+                .with_role(ThoughtRole::Retrospective)
+                .with_importance(0.8)
+                .with_tags(["episode", &amp;self.task_id])
+                .with_refs(vec![mistake_appended.index, step.index])
+                .with_relations(vec![ThoughtRelation::new(
+                    ThoughtRelationKind::Corrects, step.thought_id
+                )])
+        )?;
+        Ok(())
+    }
+
+    pub fn finish(
+        mut self,
+        result: &amp;str,
+    ) -&gt; io::Result&lt;AppendedThought&gt; {
+        let plan_uuid = self.plan_uuid;
+        let plan_index = self.plan_index;
+        append_with_id(&amp;mut *self.chain, &amp;self.agent_id,
+            ThoughtInput::new(ThoughtType::TaskComplete,
+                format!("Task {} complete after {} steps.\n\n\
+                         Result: {}",
+                        self.task_id, self.step_count, result)
+            )
+            .with_concepts(["task-summary"])
+            .with_importance(0.6)
+            .with_tags(["episode", &amp;self.task_id])
+            .with_refs(vec![plan_index])
+            .with_relations(vec![ThoughtRelation::new(
+                ThoughtRelationKind::Summarizes, plan_uuid
+            )])
+        )
+    }
+}
+
+// Helpers: bridge the &amp;Thought-returning `append_thought` with
+// the UUID-addressed `ThoughtRelation` API. `append_with_id` is a
+// small wrapper you'll typically add to your own crate once.
+fn append(
+    chain: &amp;mut MentisDb,
+    agent_id: &amp;str,
+    input: ThoughtInput,
+) -&gt; io::Result&lt;u64&gt; {
+    // append_thought returns &amp;Thought, not an index. The cast
+    // is safe because index is monotonically assigned at append.
+    let thought = chain.append_thought(agent_id, input)?;
+    Ok(thought.index)
+}
+
+fn append_with_id(
+    chain: &amp;mut MentisDb,
+    agent_id: &amp;str,
+    input: ThoughtInput,
+) -&gt; io::Result&lt;AppendedThought&gt; {
+    let thought = chain.append_thought(agent_id, input)?;
+    let index = thought.index;
+    let id = chain.get_thought_by_index(index)
+        .map(|t| t.id)
+        .ok_or_else(|| io::Error::other(
+            format!("thought just appended at index {} is not visible", index)
+        ))?;
+    Ok(AppendedThought { thought_id: id, index })
+}</code></pre>
+
+    <h4>2. Use it in your agent</h4>
+    <pre><code>use mentisdb::{BinaryStorageAdapter, MentisDb};
+use mentisdb::search::LocalTextEmbeddingProvider;
+
+fn main() -&gt; io::Result&lt;()&gt; {
+    // Setup
+    let dir = tempfile::tempdir()?;
+    let adapter = BinaryStorageAdapter::for_chain_key(
+        dir.path(), "episodes"
+    );
+    let mut chain = MentisDb::open_with_storage(Box::new(adapter))?;
+
+    chain.upsert_agent(
+        "executor",
+        Some("Code Executor"),
+        Some("engineering"),
+        Some("Runs multi-step coding tasks"),
+        None,
+    )?;
+
+    // Optional: enable semantic search.
+    // `manage_vector_sidecar` registers a provider, loads any existing
+    // sidecar for its metadata, and rebuilds it if stale.
+    // (Returns Result&lt;_, VectorSearchError&lt;_&gt;&gt;, not io::Error.)
+    chain.manage_vector_sidecar(LocalTextEmbeddingProvider::new())
+        .expect("vector sidecar should register");
+
+    // Run an episode
+    let mut episode = EpisodeRecorder::start(
+        &amp;mut chain,
+        "executor",
+        "auth-refactor-2026-06-08",
+        "Refactor auth module: extract JWT validation \
+         into middleware, add rate limiting, update tests."
+    )?;
+
+    let step1 = episode.record_step(
+        "Read current auth module (340 lines)",
+        "Identified 3 functions to extract: validate_token, \
+         extract_claims, check_scope."
+    )?;
+
+    let step2 = episode.record_step(
+        "Extract validate_token into middleware",
+        "Created src/middleware/jwt.rs; updated 4 callers."
+    )?;
+
+    let step3 = episode.record_step(
+        "Run test suite",
+        "3 tests failing in test_auth.py:73, 91, 105. \
+         All expect old function signature."
+    )?;
+
+    // Record the failure as a lesson. Note: `step3` is now an
+    // AppendedThought (carries both the chain index and the UUID),
+    // because LessonLearned needs to point a ThoughtRelation at the
+    // UUID of the failing step.
+    episode.record_mistake(
+        step3,
+        "Broke 3 tests by changing function signature \
+         without updating test fixtures first.",
+        "When refactoring public functions, update test \
+         fixtures BEFORE changing the function. Run tests \
+         after each fixture update."
+    )?;
+
+    let step4 = episode.record_step(
+        "Update test fixtures and re-run",
+        "All 47 tests pass."
+    )?;
+
+    episode.finish(
+        "Auth refactored. 47/47 tests pass. \
+         Open PR #1234 with summary."
+    )?;
+
+    // Use the returned values (silence unused warnings):
+    let _ = (step1, step2, step4);
+
+    Ok(())
+}</code></pre>
+
+    <h3>Querying episodes</h3>
+
+    <h4>"What did I do yesterday?"</h4>
+    <pre><code>// Continuation: this snippet expects `chain` from a surrounding
+// main(); in this cookbook we keep the example self-contained by
+// showing the query against a chain built in step 1.
+fn what_did_i_do_yesterday(chain: &amp;MentisDb) {
+    use chrono::{Duration, Utc};
+    let yesterday = Utc::now() - Duration::days(1);
+
+    let results = chain.query_ranked(
+        &amp;RankedSearchQuery::new()
+            .with_text("what did I work on")
+            .with_limit(20)
+            .with_filter(ThoughtQuery::new()
+                .with_since(yesterday)
+                .with_types(vec![
+                    ThoughtType::Plan,
+                    ThoughtType::TaskComplete,
+                    ThoughtType::Subgoal,
+                ]))
+    );
+
+    for hit in results.hits {
+        println!("[{:?}] {}",
+            hit.thought.thought_type,
+            hit.thought.content.lines().next().unwrap_or(""));
+    }
+}</code></pre>
+
+    <h4>"What mistakes have I made in auth tasks?"</h4>
+    <pre><code>fn auth_mistakes(chain: &amp;MentisDb) {
+    let results = chain.query_ranked(
+        &amp;RankedSearchQuery::new()
+            .with_text("auth mistakes")
+            .with_limit(10)
+            .with_filter(ThoughtQuery::new()
+                .with_types(vec![ThoughtType::LessonLearned])
+                .with_concepts_any(["auth", "authentication"]))
+            .with_reranking(50)
+    );
+    for hit in results.hits {
+        println!("[{:?}] {}", hit.score, hit.thought.content);
+    }
+}</code></pre>
+
+    <h4>"Show me the full episode for task X"</h4>
+    <pre><code>fn show_full_episode(chain: &amp;MentisDb) {
+    // 1. Find the plan
+    let plan = chain.query_ranked(
+        &amp;RankedSearchQuery::new()
+            .with_text("auth-refactor-2026-06-08")
+            .with_limit(1)
+    )
+    .hits
+    .first()
+    .map(|h| h.thought.clone());
+
+    let Some(plan) = plan else {
+        println!("Plan not found");
+        return;
+    };
+
+    // 2. Graph-expand to 2-hop neighborhood
+    let related = chain.query_ranked(
+        &amp;RankedSearchQuery::new()
+            .with_text(&amp;plan.content)
+            .with_graph(RankedSearchGraph::new()
+                .with_max_depth(2)
+                .with_max_visited(100)
+            )
+    );
+
+    // 3. Sort by append-order index for chronological replay
+    let mut by_index: Vec&lt;_&gt; = related.hits.iter().collect();
+    by_index.sort_by_key(|h| h.thought.index);
+
+    println!("=== Episode: auth-refactor ===");
+    for hit in by_index {
+        println!("[{:?}] {}",
+            hit.thought.thought_type,
+            hit.thought.content);
+    }
+}</code></pre>
+
+    <h3>Production notes</h3>
+
+    <h4>When to skip a step</h4>
+    <p>
+      Routine steps that produce no new information should not be recorded. If the agent
+      just ran the test suite and all 47 tests passed (and this is the 30th time this week),
+      skip the <code>Subgoal</code>. Record only:
+    </p>
+    <ul>
+      <li>First-time actions (establishes the pattern)</li>
+      <li>Failures (the lesson is the point)</li>
+      <li>Decisions (durable, not routine)</li>
+      <li>Surprising successes (insight material)</li>
+    </ul>
+
+    <h4>When to use scopes</h4>
+    <p>
+      If multiple users or sessions share a chain, mark routine steps as
+      <code>scope:session</code> and only promote the <code>LessonLearned</code> to
+      <code>scope:user</code>:
+    </p>
+    <pre><code>ThoughtInput::new(ThoughtType::LessonLearned, lesson)
+    .with_tags(["scope:user", "episode", &amp;self.task_id])
+    .with_role(ThoughtRole::Retrospective)
+    .with_importance(0.8)
+    .with_refs(vec![mistake_index, step_index])</code></pre>
+
+    <h4>When to compact</h4>
+    <p>
+      After 50+ thoughts for a single task, the chain gets unwieldy. Use the
+      <code>Summary</code> role to write a compacted milestone:
+    </p>
+    <pre><code>chain.append_thought(&amp;self.agent_id,
+    ThoughtInput::new(ThoughtType::Summary,
+        "Mid-task checkpoint: 8 steps done, JWT middleware \
+         extracted, rate limiting in progress, 2 tests fail."
+    )
+    .with_role(ThoughtRole::Checkpoint)
+    .with_importance(0.7)
+    .with_tags(["episode", &amp;self.task_id, "checkpoint"])
+    .with_refs(vec![plan_idx, last_step_idx])
+)?;</code></pre>
+
+    <h4>Cross-episode learning</h4>
+    <p>
+      If the agent does the same task twice, the second episode can <code>DerivedFrom</code>
+      the first's <code>LessonLearned</code>:
+    </p>
+    <pre><code>// First episode recorded:
+// "When refactoring public functions, update test fixtures first."
+
+// Second episode (3 weeks later):
+fn cross_episode_learned(
+    chain: &amp;mut MentisDb,
+    agent_id: &amp;str,
+    previous_lesson_index: u64,
+) -&gt; io::Result&lt;()&gt; {
+    let step = ThoughtInput::new(ThoughtType::Subgoal,
+        "Updated test fixtures BEFORE changing function signature. \
+         (Following lesson from auth-refactor-2026-06-08.)"
+    ).with_refs(vec![previous_lesson_index]);
+    chain.append_thought(agent_id, step)?;
+    Ok(())
+}</code></pre>
+
+    <p>
+      The graph now has a backreference: the second episode explicitly cites the first.
+      When the user asks "have we done this before?", graph expansion will surface the
+      pattern.
+    </p>
+
+    <h3>Testing this pattern</h3>
+    <p>
+      A minimal test that verifies the recorder produces a connected graph:
+    </p>
+    <pre data-cookbook-test="off"><code>// Illustrative test — depends on EpisodeRecorder + test_chain
+// helpers defined earlier in this chapter. See the chapter
+// body for the full implementation; the cookbook-as-test
+// extractor skips this block because it crosses chapter-block
+// boundaries.
+#[test]
+fn episode_recorder_creates_connected_graph() {
+    let mut chain = test_chain();
+    let mut ep = EpisodeRecorder::start(
+        &amp;mut chain, "executor", "test-task",
+        "Test plan"
+    ).unwrap();
+    let s1 = ep.record_step("do A", "A done").unwrap();
+    ep.record_mistake(s1, "broke something", "fix it").unwrap();
+    ep.finish("done").unwrap();
+
+    // Plan's incoming relations should include at least one
+    // CausedBy (from a step) and one Summarizes (from finish).
+    // We check via the relations stored on the plan thought itself
+    // and on the thoughts that point at it via `refs`.
+    let plan = chain.get_thought_by_index(0).unwrap();
+    // Verify the graph has the expected shape: a Subgoal pointing
+    // back at the plan, and a TaskComplete pointing back at the plan.
+    let mut all = chain.query(&amp;ThoughtQuery::new());
+    let has_caused_by = all.iter().any(|t| {
+        t.thought_type == ThoughtType::Subgoal
+            &amp;&amp; t.relations.iter().any(|r|
+                r.kind == ThoughtRelationKind::CausedBy
+                    &amp;&amp; r.target_id == plan.id)
+    });
+    let has_summarizes = all.iter().any(|t| {
+        t.thought_type == ThoughtType::TaskComplete
+            &amp;&amp; t.relations.iter().any(|r|
+                r.kind == ThoughtRelationKind::Summarizes
+                    &amp;&amp; r.target_id == plan.id)
+    });
+    assert!(has_caused_by, "expected a Subgoal with CausedBy pointing at the plan");
+    assert!(has_summarizes, "expected a TaskComplete with Summarizes pointing at the plan");
+    let _ = plan; // silence unused
+}</code></pre>
+
+    <h3>What's next</h3>
+    <p>
+      Episodic memory captures what the agent did. The next pattern,
+      <a href="cookbook-1-2-semantic-fact-extraction.html">Semantic Fact Extraction</a>,
+      captures <em>what the agent learned</em> from raw input using an LLM — but with the
+      same search-first discipline.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-0-4-search-first.html">← 0.4 Search-First Discipline</a> ·
+      <a href="cookbook-1-2-semantic-fact-extraction.html">1.2 Semantic Fact Extraction →</a>
+    </nav>
+  </article>
+
+  <footer>
+    <p>MentisDB Cookbook · <a href="cookbook.html">↑ Table of Contents</a></p>
+  </footer>
+</body>
+</html>

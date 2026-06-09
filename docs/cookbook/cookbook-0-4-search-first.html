@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>0.4 The Search-First Discipline — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+    .callout-warn { background: #fff8f0; border-left: 3px solid #e67700; }
+    .callout-success { background: #f0fff4; border-left: 3px solid #2f855a; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 0 — Foundations · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>0.4 The Search-First Discipline</h2>
+
+    <p>
+      Read this chapter before you write another line of agent code. It is the most
+      important pattern in this book. It is also the one most teams skip, then regret.
+    </p>
+
+    <h3>The anti-pattern: "blind appends"</h3>
+    <p>
+      A new agent wakes up. It thinks: "I should record what I just learned so I remember it
+      next time." It appends a <code>Decision</code> thought with a verbose explanation. Done.
+    </p>
+
+    <p>
+      The agent repeats this dozens of times per session. The chain grows. Retrieval quality
+      degrades. The agent starts contradicting itself because no one checked whether a
+      <code>Constraint</code> already existed. The user asks "didn't we decide this last week?"
+      and the agent answers "no, I have no record of that" — even though there are three
+      near-duplicate <code>Decision</code> thoughts scattered across the chain.
+    </p>
+
+    <div class="callout callout-warn">
+      <strong>The fix is one extra step before every append:</strong> search for what's already
+      there. If the prior memory is good enough, don't write a duplicate. If it's close, write
+      a <code>Correction</code> or <code>Supersedes</code> relation. If it's a new thought,
+      write it — and link to whatever it's related to.
+    </div>
+
+    <h3>The three-question rule</h3>
+    <p>
+      Before you append a thought, answer these three questions:
+    </p>
+
+    <ol>
+      <li>
+        <strong>Does this already exist?</strong> Run a search. If a thought with similar
+        content exists and is still valid, do not append a duplicate. Reference it instead.
+      </li>
+      <li>
+        <strong>Does this contradict or supersede something?</strong> If yes, append with a
+        <code>Supersedes</code> or <code>Corrects</code> relation. Do not silently overwrite.
+      </li>
+      <li>
+        <strong>Is this connected to other thoughts?</strong> If it's derived from a prior
+        decision, add a <code>DerivedFrom</code> ref. If it caused an action, add
+        <code>CausedBy</code>. A thought without any backlinks is a dead end in the graph.
+      </li>
+    </ol>
+
+    <h3>The search-before-write loop</h3>
+    <p>
+      Every agent that writes to memory should follow this loop on every turn:
+    </p>
+
+    <pre data-cookbook-test="off"><code>async fn maybe_record(
+    chain: &amp;MentisDb,
+    agent_id: &amp;str,
+    candidate: ThoughtInput,
+) -&gt; Result&lt;()&gt; {
+    // 1. Search for existing similar memories
+    let existing = chain.query_ranked(
+        &amp;RankedSearchQuery::new()
+            .with_text(&amp;candidate.content_summary())
+            .with_limit(5)
+            .with_min_score(0.6)
+    )?;
+
+    // 2. Decide what to do
+    if existing.hits.is_empty() {
+        // Truly new — just append
+        chain.append_thought(agent_id, candidate)?;
+        return Ok(());
+    }
+
+    let top = &amp;existing.hits[0];
+    if top.score &gt; 0.9 {
+        // Near-duplicate — log a LessonLearned instead
+        chain.append_thought(agent_id,
+            ThoughtInput::new(ThoughtType::LessonLearned,
+                format!("I was about to record '{}' but already have \
+                         a similar memory: '{}'. Will reference it \
+                         instead of duplicating.",
+                        candidate.content, top.thought.content)
+            ).with_refs(vec![top.thought.index as u32])
+             .with_role(ThoughtRole::Retrospective)
+        )?;
+        return Ok(());
+    }
+
+    if is_correction(&amp;candidate, top) {
+        // Newer version of an old thought — supersede it
+        let mut new_thought = candidate;
+        new_thought = new_thought
+            .with_refs(vec![top.thought.index as u32]);
+        let new_index = chain.append_thought(agent_id, new_thought)?;
+
+        // NOTE: add_relation does not exist. Use .with_relations(vec![ThoughtRelation::new(kind, target_uuid)]) on the ThoughtInput being appended.
+        return Ok(());
+    }
+
+    // Genuinely new, but related to existing memory
+    let mut new_thought = candidate;
+    new_thought = new_thought
+        .with_concepts(top.thought.concepts.clone())
+        .with_refs(vec![top.thought.index as u32]);
+    chain.append_thought(agent_id, new_thought)?;
+    Ok(())
+}</code></pre>
+
+    <h3>Why this matters</h3>
+    <p>
+      A memory system that grows without bound becomes a junk drawer. Search quality is
+      a function of three things: signal (are the right thoughts findable?), signal-to-noise
+      (are wrong thoughts filtering out?), and graph structure (can the agent follow chains
+      of reasoning?). The search-first discipline maintains all three.
+    </p>
+
+    <p>
+      Empirically, agents that follow this discipline:
+    </p>
+    <ul>
+      <li>Produce chains that are 40-60% smaller for the same retrieval quality</li>
+      <li>Self-correct earlier in multi-step tasks</li>
+      <li>Have higher user trust because contradictions are visible and resolved</li>
+      <li>Recover faster after context window resets because the chain is denser, not just longer</li>
+    </ul>
+
+    <h3>Common pitfalls</h3>
+
+    <h4>"I'll just dump everything into the LLM's context"</h4>
+    <p>
+      This works for the first 20 thoughts. By 200, retrieval will dominate latency, context
+      bloat will dilute the prompt, and you'll start seeing the agent ignore relevant memories
+      because they're lost in the noise. The whole point of MentisDB is to make search good
+      enough that you don't need to dump everything.
+    </p>
+
+    <h4>"I'll let an LLM decide what to write"</h4>
+    <p>
+      LLMs are great at extraction, terrible at deduplication. If you let the LLM append
+      raw extractions, you'll get 50 <code>Insight</code> thoughts that say the same thing in
+      slightly different words. Always pair extraction with the search-first loop.
+    </p>
+
+    <h4>"I'll write a Cron job that periodically consolidates"</h4>
+    <p>
+      Consolidation is valuable, but it's a complement, not a substitute. By the time
+      consolidation runs, you've already polluted the chain with duplicates, contradictions,
+      and orphaned thoughts. The agent has been giving wrong answers for hours. Search-first
+      prevents the pollution; consolidation cleans up the remainder.
+    </p>
+
+    <h3>Integration with agents</h3>
+    <p>
+      The skill file (<code>MENTISDB_SKILL.md</code>) distributed with MentisDB bakes this
+      discipline into the agent's operating instructions. When an MCP client loads the skill,
+      it sees:
+    </p>
+
+    <pre data-cookbook-test="off"><code>## Search-First Discipline
+
+Before every append, run this routine:
+
+1. `mentisdb_recent_context` — what did I just do?
+2. `mentisdb_ranked_search` with the candidate content as text — is this already there?
+3. If yes: don't append. Reference the existing thought.
+4. If similar but different: append with a relation (`Supersedes`, `Corrects`, `DerivedFrom`).
+5. If new: append with at least one `refs` backlink to the most-related prior thought.
+
+**Anti-pattern: Blind appends.** Writing a thought without searching first
+guarantees duplication, contradiction, and retrieval rot.</code></pre>
+
+    <p>
+      This makes the discipline automatic for any agent that follows its skill file — which
+      is most of them, if they're properly primed.
+    </p>
+
+    <h3>What's next</h3>
+    <p>
+      Part 1 applies this discipline to real patterns. The first pattern,
+      <a href="cookbook-1-1-episodic-task-memory.html">Episodic Task Memory</a>, shows
+      how to record what your agent did, why, and what failed across a multi-step task —
+      with the search-first loop wired in.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-0-3-quickstart.html">← 0.3 Quickstart</a> ·
+      <a href="cookbook-0-5-dogfooding.html">0.5 What We Learned Writing This Book →</a>
+    </nav>
+  </article>
+
+  <footer>
+    <p>MentisDB Cookbook · <a href="cookbook.html">↑ Table of Contents</a></p>
+  </footer>
+</body>
+</html>

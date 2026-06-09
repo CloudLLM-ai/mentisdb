@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>2.1 Semantic Compression — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 2 — Advanced Patterns · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>2.1 Semantic Compression</h2>
+
+    <p>
+      Semantic compression turns many detailed thoughts into one high-signal summary without
+      deleting the source records. In MentisDB, compression is explicit: append a
+      <code>Summary</code> thought with <code>ThoughtRole::Compression</code> and references to the source
+      window it summarizes.
+    </p>
+
+    <h3>The Pattern</h3>
+    <ul>
+      <li>Select a bounded source window by concept, time, type, or agent.</li>
+      <li>Write a compact summary that preserves decisions, blockers, and next actions.</li>
+      <li>Use <code>refs</code> so auditors can expand the summary back to source thoughts.</li>
+      <li>Retrieve compression thoughts before loading the full history.</li>
+    </ul>
+
+    <pre><code>use mentisdb::{
+    BinaryStorageAdapter, MentisDb, ThoughtInput, ThoughtQuery,
+    ThoughtRole, ThoughtType,
+};
+
+fn compress_project_window() -&gt; io::Result&lt;()&gt; {
+    let dir = tempfile::tempdir()?;
+    let adapter = BinaryStorageAdapter::for_chain_key(
+        dir.path(),
+        "cookbook-compression",
+    );
+    let mut chain = MentisDb::open_with_storage(Box::new(adapter))?;
+
+    chain.upsert_agent(
+        "summarizer",
+        Some("Summarizer"),
+        Some("platform-team"),
+        Some("Compresses detailed work logs into resumable summaries"),
+        None,
+    )?;
+
+    let mut source_indices = Vec::new();
+    for content in [
+        "Found that webhook retries use exponential backoff.",
+        "Decision: keep webhook delivery non-blocking for append latency.",
+        "Constraint: failed webhooks must not fail thought appends.",
+        "Open question: expose retry metrics in the CLI.",
+    ] {
+        let thought = chain.append_thought(
+            "summarizer",
+            ThoughtInput::new(ThoughtType::Finding, content)
+                .with_concepts(["webhooks", "delivery"])
+                .with_tags(["source-window"]),
+        )?;
+        source_indices.push(thought.index);
+    }
+
+    let summary = chain.append_thought(
+        "summarizer",
+        ThoughtInput::new(
+            ThoughtType::Summary,
+            "Webhook delivery is async and non-blocking. Retries use backoff; append failures must stay isolated from webhook failures. Remaining work: decide whether CLI retry metrics are needed.",
+        )
+        .with_role(ThoughtRole::Compression)
+        .with_refs(source_indices)
+        .with_concepts(["webhooks", "semantic-compression"])
+        .with_tags(["summary", "compression"])
+        .with_importance(0.85),
+    )?.index;
+
+    let compressed = chain.query(
+        &amp;ThoughtQuery::new()
+            .with_roles(vec![ThoughtRole::Compression])
+            .with_concepts_any(["webhooks"])
+            .with_limit(1),
+    );
+
+    assert_eq!(compressed.len(), 1);
+    assert_eq!(compressed[0].index, summary);
+    assert_eq!(compressed[0].refs.len(), 4);
+    Ok(())
+}</code></pre>
+
+    <div class="callout">
+      <strong>Compression is not deletion.</strong> The detailed source thoughts stay append-only;
+      the summary is a faster entry point for future retrieval.
+    </div>
+
+    <h3>Good Summaries</h3>
+    <p>
+      A good compression thought names the durable decisions, constraints, facts, and unresolved
+      questions. It should not include every event. Its job is to make the next search or handoff
+      cheaper and more accurate.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-1-7-error-and-mistake-memory.html">← 1.7 Error and Mistake Memory</a> ·
+      <a href="cookbook-2-2-cross-session-continuity.html">2.2 Cross-Session Continuity →</a>
+    </nav>
+  </article>
+
+  <footer>MentisDB Cookbook · <a href="cookbook.html">Table of Contents</a></footer>
+</body>
+</html>

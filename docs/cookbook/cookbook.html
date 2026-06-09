@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Memory Cookbook — MentisDB</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article h4 { font-size: 1.0rem; margin-top: 1.2rem; margin-bottom: 0.4rem; color: #444; }
+    article .meta { color: #888; font-size: 0.85rem; margin-bottom: 1rem; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .toc-part { font-weight: 600; margin-top: 1.5rem; color: #1a1a2e; }
+    .toc-chapter { margin-left: 0.5rem; color: #444; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+    .callout-warn { background: #fff8f0; border-left: 3px solid #e67700; }
+    .callout-success { background: #f0fff4; border-left: 3px solid #2f855a; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1>Agent Memory Cookbook</h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <h2>About This Book</h2>
+    <p>
+      The Agent Memory Cookbook is a practical guide to using <a href="https://mentisdb.com">MentisDB</a>
+      as the memory layer for AI agents, LLM applications, and multi-agent systems.
+    </p>
+    <p>
+      Every pattern is grounded in a real production use case. Code is runnable, tests are included,
+      and benchmarks where available. The book is opinionated: it favors durability, auditability,
+      and recall over raw speed or compactness.
+    </p>
+
+    <div class="callout">
+      <strong>Who this is for:</strong> Engineers building agents, copilots, RAG systems, or multi-agent
+      orchestration that need to persist context across sessions, share state between agents, or give
+      LLMs a verifiable long-term memory. If you've used LangMem, Mem0, Cognee, or rolled your own
+      memory layer, this book will show you what MentisDB does differently.
+    </div>
+
+    <h2>Table of Contents</h2>
+
+    <div class="toc-part">Part 0 — Foundations</div>
+    <ul>
+      <li class="toc-chapter"><a href="cookbook-0-1-why-agent-memory.html">0.1 Why Agent Memory Matters</a></li>
+      <li class="toc-chapter"><a href="cookbook-0-2-mental-model.html">0.2 MentisDB Mental Model</a></li>
+      <li class="toc-chapter"><a href="cookbook-0-3-quickstart.html">0.3 Quickstart: Your First Memory</a></li>
+      <li class="toc-chapter"><a href="cookbook-0-4-search-first.html">0.4 The Search-First Discipline</a></li>
+      <li class="toc-chapter"><a href="cookbook-0-5-dogfooding.html">0.5 What We Learned Writing This Book</a> — dogfooding lessons</li>
+    </ul>
+
+    <div class="toc-part">Part 1 — Core Patterns</div>
+    <ul>
+      <li class="toc-chapter"><a href="cookbook-1-1-episodic-task-memory.html">1.1 Episodic Task Memory</a></li>
+      <li class="toc-chapter"><a href="cookbook-1-2-semantic-fact-extraction.html">1.2 Semantic Fact Extraction</a></li>
+      <li class="toc-chapter"><a href="cookbook-1-3-multi-agent-handoff.html">1.3 Multi-Agent Handoff</a></li>
+      <li class="toc-chapter"><a href="cookbook-1-4-long-running-project-memory.html">1.4 Long-Running Project Memory</a></li>
+      <li class="toc-chapter"><a href="cookbook-1-5-rag-over-agent-history.html">1.5 RAG Over Agent History</a></li>
+      <li class="toc-chapter"><a href="cookbook-1-6-preference-learning.html">1.6 Preference Learning</a></li>
+      <li class="toc-chapter"><a href="cookbook-1-7-error-and-mistake-memory.html">1.7 Error and Mistake Memory</a></li>
+    </ul>
+
+    <div class="toc-part">Part 2 — Advanced Patterns</div>
+    <ul>
+      <li class="toc-chapter"><a href="cookbook-2-1-semantic-compression.html">2.1 Semantic Compression</a></li>
+      <li class="toc-chapter"><a href="cookbook-2-2-cross-session-continuity.html">2.2 Cross-Session Continuity</a></li>
+      <li class="toc-chapter"><a href="cookbook-2-3-dynamic-skills.html">2.3 Dynamic Skill Loading</a></li>
+      <li class="toc-chapter"><a href="cookbook-2-4-federated-team-memory.html">2.4 Federated Team Memory</a></li>
+      <li class="toc-chapter"><a href="cookbook-2-5-webhook-workflows.html">2.5 Webhook-Driven Workflows</a></li>
+    </ul>
+
+    <div class="toc-part">Part 3 — Production Hardening</div>
+    <ul>
+      <li class="toc-chapter"><a href="cookbook-3-1-embedding-provider-selection.html">3.1 Embedding Provider Selection</a></li>
+      <li class="toc-chapter"><a href="cookbook-3-2-vector-sidecars.html">3.2 Vector Sidecar Management</a></li>
+      <li class="toc-chapter"><a href="cookbook-3-3-retrieval-tuning.html">3.3 Retrieval Tuning</a></li>
+      <li class="toc-chapter"><a href="cookbook-3-4-benchmarking.html">3.4 Benchmarking Your Memory</a></li>
+      <li class="toc-chapter"><a href="cookbook-3-5-deployment.html">3.5 Deployment Patterns</a></li>
+    </ul>
+
+    <div class="toc-part">Part 4 — Agentic Harnesses (User On-Ramp)</div>
+    <ul>
+      <li class="toc-chapter"><a href="cookbook-4-1-opencode.html">4.1 OpenCode</a> — current harness, local MCP + skill store primer</li>
+      <li class="toc-chapter"><a href="cookbook-4-2-claude-code.html">4.2 Claude Code (CLI)</a> — <code>claude mcp add</code> setup, skill priming</li>
+      <li class="toc-chapter"><a href="cookbook-4-3-claude-desktop.html">4.3 Claude Desktop</a> — stdio MCP config for the desktop app</li>
+      <li class="toc-chapter"><a href="cookbook-4-4-codex.html">4.4 Codex (OpenAI CLI)</a> — <code>~/.codex/config.toml</code> MCP setup</li>
+      <li class="toc-chapter"><a href="cookbook-4-5-hermes.html">4.5 Hermes (Nous Research)</a> — native <code>MemoryProvider</code></li>
+      <li class="toc-chapter"><a href="cookbook-4-6-cursor.html">4.6 Cursor</a> — IDE MCP + <code>.cursorrules</code> priming</li>
+      <li class="toc-chapter"><a href="cookbook-4-7-continue.html">4.7 Continue.dev</a> — open-source IDE assistant</li>
+      <li class="toc-chapter"><a href="cookbook-4-8-cline-aider.html">4.8 Cline &amp; Aider</a> — VS Code extension and CLI tool</li>
+      <li class="toc-chapter"><a href="cookbook-4-9-zed-windsurf.html">4.9 Zed, Windsurf, Other MCP Clients</a> — generic patterns</li>
+    </ul>
+
+    <div class="toc-part">Part 5 — Custom Agent Recipes (Copy-Paste Code)</div>
+    <ul>
+      <li class="toc-chapter"><a href="cookbook-5-1-rust-minimal.html">5.1 Rust: Minimal Agent with Memory</a> — 50-line example</li>
+      <li class="toc-chapter"><a href="cookbook-5-2-python-langchain.html">5.2 Python: LangChain + MentisDB</a> — <code>MentisDbMemory</code> buffer</li>
+      <li class="toc-chapter"><a href="cookbook-5-3-python-pymentisdb.html">5.3 Python: Custom Agent with pymentisdb</a> — direct client, no framework</li>
+      <li class="toc-chapter"><a href="cookbook-5-4-typescript-mcp.html">5.4 TypeScript: MCP Client Integration</a> — stdio + HTTP transports</li>
+      <li class="toc-chapter"><a href="cookbook-5-5-cli-standup.html">5.5 CLI: Daily Standup Memory</a> — <code>mentisdb add</code> recipes</li>
+      <li class="toc-chapter"><a href="cookbook-5-6-dashboard-archaeology.html">5.6 Dashboard: Memory Archaeology</a> — search, filter, graph traverse</li>
+    </ul>
+
+    <h3>How to read this book</h3>
+    <p>
+      If you're new to MentisDB, read Part 0 in order. It builds the mental model and gets you
+      to a working memory in under five minutes.
+    </p>
+    <p>
+      If you're integrating MentisDB into an existing system, jump to the pattern that matches
+      your use case in Part 1. Each chapter is self-contained: scenario, why it matters, the
+      pattern, runnable code, and production notes.
+    </p>
+    <p>
+      Part 2 covers patterns you'll need once your agent is working and you want to scale
+      or harden it. Part 3 is the engineering reference: embedding selection, tuning, deployment.
+    </p>
+    <p>
+      Part 4 is the cheat sheet. Copy a recipe, adapt it, ship.
+    </p>
+
+    <h3>Conventions</h3>
+    <ul>
+      <li><code>thought</code> — a single durable memory record (a Decision, a Mistake, a Summary, etc.)</li>
+      <li><code>chain</code> — the append-only log of thoughts, hash-chained for integrity</li>
+      <li><code>agent</code> — a named writer to a chain; agents have their own identity, aliases, and optional keys</li>
+      <li><code>scope</code> — <code>user</code> (default, shared), <code>session</code>, or <code>agent</code></li>
+      <li><code>retrieval</code> — ranked lexical + vector + graph hybrid, with optional RRF rerank</li>
+    </ul>
+
+    <div class="callout callout-success">
+      <strong>Prerequisites:</strong> Rust 1.75+ for library examples, Python 3.10+ for the LangChain
+      recipe, Node 20+ for the TypeScript recipe. All recipes assume you have a MentisDB chain
+      initialized locally — see 0.3 for setup.
+    </div>
+  </article>
+
+  <footer>
+    <p>MentisDB Cookbook · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a> · <a href="https://mentisdb.com">mentisdb.com</a></p>
+  </footer>
+</body>
+</html>

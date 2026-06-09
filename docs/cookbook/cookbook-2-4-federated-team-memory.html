@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>2.4 Federated Team Memory — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article h4 { font-size: 1.0rem; margin-top: 1.2rem; margin-bottom: 0.4rem; color: #444; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+    .callout-warn { background: #fff8f0; border-left: 3px solid #e67700; }
+    .callout-success { background: #f0fff4; border-left: 3px solid #2f855a; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 2 — Advanced Patterns · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>2.4 Federated Team Memory</h2>
+
+    <h3>The problem</h3>
+    <p>
+      Two teams share a code-review agent. The backend team's chain is full of database
+      migrations, API contracts, and rate-limit decisions. The frontend team's chain is
+      full of design tokens, accessibility lints, and component-library rules. Each team
+      has its own retrieval quality bar and its own appetite for noise.
+    </p>
+    <p>
+      Merge both teams into one giant chain and after a quarter, frontend queries surface
+      backend constraints as false positives and either team's mistakes poison retrieval
+      for the other. Keep them completely isolated and cross-team architectural decisions
+      ("we standardized on OpenAPI 3.1") get re-debated and re-written twice.
+    </p>
+    <p>
+      The fix is <strong>federated team memory</strong>: each team or project gets its own
+      chain, a shared <em>root</em> chain holds cross-cutting decisions, and a single query
+      transparently searches across all of them — ranking the results into one list while
+      preserving the boundary.
+    </p>
+
+    <h3>Why it's hard</h3>
+    <ul>
+      <li>Chains are <em>append-only</em>. You can't retroactively split a polluted shared chain.</li>
+      <li>Cross-chain references break: thought indices are chain-local, so naive merging produces dangling refs.</li>
+      <li>Multi-tenancy needs a <em>security boundary</em>: tenant A must never see tenant B's data, even on a federated query.</li>
+      <li>Branches that fork from a parent need a way to "rejoin" without losing the parent's history.</li>
+      <li>Naming chains badly traps you: once <code>team-foo-2026</code> has 50,000 thoughts, renaming is an operational event.</li>
+    </ul>
+
+    <h3>The pattern</h3>
+    <p>MentisDB gives you three primitives. Compose them to taste:</p>
+    <ol>
+      <li>
+        <code>mentisdb_branch_from()</code> — create a child chain that diverges from a
+        specific thought on a parent. The branch's genesis thought is a
+        <code>StateSnapshot</code> with a <code>BranchesFrom</code> relation pointing
+        back to the branch-point. The parent is not modified.
+      </li>
+      <li>
+        <code>mentisdb_federated_search()</code> — search any explicit list of chains at
+        once. Results come back as a single ranked list, each hit annotated with its
+        <code>chain_key</code>.
+      </li>
+      <li>
+        <code>mentisdb_merge_chains()</code> — when a branch is done (a release shipped,
+        an experiment concluded), copy every source thought into a target chain with
+        autonomous agent remapping, then permanently delete the source.
+      </li>
+    </ol>
+    <p>
+      There's a quieter fourth primitive: <strong>any single-chain ranked search on a
+      branch transparently includes its ancestor chains</strong>. Walking the
+      <code>BranchesFrom</code> relations is automatic. The branch behaves as if the
+      parent's memories were locally available, but the response still marks every hit
+      with its origin chain.
+    </p>
+
+    <div class="callout">
+      <strong>Mental model:</strong> a chain is a stream of immutable thoughts. A branch
+      is a new stream that knows where it came from. A federated query is a fan-out
+      <em>read</em>. A merge is an irreversible <em>write</em>. Reads federate; writes
+      never silently cross boundaries.
+    </div>
+
+    <h3>Implementation</h3>
+
+    <h4>1. Naming the chains</h4>
+    <p>
+      Pick a hierarchy and commit to it. The single most common cause of federated-memory
+      pain in production is unprincipled chain naming. Two patterns that survive scale:
+    </p>
+    <ul>
+      <li>
+        <strong>Per-team under a shared root.</strong>
+        Root: <code>org-shared</code>. Teams: <code>team-backend</code>,
+        <code>team-frontend</code>. Project branches:
+        <code>team-backend/auth-rewrite-2026q3</code>.
+      </li>
+      <li>
+        <strong>Per-tenant under a tenant root.</strong>
+        Root: <code>tenant-acme</code>. Per-agent branches:
+        <code>tenant-acme/agent-codereview</code>. Cross-tenant root is <em>never</em>
+        queried — that's the security boundary.
+      </li>
+    </ul>
+    <p>
+      The <code>/</code> in a chain key is just a character — MentisDB doesn't interpret
+      it — but using it as a visual delimiter makes <code>mentisdb list</code> output
+      legible and lets you grep your federation config.
+    </p>
+
+    <h4>2. Stand up the root and branch with Rust</h4>
+    <p>
+      The example below builds an <code>org-shared</code> chain, branches
+      <code>team-backend</code> from one of its decisions, and stacks a project branch on
+      top of that. Federated search and the merge come next.
+    </p>
+
+    <pre data-cookbook-test="off"><code>use mentisdb::{
+    MentisDb, ThoughtInput, ThoughtType, ThoughtRole,
+    RankedSearchQuery, RankedSearchFilter,
+};
+use std::path::Path;
+use std::io;
+
+fn main() -&gt; io::Result&lt;()&gt; {
+    let dir = tempfile::tempdir()?;
+    let chain_dir = dir.path();
+
+    // 1. Root chain: cross-cutting org-wide decisions.
+    let mut root = MentisDb::open_with_key(chain_dir, "org-shared")?;
+    root.upsert_agent("architect", Some("Chief Architect"),
+        Some("org"), Some("Writes org-wide constraints"), None)?;
+
+    let api_decision = root.append_thought("architect",
+        ThoughtInput::new(ThoughtType::Decision,
+            "All public HTTP APIs use OpenAPI 3.1; \
+             contract-first, no hand-rolled clients.")
+            .with_concepts(["api", "openapi", "contracts"])
+            .with_tags(["scope:org", "policy"])
+            .with_importance(0.9)
+            .with_role(ThoughtRole::Memory)
+    )?.clone();
+
+    root.append_thought("architect",
+        ThoughtInput::new(ThoughtType::Constraint,
+            "Rate-limit headers must use the IETF RateLimit fields.")
+            .with_concepts(["rate-limit", "http"])
+            .with_tags(["scope:org", "policy"])
+            .with_importance(0.85)
+    )?;
+
+    // 2. Branch the backend team off the API decision.
+    //    The branch's genesis StateSnapshot carries a
+    //    BranchesFrom relation pointing at `api_decision.id`.
+    let mut backend = MentisDb::branch_from(
+        chain_dir, "org-shared", api_decision.id, "team-backend",
+    )?;
+    backend.upsert_agent("backend-bot", Some("Backend Reviewer"),
+        Some("team-backend"), None, None)?;
+
+    backend.append_thought("backend-bot",
+        ThoughtInput::new(ThoughtType::Decision,
+            "Backend uses axum 0.7 + sqlx for new services.")
+            .with_concepts(["stack", "rust", "axum", "sqlx"])
+            .with_tags(["scope:team", "team-backend"])
+            .with_importance(0.8)
+    )?;
+
+    // 3. A branch of a branch is still a branch — the ancestor
+    //    walk finds both `team-backend` AND `org-shared`.
+    let last_backend = backend.thoughts().last().unwrap().id;
+    let mut auth = MentisDb::branch_from(
+        chain_dir, "team-backend", last_backend,
+        "team-backend/auth-rewrite-2026q3",
+    )?;
+    auth.upsert_agent("backend-bot", None,
+        Some("team-backend"), None, None)?;
+    auth.append_thought("backend-bot",
+        ThoughtInput::new(ThoughtType::Plan,
+            "Replace bespoke JWT validation with `jsonwebtoken`; \
+             migrate in 4 steps across 3 services.")
+            .with_concepts(["auth", "jwt", "migration"])
+            .with_tags(["scope:project", "auth-rewrite"])
+            .with_importance(0.75)
+    )?;
+
+    Ok(())
+}</code></pre>
+
+    <p>
+      The directory layout on disk is now three independent append-only chains. They share
+      no thoughts. The only link is the <code>BranchesFrom</code> relation in each branch's
+      genesis thought — a single typed edge the server uses to walk the ancestor list at
+      query time.
+    </p>
+
+    <h4>3. Federated search across the whole tree</h4>
+    <p>
+      A code-review agent wants to know "what do we say about API contracts?" and doesn't
+      care which team wrote the rule. Use <code>mentisdb_federated_search</code> with an
+      explicit chain list:
+    </p>
+
+    <pre data-cookbook-test="off"><code>{
+  "tool": "mentisdb_federated_search",
+  "arguments": {
+    "chain_keys": [
+      "org-shared",
+      "team-backend",
+      "team-backend/auth-rewrite-2026q3"
+    ],
+    "text": "API contracts and rate limits",
+    "thought_types": ["Decision", "Constraint", "PreferenceUpdate"],
+    "limit": 10,
+    "enable_reranking": true
+  }
+}</code></pre>
+
+    <p>
+      The server runs the same ranked query against each chain, then merges the per-chain
+      result sets with Reciprocal Rank Fusion. Every hit carries its <code>chain_key</code>
+      so the agent can render provenance:
+    </p>
+
+    <pre data-cookbook-test="off"><code>=== Federated results (3 chains, top 4) ===
+[org-shared          ] Decision  : All public HTTP APIs use OpenAPI 3.1...
+[org-shared          ] Constraint: Rate-limit headers must use IETF...
+[team-backend        ] Decision  : Backend uses axum 0.7 + sqlx...
+[team-backend        ] PreferenceUpdate: Prefer `tracing` macros...</code></pre>
+
+    <p>
+      Critically, the <em>same</em> agent on a single-chain query against
+      <code>team-backend/auth-rewrite-2026q3</code> will <em>also</em> see the
+      <code>org-shared</code> and <code>team-backend</code> hits — because branch search
+      transparently walks ancestors. The federated call is for when you want to fan out
+      across <em>sibling</em> chains (multiple teams, multiple tenants you administer); the
+      ancestor walk happens automatically on every branch query.
+    </p>
+
+    <div class="callout callout-success">
+      <strong>Two reads, same model:</strong> "search this branch" → automatic ancestor walk.
+      "search these N chains" → explicit federated query. Both return one ranked list with
+      <code>chain_key</code> stamped on every hit. Your agent code never has to merge by hand.
+    </div>
+
+    <h4>4. Merging a finished branch back</h4>
+    <p>
+      The <code>auth-rewrite-2026q3</code> project shipped. Its lessons should belong to
+      <code>team-backend</code> permanently; the branch as a separate chain is now noise.
+    </p>
+
+    <pre data-cookbook-test="off"><code>// MCP call
+{
+  "tool": "mentisdb_merge_chains",
+  "arguments": {
+    "source_chain_key": "team-backend/auth-rewrite-2026q3",
+    "target_chain_key": "team-backend"
+  }
+}
+
+// Response
+{ "thoughts_copied": 47, "agents_remapped": 1, "source_deleted": true }</code></pre>
+
+    <p>
+      <code>merge_chains</code> is autonomous about agent identity: each source agent is
+      matched to the closest existing target agent by Jaccard character-set similarity,
+      with thought-count as the tiebreaker. <strong>No new agents are created on the
+      target chain.</strong> Register any new agents on the target <em>before</em> merging
+      or their thoughts will be relabeled. Cross-chain <code>refs</code> indices are also
+      dropped — replace them with UUID-based <code>relations</code> beforehand if you need
+      them to survive.
+    </p>
+
+    <div class="callout callout-warn">
+      <strong><code>merge_chains</code> is destructive.</strong> The source is deleted.
+      Back up the directory before merging anything you might want to inspect later, and
+      run the merge from one process at a time.
+    </div>
+
+    <h3>Production notes</h3>
+
+    <h4>When to branch vs. write to a shared chain</h4>
+    <p>
+      <strong>Branch when the lifetime of the work is bounded.</strong> If
+      <code>team-backend</code> is the team's permanent brain, write into it directly. If
+      <code>auth-rewrite-2026q3</code> is a finite project, branch it, do the work, merge
+      (or archive) when done. Branches are cheap to create and cheap to delete; they exist
+      precisely so a polluted experiment doesn't poison a durable chain.
+    </p>
+
+    <h4>Naming conventions: pick one in week one</h4>
+    <p>
+      Renaming a chain at scale is a migration: every webhook, saved query, bookmark, and
+      <code>opencode.json</code> entry has to change in lockstep. Set a convention before
+      you have ten chains:
+    </p>
+    <ul>
+      <li><code>org-shared</code>, <code>org-policy</code> — root chains, never deleted</li>
+      <li><code>team-&lt;name&gt;</code> — long-lived team chains</li>
+      <li><code>team-&lt;name&gt;/&lt;project&gt;-&lt;quarter&gt;</code> — bounded project branches</li>
+      <li><code>tenant-&lt;id&gt;</code>, <code>tenant-&lt;id&gt;/&lt;agent&gt;</code> — multi-tenant boundary</li>
+      <li><code>archive/&lt;original-key&gt;-&lt;date&gt;</code> — frozen, read-only history</li>
+    </ul>
+
+    <h4>The "no orphans" rule</h4>
+    <p>
+      Every long-lived chain should be reachable from some root. If a branch's parent is
+      deleted, the ancestor-walk silently terminates and you've lost transparent access to
+      the root's decisions. Never delete a chain with live descendants, and audit
+      descendants before any <code>merge_chains</code> that deletes their source ancestor.
+    </p>
+
+    <h4>Multi-tenancy and the security boundary</h4>
+    <p>
+      Federated search is a <em>capability</em>, not a permission system. Anyone holding
+      a list of chain keys can fan a query across them. For multi-tenant deployments:
+    </p>
+    <ul>
+      <li>Use per-tenant chain keys with a strict prefix (<code>tenant-acme</code>, <code>tenant-globex</code>).</li>
+      <li>Enforce at the application layer that a tenant's session can only federate over chains sharing its prefix.</li>
+      <li>Never branch a tenant chain from another tenant's chain. A cross-tenant <code>BranchesFrom</code> would let the ancestor-walk leak data.</li>
+      <li>For hosted offerings, run the MentisDB server behind a proxy that injects the tenant prefix into every request — don't trust clients to scope themselves.</li>
+    </ul>
+
+    <div class="callout callout-warn">
+      <strong>The leakiest mistake</strong> is branching a tenant's chain from a chain that
+      another tenant also branches from, while writing tenant-specific data into that shared
+      ancestor. Keep ancestors strictly policy-only: facts that every descendant is allowed
+      to see.
+    </div>
+
+    <h4>Federated search is not free</h4>
+    <p>
+      Each chain in <code>chain_keys</code> is a real query — cost scales linearly. For a
+      federation of 50 chains, either narrow with strong filters (tags, types, time
+      windows) or pre-aggregate via <code>merge_chains</code> into a smaller set of rollup
+      chains updated on a schedule.
+    </p>
+
+    <h3>Querying patterns</h3>
+
+    <h4>"What does any team say about JWT?"</h4>
+    <pre data-cookbook-test="off"><code>mentisdb_federated_search({
+  chain_keys: list_team_chains(),
+  text: "JWT validation",
+  concepts_any: ["auth", "jwt"],
+  thought_types: ["Decision", "Constraint", "LessonLearned"],
+  limit: 20,
+  enable_reranking: true,
+})</code></pre>
+
+    <h4>"On this branch, including everything the parent decided"</h4>
+    <pre data-cookbook-test="off"><code>// Single-chain query. Ancestors are walked automatically.
+mentisdb_ranked_search({
+  chain_key: "team-backend/auth-rewrite-2026q3",
+  text: "rate limiting",
+  limit: 10,
+})
+// Hits carry chain_key annotations for whichever ancestor
+// (or the branch itself) actually owns each thought.</code></pre>
+
+    <h3>Testing this pattern</h3>
+    <p>
+      The most important regression to catch is that the ancestor walk still surfaces a
+      parent's decision from a branch query:
+    </p>
+
+    <pre data-cookbook-test="off"><code>#[test]
+fn branch_walks_ancestor_on_search() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut parent = MentisDb::open_with_key(dir.path(), "parent")
+        .unwrap();
+    let pivot = parent.append("a",
+        ThoughtType::Decision,
+        "Use OpenAPI 3.1.").unwrap().clone();
+
+    let _branch = MentisDb::branch_from(
+        dir.path(), "parent", pivot.id, "branch",
+    ).unwrap();
+
+    // Single-chain search on the branch surfaces the parent's
+    // decision via the ancestor walk, with chain_key annotated.
+    let res = run_ranked_search("branch", "OpenAPI");
+    assert!(res.hits.iter().any(|h|
+        h.chain_key == "parent" &amp;&amp;
+        h.thought.content.contains("OpenAPI")
+    ));
+}</code></pre>
+
+    <h3>What's next</h3>
+    <p>
+      Federation gives multiple agents one queryable memory without forcing them into one
+      chain. The next pattern,
+      <a href="cookbook-2-5-webhook-driven-workflows.html">Webhook-Driven Workflows</a>,
+      shows how to make those chains <em>react</em> — firing HTTP callbacks the moment a
+      thought is appended, so downstream agents and pipelines can wake up on the new memory
+      instead of polling.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-2-3-dynamic-skill-loading.html">← 2.3 Dynamic Skill Loading</a> ·
+      <a href="cookbook-2-5-webhook-driven-workflows.html">2.5 Webhook-Driven Workflows →</a>
+    </nav>
+  </article>
+
+  <footer>
+    <p>MentisDB Cookbook · <a href="cookbook.html">↑ Table of Contents</a></p>
+  </footer>
+</body>
+</html>

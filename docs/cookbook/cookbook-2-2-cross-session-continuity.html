@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>2.2 Cross-Session Continuity — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 2 — Advanced Patterns · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>2.2 Cross-Session Continuity</h2>
+
+    <p>
+      Cross-session continuity is the handoff from your previous process to your next process.
+      The previous session writes a <code>Handoff</code>; the next session accepts it by writing a
+      <code>Checkpoint</code> or <code>ActionTaken</code> that references the handoff. The chain then shows
+      both the transfer and the continuation.
+    </p>
+
+    <h3>The Pattern</h3>
+    <ul>
+      <li>End each session with a <code>Handoff</code> thought using <code>ThoughtRole::Handoff</code>.</li>
+      <li>Include done, pending, risks, and the first next step.</li>
+      <li>In the next session, query handoffs by project concept.</li>
+      <li>Write a continuation checkpoint that references the handoff.</li>
+    </ul>
+
+    <pre><code>use mentisdb::{
+    BinaryStorageAdapter, MentisDb, RankedSearchQuery, ThoughtInput,
+    ThoughtQuery, ThoughtRole, ThoughtType,
+};
+
+fn continue_across_sessions() -&gt; io::Result&lt;()&gt; {
+    let dir = tempfile::tempdir()?;
+    let adapter = BinaryStorageAdapter::for_chain_key(
+        dir.path(),
+        "cookbook-cross-session",
+    );
+    let mut chain = MentisDb::open_with_storage(Box::new(adapter))?;
+
+    chain.upsert_agent(
+        "agent-prev",
+        Some("Previous Agent"),
+        Some("memory-team"),
+        Some("Writes handoffs before shutdown"),
+        None,
+    )?;
+    chain.upsert_agent(
+        "agent-next",
+        Some("Next Agent"),
+        Some("memory-team"),
+        Some("Resumes from durable handoffs"),
+        None,
+    )?;
+
+    let handoff = chain.append_thought(
+        "agent-prev",
+        ThoughtInput::new(
+            ThoughtType::Handoff,
+            "Done: reproduced the flaky auth test. Pending: isolate whether cache state or clock skew causes it. First next step: rerun with fixed clock.",
+        )
+        .with_role(ThoughtRole::Handoff)
+        .with_concepts(["auth-flake", "test-debugging"])
+        .with_tags(["handoff", "session-end"])
+        .with_importance(0.9),
+    )?;
+    let handoff_index = handoff.index;
+
+    let candidates = chain.query_ranked(
+        &amp;RankedSearchQuery::new()
+            .with_text("Where should I resume the auth flaky test investigation?")
+            .with_filter(
+                ThoughtQuery::new()
+                    .with_roles(vec![ThoughtRole::Handoff])
+                    .with_concepts_any(["auth-flake"]),
+            )
+            .with_limit(1),
+    );
+    assert_eq!(candidates.hits.len(), 1);
+
+    let continuation = chain.append_thought(
+        "agent-next",
+        ThoughtInput::new(
+            ThoughtType::Checkpoint,
+            "Accepted handoff. Starting with fixed-clock rerun before changing cache code.",
+        )
+        .with_role(ThoughtRole::Checkpoint)
+        .with_refs(vec![handoff_index])
+        .with_concepts(["auth-flake", "resume-point"])
+        .with_tags(["handoff", "accepted"])
+        .with_importance(0.85),
+    )?;
+
+    assert_eq!(continuation.refs, vec![handoff_index]);
+    Ok(())
+}</code></pre>
+
+    <div class="callout">
+      <strong>Continuity is a write, not just a read.</strong> If the next session only reads a
+      handoff, the chain cannot later prove that the handoff was accepted or acted on.
+    </div>
+
+    <h3>What to Include</h3>
+    <p>
+      A good handoff is operational. It names what changed, what is still uncertain, what not
+      to repeat, and the first concrete next step. That makes it useful to both a future human
+      and a future agent.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-2-1-semantic-compression.html">← 2.1 Semantic Compression</a> ·
+      <a href="cookbook-2-4-federated-team-memory.html">2.4 Federated Team Memory →</a>
+    </nav>
+  </article>
+
+  <footer>MentisDB Cookbook · <a href="cookbook.html">Table of Contents</a></footer>
+</body>
+</html>

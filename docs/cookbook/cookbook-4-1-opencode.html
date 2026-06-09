@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>4.1 OpenCode — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article h4 { font-size: 1.0rem; margin-top: 1.2rem; margin-bottom: 0.4rem; color: #444; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+    .callout-warn { background: #fff8f0; border-left: 3px solid #e67700; }
+    .callout-success { background: #f0fff4; border-left: 3px solid #2f855a; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 4 — Agentic Harnesses · <a href="cookbook.html">← Back to TOC</a></nav>
+    <h2>4.1 OpenCode</h2>
+
+    <p>
+      This chapter is the on-ramp for using MentisDB inside <a href="https://opencode.ai">OpenCode</a> —
+      the open-source terminal-based coding agent. It's written from inside OpenCode itself:
+      every example below was produced by a session that has MentisDB as its memory layer.
+    </p>
+
+    <div class="callout">
+      <strong>What you'll get:</strong> a per-project durable memory that survives
+      <code>Ctrl+C</code>, context window resets, and the dozens of little one-shot
+      sessions you start every day. The agent stops asking the same questions, stops
+      re-reading the same files, and starts treating your project like a long-running
+      collaboration instead of a stranger.
+    </div>
+
+    <h3>Prerequisites</h3>
+    <ul>
+      <li>OpenCode installed and configured with a model provider</li>
+      <li><code>mentisdb</code> binary on your <code>PATH</code> — install with <code>cargo install mentisdb --features server</code> or <code>brew install mentisdb</code></li>
+      <li>A project directory you want the agent to remember across sessions</li>
+    </ul>
+
+    <h3>Step 1: Initialize a chain for the project</h3>
+    <p>
+      Each project should have its own chain. This keeps memories scoped to one codebase
+      and lets you back up, fork, or share chains independently.
+    </p>
+
+    <pre data-cookbook-test="off"><code># From the project root
+mentisdb init
+
+# Or with an explicit name (defaults to the directory name)
+mentisdb init --chain my-cool-project
+
+# Verify
+mentisdb list
+#   my-cool-project   0 thoughts   2026-06-08</code></pre>
+
+    <p>
+      This creates a <code>.mentisdb/</code> directory in your project root (or under
+      <code>~/.mentisdb/chains/</code> depending on your settings) and writes the
+      hash-chained append-only log plus an empty vector sidecar if you enabled embeddings.
+    </p>
+
+    <div class="callout callout-warn">
+      <strong>Add <code>.mentisdb/</code> to <code>.gitignore</code></strong> if you don't want
+      memory in your repo. Many teams instead check it in for a shared "team brain" that
+      everyone can read but only specific agents write to. Pick the model that fits your team.
+    </div>
+
+    <h3>Step 2: Add MentisDB as an MCP server</h3>
+    <p>
+      OpenCode reads MCP server config from <code>opencode.json</code> or
+      <code>opencode.jsonc</code> at the project root, or from
+      <code>~/.config/opencode/opencode.json</code> for global config.
+    </p>
+
+    <p>
+      For a project-local setup, create or edit <code>opencode.json</code>:
+    </p>
+
+    <pre data-cookbook-test="off"><code>{
+  "mcp": {
+    "mentisdb": {
+      "type": "local",
+      "command": ["mentisdb", "--mode", "stdio"]
+    }
+  }
+}</code></pre>
+
+    <p>
+      For a global setup (one chain shared across all your projects), put it in
+      <code>~/.config/opencode/opencode.json</code> instead and use a stable
+      <code>--chain</code> argument:
+    </p>
+
+    <pre data-cookbook-test="off"><code>{
+  "mcp": {
+    "mentisdb-global": {
+      "type": "local",
+      "command": ["mentisdb", "--mode", "stdio", "--chain", "global-brain"]
+    }
+  }
+}</code></pre>
+
+    <p>
+      Restart OpenCode. You should see the MCP server come up in the status line and the
+      <code>mentisdb_*</code> tools appear in the tool palette.
+    </p>
+
+    <h4>Remote / multi-user setup</h4>
+    <p>
+      If you're running <code>mentisdb</code> as a long-lived HTTP server (see
+      <a href="cookbook-3-5-deployment.html">3.5 Deployment Patterns</a>), point OpenCode at it:
+    </p>
+
+    <pre data-cookbook-test="off"><code>{
+  "mcp": {
+    "mentisdb": {
+      "type": "remote",
+      "url": "https://mentisdb.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer mentisdb_xxxxx"
+      }
+    }
+  }
+}</code></pre>
+
+    <h3>Step 3: Install the MentisDB skill</h3>
+    <p>
+      OpenCode has a <code>skills/</code> directory where agents look for operating
+      instructions. The MentisDB skill teaches the agent the search-first discipline
+      from <a href="cookbook-0-4-search-first.html">chapter 0.4</a> and lists the available
+      tools and thought types.
+    </p>
+
+    <pre data-cookbook-test="off"><code># Per-project skill
+mkdir -p .opencode/skills
+curl -L https://docs.mentisdb.com/mentisdb-skill.md \
+  -o .opencode/skills/mentisdb.md
+
+# Global skill (applies to all projects)
+mkdir -p ~/.config/opencode/skills
+curl -L https://docs.mentisdb.com/mentisdb-skill.md \
+  -o ~/.config/opencode/skills/mentisdb.md</code></pre>
+
+    <p>
+      The skill file is loaded automatically when an OpenCode session starts and includes
+      the three-question rule, the anti-pattern warnings, and the exact tool names the
+      agent should call.
+    </p>
+
+    <h3>Step 4: Prime the agent</h3>
+    <p>
+      At the start of any session, paste the primer line so the agent knows it has memory
+      available:
+    </p>
+
+    <pre data-cookbook-test="off"><code>Use mentisdb as your memory system for this project. \
+Before writing any new thought, search for existing similar \
+memories and link to them. Follow the search-first discipline \
+in the mentisdb skill.</code></pre>
+
+    <p>
+      You only need to paste this once per session. The agent will load the skill file
+      automatically and the primer tells it to use the discipline. After that, every
+      turn goes through the search-before-write loop.
+    </p>
+
+    <h3>Step 5: A working session</h3>
+    <p>
+      Here's a realistic first session. The user is debugging a flaky test in a Rust
+      project that has been touched by the agent before.
+    </p>
+
+    <pre data-cookbook-test="off"><code>$ opencode
+
+# (primer pasted once)
+> Use mentisdb as your memory system for this project. Before
+> writing any new thought, search for existing similar memories
+> and link to them.
+
+# (real task)
+> The test in tests/rate_limit_tests.rs:73 fails about 30% of
+> the time. It looks like a timing issue. Can you investigate?</code></pre>
+
+    <p>
+      A well-primed agent will, before debugging, search the chain:
+    </p>
+
+    <pre data-cookbook-test="off"><code>> Let me check what we already know about this test and rate
+> limiting in this project.
+
+  [calls mcp__mentisdb__mentisdb_recent_context with last_n=10]
+  [calls mcp__mentisdb__mentisdb_ranked_search with
+   text="rate limit test flaky timing"]</code></pre>
+
+    <p>
+      The chain surfaces two relevant prior thoughts:
+    </p>
+
+    <ul>
+      <li>A <code>Decision</code> from last week: "Throttling at the API gateway is more reliable than per-service limits. We saw 3 incidents where per-service limits failed during deploys."</li>
+      <li>A <code>Mistake</code> from two weeks ago: "Spent 2 hours on a flaky test that was actually exposing a real race condition in the token bucket. Fixed by adding a 10ms sleep, not by retrying the test."</li>
+    </ul>
+
+    <p>
+      Armed with this context, the agent's investigation is faster and more accurate.
+      It might say:
+    </p>
+
+    <pre data-cookbook-test="off"><code>> Found two relevant memories. Last week we decided to push
+> throttling to the API gateway, and two weeks ago we had a
+> similar flake that turned out to be a real race in the token
+> bucket. Let me look at the test and the bucket implementation
+> together — the flake might be the same kind of issue.
+
+  [reads tests/rate_limit_tests.rs:73]
+  [reads src/rate_limiter.rs]
+  [identifies actual race condition, not a test bug]</code></pre>
+
+    <p>
+      When the agent finds the real fix, it records a new memory with a backlink to
+      the prior mistake:
+    </p>
+
+    <pre data-cookbook-test="off"><code>  [calls mcp__mentisdb__mentisdb_append with
+   thought_type="Correction",
+   content="The flaky test at tests/rate_limit_tests.rs:73 was \
+            the same race condition we hit on May 22. The fix \
+            is in src/rate_limiter.rs:142 — the refill loop \
+            needs a generation counter to avoid lost updates. \
+            The 10ms sleep we added in May was masking it, not \
+            fixing it.",
+   refs=[42]]  # the prior Mistake thought's index</code></pre>
+
+    <p>
+      Next time someone hits a flaky test, the chain has both the symptom, the cause,
+      and the fix, all cross-linked.
+    </p>
+
+    <h3>Daily workflow patterns</h3>
+
+    <h4>End-of-day checkpoint</h4>
+    <p>
+      At the end of a long session, ask the agent to checkpoint:
+    </p>
+
+    <pre data-cookbook-test="off"><code>> Save a checkpoint of what we did today and what's pending
+> for tomorrow.</code></pre>
+
+    <p>
+      The agent writes a <code>Summary</code> with <code>role: Checkpoint</code> that
+      captures the day's state. Tomorrow's session starts with
+      <code>mentisdb_recent_context</code> and picks up where you left off.
+    </p>
+
+    <h4>Cross-session continuity</h4>
+    <p>
+      OpenCode sessions are short by design. To make them feel like one long collaboration,
+      train the agent (and yourself) to:
+    </p>
+    <ol>
+      <li>Always <code>mentisdb_recent_context</code> at session start</li>
+      <li>Always search before writing</li>
+      <li>Always checkpoint before ending a session</li>
+    </ol>
+
+    <p>
+      After a week of this, you'll have a chain dense enough that any new session
+      can answer "what's the state of X?" with a single ranked search.
+    </p>
+
+    <h4>Multi-agent setups</h4>
+    <p>
+      OpenCode can run with multiple agents in parallel (e.g. a planner and an executor).
+      Register them as separate MentisDB agent identities:
+    </p>
+
+    <pre data-cookbook-test="off"><code>mentisdb upsert-agent planner "The Planner" engineering-team
+mentisdb upsert-agent executor "The Executor" engineering-team
+mentisdb upsert-agent critic "The Critic" engineering-team</code></pre>
+
+    <p>
+      Now you can ask "what did the critic object to last time we did this refactor?" and
+      get a clean answer scoped to that agent's perspective.
+    </p>
+
+    <h3>Production notes</h3>
+
+    <h4>Storage location</h4>
+    <p>
+      By default, <code>mentisdb</code> stores chains under <code>~/.mentisdb/chains/</code>.
+      For Docker or CI environments, override with <code>MENTISDB_DATA_DIR</code>:
+    </p>
+
+    <pre data-cookbook-test="off"><code>export MENTISDB_DATA_DIR=/var/lib/mentisdb</code></pre>
+
+    <h4>Backups</h4>
+    <p>
+      Chains are append-only files. Backup is <code>cp -r</code> or <code>rsync</code>.
+      For automated backups, see <a href="cookbook-3-5-deployment.html">3.5 Deployment Patterns</a>.
+    </p>
+
+    <h4>Embeddings</h4>
+    <p>
+      For the best retrieval quality, enable FastEmbed embeddings:
+    </p>
+
+    <pre data-cookbook-test="off"><code>export MENTISDB_EMBEDDING=fastembed
+
+# Or in opencode.json
+{
+  "env": {
+    "MENTISDB_EMBEDDING": "fastembed"
+  }
+}</code></pre>
+
+    <p>
+      The first run downloads the AllMiniL6V2 model (~90 MB). After that it's cached
+      locally and embeddings are computed on every append. See
+      <a href="cookbook-3-1-embedding-providers.html">3.1 Embedding Provider Selection</a>
+      for the full tradeoff matrix.
+    </p>
+
+    <h3>Troubleshooting</h3>
+
+    <h4>"The mentisdb_* tools don't appear in OpenCode"</h4>
+    <ul>
+      <li>Check the JSON syntax in <code>opencode.json</code> (use <code>opencode.jsonc</code> if you want comments)</li>
+      <li>Verify <code>mentisdb --mode stdio</code> works from the command line first</li>
+      <li>Check <code>~/.config/opencode/logs/</code> for MCP startup errors</li>
+      <li>Restart OpenCode — config is read at startup, not hot-reloaded</li>
+    </ul>
+
+    <h4>"The agent appends without searching"</h4>
+    <p>
+      The primer was probably not pasted, or the skill file isn't loading. Check that
+      <code>.opencode/skills/mentisdb.md</code> exists and contains the search-first
+      discipline section. Some OpenCode versions require skill files to have a YAML
+      frontmatter header — see the skill format docs.
+    </p>
+
+    <h4>"Search returns nothing useful"</h4>
+    <ul>
+      <li>Make sure <code>mentisdb_ranked_search</code> is being called with a <code>text</code> parameter, not just filters</li>
+      <li>Enable RRF reranking: <code>enable_reranking=true</code> in the call</li>
+      <li>Check <code>min_importance</code> and <code>min_confidence</code> thresholds — they might be filtering good hits</li>
+      <li>If using FastEmbed, verify the vector sidecar isn't stale: <code>mentisdb vectors rebuild</code></li>
+    </ul>
+
+    <h4>"The chain grows too fast / gets too noisy"</h4>
+    <p>
+      You're hitting the dedup problem. Solutions:
+    </p>
+    <ul>
+      <li>Lower <code>importance</code> on routine <code>Subgoal</code> thoughts (already at 0.4 by default — go to 0.2)</li>
+      <li>Use <code>scope:session</code> for routine steps that don't need to be shared</li>
+      <li>Run <code>mentisdb compact</code> periodically to merge near-duplicates</li>
+      <li>Set <code>MENTISDB_DEDUP_THRESHOLD=0.85</code> to auto-supersede near-duplicates</li>
+    </ul>
+
+    <h3>What you've built</h3>
+    <p>
+      You now have OpenCode as a long-running collaborator with a durable memory. Every
+      session picks up where the last one left off. Every decision, mistake, and lesson
+      is recorded, cross-linked, and retrievable. The agent stops forgetting and starts
+      learning.
+    </p>
+
+    <p>
+      The next chapter covers the same setup for Claude Code, which is the most popular
+      CLI coding agent and has a slightly different MCP configuration pattern.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-3-5-deployment.html">← 3.5 Deployment Patterns</a> ·
+      <a href="cookbook-4-2-claude-code.html">4.2 Claude Code →</a>
+    </nav>
+  </article>
+
+  <footer>
+    <p>MentisDB Cookbook · <a href="cookbook.html">↑ Table of Contents</a></p>
+  </footer>
+</body>
+</html>
