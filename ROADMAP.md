@@ -164,14 +164,152 @@ The next phase closes the remaining competitive gaps and ships what enterprise u
 ### Academic Benchmark Verification
 - **Partner with an academic group** — Virginia Tech Sanghani Center or similar; independently verify LoCoMo and LongMemEval scores like Hindsight did
 
-### Enterprise
-- **MentisDB Cloud** — managed service, zero-infrastructure deployment
-- **Token tracking** — per-agent usage metrics
-- **Compliance exports** — SOC2, GDPR audit trails
+### Enterprise (Dual-Track Strategy)
+
+**Track A: World-Class Library (Primary — Now)**
+- **Crates.io excellence** — complete rustdoc, examples, cookbook, migration guides
+- **Agent Memory Cookbook** — 10+ runnable patterns for RAG, multi-agent handoff, long-running tasks, episodic memory, semantic compression
+- **Ecosystem connectors** — native LangChain store, LlamaIndex connector, Claude Code/Cursor plugins
+- **Academic benchmark verification** — independent LoCoMo/LongMemEval validation (target: ≥85% R@10)
+- **Zero-dep local-first** — no LLM required, embedded sled storage, hash-chain integrity
+
+**Track B: Managed Cloud Service (Secondary — After Library Maturity)**
+- **Multi-tenancy** — org/workspace/chains isolation, per-tenant API keys, RBAC
+- **Managed embeddings** — pre-warmed FastEmbed/OpenAI-compatible model server, no cold starts
+- **HNSW/Quantized ANN** — sub-100ms p95 at 10M+ vectors (see HNSW note below)
+- **Usage metering & billing** — per-request, per-GB, per-seat tiers
+- **SLA/observability** — health endpoints, latency percentiles, backup/restore API, audit logs
+- **Import/Export UX** — one-click JSONL/CSV/Parquet, schema migration
+- **Compliance** — SOC2, GDPR audit trails, VPC deployment option
+
+**Pricing Target (When Track B Ships)**
+| Tier | Monthly | Includes |
+|------|---------|----------|
+| Hobby | $0 | 10k vectors, 100 MB, 1k req/day, shared CPU |
+| Starter | $49 | 1M vectors, 2 GB, 100k req/day, dedicated CPU, API keys |
+| Pro | $199 | 10M vectors, 20 GB, 1M req/day, HNSW, custom embeddings, SSO |
+| Enterprise | Custom | Unlimited, VPC, SLA, dedicated infra, audit logs, support |
+
+**Go/No-Go Gate for Track B**: Library reaches ≥85% LoCoMo R@10, 3+ design partners committed, cookbook published, crates.io downloads >1k/mo.
 
 ### Developer Experience
 - **Browser extension** — read/write memories from any webpage
 - **Self-improving agent primitives** — agents that update their own skill files
+- **Agent Memory Cookbook** — deployed at docs.mentisdb.com/cookbook; 10+ patterns with runnable code
+
+---
+
+## What Is HNSW? (And Why MentisDB Needs It)
+
+**HNSW = Hierarchical Navigable Small World graphs**
+
+It is the dominant algorithm for *approximate nearest neighbor search* (ANNS) at scale. Pinecone, Qdrant, Weaviate, Milvus, Vespa, and OpenSearch all use HNSW or variants.
+
+### The Problem
+Exact cosine search over 10M vectors of dimension 1536 requires ~60 GB RAM and scans take seconds. Linear scan doesn't scale.
+
+### The HNSW Idea
+Build a multi-layer graph where:
+- **Layer 0** = all vectors, connected to ~16-64 nearest neighbors (dense connectivity)
+- **Layer 1** = subset (~1/4), longer-range connections
+- **Layer 2** = subset of layer 1, even longer range
+- ...
+- **Top layer** = few entry points, global navigation
+
+Search starts at the top layer, greedily walks toward the query vector, drops down a layer, repeats. Typical hops: 50-200 total distance computations vs 10M for brute force.
+
+### Key Parameters
+- `M` = max connections per node (default 16-48). Higher = better recall, more memory.
+- `efConstruction` = search width during index build (default 100-400). Higher = better graph quality, slower build.
+- `efSearch` = search width at query time (default 50-200). Higher = better recall, slower query.
+
+### Why MentisDB Needs It
+| Current | With HNSW |
+|---------|-----------|
+| Linear scan, exact cosine | Sublinear graph search, ~95-99% recall |
+| ~50k vectors practical | 10M+ vectors practical |
+| p95 ~200ms at 50k | p95 ~10-50ms at 1M+ |
+| Memory: 4 bytes × dim × N | Memory: ~1.1× vectors + graph edges |
+
+### Integration Path for MentisDB
+1. **Keep exact f32 as reference** — never lose deterministic, auditable search
+2. **HNSW as optional `VectorSearchBackend`** — same trait, swapped implementation
+3. **Quantized HNSW** — store compressed vectors in graph nodes (TurboQuant/4-bit), exact vectors on disk for rerank
+4. **Filter-aware search** — HNSW with bitmap/pre-filter support (MentisDB's filter-first model maps well)
+5. **Incremental build** — HNSW supports online inserts; deletes via tombstone + periodic rebuild
+
+### Rust Crates to Evaluate
+- `hnsw` — pure Rust, no BLAS, used by Qdrant's early versions
+- `arroy` — used by Meilisearch, supports mmap, incremental
+- `vectorsearch` — newer, SIMD-optimized
+- Or wrap `faiss`/`hnswlib` via FFI (heavier deps)
+
+**Decision**: Prototype `hnsw` crate behind feature flag after cookbook v1. Benchmark against exact f32 at 100k, 1M, 10M. Target: ≥95% recall@10 with <50ms p95 at 1M vectors.
+
+---
+
+## Agent Memory Cookbook (docs.mentisdb.com/cookbook)
+
+**Status**: In progress — see `/docs/cookbook/` for source files.
+
+### Table of Contents
+
+#### Part 0: Foundations
+0.1  **Why Agent Memory Matters** — the problem space, LLM context limits, hallucination reduction
+0.2  **MentisDB Mental Model** — chains, thoughts, agents, embeddings, retrieval modes
+0.3  **Quickstart: Your First Memory** — 5-minute tutorial from `cargo add mentisdb` to first search
+0.4  **Search-First Discipline** — the `recent_context → ranked_search → append` loop
+
+#### Part 1: Core Patterns (Library Users)
+1.1  **Episodic Task Memory** — remember what you did, why, and what failed across sessions
+1.2  **Semantic Fact Extraction** — LLM-extracted `Decision`, `Constraint`, `Insight` with review workflow
+1.3  **Multi-Agent Handoff** — `Summary` + `role: Checkpoint` + `BranchesFrom` for seamless context transfer
+1.4  **Long-Running Project Memory** — entity types, temporal validity, dedup, cross-chain federation
+1.5  **RAG Over Agent History** — hybrid lexical + vector + graph retrieval for "what did we decide about X?"
+1.6  **Preference Learning** — `PreferenceUpdate` thoughts, confidence decay, conflict resolution
+1.7  **Error/Mistake Memory** — `Mistake` + `Correction` pairs, automatic `LessonLearned` synthesis
+
+#### Part 2: Advanced Patterns
+2.1  **Semantic Compression** — `Summary` checkpoints, sliding window, importance-weighted retention
+2.2  **Cross-Session Continuity** — agent-scoped context, session scopes, identity persistence
+2.3  **Dynamic Skill Loading** — upload skill → version → `mentisdb_read_skill` → execute
+2.4  **Federated Team Memory** — branch per feature/tenant, merge with `BranchesFrom` provenance
+2.5  **Webhook-Driven Workflows** — append → HTTP callback → downstream processing → write back
+
+#### Part 3: Production Hardening
+3.1  **Embedding Provider Selection** — local (256d) vs FastEmbed (384d) vs OpenAI (1536d/3072d) tradeoffs
+3.2  **Vector Sidecar Management** — rebuild strategies, freshness, incremental sync, corruption recovery
+3.3  **Retrieval Tuning** — BM25 weights, RRF parameters, vector thresholds, graph expansion depth
+3.4  **Benchmarking Your Memory** — LoCoMo/LongMemEval methodology, custom eval sets, CI integration
+3.5  **Deployment Patterns** — stdio MCP, HTTP MCP, REST, library-only, systemd, Docker, Railway
+
+#### Part 4: Using MentisDB with Agentic Harnesses (User On-Ramp)
+4.1  **OpenCode** — current harness, local MCP + skill store primer
+4.2  **Claude Code (CLI)** — `claude mcp add` setup, skill priming, working session
+4.3  **Claude Desktop** — stdio MCP config, one-click memory for desktop Claude
+4.4  **Codex (OpenAI CLI)** — `~/.codex/config.toml` MCP setup
+4.5  **Hermes (Nous Research)** — native `MemoryProvider` integration
+4.6  **Cursor** — IDE MCP server config, `.cursorrules` priming
+4.7  **Continue.dev** — open-source IDE assistant with MentisDB provider
+4.8  **Cline & Aider** — VS Code extension and CLI tool integrations
+4.9  **Zed, Windsurf, Other MCP Clients** — generic config patterns
+
+#### Part 5: Custom Agent Recipes (Copy-Paste Code)
+5.1  **Rust: Minimal Agent with Memory** — 50-line complete example
+5.2  **Python: LangChain + MentisDB** — `MentisDbMemory` conversation buffer
+5.3  **Python: Custom Agent with pymentisdb** — direct client, no framework
+5.4  **TypeScript: MCP Client Integration** — stdio + HTTP transport patterns
+5.5  **CLI: Daily Standup Memory** — `mentisdb add --type Decision --tags standup`
+5.6  **Dashboard: Memory Archaeology** — search, filter, graph traverse, export
+
+---
+
+## Next Actions (This Week)
+1. Create `/docs/cookbook/` directory structure
+2. Write 0.1–0.4 (Foundations) as markdown → HTML pipeline
+3. Write 1.1 (Episodic Task Memory) as first complete pattern
+4. Add cookbook nav to docs.mentisdb.com index.html
+5. Publish to GitHub Pages / Railway static site
 
 ---
 
