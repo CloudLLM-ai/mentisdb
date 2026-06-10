@@ -92,6 +92,7 @@ pub(super) fn run_setup(
             plan.url.clone(),
             platform,
             &env,
+            None,
         ) {
             Ok(result) => {
                 writeln!(

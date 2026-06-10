@@ -21,6 +21,8 @@ pub struct SetupCommand {
 pub struct WizardCommand {
     /// Optional preselected MentisDB MCP endpoint URL.
     pub url: Option<String>,
+    /// Optional bearer token for remote integrations (Authorization header).
+    pub bearer_token: Option<String>,
     /// Apply the default detected selection without prompting for confirmation.
     pub assume_yes: bool,
 }
@@ -864,6 +866,7 @@ fn parse_setup(args: Vec<String>) -> Result<CliCommand, String> {
 
 fn parse_wizard(args: Vec<String>) -> Result<CliCommand, String> {
     let mut url = None;
+    let mut bearer_token = None;
     let mut assume_yes = false;
     let mut index = 1;
     while index < args.len() {
@@ -875,6 +878,13 @@ fn parse_wizard(args: Vec<String>) -> Result<CliCommand, String> {
                 url = Some(value.clone());
                 index += 2;
             }
+            "--bearer" | "--token" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--bearer requires a value".to_string())?;
+                bearer_token = Some(value.clone());
+                index += 2;
+            }
             "--yes" | "-y" => {
                 assume_yes = true;
                 index += 1;
@@ -884,7 +894,7 @@ fn parse_wizard(args: Vec<String>) -> Result<CliCommand, String> {
         }
     }
 
-    Ok(CliCommand::Wizard(WizardCommand { url, assume_yes }))
+    Ok(CliCommand::Wizard(WizardCommand { url, bearer_token, assume_yes }))
 }
 
 pub(super) fn parse_integration(value: &str) -> Option<IntegrationKind> {

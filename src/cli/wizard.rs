@@ -50,7 +50,18 @@ pub(super) fn run_wizard(
     } else {
         let entered = boxed_text_prompt(
             out,
-            "Override the default MentisDB URL for all selected integrations?\n(Leave blank to use per-integration defaults)",
+            "Override the default MentisDB URL for all selected integrations?\n(Leave blank to use per-integration defaults)\n\nExamples:\n  http://127.0.0.1:9471     (local HTTP, default port)\n  https://203.0.113.77:9473  (remote HTTPS, default port)\n\nInclude the http:// or https:// scheme and port.",
+            input,
+        )?;
+        (!entered.trim().is_empty()).then_some(entered.trim().to_string())
+    };
+
+    let bearer_override = if let Some(token) = &command.bearer_token {
+        Some(token.clone())
+    } else {
+        let entered = boxed_text_prompt(
+            out,
+            "Optional bearer token for remote integrations (Authorization: Bearer ...)?\n(Leave blank to skip)",
             input,
         )?;
         (!entered.trim().is_empty()).then_some(entered.trim().to_string())
@@ -142,6 +153,7 @@ pub(super) fn run_wizard(
             plan.url.clone(),
             platform,
             &env,
+            bearer_override.clone(),
         ) {
             Ok(result) => {
                 writeln!(
