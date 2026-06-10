@@ -13,6 +13,8 @@ pub(crate) struct IntegrationWriterSettings {
     default_http_url: String,
     /// Default HTTPS MCP URL used by bridge-based clients.
     default_https_url: String,
+    /// Optional bearer token to inject as Authorization header for remote integrations.
+    bearer_token: Option<String>,
 }
 
 impl Default for IntegrationWriterSettings {
@@ -21,6 +23,7 @@ impl Default for IntegrationWriterSettings {
             server_name: "mentisdb".to_owned(),
             default_http_url: "http://127.0.0.1:9471".to_owned(),
             default_https_url: "https://my.mentisdb.com:9473".to_owned(),
+            bearer_token: None,
         }
     }
 }
@@ -49,6 +52,17 @@ impl IntegrationWriterSettings {
             IntegrationKind::ClaudeDesktop => &self.default_https_url,
             _ => &self.default_http_url,
         }
+    }
+
+    /// Return the optional bearer token for Authorization header injection.
+    pub(crate) fn bearer_token(&self) -> Option<&str> {
+        self.bearer_token.as_deref()
+    }
+
+    /// Return a new settings with bearer token set.
+    pub(crate) fn with_bearer_token(mut self, token: Option<String>) -> Self {
+        self.bearer_token = token;
+        self
     }
 }
 

@@ -56,7 +56,7 @@ pub struct ApplyResult {
 pub fn apply_setup(integration: IntegrationKind, url: String) -> io::Result<ApplyResult> {
     let env = PathEnvironment::capture();
     let platform = HostPlatform::current();
-    apply_setup_with_environment(integration, url, platform, &env)
+    apply_setup_with_environment(integration, url, platform, &env, None)
 }
 
 /// Apply setup for one integration using an explicit platform and environment snapshot.
@@ -65,6 +65,7 @@ pub fn apply_setup_with_environment(
     url: String,
     platform: HostPlatform,
     env: &PathEnvironment,
+    bearer_token: Option<String>,
 ) -> io::Result<ApplyResult> {
     let setup_plan =
         build_setup_plan_for_integration(integration, url, platform, env).ok_or_else(|| {
@@ -73,12 +74,17 @@ pub fn apply_setup_with_environment(
                 "unsupported integration target",
             )
         })?;
-    apply_setup_plan(&setup_plan, &OsFileSystem)
+    apply_setup_plan(&setup_plan, &OsFileSystem, bearer_token)
 }
 
-fn apply_setup_plan(plan: &SetupPlan, fs: &impl FileSystem) -> io::Result<ApplyResult> {
-    let writer_settings =
-        IntegrationWriterSettings::default().with_url_for(plan.integration, plan.url.clone());
+fn apply_setup_plan(
+    plan: &SetupPlan,
+    fs: &impl FileSystem,
+    bearer_token: Option<String>,
+) -> io::Result<ApplyResult> {
+    let writer_settings = IntegrationWriterSettings::default()
+        .with_url_for(plan.integration, plan.url.clone())
+        .with_bearer_token(bearer_token);
     let apply_plan = build_apply_plan(plan, &writer_settings);
     let changed = apply_integration_plan(&apply_plan, fs)?;
 
