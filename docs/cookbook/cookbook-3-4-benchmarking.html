@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3.4 Benchmarking Your Memory — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 3 — Production Hardening · <a href="cookbook.html">Back to TOC</a></nav>
+    <h2>3.4 Benchmarking Your Memory</h2>
+
+    <p>
+      A memory benchmark should answer one practical question: when an agent asks a realistic
+      question, does the right memory show up soon enough to use? Latency matters, but recall is
+      the quality gate. A fast system that misses the decision is just confidently wrong.
+    </p>
+
+    <h3>The pattern</h3>
+    <ul>
+      <li>Create a small eval set from real incidents, decisions, and handoffs.</li>
+      <li>Store expected thought indices or stable ids for each query.</li>
+      <li>Measure recall at <code>k</code> before latency tuning.</li>
+      <li>Run the eval in CI before changing retrieval knobs or embedding providers.</li>
+    </ul>
+
+    <pre><code>struct MemoryEvalCase {
+    query: &amp;'static str,
+    expected_content: &amp;'static str,
+}
+
+fn benchmark_recall_at_k() -&gt; io::Result&lt;()&gt; {
+    let dir = tempfile::tempdir()?;
+    let adapter = BinaryStorageAdapter::for_chain_key(dir.path(), "cookbook-benchmark");
+    let mut chain = MentisDb::open_with_storage(Box::new(adapter))?;
+
+    chain.upsert_agent(
+        "eval-agent",
+        Some("Eval Agent"),
+        Some("memory-team"),
+        Some("Builds retrieval eval sets"),
+        None,
+    )?;
+
+    for content in [
+        "Decision: use bearer tokens for remote MCP access.",
+        "Constraint: dashboard access must require a PIN on shared hosts.",
+        "Lesson: stale vector sidecars should be rebuilt from the append-only log.",
+    ] {
+        chain.append_thought(
+            "eval-agent",
+            ThoughtInput::new(ThoughtType::Decision, content)
+                .with_concepts(["deployment", "security"])
+                .with_importance(0.8),
+        )?;
+    }
+
+    let cases = [
+        MemoryEvalCase {
+            query: "How do we secure remote MCP access?",
+            expected_content: "bearer tokens",
+        },
+        MemoryEvalCase {
+            query: "What protects the dashboard on shared hosts?",
+            expected_content: "PIN",
+        },
+    ];
+
+    let mut hits = 0;
+    for case in &amp;cases {
+        let result = chain.query_ranked(
+            &amp;RankedSearchQuery::new()
+                .with_text(case.query)
+                .with_limit(3),
+        );
+        if result
+            .hits
+            .iter()
+            .any(|hit| hit.thought.content.contains(case.expected_content))
+        {
+            hits += 1;
+        }
+    }
+
+    let recall_at_3 = hits as f32 / cases.len() as f32;
+    assert!(recall_at_3 &gt;= 0.5);
+    Ok(())
+}</code></pre>
+
+    <div class="callout">
+      <strong>Use your own queries.</strong> LoCoMo and LongMemEval are useful external bars, but
+      production regressions usually show up first in project-specific questions.
+    </div>
+
+    <h3>What to track</h3>
+    <p>
+      Track recall@5 or recall@10, median latency, p95 latency, and the number of candidates
+      considered. When a benchmark fails, save the query, expected memory, actual top hits, and
+      retrieval settings as a durable thought so future tuning work starts with evidence.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-3-3-retrieval-tuning.html">&larr; 3.3 Retrieval Tuning</a> ·
+      <a href="cookbook-3-5-deployment.html">3.5 Deployment Patterns &rarr;</a>
+    </nav>
+  </article>
+
+  <footer>MentisDB Cookbook · <a href="cookbook.html">Table of Contents</a></footer>
+</body>
+</html>

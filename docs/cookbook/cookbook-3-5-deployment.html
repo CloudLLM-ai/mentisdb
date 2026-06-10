@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3.5 Deployment Patterns — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 3 — Production Hardening · <a href="cookbook.html">Back to TOC</a></nav>
+    <h2>3.5 Deployment Patterns</h2>
+
+    <p>
+      MentisDB can run embedded in a Rust process, as a local stdio MCP process, as HTTP/HTTPS
+      MCP, as REST, or with the dashboard enabled. The right deployment is the smallest surface
+      that satisfies your agent topology.
+    </p>
+
+    <h3>Deployment choices</h3>
+    <ul>
+      <li><strong>Library-only:</strong> use <code>MentisDb</code> directly inside your application.</li>
+      <li><strong>Stdio MCP:</strong> best for desktop clients and local harnesses.</li>
+      <li><strong>HTTP MCP:</strong> best for local development with multiple tools.</li>
+      <li><strong>HTTPS MCP/REST:</strong> required for remote agents and shared servers.</li>
+      <li><strong>Dashboard:</strong> useful for operators, protected with a PIN on shared hosts.</li>
+    </ul>
+
+    <pre><code>fn inspect_deployment_config_shape() {
+    let config = mentisdb::server::MentisDbServerConfig::from_env();
+
+    assert_eq!(config.mcp_addr.port(), 9471);
+    assert_eq!(config.rest_addr.port(), 9472);
+    assert!(config.https_mcp_addr.is_some());
+    assert!(config.https_rest_addr.is_some());
+    assert!(config.dashboard_addr.is_some());
+
+    let data_dir = mentisdb::server::default_mentisdb_dir();
+    assert!(!data_dir.as_os_str().is_empty());
+}</code></pre>
+
+    <h3>Local daemon</h3>
+    <pre data-cookbook-test="off"><code>cargo install mentisdb
+mentisdb
+
+# In another terminal:
+mentisdb wizard</code></pre>
+
+    <h3>Remote HTTPS MCP</h3>
+    <pre data-cookbook-test="off"><code>export MENTISDB_BIND_HOST=0.0.0.0
+export MENTISDB_HTTPS_MCP_PORT=9473
+export MENTISDB_DASHBOARD_PORT=9475
+export MENTISDB_DASHBOARD_PIN='choose-a-real-pin'
+
+mentisdb bearer-token create --scope global
+mentisdb cert your.domain.example
+mentisdb</code></pre>
+
+    <h3>Systemd unit sketch</h3>
+    <pre data-cookbook-test="off"><code>[Unit]
+Description=MentisDB daemon
+After=network-online.target
+
+[Service]
+User=mentisdb
+EnvironmentFile=/etc/mentisdb/mentisdb.env
+ExecStart=/usr/local/bin/mentisdb --headless
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target</code></pre>
+
+    <div class="callout">
+      <strong>Remote rule:</strong> never expose a remote MCP server without bearer-token access,
+      TLS, and a clear chain-scope policy.
+    </div>
+
+    <nav class="crumbs">
+      <a href="cookbook-3-4-benchmarking.html">&larr; 3.4 Benchmarking Your Memory</a> ·
+      <a href="cookbook-4-1-opencode.html">4.1 OpenCode &rarr;</a>
+    </nav>
+  </article>
+
+  <footer>MentisDB Cookbook · <a href="cookbook.html">Table of Contents</a></footer>
+</body>
+</html>
