@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Agent Memory Cookbook — How to Make Coding Agents Remember</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.45rem; margin-bottom: 0.5rem; line-height: 1.25; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article .meta { color: #888; font-size: 0.85rem; margin-bottom: 1rem; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin: 1rem 0 1.5rem; border-radius: 0 4px 4px 0; }
+    .cta { display: inline-block; margin: 0.5rem 0 1rem; padding: 0.75rem 1rem; border-radius: 5px; background: #4361ee; color: #fff; text-decoration: none; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="index.html">MentisDB Blog</a></h1>
+    <p>Durable memory for AI agents</p>
+  </header>
+
+  <article>
+    <h2>The Agent Memory Cookbook — How to Make Coding Agents Remember</h2>
+    <div class="meta">June 10, 2026</div>
+
+    <p>
+      We just published the <strong>Agent Memory Cookbook</strong>: a practical guide to using
+      MentisDB with coding agents, MCP harnesses, and custom applications that need durable memory.
+    </p>
+
+    <a class="cta" href="cookbook/cookbook.html">Read the Agent Memory Cookbook →</a>
+
+    <p>
+      The cookbook exists because most people do not start by writing a custom agent. They start
+      with a coding harness: OpenCode, Codex, Claude Code, Cursor, Claude Desktop, or another MCP
+      client. The hard part is not just connecting the tool. The hard part is teaching the model
+      when to search memory, when to append a new memory, what to skip, and how to checkpoint so
+      tomorrow's session starts smarter than today's.
+    </p>
+
+    <div class="callout">
+      <p>
+        The core lesson: <strong>"use MentisDB" is not enough</strong>. Good agent memory is an
+        operating loop: bootstrap, read the skill, load recent context, search before work, distill
+        durable lessons, append typed thoughts, and checkpoint before context loss.
+      </p>
+    </div>
+
+    <h3>What is inside</h3>
+    <p>The cookbook is organized around how people actually adopt MentisDB:</p>
+    <ul>
+      <li><strong>Foundations</strong> — why agent memory matters, the MentisDB mental model, quickstart, and search-first discipline.</li>
+      <li><strong>Operator Playbook</strong> — prompts, daily memory loop, what to save vs skip, and how to make OpenCode/Codex/Claude Code squeeze value out of MentisDB.</li>
+      <li><strong>Core Patterns</strong> — episodic task memory, handoff, long-running projects, preference learning, and mistake memory.</li>
+      <li><strong>Advanced Patterns</strong> — semantic compression, dynamic skills, webhooks, and federated team memory.</li>
+      <li><strong>Production Hardening</strong> — embedding provider selection, vector sidecars, retrieval tuning, benchmarking, and deployment.</li>
+      <li><strong>Harness Guides and Recipes</strong> — OpenCode, Claude Code, Codex, Cursor, TypeScript MCP, Python, Rust, CLI, and dashboard workflows.</li>
+    </ul>
+
+    <h3>The operator playbook is the center</h3>
+    <p>
+      The most important new chapter is <a href="cookbook/cookbook-1-0-operator-playbook.html">1.0 Operator Playbook for Coding Agents</a>.
+      It is written for regular users running a coding agent through MCP. It gives copy-paste prompts
+      for starting a task, debugging a failure, recording a durable lesson, writing a checkpoint,
+      and deciding when a repeated lesson should become a skill.
+    </p>
+
+    <p>For example, a good session starts like this:</p>
+    <pre><code>Use MentisDB as your durable memory system for this repository.
+
+Before doing work:
+1. Find or bootstrap the correct project chain.
+2. Read the core MentisDB skill/instructions.
+3. Load recent context and the latest checkpoint.
+4. Search for prior decisions, constraints, mistakes, and lessons related to this task.
+5. Tell me what you found before editing files.</code></pre>
+
+    <p>
+      That one habit changes the agent's behavior. It stops treating every session as a cold start.
+      It starts seeing old decisions, failed fixes, constraints, user preferences, and verification
+      history before it edits files.
+    </p>
+
+    <h3>Cookbook-as-test</h3>
+    <p>
+      The cookbook is also wired into CI. Rust examples are extracted from the HTML and compiled by
+      <code>cargo test --test cookbook_tests --all-features</code>. If the public API drifts, cookbook
+      examples fail before they ship.
+    </p>
+
+    <p>
+      That matters because memory documentation is only useful if the examples are real. We already
+      used the pipeline to catch stale APIs while writing the book, and it now protects future edits.
+    </p>
+
+    <h3>Why this matters</h3>
+    <p>
+      Without durable memory, coding agents are brilliant in the moment and amnesiac by design.
+      With a good MentisDB operating loop, the same tools accumulate context: decisions, traps,
+      preferences, task completions, and skills. The model is still the model, but the session begins
+      with better evidence every day.
+    </p>
+
+    <p>
+      Start here: <a href="cookbook/cookbook.html">Agent Memory Cookbook</a>.
+    </p>
+  </article>
+
+  <footer>
+    <a href="index.html">← Back to blog</a>
+  </footer>
+</body>
+</html>
