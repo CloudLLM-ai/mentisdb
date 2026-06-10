@@ -6,10 +6,15 @@ pub(super) fn build(
     plan: &SetupPlan,
     settings: &IntegrationWriterSettings,
 ) -> IntegrationApplyPlan {
-    let mut patch = TomlPatch::new().set_path(
-        ["mcp_servers", settings.server_name(), "url"],
-        TomlValue::from(settings.url_for(plan.integration).to_owned()),
-    );
+    let mut patch = TomlPatch::new()
+        .set_path(
+            ["mcp_servers", settings.server_name(), "url"],
+            TomlValue::from(settings.url_for(plan.integration).to_owned()),
+        )
+        .set_path(
+            ["mcp_servers", settings.server_name(), "enabled"],
+            TomlValue::from(true),
+        );
     if let Some(token) = settings.bearer_token() {
         patch = patch.set_path(
             ["mcp_servers", settings.server_name(), "headers", "Authorization"],
