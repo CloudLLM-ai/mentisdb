@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>3.5 Deployment Patterns — MentisDB Cookbook</title>
+  <title>3.5 Deployment Patterns — The MentisDB Agent Memory Cookbook</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
@@ -31,7 +31,7 @@
     <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
       <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
     </nav>
-    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <h1><a href="cookbook.html">The MentisDB Agent Memory Cookbook</a></h1>
     <p>Patterns and recipes for building AI agents that remember</p>
   </header>
 
@@ -44,6 +44,13 @@
       MCP, as REST, or with the dashboard enabled. The right deployment is the smallest surface
       that satisfies your agent topology.
     </p>
+
+    <div class="callout">
+      <strong>Recommended for teams:</strong> run MentisDB as a long-lived HTTPS MCP server in the
+      cloud or on your internal network, protect it with bearer tokens, and have every coding
+      harness connect remotely. Local mode is convenient for solo experiments; shared server mode
+      is how agent memories compound across people, machines, and tools.
+    </div>
 
     <h3>Deployment choices</h3>
     <ul>
@@ -69,7 +76,7 @@
 
     <h3>Local daemon</h3>
     <pre data-cookbook-test="off"><code>cargo install mentisdb
-mentisdb
+mentisdb          # keep this terminal running; it starts the daemon
 
 # In another terminal:
 mentisdb wizard</code></pre>
@@ -80,9 +87,9 @@ export MENTISDB_HTTPS_MCP_PORT=9473
 export MENTISDB_DASHBOARD_PORT=9475
 export MENTISDB_DASHBOARD_PIN='choose-a-real-pin'
 
-mentisdb bearer-token create --scope global
+mentisdb bearertoken create --global codex-admin
 mentisdb cert your.domain.example
-mentisdb</code></pre>
+mentisdb          # restart after creating/updating certs and env vars</code></pre>
 
     <h3>Systemd unit sketch</h3>
     <pre data-cookbook-test="off"><code>[Unit]
@@ -110,6 +117,6 @@ WantedBy=multi-user.target</code></pre>
     </nav>
   </article>
 
-  <footer>MentisDB Cookbook · <a href="cookbook.html">Table of Contents</a></footer>
+  <footer>The MentisDB Agent Memory Cookbook · <a href="cookbook.html">Table of Contents</a></footer>
 </body>
 </html>

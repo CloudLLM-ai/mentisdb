@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Agent Memory Cookbook — MentisDB</title>
+  <title>The MentisDB Agent Memory Cookbook — MentisDB</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -44,14 +44,14 @@
     <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
       <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
     </nav>
-    <h1>Agent Memory Cookbook</h1>
+    <h1>The MentisDB Agent Memory Cookbook</h1>
     <p>Patterns and recipes for building AI agents that remember</p>
   </header>
 
   <article>
     <h2>About This Book</h2>
     <p>
-      The Agent Memory Cookbook is a practical guide to using <a href="https://mentisdb.com">MentisDB</a>
+      The MentisDB Agent Memory Cookbook is a practical guide to using <a href="https://mentisdb.com">MentisDB</a>
       as the memory layer for AI agents, LLM applications, and multi-agent systems.
     </p>
     <p>
@@ -134,7 +134,7 @@
       <li class="toc-chapter"><a href="cookbook-5-2-python-langchain.html">5.2 Python: LangChain + MentisDB</a> — <code>MentisDbMemory</code> buffer</li>
       <li class="toc-chapter"><a href="cookbook-5-3-python-pymentisdb.html">5.3 Python: Custom Agent with pymentisdb</a> — direct client, no framework</li>
       <li class="toc-chapter"><a href="cookbook-5-4-typescript-mcp.html">5.4 TypeScript: MCP Client Integration</a> — stdio + HTTP transports</li>
-      <li class="toc-chapter"><a href="cookbook-5-5-cli-standup.html">5.5 CLI: Daily Standup Memory</a> — <code>mentisdb add</code> recipes</li>
+      <li class="toc-chapter"><a href="cookbook-5-5-cli-standup.html">5.5 Daily Standup Memory</a> — save team updates through your MCP-connected harness</li>
       <li class="toc-chapter"><a href="cookbook-5-6-dashboard-archaeology.html">5.6 Dashboard: Memory Archaeology</a> — search, filter, graph traverse</li>
     </ul>
 
@@ -147,6 +147,11 @@
       If you use coding agents through MCP, read <a href="cookbook-1-0-operator-playbook.html">1.0 Operator Playbook</a>
       next. It teaches what to prompt, when to search, what to save, what to skip, and how to
       make memory compound across OpenCode, Codex, Claude Code, and similar harnesses.
+    </p>
+    <p>
+      Local MentisDB is fine for learning and solo work. For teams, the recommended setup is a
+      shared HTTPS MCP server in the cloud or on your internal network, protected with bearer
+      tokens, so every teammate and coding harness writes to the same durable memory.
     </p>
     <p>
       If you're integrating MentisDB into an application or custom harness, continue into the
@@ -171,7 +176,7 @@
   </article>
 
   <footer>
-    <p>MentisDB Cookbook · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a> · <a href="https://mentisdb.com">mentisdb.com</a></p>
+    <p>The MentisDB Agent Memory Cookbook · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a> · <a href="https://mentisdb.com">mentisdb.com</a></p>
   </footer>
 </body>
 </html>
