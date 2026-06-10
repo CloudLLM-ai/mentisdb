@@ -1,3 +1,20 @@
+0.10.2.47 UNRELEASED
+  - feat(wizard): interactive setup wizard now supports Grok CLI / Build TUI
+    harness (writes to ~/.grok/config.toml on macOS, ~/.config/grok on Linux,
+    %APPDATA%\grok on Windows).
+  - feat(wizard): optional bearer token collection via `--bearer` / `--token`
+    flag or interactive prompt; token is injected as `Authorization: Bearer ...`
+    header (or `http_headers` map for TOML-based clients) for all remote
+    integrations.
+  - feat(integrations): Codex, OpenCode, Qwen, Claude Code, Copilot CLI,
+    Gemini CLI, VS Code Copilot, and Grok targets now write the bearer token
+    using the exact header shape observed in real user configs
+    (`headers.Authorization` for JSON clients, `http_headers.Authorization`
+    for TOML clients).
+  - fix(wizard): URL override prompt now shows two concrete examples with
+    schemes and default ports (`http://127.0.0.1:9471`, `https://203.0.113.77:9473`)
+    and explicitly instructs users to include the http/https prefix.
+
 0.10.1.46 JUN/05/2026
   - feat(auth): built-in bearer-token authentication for remote MCP servers.
     `MENTISDB_BEARER_TOKEN_ACCESS=true` now protects standard Streamable HTTP
