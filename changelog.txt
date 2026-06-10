@@ -14,6 +14,14 @@
   - fix(wizard): URL override prompt now shows two concrete examples with
     schemes and default ports (`http://127.0.0.1:9471`, `https://203.0.113.77:9473`)
     and explicitly instructs users to include the http/https prefix.
+  - fix(integrations): `url_for` now correctly prefers http overrides when the
+    user supplies an http:// URL even if the https slot still contains a value;
+    Grok writer only emits `NODE_TLS_REJECT_UNAUTHORIZED` env var for https URLs.
+  - feat(wizard): when Grok CLI is selected with an https URL, show a clear
+    warning that Grok cannot skip self-signed certificate verification and
+    recommend using the plain http:// URL on port 9471 instead.
+  - feat(wizard): setup plan summary now shows a masked bearer token hint
+    (first 8 chars + *****) when a bearer token is provided.
 
 0.10.1.46 JUN/05/2026
   - feat(auth): built-in bearer-token authentication for remote MCP servers.
