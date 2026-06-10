@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>2.5 Webhook-Driven Workflows — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 2 — Advanced Patterns · <a href="cookbook.html">Back to TOC</a></nav>
+    <h2>2.5 Webhook-Driven Workflows</h2>
+
+    <p>
+      Polling memory chains wastes time and misses urgency. Webhooks let an append wake another
+      system immediately: a CI bot, indexing worker, monitoring process, or second agent.
+      Delivery is asynchronous, so appending a thought does not wait for the downstream service.
+    </p>
+
+    <h3>The pattern</h3>
+    <ul>
+      <li>Register an HTTPS endpoint with an optional chain filter.</li>
+      <li>Add a thought-type filter for high-signal events.</li>
+      <li>Keep webhook handlers idempotent; retries are expected.</li>
+      <li>Write results back as new thoughts, not as hidden side effects.</li>
+    </ul>
+
+    <pre><code>fn configure_webhook_filters() -&gt; io::Result&lt;()&gt; {
+    let dir = tempfile::tempdir()?;
+    let manager = mentisdb::WebhookManager::new(dir.path().to_path_buf())?;
+
+    let mut thought_types = std::collections::HashSet::new();
+    thought_types.insert(mentisdb::ThoughtType::TaskComplete);
+    thought_types.insert(mentisdb::ThoughtType::Mistake);
+
+    let registration = manager.register_webhook(
+        "https://example.com/mentisdb/events".to_string(),
+        Some("prod-agent-memory".to_string()),
+        Some(thought_types),
+    )?;
+
+    assert!(registration.active);
+    assert_eq!(registration.chain_key_filter.as_deref(), Some("prod-agent-memory"));
+    assert!(registration
+        .thought_type_filter
+        .as_ref()
+        .unwrap()
+        .contains(&amp;mentisdb::ThoughtType::TaskComplete));
+
+    let all = manager.list_webhooks();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].id, registration.id);
+
+    assert!(manager.delete_webhook(registration.id)?);
+    assert!(manager.list_webhooks().is_empty());
+    Ok(())
+}</code></pre>
+
+    <h3>Payload shape</h3>
+    <pre data-cookbook-test="off"><code>{
+  "event": "thought.appended",
+  "chain_key": "prod-agent-memory",
+  "thought": {
+    "thought_type": "TaskComplete",
+    "agent_id": "release-bot",
+    "content": "Release candidate built and smoke-tested"
+  }
+}</code></pre>
+
+    <div class="callout">
+      <strong>Do not do critical writes inside the webhook handler only.</strong> If the action
+      matters to future agents, append a follow-up thought that records the outcome.
+    </div>
+
+    <nav class="crumbs">
+      <a href="cookbook-2-4-federated-team-memory.html">&larr; 2.4 Federated Team Memory</a> ·
+      <a href="cookbook-3-1-embedding-provider-selection.html">3.1 Embedding Provider Selection &rarr;</a>
+    </nav>
+  </article>
+
+  <footer>MentisDB Cookbook · <a href="cookbook.html">Table of Contents</a></footer>
+</body>
+</html>

@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3.2 Vector Sidecar Management — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 3 — Production Hardening · <a href="cookbook.html">Back to TOC</a></nav>
+    <h2>3.2 Vector Sidecar Management</h2>
+
+    <p>
+      The chain log is canonical. A vector sidecar is a derived index that can be rebuilt from
+      the log at any time. Treat sidecars as durable caches: useful, integrity-checked, but never
+      the source of truth.
+    </p>
+
+    <h3>The pattern</h3>
+    <ul>
+      <li>Build or load a sidecar with <code>manage_vector_sidecar</code>.</li>
+      <li>Let managed sidecars sync on append for the current handle.</li>
+      <li>Use status APIs to detect stale or missing indexes.</li>
+      <li>Rebuild from the chain log when metadata, model version, or head hash changes.</li>
+    </ul>
+
+    <pre><code>fn manage_vector_sidecar_lifecycle() -&gt; io::Result&lt;()&gt; {
+    let dir = tempfile::tempdir()?;
+    let adapter = BinaryStorageAdapter::for_chain_key(dir.path(), "cookbook-sidecars");
+    let mut chain = MentisDb::open_with_storage(Box::new(adapter))?;
+
+    chain.upsert_agent(
+        "search-agent",
+        Some("Search Agent"),
+        Some("memory-team"),
+        Some("Maintains vector sidecars"),
+        None,
+    )?;
+    chain.append_thought(
+        "search-agent",
+        ThoughtInput::new(
+            ThoughtType::Decision,
+            "Use local embeddings for offline semantic search during development.",
+        )
+        .with_concepts(["embeddings", "offline-search"]),
+    )?;
+
+    let provider = mentisdb::search::LocalTextEmbeddingProvider::new();
+    let sidecar = chain
+        .manage_vector_sidecar(provider)
+        .map_err(|error| io::Error::other(format!("{error:?}")))?;
+    assert_eq!(sidecar.entries.len(), 1);
+
+    chain.append_thought(
+        "search-agent",
+        ThoughtInput::new(
+            ThoughtType::Insight,
+            "Managed sidecars update on append for the open handle.",
+        )
+        .with_concepts(["embeddings", "sidecar-sync"]),
+    )?;
+
+    let statuses = chain.managed_vector_sidecar_statuses()?;
+    assert!(statuses.iter().any(|status| {
+        status.provider_key == "local-text-v1" &amp;&amp; status.sidecar_exists
+    }));
+
+    let result = chain.query_ranked(
+        &amp;RankedSearchQuery::new()
+            .with_text("offline semantic search")
+            .with_limit(3),
+    );
+    assert!(!result.hits.is_empty());
+    Ok(())
+}</code></pre>
+
+    <div class="callout">
+      <strong>Production rule:</strong> back up the chain log first. Sidecars can be rebuilt;
+      lost append-only thoughts cannot.
+    </div>
+
+    <nav class="crumbs">
+      <a href="cookbook-3-1-embedding-provider-selection.html">&larr; 3.1 Embedding Provider Selection</a> ·
+      <a href="cookbook-3-3-retrieval-tuning.html">3.3 Retrieval Tuning &rarr;</a>
+    </nav>
+  </article>
+
+  <footer>MentisDB Cookbook · <a href="cookbook.html">Table of Contents</a></footer>
+</body>
+</html>

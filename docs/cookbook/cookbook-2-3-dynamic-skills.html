@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>2.3 Dynamic Skill Loading — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Part 2 — Advanced Patterns · <a href="cookbook.html">Back to TOC</a></nav>
+    <h2>2.3 Dynamic Skill Loading</h2>
+
+    <p>
+      Skills are versioned operating instructions for agents. A skill is not a prompt pasted into
+      one chat; it is an immutable artifact in the registry. Agents discover skills during
+      bootstrap, read the ones they trust, and then apply them consistently across sessions.
+    </p>
+
+    <h3>The pattern</h3>
+    <ul>
+      <li>Upload skills as Markdown or JSON with a stable <code>skill_id</code>.</li>
+      <li>Read skills at session start and always check returned warnings.</li>
+      <li>Upload a new version instead of editing history.</li>
+      <li>Search skills by tag, trigger, text, status, or uploader.</li>
+    </ul>
+
+    <pre><code>fn dynamic_skill_loading() -&gt; io::Result&lt;()&gt; {
+    let dir = tempfile::tempdir()?;
+    let mut registry = mentisdb::SkillRegistry::open(dir.path())?;
+
+    let v1 = r#"---
+tags: [rust, review]
+triggers: [review]
+---
+# Code Review
+
+Check correctness before style. Report findings first.
+"#;
+
+    let summary = registry.upload_skill(
+        mentisdb::SkillUpload::new("review-agent", mentisdb::SkillFormat::Markdown, v1)
+            .with_skill_id("code-review"),
+    )?;
+    assert_eq!(summary.skill_id, "code-review");
+    assert_eq!(summary.version_count, 1);
+
+    let output = registry.read_skill(
+        "code-review",
+        None,
+        mentisdb::SkillFormat::Markdown,
+    )?;
+    assert!(output.content.contains("Code Review"));
+    assert!(output.warnings.is_empty());
+
+    let matches = registry.search_skills(&amp;mentisdb::SkillQuery {
+        text: Some("correctness".into()),
+        limit: Some(1),
+        ..Default::default()
+    });
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].skill_id, "code-review");
+
+    let v2 = r#"---
+tags: [rust, review]
+triggers: [review]
+---
+# Code Review
+
+Check correctness and safety before style. Report findings first.
+"#;
+    let updated = registry.upload_skill(
+        mentisdb::SkillUpload::new("review-agent", mentisdb::SkillFormat::Markdown, v2)
+            .with_skill_id("code-review"),
+    )?;
+    assert_eq!(updated.version_count, 2);
+    assert_eq!(registry.skill_versions("code-review")?.len(), 2);
+    Ok(())
+}</code></pre>
+
+    <div class="callout">
+      <strong>Operational rule:</strong> dynamic does not mean unaudited. Trust decisions happen
+      before reading unknown skill content into an agent's context.
+    </div>
+
+    <h3>When to use it</h3>
+    <p>
+      Use dynamic skills for reusable procedures: release engineering, crash triage, code review,
+      security checks, and project-specific conventions. Store volatile task state as thoughts;
+      store reusable behavior as skills.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-2-2-cross-session-continuity.html">&larr; 2.2 Cross-Session Continuity</a> ·
+      <a href="cookbook-2-4-federated-team-memory.html">2.4 Federated Team Memory &rarr;</a>
+    </nav>
+  </article>
+
+  <footer>MentisDB Cookbook · <a href="cookbook.html">Table of Contents</a></footer>
+</body>
+</html>
