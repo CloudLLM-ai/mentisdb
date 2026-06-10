@@ -15,6 +15,7 @@
     article { margin-bottom: 3rem; }
     article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
     article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article h4 { font-size: 1.0rem; margin-top: 1.2rem; margin-bottom: 0.4rem; color: #444; }
     article p { margin-bottom: 1rem; }
     article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
     article li { margin-bottom: 0.4rem; }
@@ -42,175 +43,163 @@
     <h2>0.3 Quickstart: Your First Memory</h2>
 
     <p>
-      This chapter gets you from zero to a working MentisDB chain with three thoughts and a
-      ranked search, in under five minutes. We'll use the Rust library directly. For
-      Python/TypeScript, see Part 4.
+      This chapter gets you from zero to a working memory in a few minutes, using the
+      same coding agent you already use for everyday work. We assume the most common
+      case: you talk to a chat-based coding agent that supports MCP (OpenCode, Codex,
+      Claude Code, Cursor, Claude Desktop, or any other MCP-capable harness).
     </p>
-
-    <h3>Prerequisites</h3>
-    <ul>
-      <li>Rust 1.75 or newer (<code>rustup update</code>)</li>
-      <li>A new or existing Rust project: <code>cargo new my_agent --bin</code></li>
-    </ul>
-
-    <h3>Step 1: Add the dependency</h3>
-    <pre><code>cd my_agent
-cargo add mentisdb</code></pre>
 
     <p>
-      That's it. MentisDB has no required external services. The default feature set
-      includes the HTTP/MCP server and LLM extraction helpers. For a minimal library-only
-      integration, use:
+      You should not have to know how MentisDB stores thoughts, what an "agent
+      identity" is, or what the memory schema looks like. You ask the agent to
+      remember things. The agent does the right thing behind the scenes.
     </p>
-    <pre><code>cargo add mentisdb --no-default-features</code></pre>
 
-    <h3>Step 2: Open a chain</h3>
+    <div class="callout">
+      <strong>If you are building a custom agent in Rust, Python, or TypeScript:</strong>
+      skip the chat path below and start at
+      <a href="cookbook-5-1-rust-minimal.html">5.1 Rust: Minimal Agent with Memory</a>
+      or <a href="cookbook-5-3-python-pymentisdb.html">5.3 Python: Custom Agent with pymentisdb</a>.
+      The rest of this chapter is for people whose "agent" is a chat window.
+    </div>
+
+    <h3>Step 1: Get a running MentisDB server</h3>
+
     <p>
-      A chain is a directory on disk (or a subdirectory of <code>~/.mentisdb/chains/</code>).
-      For this quickstart we'll use a temp directory. In production, choose a stable path.
+      The simplest path is the one-line installer that detects your coding harness
+      and configures the MCP connection for you:
     </p>
-    <pre><code>use mentisdb::{
-    BinaryStorageAdapter, MentisDb, ThoughtInput, ThoughtType,
-    RankedSearchQuery, ThoughtQuery,
-};
-use tempfile::TempDir;
 
-fn main() -> io::Result&lt;()&gt; {
-    // 1. Open a chain (auto-creates on first run)
-    let dir = tempfile::tempdir()?;
-    let adapter = BinaryStorageAdapter::for_chain_key(
-        dir.path(), "my-first-chain"
-    );
-    let mut chain = MentisDb::open_with_storage(Box::new(adapter))?;
+    <pre data-cookbook-test="off"><code>mentisdb wizard</code></pre>
 
-    // 2. Register an agent
-    chain.upsert_agent(
-        "planner",
-        Some("The Planner"),
-        Some("my-team"),
-        Some("Plans tasks and records decisions"),
-        None,
-    )?;
+    <p>
+      The wizard installs the <code>mentisdb</code> binary if you don't already have it,
+      starts a local server, and registers it with OpenCode, Claude Code, Codex,
+      or whichever harness it finds. It writes a minimal default chain so you
+      can begin immediately.
+    </p>
 
-    // 3. Write three thoughts
-    chain.append_thought("planner",
-        ThoughtInput::new(ThoughtType::Decision,
-            "Use Postgres for the events table. \
-             Need transactions and joins; DynamoDB's \
-             single-region eventual consistency bit us."
-        ).with_concepts(["database", "consistency"])
-         .with_importance(0.9)
-         .with_tags(["prod", "architecture"])
-    )?;
+    <p>
+      If you prefer to do it by hand, or you want a shared server for a team,
+      follow <a href="cookbook-3-5-deployment.html">3.5 Deployment Patterns</a>. The
+      cookbook is operator-friendly, not installer-hostile, but the wizard is
+      the right default for a first memory.
+    </p>
 
-    chain.append_thought("planner",
-        ThoughtInput::new(ThoughtType::Insight,
-            "Throttling at the API gateway is more reliable \
-             than per-service limits. We saw 3 incidents \
-             where per-service limits failed during deploys."
-        ).with_concepts(["reliability", "rate-limiting"])
-         .with_importance(0.7)
-         .with_tags(["prod", "lessons"])
-    )?;
+    <h3>Step 2: Open your coding agent</h3>
 
-    chain.append_thought("planner",
-        ThoughtInput::new(ThoughtType::Constraint,
-            "All user PII must be encrypted at rest with \
-             envelope encryption. Compliance requirement."
-        ).with_concepts(["security", "compliance", "pii"])
-         .with_importance(0.95)
-         .with_tags(["security", "compliance"])
-    )?;
+    <p>
+      Open the coding agent you use every day. In its MCP / tool list you should
+      see <code>mentisdb_*</code> tools. If your agent has not been primed yet,
+      paste this one-time instruction into a new chat:
+    </p>
 
-    // 4. Search the chain (returns RankedSearchResult directly)
-    let results = chain.query_ranked(
-        &amp;RankedSearchQuery::new()
-            .with_text("how do we handle rate limiting?")
-            .with_limit(5)
-    );
+    <pre data-cookbook-test="off"><code>Use MentisDB as your durable memory for this conversation. Start by opening the
+project chain, loading the core skill, reading the recent context, and telling
+me what you already know. Search before you add new memories.</code></pre>
 
-    for hit in results.hits {
-        // hit.score is RankedSearchScore (ordered_float); cast or use Debug.
-        println!("[{:?}] {}", hit.score, hit.thought.content);
-    }
+    <p>
+      From that point on, in any future chat with the same project, the agent
+      will reuse the same memory by default. You do not need to paste the
+      instruction again.
+    </p>
 
-    Ok(())
-}</code></pre>
+    <h3>Step 3: Save your first memory</h3>
 
-    <h3>Step 3: Run it</h3>
-    <pre><code>cargo run</code></pre>
+    <p>Ask the agent in plain language. For example:</p>
 
-    <p>You should see output similar to:</p>
-    <pre><code>[0.847] Throttling at the API gateway is more reliable...
-[0.312] Use Postgres for the events table...
-[0.104] All user PII must be encrypted at rest...</code></pre>
+    <pre data-cookbook-test="off"><code>Remember that I prefer Postgres over DynamoDB for anything that needs joins or
+strong transactions. We picked it because DynamoDB's single-region eventual
+consistency bit us in a previous incident.</code></pre>
+
+    <p>
+      The agent decides what kind of memory this is, what tags and concepts
+      to attach, and where in the chain it belongs. You do not have to know.
+    </p>
+
+    <p>Save a second memory the same way:</p>
+
+    <pre data-cookbook-test="off"><code>Remember the lesson from the rate-limiting incident: throttling at the API
+gateway is more reliable than per-service limits. We saw three deploy-time
+failures from per-service limits.</code></pre>
+
+    <p>And a third:</p>
+
+    <pre data-cookbook-test="off"><code>Remember this constraint: all user PII must be encrypted at rest with envelope
+encryption. It is a compliance requirement, not optional.</code></pre>
+
+    <h3>Step 4: Ask your agent to recall it</h3>
+
+    <p>
+      A few minutes later — or the next day, or in a brand new chat — ask:
+    </p>
+
+    <pre data-cookbook-test="off"><code>How do we handle rate limiting on this project? Check MentisDB first.</code></pre>
+
+    <p>
+      The agent searches the chain, finds the throttling lesson, and answers
+      with the context you saved. If the agent ignores the chain and answers
+      from its general knowledge, that is the signal that the MCP connection
+      is not yet wired up correctly.
+    </p>
 
     <div class="callout callout-success">
-      <strong>You just built an agent that remembers.</strong> The chain is on disk,
-      hash-chained, and queryable. Restart your process, open the same chain, and your
-      thoughts are still there.
+      <strong>You just built an agent that remembers.</strong>
+      The chain is on disk, hash-chained, and queryable. Close the chat, open
+      a new one tomorrow, and the agent will still find the same three memories.
     </div>
 
     <h3>What just happened</h3>
     <ol>
-      <li><code>open_with_storage</code> opened (or created) a chain in the temp directory. The
-        <code>BinaryStorageAdapter</code> writes length-prefixed bincode records — fast and
-        append-only.</li>
-      <li><code>upsert_agent</code> registered an agent identity. Agents are persistent: their
-        metadata is part of the chain's registry.</li>
-      <li>Three <code>append_thought</code> calls wrote durable, hash-chained records. Each got
-        a UUID, an index, and a hash that includes the prior thought's hash.</li>
-      <li><code>query_ranked</code> did hybrid retrieval: BM25 lexical scoring ranked the
-        thoughts by keyword overlap with "how do we handle rate limiting?", and the "rate-limiting"
-        concept tag gave the throttling insight a strong signal.</li>
+      <li>The wizard registered an MCP server so your coding agent can call MentisDB tools.</li>
+      <li>Your first three prompts told the agent to remember durable things. The agent decided how to store them.</li>
+      <li>Your fourth prompt asked the agent to recall. The agent searched the chain, found the rate-limiting lesson, and answered from it.</li>
+      <li>Next time you open a chat in the same project, the same memories are there.</li>
     </ol>
 
-    <h3>Adding semantic search (vector)</h3>
-    <p>
-      The above used lexical search only. To add semantic similarity, register an
-      embedding provider. The simplest is the local one (no network, no model download):
-    </p>
-    <pre><code>// Register a local embedding provider. manage_vector_sidecar
-// loads or rebuilds the vector sidecar automatically.
-fn enable_semantic_search(chain: &amp;mut MentisDb) {
-    chain.manage_vector_sidecar(LocalTextEmbeddingProvider::new())
-        .expect("vector sidecar should register");
-}</code></pre>
+    <h3>What to ask for next</h3>
 
     <p>
-      Now every append embeds the new thought and updates the vector index automatically.
-      <code>query_ranked</code> will automatically use both lexical and vector signals.
+      The chat-based loop is the same on every coding harness. These are the
+      requests users make most often. Use them verbatim or in your own words:
     </p>
 
-    <div class="callout">
-      <strong>For better quality embeddings</strong>, enable the FastEmbed feature
-      and use the AllMiniL6V2 model (384d, ~90MB download on first use):
-    </p>
-    <pre><code>cargo add mentisdb --features local-embeddings</code></pre>
-
-    <p>See <a href="cookbook-3-1-embedding-provider-selection.html">3.1 Embedding Provider Selection</a> for when
-    local vs. FastEmbed vs. OpenAI makes sense.</p>
-
-    <h3>Inspecting the chain</h3>
-    <p>
-      After running, look at the directory:
-    </p>
-    <pre><code>ls -la /tmp/.tmpXXXX/my-first-chain/
-# my-first-chain.tcbin       # append-only thought log
-# my-first-chain.vectors.mentisdb-local-text.v1.256d.json  # vector sidecar</code></pre>
+    <ul>
+      <li><strong>Save a decision</strong> — "Remember that we decided to use Postgres for the events table. Reason: we need transactions and joins."</li>
+      <li><strong>Save a constraint</strong> — "Remember the security rule: PII is encrypted at rest with envelope encryption. Compliance requirement."</li>
+      <li><strong>Save a lesson</strong> — "Remember the lesson from this bug: do not recreate deleted chains on cache drop. The safe fix is to detach persistence first."</li>
+      <li><strong>Save a checkpoint</strong> — "Before we stop, write a checkpoint of what we did today, what passed, what failed, and the exact next step."</li>
+      <li><strong>Recall</strong> — "How do we handle rate limiting on this project? Check MentisDB."</li>
+      <li><strong>Find old work</strong> — "Search MentisDB for any prior decisions or mistakes about websocket reconnects before I start this fix."</li>
+    </ul>
 
     <p>
-      The <code>.tcbin</code> file is the canonical log. For application code, reopen it with
-      <code>MentisDb::open_with_storage</code>. For agent workflows, connect through MCP and ask the
-      harness to call <code>mentisdb_head</code>, <code>mentisdb_recent_context</code>, or
-      <code>mentisdb_ranked_search</code> against the same chain key.
+      For the full operating loop (when to search, when to save, what to skip,
+      harness-specific tips) read
+      <a href="cookbook-1-0-operator-playbook.html">1.0 Operator Playbook for Coding Agents</a>
+      next.
+    </p>
+
+    <h3>Inspecting the chain (optional)</h3>
+
+    <p>
+      If you like dashboards, the same server exposes one. Run:
+    </p>
+
+    <pre data-cookbook-test="off"><code>mentisdb --mode dashboard</code></pre>
+
+    <p>
+      and open the URL it prints. You will see the chain you just wrote, the
+      three memories, and a search bar. It is read-only by default.
     </p>
 
     <h3>What's next</h3>
+
     <p>
-      You have a working chain. Before you add another thought, read the next chapter on
-      the <a href="cookbook-0-4-search-first.html">search-first discipline</a> — it will save you
-      from the most common mistake new users make.
+      You have a working memory and an agent that uses it. Before you add
+      another thought, read the next chapter on the
+      <a href="cookbook-0-4-search-first.html">search-first discipline</a> — it
+      is the single highest-leverage habit in this entire cookbook.
     </p>
 
     <nav class="crumbs">
