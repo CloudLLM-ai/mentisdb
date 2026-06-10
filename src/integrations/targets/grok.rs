@@ -20,6 +20,12 @@ pub(super) fn build(
             ["mcp_servers", settings.server_name(), "headers", "Authorization"],
             TomlValue::from(format!("Bearer {}", token)),
         );
+        // Match the working OpenCode configuration: disable TLS verification
+        // for self-signed certificates on remote mentisdb instances.
+        patch = patch.set_path(
+            ["mcp_servers", settings.server_name(), "env", "NODE_TLS_REJECT_UNAUTHORIZED"],
+            TomlValue::from("0"),
+        );
     }
 
     IntegrationApplyPlan::new(plan.integration, plan.platform).with_file(ManagedFile::toml(
