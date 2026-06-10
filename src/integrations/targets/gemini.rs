@@ -8,7 +8,7 @@ pub(super) fn build(
     settings: &IntegrationWriterSettings,
 ) -> IntegrationApplyPlan {
     let url = settings.url_for(plan.integration);
-    let patch = JsonPatch::new()
+    let mut patch = JsonPatch::new()
         .set_path(
             ["mcpServers", settings.server_name(), "type"],
             json!("http"),
@@ -18,6 +18,12 @@ pub(super) fn build(
             ["mcpServers", settings.server_name(), "httpUrl"],
             json!(url),
         );
+    if let Some(token) = settings.bearer_token() {
+        patch = patch.set_path(
+            ["mcpServers", settings.server_name(), "headers", "Authorization"],
+            json!(format!("Bearer {}", token)),
+        );
+    }
 
     IntegrationApplyPlan::new(plan.integration, plan.platform).with_file(ManagedFile::json(
         plan.spec.config_target.path.clone(),
