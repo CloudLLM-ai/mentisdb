@@ -682,7 +682,7 @@ pub(crate) fn build_first_run_setup_lines() -> Vec<String> {
         "Then apply one target with: mentisdb setup <agent>".to_string(),
         String::new(),
         "Supported agents: codex, claude-code, claude-desktop, gemini,".to_string(),
-        "opencode, qwen, copilot, vscode-copilot.".to_string(),
+        "opencode, qwen, copilot, vscode-copilot, grok.".to_string(),
     ]
 }
 
@@ -2233,6 +2233,7 @@ Backup subcommand:
     qwen
     copilot
     vscode-copilot
+    grok
     all
 
 Important environment variables:
