@@ -46,8 +46,17 @@
       <strong>Why this chapter is different:</strong> every other chapter explains how
       to use MentisDB in your projects. This one shows the operating loop we use
       while maintaining the cookbook itself: search the project chain before edits,
-      make documentation decisions explicit, save lessons from mistakes, and leave
-      checkpoints that another session can resume from.
+      make documentation decisions explicit, save lessons from mistakes, run the
+      verification ritual before stopping, and leave a checkpoint that the next
+      session can resume from.
+    </div>
+
+    <div class="callout callout-warn">
+      <strong>What this chapter is not.</strong> The earliest draft of this chapter
+      told a story about six sub-agents writing the cookbook against a
+      <code>/tmp/cookbook-memory.md</code> stand-in file. That story is
+      historical; the cookbook no longer works that way. The maintenance loop
+      described below is the one the cookbook actually uses today.
     </div>
 
     <h3>The setup</h3>
@@ -145,83 +154,161 @@ Before you stop, save a checkpoint with what changed, what you verified, remaini
     </p>
 
     <p>
-      That is why the cookbook includes a cookbook-as-test pass:
-    </p>
-
-    <pre data-cookbook-test="off"><code># In scripts/extract_cookbook_examples.py
-# (Pseudocode: actual implementation in the script.)
-def looks_like_rust(code):
-    # Skip shell, JSON, markdown, output transcripts
-    if NON_RUST_FIRST_LINE.match(code): return False
-    if code.lstrip().startswith(("#", "cd ", "##", "&gt;", "===")): return False
-    return True
-
-def emit_chapter_test(chapter, examples):
-    # One .rs file per chapter. Cross-block references
-    # (struct in block 1, used in block 2) just work because
-    # every example lives in the same module scope.
-    return f"""
-        #![allow(unused_imports, dead_code)]
-        use mentisdb::{{ ...preimports... }};
-        {concat_examples_into_one_scope(examples)}
-        #[test] fn chapter_compiles() {{}}
-    """
-
-# In .github/workflows/test.yml:
-- name: Run cookbook-as-test
-  run: |
-    python3 scripts/extract_cookbook_examples.py docs/cookbook/
-    cargo test --test cookbook_tests --all-features</code></pre>
-
-    <p>
-      The script reads every <code>&lt;pre&gt;</code> block in
-      <code>docs/cookbook/</code>, filters out non-Rust blocks
-      (shell, JSON, output, markdown), and emits one
-      <code>tests/cookbook/&lt;chapter&gt;.rs</code> per chapter.
-      Each <code>#[test] fn chapter_compiles() {{}}</code> exists
-      purely as a tripwire: if the chapter's source references a
-      method, type, or import that doesn't exist in the public
-      MentisDB API, the file fails to compile, and the test fails.
+      The implementation lives in <code>scripts/extract_cookbook_examples.py</code>
+      and the resulting <code>tests/cookbook/&lt;chapter&gt;.rs</code> files. The
+      extractor reads every <code>&lt;pre&gt;</code> block in
+      <code>docs/cookbook/</code>, skips blocks marked
+      <code>data-cookbook-test="off"</code>, and emits one
+      <code>chapter_compiles</code> tripwire per chapter that uses Rust. If the
+      chapter references a method, type, or import that no longer exists in the
+      public API, the file fails to compile and the test fails.
     </p>
 
     <h4>The first run caught 174 errors</h4>
     <p>
-      On the first run after this pipeline shipped, the test
-      target failed to compile with 174 errors across the
-      cookbook chapters. The categories, in order of frequency:
+      On the first run after this pipeline shipped, the test target failed to
+      compile with 174 errors across the cookbook chapters. The categories, in
+      order of frequency:
     </p>
     <ol>
       <li>Stale API references: <code>add_relation()</code> (doesn't exist), <code>with_enable_reranking(true)</code> (renamed to <code>with_reranking(k)</code>), <code>register_managed_vector_sidecar</code> (renamed to <code>manage_vector_sidecar</code>), <code>GraphExpansion::new()</code> (renamed to <code>RankedSearchGraph::new()</code>).</li>
-      <li>Invented helper types: <code>EpisodeRecorder</code>, <code>HandoffEnvelope</code>, <code>TagWeightedEmbeddingProvider</code>, <code>test_chain()</code>, <code>is_correction()</code>. Sub-agents wrote structurally-sound code referencing helpers that don't exist in the library.</li>
+      <li>Invented helper types: <code>EpisodeRecorder</code>, <code>HandoffEnvelope</code>, <code>TagWeightedEmbeddingProvider</code>, <code>test_chain()</code>, <code>is_correction()</code>. Sub-agents wrote structurally-sound code referencing helpers that do not exist in the library.</li>
       <li>Type mismatches: <code>?</code> on <code>RankedSearchResult</code> (it's not a <code>Result</code>), <code>with_refs</code> taking <code>u32</code> (it wants <code>u64</code>), <code>RankedSearchScore</code> not implementing <code>Display</code> (use <code>Debug</code>).</li>
       <li>Decoder bugs: <code>decode_block</code> was stripping <code>Result&lt;()&gt;</code> as if it were an HTML tag, because the unescape happened before the tag-strip regex.</li>
     </ol>
 
     <p>
-      The fix took a day. Two chapters (0.3 Quickstart and
-      1.1 Episodic Task Memory) now compile cleanly. Several
-      others (0.4, 0.5, 1.2, 1.3, 1.5, 1.7, 2.4, 3.1, 4.1) are
-      marked <code>data-cookbook-test="off"</code> because
-      they contain illustrative pseudocode or invented helpers
-      that the extractor deliberately skips. As future edits land,
-      the pipeline runs again; new API examples must compile to be merged.
+      That was the wave 1 fallout. The cookbook has since been rewritten across
+      several passes, and the current state of the pipeline is the one you can
+      reproduce today:
+    </p>
+
+    <pre data-cookbook-test="off"><code># Regenerate the cookbook tests and run them locally.
+python3 scripts/extract_cookbook_examples.py docs/cookbook/
+cargo test --test cookbook_tests --all-features</code></pre>
+
+    <p>
+      As of the June 2026 pass, the extractor emits <strong>12 compile-tested
+      chapters with 17 Rust examples</strong> and <code>cargo test
+      --test cookbook_tests</code> passes 12/12. Two chapters are deliberately
+      language-agnostic and have no generated test file: the new
+      <a href="cookbook-0-3-quickstart.html">0.3 Quickstart</a> and
+      <a href="cookbook-1-0-operator-playbook.html">1.0 Operator Playbook</a>.
+      They are correct, complete, and intentionally not testable as Rust. The
+      remaining chapters either compile (Part 1 patterns, Part 3 hardening,
+      Part 5 recipes) or are marked <code>data-cookbook-test="off"</code> when
+      they show shell, JSON, or operator prose.
     </p>
 
     <div class="callout callout-success">
       <strong>This is the highest-leverage improvement in the cookbook</strong>.
-      It costs one Python script (~250 lines), one Cargo test target,
-      and a CI step. In exchange, every claim the cookbook makes
-      about the library is now backed by a compile pass on every
-      PR. The next time an agent invents an API name that doesn't
-      exist, the test fails before merge.
+      It costs one Python script, one Cargo test target, and a CI step. In
+      exchange, every Rust example the cookbook makes about the library is now
+      backed by a compile pass on every PR. The next time an agent invents an
+      API name that doesn't exist, the test fails before merge.
     </div>
+
+    <h3>Lesson 5: Three sub-agent failure modes the chain has actually recorded</h3>
+
+    <p>
+      The cookbook's value is partly that it has been built and rebuilt the hard
+      way. The chain has memory checkpoints for each pass. Three failure modes
+      show up over and over, and each one teaches the same thing in a different
+      shape: sub-agents do not fail loudly; they fail quietly with output that
+      looks plausible.
+    </p>
+
+    <ul>
+      <li>
+        <strong>Stub chapters.</strong> A sub-agent dispatched to "write chapter
+        1.4" returned a file containing only <code>&lt;html&gt;Hello&lt;/html&gt;</code>.
+        Another returned <code>&lt;!DOCTYPE html&gt;</code> with no body. The
+        TypeScript-like-looking files were named without the project's
+        <code>cookbook-N-M-…html</code> convention. The chain checkpoint for
+        that recovery documents the conventional renames and the conventional
+        filenames the next sub-agent must use. Save naming and structure
+        conventions as memories, not as a one-time prompt.
+      </li>
+      <li>
+        <strong>Invented API surface.</strong> Sub-agents that did write real
+        chapters often wrote real-looking Rust that referenced methods, types,
+        and helpers that do not exist in the public crate. The
+        cookbook-as-test pipeline catches that, but only if the chapter is
+        actually marked for the extractor. A chapter with
+        <code>data-cookbook-test="off"</code> on every block compiles nothing and
+        proves nothing. Mark illustrative blocks off, never whole chapters that
+        could be tested.
+      </li>
+      <li>
+        <strong>Right work, wrong audience.</strong> A sub-agent can be right
+        about the API and still be wrong about the user. The original 1.0
+        Operator Playbook taught people to hand-write
+        <code>Append a LessonLearned memory: content/tags/concepts/refs</code>
+        payloads. That is correct Rust, but it is not how a human using a chat
+        coding agent actually talks. The same sub-agent skill that produces
+        good Rust produces bad human-facing prose unless the audience is in the
+        prompt and the chain. <em>Search first</em> means searching for prior
+        audience decisions too, not only for prior technical decisions.
+      </li>
+    </ul>
+
+    <h3>Lesson 6: The verification ritual before you stop</h3>
+
+    <p>
+      Every meaningful cookbook edit ends with the same five commands. If any
+      one of them fails, the edit is not finished. Future agents search the
+      chain for the phrase <em>"verification ritual"</em> and find this list.
+    </p>
+
+    <pre data-cookbook-test="off"><code>git diff --check -- docs/cookbook/
+python3 scripts/extract_cookbook_examples.py docs/cookbook/
+cargo test --test cookbook_tests --all-features
+# Internal link sanity:
+python3 -c "import re,sys,pathlib,urllib.parse as u; \
+  bad=[]; \
+  [bad.append((p.name, m)) for p in pathlib.Path('docs/cookbook').glob('*.html') \
+    for m in re.findall(r'href=\"([^\"#]+)\"', p.read_text()) \
+    if m.startswith('cookbook-') and not (pathlib.Path('docs/cookbook')/u.unquote(m)).exists()]; \
+  sys.exit(1) if bad else print('links ok')"
+# Save a MentisDB checkpoint in plain language:
+#   "Save a Summary checkpoint on the cookbook chain summarizing what
+#    changed, what passed, what failed, and the exact next step."</code></pre>
+
+    <p>
+      The fifth step is the one most agents skip. Saving a MentisDB
+      <code>Checkpoint</code> with what changed, what passed, what failed, and
+      the exact next step is what makes tomorrow's session start smarter than
+      today's. Without it, the next session re-derives the same context from
+      scratch, or worse, does not know that this work was already done. Use the
+      same natural-language prompts the operator chapter teaches, not a raw
+      <code>mentisdb_append</code> invocation.
+    </p>
+
+    <h3>Lesson 7: Live, dated, narrow wins beat ancient sweeping claims</h3>
+
+    <p>
+      Earlier versions of this chapter listed "seven lessons" from the wave 1
+      markdown-file stand-in. Those lessons were real but they drifted. The
+      chapter is at its best when each numbered lesson is dated, narrow, and
+      anchored to a checkpoint on the chain that a future agent can
+      actually retrieve. <em>"Use a chain"</em> is true and useless.
+      <em>"On 2026-06-10, the operator playbook was rewritten to teach natural
+      language prompts; see checkpoint #587."</em> is true and useful.
+    </p>
+
+    <p>
+      When you add a lesson to this chapter, write it the way you would want to
+      find it six months from now: a concrete date, a specific chapter or
+      commit, and a checkpoint index. Otherwise, prune it.
+    </p>
 
     <h3>What's next</h3>
     <p>
       Part 1 continues with <a href="cookbook-1-1-episodic-task-memory.html">1.1 Episodic Task Memory</a>,
-      which is the same pattern (Plan / Subgoal / TaskComplete / LessonLearned)
-      applied to a single agent's task memory. If you skipped to this chapter
-      to read the meta-lesson first, go back to 0.1 and read in order.
+      which is the same operator loop (search first, work, save the durable
+      parts, checkpoint) applied to a single agent's task memory. If you
+      skipped to this chapter to read the meta-lesson first, go back to 0.1
+      and read in order.
     </p>
 
     <nav class="crumbs">
