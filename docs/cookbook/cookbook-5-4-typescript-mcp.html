@@ -1,0 +1,14 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>5.4 TypeScript MCP — MentisDB Cookbook</title><style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.7;color:#1a1a2e;background:#fafafa;max-width:720px;margin:0 auto;padding:2rem 1.5rem}header{margin-bottom:3rem;border-bottom:1px solid #e0e0e0;padding-bottom:1.5rem}h1{font-size:1.8rem}h1 a{color:#1a1a2e;text-decoration:none}h2{font-size:1.4rem}h3{font-size:1.15rem;margin-top:1.5rem}pre{background:#f5f5f5;padding:1rem;border-radius:4px;overflow-x:auto}code{background:#f0f0f0;padding:.15em .35em;border-radius:3px}pre code{background:none;padding:0}.crumbs,footer{font-size:.85rem;color:#888}a{color:#4361ee}</style></head><body><header><nav><a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav><h1><a href="cookbook.html">Agent Memory Cookbook</a></h1><p>Patterns and recipes for building AI agents that remember</p></header><article><nav class="crumbs">Part 5 — Custom Agent Recipes · <a href="cookbook.html">Back to TOC</a></nav><h2>5.4 TypeScript: MCP Client Integration</h2><p>TypeScript agents can call MentisDB through MCP tools or REST. MCP is best when your agent runtime already has a tool loop; REST is best for service code.</p><pre data-cookbook-test="off"><code>const result = await mcp.callTool("mentisdb_ranked_search", {
+  chain_key: "typescript-agent",
+  text: "what did we decide about auth tokens?",
+  limit: 5,
+});
+
+await mcp.callTool("mentisdb_append", {
+  chain_key: "typescript-agent",
+  agent_id: "ts-agent",
+  thought_type: "Decision",
+  content: "Use short-lived bearer tokens for remote tool access.",
+  concepts: ["auth", "mcp"],
+  tags: ["typescript", "security"],
+});</code></pre><p>Keep the MCP request objects explicit. Hidden wrappers often erase useful metadata like concepts, tags, roles, and importance.</p><nav class="crumbs"><a href="cookbook-5-3-python-pymentisdb.html">&larr; 5.3 Python pymentisdb</a> · <a href="cookbook-5-5-cli-standup.html">5.5 CLI Standup &rarr;</a></nav></article><footer>MentisDB Cookbook · <a href="cookbook.html">Table of Contents</a></footer></body></html>
