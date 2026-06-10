@@ -50,7 +50,7 @@ pub(super) fn run_wizard(
     } else {
         let entered = boxed_text_prompt(
             out,
-            "Override the default MentisDB URL for all selected integrations?\n(Leave blank to use per-integration defaults)\n\nExamples:\n  http://127.0.0.1:9471     (local HTTP, default port)\n  https://203.0.113.77:9473  (remote HTTPS, default port)\n\nInclude the http:// or https:// scheme and port.",
+            "Override the default MentisDB URL for all selected integrations?\n(Leave blank to use per-integration defaults)\n\nYou can provide either an http:// or https:// address.\nExamples:\n  http://127.0.0.1:9471     (local HTTP, default port)\n  https://203.0.113.77:9473  (remote HTTPS, default port)\n\nInclude the scheme and port.",
             input,
         )?;
         (!entered.trim().is_empty()).then_some(entered.trim().to_string())
