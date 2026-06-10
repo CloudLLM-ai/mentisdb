@@ -61,10 +61,10 @@
     </p>
 
     <div class="callout">
-      <strong>Who this is for:</strong> Engineers building agents, copilots, RAG systems, or multi-agent
-      orchestration that need to persist context across sessions, share state between agents, or give
-      LLMs a verifiable long-term memory. If you've used LangMem, Mem0, Cognee, or rolled your own
-      memory layer, this book will show you what MentisDB does differently.
+      <strong>Who this is for:</strong> Most readers are regular users of coding agents like
+      OpenCode, Codex, Claude Code, Cursor, or Claude Desktop. Start with the foundations,
+      then read the Operator Playbook. Developers building custom harnesses can continue into
+      the API and library patterns after that.
     </div>
 
     <h2>Table of Contents</h2>
@@ -78,7 +78,15 @@
       <li class="toc-chapter"><a href="cookbook-0-5-dogfooding.html">0.5 What We Learned Writing This Book</a> — dogfooding lessons</li>
     </ul>
 
-    <div class="toc-part">Part 1 — Core Patterns</div>
+    <div class="toc-part">Start Here for Coding Agents — Operator Playbook</div>
+    <ul>
+      <li class="toc-chapter"><a href="cookbook-1-0-operator-playbook.html">1.0 Operator Playbook for Coding Agents</a> — prompts, timing, memory quality, checkpoints, and MCP habits</li>
+      <li class="toc-chapter"><a href="cookbook-4-1-opencode.html">OpenCode Deep Guide</a> — current harness, local MCP + skill store primer</li>
+      <li class="toc-chapter"><a href="cookbook-4-2-claude-code.html">Claude Code</a> — CLI MCP setup and operating loop</li>
+      <li class="toc-chapter"><a href="cookbook-4-4-codex.html">Codex</a> — MCP setup and memory-use prompts</li>
+    </ul>
+
+    <div class="toc-part">Part 1 — Core Memory Patterns</div>
     <ul>
       <li class="toc-chapter"><a href="cookbook-1-1-episodic-task-memory.html">1.1 Episodic Task Memory</a></li>
       <li class="toc-chapter"><a href="cookbook-1-2-semantic-fact-extraction.html">1.2 Semantic Fact Extraction</a></li>
@@ -107,7 +115,7 @@
       <li class="toc-chapter"><a href="cookbook-3-5-deployment.html">3.5 Deployment Patterns</a></li>
     </ul>
 
-    <div class="toc-part">Part 4 — Agentic Harnesses (User On-Ramp)</div>
+    <div class="toc-part">Part 4 — Agentic Harnesses Reference</div>
     <ul>
       <li class="toc-chapter"><a href="cookbook-4-1-opencode.html">4.1 OpenCode</a> — current harness, local MCP + skill store primer</li>
       <li class="toc-chapter"><a href="cookbook-4-2-claude-code.html">4.2 Claude Code (CLI)</a> — <code>claude mcp add</code> setup, skill priming</li>
@@ -136,16 +144,14 @@
       to a working memory in under five minutes.
     </p>
     <p>
-      If you're integrating MentisDB into an existing system, jump to the pattern that matches
-      your use case in Part 1. Each chapter is self-contained: scenario, why it matters, the
-      pattern, runnable code, and production notes.
+      If you use coding agents through MCP, read <a href="cookbook-1-0-operator-playbook.html">1.0 Operator Playbook</a>
+      next. It teaches what to prompt, when to search, what to save, what to skip, and how to
+      make memory compound across OpenCode, Codex, Claude Code, and similar harnesses.
     </p>
     <p>
-      Part 2 covers patterns you'll need once your agent is working and you want to scale
-      or harden it. Part 3 is the engineering reference: embedding selection, tuning, deployment.
-    </p>
-    <p>
-      Part 4 is the cheat sheet. Copy a recipe, adapt it, ship.
+      If you're integrating MentisDB into an application or custom harness, continue into the
+      core memory patterns and Part 5 code recipes. Part 3 is the engineering reference:
+      embedding selection, tuning, benchmarking, and deployment.
     </p>
 
     <h3>Conventions</h3>

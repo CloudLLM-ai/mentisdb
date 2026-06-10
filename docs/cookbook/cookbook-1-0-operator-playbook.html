@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.0 Operator Playbook for Coding Agents — MentisDB Cookbook</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; line-height: 1.7; color: #1a1a2e; background: #fafafa; max-width: 760px; margin: 0 auto; padding: 2rem 1.5rem; }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    nav.crumbs { font-size: 0.85rem; color: #888; margin-bottom: 0.5rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article h4 { font-size: 1rem; margin-top: 1.2rem; margin-bottom: 0.4rem; color: #444; }
+    article p { margin-bottom: 1rem; }
+    article ul, article ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    article table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.92rem; }
+    article th, article td { border: 1px solid #e0e0e0; padding: 0.5rem 0.7rem; text-align: left; vertical-align: top; }
+    article th { background: #f5f5f5; font-weight: 600; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    .callout { background: #f0f4ff; border-left: 3px solid #4361ee; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+    .callout-warn { background: #fff8f0; border-left: 3px solid #e67700; }
+    .callout-success { background: #f0fff4; border-left: 3px solid #2f855a; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="cookbook.html">Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
+
+  <article>
+    <nav class="crumbs">Start Here for Coding Agents · <a href="cookbook.html">Back to TOC</a></nav>
+    <h2>1.0 Operator Playbook for Coding Agents</h2>
+
+    <p>
+      Most MentisDB users will not write a custom Rust agent. They will use OpenCode, Codex,
+      Claude Code, Cursor, or another MCP-capable coding harness. This chapter is the operator
+      manual for that world: what to prompt, when to make the agent search, when to make it write,
+      and how to make memory compound instead of turning into a noisy log.
+    </p>
+
+    <div class="callout callout-success">
+      <strong>The goal:</strong> each day the agent should start with more useful project context
+      than it had yesterday. MentisDB does not make the model smarter by magic. It makes the
+      right prior decisions, traps, preferences, and lessons available at the right moment.
+    </div>
+
+    <h3>The One Prompt That Starts Memory</h3>
+    <p>Paste this at the start of a new repository session:</p>
+
+    <pre data-cookbook-test="off"><code>Use MentisDB as your durable memory system for this repository.
+
+Before doing work:
+1. Find or bootstrap the correct project chain.
+2. Read the core MentisDB skill/instructions.
+3. Load recent context and the latest checkpoint.
+4. Search for prior decisions, constraints, mistakes, and lessons related to this task.
+5. Tell me what you found before editing files.
+
+During work:
+- Search before adding new memories.
+- Append only durable decisions, constraints, lessons, mistakes, preferences, task completions, and checkpoints.
+- Use specific tags and concepts.
+- Add refs or relations when a new memory follows from older context.
+
+Before stopping:
+- Write a Summary checkpoint with what changed, what passed, what failed, and the exact next step.</code></pre>
+
+    <p>
+      This prompt matters because most agents will happily use MentisDB as a write-only notebook
+      unless you tell them to load, search, reason, and then write. The retrieval step is where
+      performance improves.
+    </p>
+
+    <h3>The Daily Memory Loop</h3>
+    <p>Use this loop for every meaningful coding session:</p>
+
+    <ol>
+      <li><strong>Start:</strong> bootstrap the chain, load recent context, find the latest checkpoint.</li>
+      <li><strong>Orient:</strong> search for the topic, files, subsystem, error, and prior decisions.</li>
+      <li><strong>Work:</strong> edit code, run tests, debug, review.</li>
+      <li><strong>Distill:</strong> identify what future agents should know.</li>
+      <li><strong>Write:</strong> append only durable, typed memories with tags and concepts.</li>
+      <li><strong>Checkpoint:</strong> save a resumable summary before context loss or session end.</li>
+    </ol>
+
+    <pre data-cookbook-test="off"><code>Before you edit, search MentisDB for:
+- prior decisions about this subsystem
+- mistakes or failed fixes involving these files
+- user preferences for this repo
+- constraints that should affect the implementation
+
+Summarize the relevant memories and then proceed.</code></pre>
+
+    <h3>When To Use MentisDB</h3>
+
+    <table>
+      <thead>
+        <tr><th>Moment</th><th>Ask the agent to do this</th><th>Why</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>New session</td><td>Bootstrap, read skill, recent context, latest checkpoint</td><td>Prevents cold-start amnesia</td></tr>
+        <tr><td>Before unfamiliar edits</td><td>Search decisions, constraints, lessons, mistakes</td><td>Avoids repeating known traps</td></tr>
+        <tr><td>After root cause found</td><td>Append <code>LessonLearned</code> or <code>Correction</code></td><td>Makes the failure useful tomorrow</td></tr>
+        <tr><td>After architectural choice</td><td>Append <code>Decision</code> with rationale</td><td>Stops re-litigating the same choice</td></tr>
+        <tr><td>After tests pass</td><td>Append <code>TaskComplete</code> with command and result</td><td>Gives future agents evidence</td></tr>
+        <tr><td>Before compaction</td><td>Append <code>Summary</code> with role <code>Checkpoint</code></td><td>Survives context truncation</td></tr>
+        <tr><td>Before handoff</td><td>Append <code>Handoff</code> or checkpoint with next step</td><td>Lets another agent resume cleanly</td></tr>
+      </tbody>
+    </table>
+
+    <h3>What To Save, What To Skip</h3>
+
+    <h4>Save</h4>
+    <ul>
+      <li>A decision and why it was made.</li>
+      <li>A constraint that should affect future work.</li>
+      <li>A mistake, root cause, and correction.</li>
+      <li>A user preference that changes how the agent should behave.</li>
+      <li>A completed task with exact verification evidence.</li>
+      <li>A checkpoint that lets a future session resume.</li>
+    </ul>
+
+    <h4>Skip</h4>
+    <ul>
+      <li>Raw command logs without interpretation.</li>
+      <li>Temporary hunches that were not validated.</li>
+      <li>Generic notes like "working on tests".</li>
+      <li>Duplicate summaries already present in the chain.</li>
+      <li>Secrets, tokens, credentials, or private keys.</li>
+    </ul>
+
+    <h3>Bad Memory vs Good Memory</h3>
+
+    <p>Bad:</p>
+    <pre data-cookbook-test="off"><code>Remember that tests passed.</code></pre>
+
+    <p>Good:</p>
+    <pre data-cookbook-test="off"><code>Append a TaskComplete memory:
+content: "Implemented retry jitter for websocket reconnects. Verification: `cargo test websocket_reconnect` passed. Follow-up: run full integration suite before release."
+tags: ["websocket", "retry", "verified"]
+concepts: ["reconnect-jitter", "network-resilience"]
+importance: 0.8</code></pre>
+
+    <p>Bad:</p>
+    <pre data-cookbook-test="off"><code>Remember not to do that again.</code></pre>
+
+    <p>Good:</p>
+    <pre data-cookbook-test="off"><code>Append a LessonLearned memory:
+content: "Do not fix dashboard stale data by recreating deleted chains on cache drop. That regressed delete semantics. Detach persistence before deleting cached chains."
+tags: ["dashboard", "delete-chain", "regression"]
+concepts: ["cache-lifecycle", "chain-deletion"]
+refs: [the Mistake or failing-test thought]</code></pre>
+
+    <h3>The Prompt Pack</h3>
+
+    <h4>Start a task</h4>
+    <pre data-cookbook-test="off"><code>Before implementing this, search MentisDB for prior decisions, constraints, mistakes, and lessons about this area. Report the top relevant memories with their thought types, then proceed.</code></pre>
+
+    <h4>Debug a failure</h4>
+    <pre data-cookbook-test="off"><code>Search MentisDB for this error message, failing test name, file path, and subsystem. Look specifically for Mistake, Correction, LessonLearned, and TaskComplete thoughts. Do not propose a fix until you summarize what previous work says.</code></pre>
+
+    <h4>Record a durable lesson</h4>
+    <pre data-cookbook-test="off"><code>Save the root cause and fix as a LessonLearned or Correction in MentisDB. Include exact file paths, the failed assumption, the verified fix, and refs to any related Mistake or prior checkpoint.</code></pre>
+
+    <h4>Before context loss</h4>
+    <pre data-cookbook-test="off"><code>Write a Summary checkpoint now. Include: goal, completed work, files changed, tests run and results, unresolved risks, and the first next step. Use role Checkpoint.</code></pre>
+
+    <h4>Improve the agent's behavior</h4>
+    <pre data-cookbook-test="off"><code>If this lesson will apply repeatedly, propose whether it should become a MentisDB skill. If yes, draft the skill update and save a Decision explaining why.</code></pre>
+
+    <h3>Harness-Specific Tricks</h3>
+
+    <h4>OpenCode</h4>
+    <ul>
+      <li>Keep a project skill or instruction that says "search MentisDB before edits".</li>
+      <li>Ask for a memory summary before large refactors.</li>
+      <li>After a long tool run, explicitly ask for a checkpoint before continuing.</li>
+      <li>If subagents are used, tell each one the chain and agent identity to use.</li>
+    </ul>
+
+    <h4>Codex</h4>
+    <ul>
+      <li>Use a task-start prompt that requires searching before writing code.</li>
+      <li>Ask Codex to cite memories by type and content summary, not by vague "I remember" claims.</li>
+      <li>Ask it to append a <code>TaskComplete</code> only after verification output is known.</li>
+    </ul>
+
+    <h4>Claude Code</h4>
+    <ul>
+      <li>Use MentisDB at the start of every repository session, not only after the context fills.</li>
+      <li>Ask for a handoff checkpoint before switching from Claude Code to another harness.</li>
+      <li>Prefer stdio for local Claude Desktop and HTTP/HTTPS MCP for shared daemon setups.</li>
+    </ul>
+
+    <h3>How To Tell If It Is Working</h3>
+    <ul>
+      <li>The agent mentions relevant prior decisions before editing.</li>
+      <li>The same mistake is not repeated across sessions.</li>
+      <li>Checkpoints contain exact next steps, not vague summaries.</li>
+      <li>Search results improve because thoughts have strong tags and concepts.</li>
+      <li>Repeated lessons become skills, not just more memories.</li>
+    </ul>
+
+    <div class="callout callout-warn">
+      <strong>Anti-pattern:</strong> "Use MentisDB" is not enough. A model can satisfy that by
+      appending noisy notes. The operator's job is to enforce the loop: search first, work,
+      distill, write only durable memories, checkpoint.
+    </div>
+
+    <h3>The Compounding Effect</h3>
+    <p>
+      Day one, MentisDB mostly remembers setup and decisions. Day two, it prevents repeated
+      mistakes. Day three, it carries user preferences and verification history. Day four, it
+      turns repeated lessons into skills. Day five, a different model or harness can inherit the
+      same project memory. That is the power curve: not one smarter model, but a better memory
+      substrate that every model can use.
+    </p>
+
+    <nav class="crumbs">
+      <a href="cookbook-0-5-dogfooding.html">&larr; 0.5 Dogfooding Lessons</a> ·
+      <a href="cookbook-4-1-opencode.html">OpenCode Deep Guide &rarr;</a>
+    </nav>
+  </article>
+
+  <footer>MentisDB Cookbook · <a href="cookbook.html">Table of Contents</a></footer>
+</body>
+</html>
