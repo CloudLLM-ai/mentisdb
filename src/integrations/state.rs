@@ -52,6 +52,7 @@ impl IntegrationWriterSettings {
     pub(crate) fn url_for(&self, integration: IntegrationKind) -> &str {
         match integration {
             IntegrationKind::ClaudeDesktop => &self.default_https_url,
+            _ if self.default_http_url.starts_with("http://") => &self.default_http_url,
             _ if self.default_https_url.starts_with("https://") => &self.default_https_url,
             _ => &self.default_http_url,
         }

@@ -28,7 +28,7 @@ pub(super) fn run_setup(
             .clone()
             .unwrap_or_else(|| default_url(*integration).to_string());
         let Some(plan) =
-            build_setup_plan_for_integration(*integration, url.clone(), platform, &env)
+            build_setup_plan_for_integration(*integration, url.clone(), platform, &env, None)
         else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -140,6 +140,9 @@ pub fn render_setup_plan(plan: &SetupPlan) -> String {
         plan.detection_status.as_str(),
         plan.action.as_str(),
     ));
+    if let Some(hint) = &plan.bearer_hint {
+        rendered.push_str(&format!("Bearer: {hint}\n"));
+    }
     if let Some(command) = &plan.suggested_command {
         rendered.push_str(&format!("Command: {command}\n"));
     }

@@ -72,6 +72,8 @@ pub struct SetupPlan {
     pub snippet: Option<String>,
     /// Additional operator notes.
     pub notes: Vec<String>,
+    /// Masked bearer token hint (first few chars + asterisks) when one was supplied.
+    pub bearer_hint: Option<String>,
 }
 
 /// Setup plan covering every supported integration on one platform.
@@ -100,11 +102,12 @@ pub fn build_setup_plan_for_integration(
     url: impl Into<String>,
     platform: HostPlatform,
     env: &PathEnvironment,
+    bearer: Option<&str>,
 ) -> Option<SetupPlan> {
     let url = url.into();
     let report = detect_integrations_with_environment(platform, env.clone());
     let detection = report.integration(integration)?.clone();
-    Some(plan_from_detection(detection, url))
+    Some(plan_from_detection(detection, url, bearer))
 }
 
 /// Detect integrations on the current host and convert them into setup plans.
@@ -124,7 +127,7 @@ pub fn build_detected_setup_catalog(report: DetectionReport) -> SetupCatalogPlan
         .into_iter()
         .map(|detection| {
             let url = default_url_for_integration(detection.integration).to_string();
-            plan_from_detection(detection, url)
+            plan_from_detection(detection, url, None)
         })
         .collect();
 
@@ -135,7 +138,20 @@ pub fn build_detected_setup_catalog(report: DetectionReport) -> SetupCatalogPlan
     }
 }
 
-fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPlan {
+fn mask_bearer(token: &str) -> String {
+    const PREFIX: usize = 8;
+    if token.len() <= PREFIX {
+        "********".to_string()
+    } else {
+        format!("{}*****", &token[..PREFIX])
+    }
+}
+
+fn plan_from_detection(
+    detection: IntegrationDetection,
+    url: String,
+    bearer: Option<&str>,
+) -> SetupPlan {
     let integration = detection.integration;
     let platform = detection.platform;
     let spec = detection.spec.clone();
@@ -214,6 +230,8 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
         ),
         _ => {}
     }
+    let bearer_hint = bearer.map(mask_bearer);
+
     notes.push(match detection.status {
         DetectionStatus::Configured => {
             "Canonical config file already exists; setup should merge or update in place."
@@ -240,6 +258,7 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
         suggested_command,
         snippet,
         notes,
+        bearer_hint,
     }
 }
 

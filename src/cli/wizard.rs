@@ -67,12 +67,37 @@ pub(super) fn run_wizard(
         (!entered.trim().is_empty()).then_some(entered.trim().to_string())
     };
 
+    // Grok-specific warning: Grok CLI cannot skip self-signed certificate verification.
+    if selected.iter().any(|i| *i == IntegrationKind::Grok) {
+        let grok_url = url_override
+            .clone()
+            .unwrap_or_else(|| default_url(IntegrationKind::Grok).to_string());
+        if grok_url.starts_with("https://") {
+            writeln!(out, "\n⚠️  Grok CLI notice:")?;
+            writeln!(
+                out,
+                "Grok CLI does not support skipping TLS certificate verification for remote MCP servers."
+            )?;
+            writeln!(
+                out,
+                "If the remote server uses a self-signed certificate the connection will fail."
+            )?;
+            writeln!(
+                out,
+                "Recommendation: use http:// on port 9471 instead (e.g. http://<ip>:9471)."
+            )?;
+            writeln!(out)?;
+        }
+    }
+
     let mut planned = Vec::new();
     for integration in selected {
         let url = url_override
             .clone()
             .unwrap_or_else(|| default_url(integration).to_string());
-        let Some(plan) = build_setup_plan_for_integration(integration, url, platform, &env) else {
+        let Some(plan) =
+            build_setup_plan_for_integration(integration, url, platform, &env, bearer_override.as_deref())
+        else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unsupported integration target",
