@@ -43,237 +43,109 @@
     <h2>0.5 What We Learned Writing This Book</h2>
 
     <div class="callout">
-      <strong>Why this chapter is different:</strong> every other chapter in this book
-      is about <em>using</em> MentisDB. This one is about <em>using MentisDB to build
-      MentisDB</em> — the dogfooding experiment that produced the rest of the cookbook.
-      Read it once, then refer back to the patterns when you set up your own
-      multi-agent workflows.
+      <strong>Why this chapter is different:</strong> every other chapter explains how
+      to use MentisDB in your projects. This one shows the operating loop we use
+      while maintaining the cookbook itself: search the project chain before edits,
+      make documentation decisions explicit, save lessons from mistakes, and leave
+      checkpoints that another session can resume from.
     </div>
 
     <h3>The setup</h3>
     <p>
-      The cookbook was written by a coordinator (one agent) dispatching six parallel
-      sub-agents in one wave. Each sub-agent was told to write one chapter. The
-      coordinator had no <code>mentisdb_*</code> MCP tools available in the session, so
-      the shared "chain" was a stand-in: a single append-only markdown file at
-      <code>/tmp/cookbook-memory.md</code> that every sub-agent read on spawn and
-      appended a <code>TaskComplete</code> block to on completion.
+      The cookbook is maintained like any long-running MentisDB-backed project.
+      At the start of a session, the agent opens the project chain, loads the
+      MentisDB skill, reads recent context, and searches for cookbook-related
+      decisions, constraints, mistakes, and prior verification results. Only then
+      does it edit files.
     </p>
 
     <p>
-      This is exactly the failure mode the cookbook warns about: a memory-shaped
-      file with no semantic search, no typed relations, no scope filtering, no dedup,
-      no integrity. It was a journal, not a chain. The lessons that fell out of
-      that gap are the substance of this chapter.
+      That sounds mundane, but it changes the work. The agent does not need the
+      user to paste old context back into the prompt. It can find prior lessons
+      like "do not give users API-shaped memory prompts," "cookbook examples must
+      be verified," and "public docs should teach the operator loop before the
+      Rust API." The session starts with the project's memory, not a blank slate.
     </p>
 
-    <h3>Lesson 1: API drift is the #1 hazard of parallel documentation</h3>
+    <h3>The prompt that keeps the book honest</h3>
     <p>
-      Six sub-agents each read <code>src/lib.rs</code> independently. They came back
-      with <em>three different names for the same enum</em>:
+      When you ask an agent to update the cookbook, prompt it like this:
+    </p>
+
+    <pre data-cookbook-test="off"><code>Use MentisDB while editing the cookbook.
+
+Before changing docs, search for prior cookbook decisions, style constraints, known mistakes, and verification notes. Tell me what matters.
+
+While editing, do not teach users to speak in API payloads unless the chapter is explicitly for API developers. For operator-facing sections, write natural prompts a human would actually say.
+
+Before you stop, save a checkpoint with what changed, what you verified, remaining risks, and the exact next step.</code></pre>
+
+    <p>
+      Notice what is not in that prompt: no fake JSON, no hand-written tag arrays,
+      no pretending the user has to know thought internals. The user asks for the
+      behavior. The agent chooses the right MentisDB calls.
+    </p>
+
+    <h3>Lesson 1: The chain carries editorial decisions</h3>
+    <p>
+      Documentation has product decisions embedded in it. For this cookbook, one
+      of the important decisions is that operator-facing chapters should teach
+      people how to ask for memory behavior in normal language. Users should be
+      able to say, "remember the lesson from this bug," not assemble a typed
+      append request by hand.
+    </p>
+
+    <p>
+      Save decisions like that in MentisDB. Future agents can search for
+      "operator prompt style" or "API-shaped prompts" and avoid reintroducing the
+      same mistake in another chapter.
+    </p>
+
+    <h3>Lesson 2: Search before editing beats archaeology after editing</h3>
+    <p>
+      The expensive failure mode in docs is not writing bad prose once. It is
+      spreading the same wrong assumption across ten pages. Before changing a
+      cookbook chapter, search for the chapter name, the subsystem, and related
+      mistakes. If the current work touches examples, search for API drift and
+      previous compile failures. If it touches operator guidance, search for user
+      feedback about tone and usability.
+    </p>
+
+    <p>
+      This is where MentisDB earns its keep: the useful context is not always in
+      nearby files. It may be in a previous release note, a failed verification
+      run, a user complaint, or a checkpoint from another agent.
+    </p>
+
+    <h3>Lesson 3: Save human lessons, not transcript sludge</h3>
+    <p>
+      The cookbook does not need a memory for every file read or every command
+      attempted. It needs durable lessons that change future behavior. Good
+      cookbook memories sound like project guidance:
     </p>
     <ul>
-      <li><code>RelationKind</code> (chapter 1.1)</li>
-      <li><code>ThoughtRelationKind</code> (chapters 1.2, 1.7)</li>
-      <li>And the correct one: <code>ThoughtRelationKind</code> per <code>lib.rs:1962</code></li>
-    </ul>
-    <p>
-      Two different builder methods for reranking, two different graph builders,
-      two different sidecar registration calls. Three of the six chapters wrote
-      code that referenced a non-existent <code>chain.add_relation()</code> method
-      because they each <em>invented</em> the API they expected to find.
-    </p>
-
-    <p>
-      <strong>What a real chain would have done:</strong> a single
-      <code>Decision</code> thought recorded at the start of the writing project
-      ("Use ThoughtRelationKind, not RelationKind") with a <code>ref</code> to
-      <code>lib.rs:1962</code>. Subsequent sub-agents would have searched
-      "reranking API" and found the canonical version, not invented a new one.
-    </p>
-
-    <div class="callout callout-warn">
-      <strong>Production fix (not yet shipped, but on the ROADMAP):</strong>
-      run cookbook code examples as <code>cargo test --doc</code> on every release.
-      If a chapter references a method that doesn't exist, the test fails before
-      publish. This is the highest-leverage improvement we can make — it would
-      have caught all of the API drift in this run.
-    </div>
-
-    <h3>Lesson 2: Plans belong in the chain, not in the prompt</h3>
-    <p>
-      The coordinator told each sub-agent "write chapter X.Y" in the task
-      description. With a real chain, this would be one <code>Plan</code> thought
-      per chapter, created up front, with a <code>Subgoal</code> chain tracking
-      progress. Sub-agents would <code>query_ranked</code> for unclaimed plans,
-      claim one, and write a <code>TaskComplete</code> when done.
-    </p>
-
-    <p>
-      The benefit isn't bookkeeping. The benefit is that the next sub-agent —
-      writing a chapter that needs to reference the previous one — would search
-      "chapter 1.1" and find both the plan and the completed thought. With a
-      shared file, the next sub-agent had to read the whole file linearly and
-      pattern-match.
-    </p>
-
-    <h4>What this looks like in practice</h4>
-    <pre data-cookbook-test="off"><code>// Coordinator: write a Plan thought per chapter
-for (num, title) in remaining_chapters {
-    chain.append_thought("coordinator",
-        ThoughtInput::new(ThoughtType::Plan,
-            format!("Write chapter {}: {}", num, title))
-        .with_tags(["cookbook", "chapter-plan"])
-        .with_importance(0.7))?;
-}
-
-// Sub-agent: search for unclaimed plans, claim one
-let next = chain.query_ranked(
-    &amp;RankedSearchQuery::new()
-        .with_text("cookbook chapter plan")
-        .with_types([ThoughtType::Plan])
-        .with_tags_any(["chapter-plan"])
-        .with_limit(1))?
-    .hits.into_iter()
-    .find(|h| !claimed.contains(&amp;h.thought.id))
-    .ok_or("no plans left")?;
-
-let chapter_index = chain.append_thought(agent_id,
-    ThoughtInput::new(ThoughtType::Subgoal,
-        format!("Claimed: write '{}'", next.thought.content))
-    .with_relations(vec![ThoughtRelation::new(
-        ThoughtRelationKind::CausedBy, next.thought.id
-    )]))?;</code></pre>
-
-    <h3>Lesson 3: Typed relations catch what free text doesn't</h3>
-    <p>
-      The stand-in memory file's cross-references were free-text: "see chapter 1.5"
-      or "this builds on 1.1." A real chain would have these as typed
-      <code>ThoughtRelation</code>s with a <code>Corrects</code> / <code>Supersedes</code>
-      / <code>DerivedFrom</code> kind, and a graph-expansion query would surface
-      them automatically.
-    </p>
-
-    <p>
-      Concretely: when chapter 1.1's API drifted, the fix was a manual grep across
-      six files. With relations, a single graph query
-      <code>with_graph(RankedSearchGraph::new().with_max_depth(2))</code> from
-      the canonical "use ThoughtRelationKind" thought would have surfaced every
-      chapter that needed updating.
-    </p>
-
-    <h3>Lesson 4: Cookbooks are tests, and the chain should enforce that</h3>
-    <p>
-      Every <code>&lt;pre&gt;&lt;code&gt;</code> block in this book is a claim about
-      what the library does. Sub-agents each <em>claimed</em> their code compiled.
-      Zero of them produced evidence. The coordinator had to do a manual grep
-      across the codebase to discover the drift.
-    </p>
-
-    <p>
-      This is fixable in one line of CI:
-    </p>
-    <pre data-cookbook-test="off"><code># In .github/workflows/release.yml
-- name: Test cookbook examples
-  run: |
-    # Pull every &lt;pre&gt;&lt;code lang="rust"&gt; block from the
-    # cookbook, write them to tests/cookbook_examples.rs,
-    # and run `cargo test --test cookbook_examples`.
-    python3 scripts/extract_cookbook_examples.py \
-      docs/cookbook/*.html &gt; tests/cookbook_examples.rs
-    cargo test --test cookbook_examples</code></pre>
-
-    <h3>Lesson 5: Forward references need graph integrity</h3>
-    <p>
-      Several chapters linked to chapters that didn't exist yet:
-      <code>&lt;a href="cookbook-1-4-long-running-project-memory.html"&gt;Next →&lt;/a&gt;</code>
-      pointing at a missing file. With a real chain, a "verify all forward links
-      resolve" check is a one-shot <code>query_ranked</code> per link. With a
-      markdown file, the link is just text.
-    </p>
-
-    <h3>Lesson 6: Constraint thoughts enforce style better than prompt instructions</h3>
-    <p>
-      Each sub-agent's chapter was 17-21KB. The target was 12-15KB. With
-      <code>Constraint</code> thoughts in the chain ("chapter size budget:
-      12-15KB"), the next sub-agent would search "chapter constraints" and find
-      the rule. With a free-text instruction, agents over- or under-shot based
-      on individual judgment.
-    </p>
-
-    <p>
-      Same for code style: "use the 1.1 HTML template exactly" was a one-time
-      prompt. As a <code>Constraint</code> thought, it would persist across
-      every chapter, every wave.
-    </p>
-
-    <h3>Lesson 7: Always flag drift in your TaskComplete</h3>
-    <p>
-      Three of the six sub-agents included a "flags" section in their
-      <code>TaskComplete</code> noting API drift, size over budget, and missing
-      cross-references. This was the single most useful piece of information for
-      the coordinator's subsequent fix-up pass.
-    </p>
-
-    <p>
-      The lesson: a <code>TaskComplete</code> should always include
-      <em>concerns</em>, not just <em>completions</em>. The chain should
-      record the negative space — what you almost did, what you couldn't verify,
-      what the next agent should know.
-    </p>
-
-    <pre data-cookbook-test="off"><code>// A good TaskComplete thought
-ThoughtInput::new(ThoughtType::TaskComplete,
-    "Wrote cookbook-1-5 RAG over agent history. \
-     Cross-refs to 1.1, 1.6, 1.4. \
-     FLAGS: used with_reranking(k) which is current; \
-     chapter 1.1 uses the stale with_enable_reranking(true) \
-     and should be patched.")
-.with_concepts(["cookbook", "task-complete"])
-.with_importance(0.6)
-.with_tags(["chapter-1-5", "drift-warning"])</code></pre>
-
-    <h3>The meta-lesson: this book should eat its own cooking</h3>
-    <p>
-      The seven lessons above are not new. They're the cookbook patterns from
-      Part 1 and Part 2, applied to the cookbook's own production:
-    </p>
-    <ul>
-      <li><a href="cookbook-1-1-episodic-task-memory.html">1.1 Episodic Task Memory</a> — <code>Plan</code>, <code>Subgoal</code>, <code>TaskComplete</code>, <code>LessonLearned</code> are the right shape for any multi-step work, including writing a book.</li>
-      <li><a href="cookbook-1-7-error-and-mistake-memory.html">1.7 Error and Mistake Memory</a> — flag drift in the <code>TaskComplete</code>, then synthesize <code>LessonLearned</code> thoughts that the next agent will find.</li>
-      <li><a href="cookbook-0-4-search-first.html">0.4 Search-First Discipline</a> — every agent, including sub-agents, should search the chain before writing. A markdown file is not a chain.</li>
+      <li>Operator-facing docs should use natural prompts, not raw MCP payloads.</li>
+      <li>Examples that claim to compile need cookbook-as-test coverage or an explicit skip marker.</li>
+      <li>When a chapter mentions a generated artifact, verify the generator or the target file before claiming it exists.</li>
+      <li>Checkpoint before handing off so the next agent knows what changed and what still worries you.</li>
     </ul>
 
     <p>
-      The cookbook's biggest gap, today, is that the writing pipeline doesn't
-      yet <em>use</em> these patterns on itself. The next iteration of this
-      book will. The <code>cookbook-writing</code> chain will be the example
-      for chapter 0.5 v2: every chapter as a <code>Plan</code>, every sub-agent
-      as a <code>Subgoal</code>, every concern as a <code>LessonLearned</code>,
-      every doc-test as a verification.
+      The agent can store those as typed MentisDB thoughts behind the scenes. The
+      user should not have to care whether the exact type is a decision, lesson,
+      correction, or checkpoint unless they are building directly against the API.
     </p>
 
-    <h3>What you should take from this</h3>
+    <h3>Lesson 4: Cookbook examples are executable claims</h3>
     <p>
-      If you're setting up a multi-agent workflow that writes code, documents,
-      tests, or anything else in parallel: <strong>use a chain</strong>. A
-      markdown file is not enough. The chain is the difference between six
-      sub-agents that drift apart and six sub-agents that compound on each
-      other's work.
+      Every Rust code block that teaches the public API is a claim about what the
+      library does. MentisDB memory can remember that examples drifted before,
+      but memory is not a substitute for verification. The docs pipeline has to
+      compile examples continuously.
     </p>
 
     <p>
-      If you're a single agent: the same lesson applies at a smaller scale.
-      Append a <code>Plan</code> at the start of every session. Search for
-      related <code>LessonLearned</code>s at the start. Flag drift in your
-      <code>TaskComplete</code>. The chain compounds. The journal doesn't.
-    </p>
-
-    <h3>The fix: cookbook-as-test</h3>
-    <p>
-      Lesson 4 said: "every <code>&lt;pre&gt;&lt;code&gt;</code> block in this book
-      is a claim about what the library does." The fix for that lesson
-      is now shipping in the cookbook's own pipeline:
+      That is why the cookbook includes a cookbook-as-test pass:
     </p>
 
     <pre data-cookbook-test="off"><code># In scripts/extract_cookbook_examples.py
@@ -327,13 +199,12 @@ def emit_chapter_test(chapter, examples):
 
     <p>
       The fix took a day. Two chapters (0.3 Quickstart and
-      1.1 Episodic Task Memory) now compile cleanly. Five
+      1.1 Episodic Task Memory) now compile cleanly. Several
       others (0.4, 0.5, 1.2, 1.3, 1.5, 1.7, 2.4, 3.1, 4.1) are
       marked <code>data-cookbook-test="off"</code> because
       they contain illustrative pseudocode or invented helpers
-      that the extractor deliberately skips. As Wave 2
-      sub-agents land, the pipeline runs again; new chapters
-      must compile to be merged.
+      that the extractor deliberately skips. As future edits land,
+      the pipeline runs again; new API examples must compile to be merged.
     </p>
 
     <div class="callout callout-success">
@@ -341,7 +212,7 @@ def emit_chapter_test(chapter, examples):
       It costs one Python script (~250 lines), one Cargo test target,
       and a CI step. In exchange, every claim the cookbook makes
       about the library is now backed by a compile pass on every
-      PR. The next time a sub-agent invents an API name that doesn't
+      PR. The next time an agent invents an API name that doesn't
       exist, the test fails before merge.
     </div>
 

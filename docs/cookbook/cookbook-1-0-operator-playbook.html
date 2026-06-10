@@ -72,12 +72,12 @@ Before doing work:
 
 During work:
 - Search before adding new memories.
-- Append only durable decisions, constraints, lessons, mistakes, preferences, task completions, and checkpoints.
-- Use specific tags and concepts.
-- Add refs or relations when a new memory follows from older context.
+- Save only information that will matter in a future session: decisions, constraints, lessons, mistakes, preferences, completed work, and checkpoints.
+- When saving, include concrete names: files, commands, subsystems, errors, and the reason the memory matters.
+- If the new memory depends on something already in MentisDB, connect it to the older context you found.
 
 Before stopping:
-- Write a Summary checkpoint with what changed, what passed, what failed, and the exact next step.</code></pre>
+- Write a checkpoint with what changed, what passed, what failed, and the exact next step.</code></pre>
 
     <p>
       This prompt matters because most agents will happily use MentisDB as a write-only notebook
@@ -114,11 +114,11 @@ Summarize the relevant memories and then proceed.</code></pre>
       <tbody>
         <tr><td>New session</td><td>Bootstrap, read skill, recent context, latest checkpoint</td><td>Prevents cold-start amnesia</td></tr>
         <tr><td>Before unfamiliar edits</td><td>Search decisions, constraints, lessons, mistakes</td><td>Avoids repeating known traps</td></tr>
-        <tr><td>After root cause found</td><td>Append <code>LessonLearned</code> or <code>Correction</code></td><td>Makes the failure useful tomorrow</td></tr>
-        <tr><td>After architectural choice</td><td>Append <code>Decision</code> with rationale</td><td>Stops re-litigating the same choice</td></tr>
-        <tr><td>After tests pass</td><td>Append <code>TaskComplete</code> with command and result</td><td>Gives future agents evidence</td></tr>
-        <tr><td>Before compaction</td><td>Append <code>Summary</code> with role <code>Checkpoint</code></td><td>Survives context truncation</td></tr>
-        <tr><td>Before handoff</td><td>Append <code>Handoff</code> or checkpoint with next step</td><td>Lets another agent resume cleanly</td></tr>
+        <tr><td>After root cause found</td><td>Ask the agent to save the root cause and verified fix as a durable lesson</td><td>Makes the failure useful tomorrow</td></tr>
+        <tr><td>After architectural choice</td><td>Ask the agent to remember the choice, rationale, and rejected alternatives</td><td>Stops re-litigating the same choice</td></tr>
+        <tr><td>After tests pass</td><td>Ask the agent to save what changed and the exact verification result</td><td>Gives future agents evidence</td></tr>
+        <tr><td>Before compaction</td><td>Ask the agent to write a resumable checkpoint</td><td>Survives context truncation</td></tr>
+        <tr><td>Before handoff</td><td>Ask the agent to save what is done, what is risky, and the next action</td><td>Lets another agent resume cleanly</td></tr>
       </tbody>
     </table>
 
@@ -149,21 +149,17 @@ Summarize the relevant memories and then proceed.</code></pre>
     <pre data-cookbook-test="off"><code>Remember that tests passed.</code></pre>
 
     <p>Good:</p>
-    <pre data-cookbook-test="off"><code>Append a TaskComplete memory:
-content: "Implemented retry jitter for websocket reconnects. Verification: `cargo test websocket_reconnect` passed. Follow-up: run full integration suite before release."
-tags: ["websocket", "retry", "verified"]
-concepts: ["reconnect-jitter", "network-resilience"]
-importance: 0.8</code></pre>
+    <pre data-cookbook-test="off"><code>Save this in MentisDB as a durable completion note, but first search for related websocket reconnect work so you do not duplicate an existing memory.
+
+We implemented retry jitter for websocket reconnects. `cargo test websocket_reconnect` passed. The follow-up is to run the full integration suite before release.</code></pre>
 
     <p>Bad:</p>
     <pre data-cookbook-test="off"><code>Remember not to do that again.</code></pre>
 
     <p>Good:</p>
-    <pre data-cookbook-test="off"><code>Append a LessonLearned memory:
-content: "Do not fix dashboard stale data by recreating deleted chains on cache drop. That regressed delete semantics. Detach persistence before deleting cached chains."
-tags: ["dashboard", "delete-chain", "regression"]
-concepts: ["cache-lifecycle", "chain-deletion"]
-refs: [the Mistake or failing-test thought]</code></pre>
+    <pre data-cookbook-test="off"><code>Remember the lesson from this bug so future agents do not repeat it. Search MentisDB for related dashboard deletion or stale-data mistakes first, then save the root cause, the bad fix, and the safe fix.
+
+The lesson: do not fix dashboard stale data by recreating deleted chains when the cache is dropped. That regressed delete semantics. The safe fix is to detach persistence before deleting cached chains.</code></pre>
 
     <h3>The Prompt Pack</h3>
 
@@ -171,16 +167,16 @@ refs: [the Mistake or failing-test thought]</code></pre>
     <pre data-cookbook-test="off"><code>Before implementing this, search MentisDB for prior decisions, constraints, mistakes, and lessons about this area. Report the top relevant memories with their thought types, then proceed.</code></pre>
 
     <h4>Debug a failure</h4>
-    <pre data-cookbook-test="off"><code>Search MentisDB for this error message, failing test name, file path, and subsystem. Look specifically for Mistake, Correction, LessonLearned, and TaskComplete thoughts. Do not propose a fix until you summarize what previous work says.</code></pre>
+    <pre data-cookbook-test="off"><code>Search MentisDB for this error message, failing test name, file path, and subsystem. Look especially for prior mistakes, corrections, lessons, and completed fixes. Do not propose a fix until you summarize what previous work says.</code></pre>
 
     <h4>Record a durable lesson</h4>
-    <pre data-cookbook-test="off"><code>Save the root cause and fix as a LessonLearned or Correction in MentisDB. Include exact file paths, the failed assumption, the verified fix, and refs to any related Mistake or prior checkpoint.</code></pre>
+    <pre data-cookbook-test="off"><code>Save the root cause and fix in MentisDB as a durable lesson. Include exact file paths, the failed assumption, the verified fix, and links to any related prior mistake or checkpoint you find when searching.</code></pre>
 
     <h4>Before context loss</h4>
-    <pre data-cookbook-test="off"><code>Write a Summary checkpoint now. Include: goal, completed work, files changed, tests run and results, unresolved risks, and the first next step. Use role Checkpoint.</code></pre>
+    <pre data-cookbook-test="off"><code>Write a resumable MentisDB checkpoint now. Include: goal, completed work, files changed, tests run and results, unresolved risks, and the first next step.</code></pre>
 
     <h4>Improve the agent's behavior</h4>
-    <pre data-cookbook-test="off"><code>If this lesson will apply repeatedly, propose whether it should become a MentisDB skill. If yes, draft the skill update and save a Decision explaining why.</code></pre>
+    <pre data-cookbook-test="off"><code>If this lesson will apply repeatedly, propose whether it should become a MentisDB skill. If yes, draft the skill update and remember why we decided to make it a skill instead of leaving it as one more project memory.</code></pre>
 
     <h3>Harness-Specific Tricks</h3>
 
@@ -196,7 +192,7 @@ refs: [the Mistake or failing-test thought]</code></pre>
     <ul>
       <li>Use a task-start prompt that requires searching before writing code.</li>
       <li>Ask Codex to cite memories by type and content summary, not by vague "I remember" claims.</li>
-      <li>Ask it to append a <code>TaskComplete</code> only after verification output is known.</li>
+      <li>Ask it to save completed work only after verification output is known.</li>
     </ul>
 
     <h4>Claude Code</h4>

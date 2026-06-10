@@ -1,10 +1,68 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>5.5 Daily Standup Memory — The MentisDB Agent Memory Cookbook</title><style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.7;color:#1a1a2e;background:#fafafa;max-width:720px;margin:0 auto;padding:2rem 1.5rem}header{margin-bottom:3rem;border-bottom:1px solid #e0e0e0;padding-bottom:1.5rem}h1{font-size:1.8rem}h1 a{color:#1a1a2e;text-decoration:none}h2{font-size:1.4rem}h3{font-size:1.15rem;margin-top:1.5rem}pre{background:#f5f5f5;padding:1rem;border-radius:4px;overflow-x:auto}code{background:#f0f0f0;padding:.15em .35em;border-radius:3px}pre code{background:none;padding:0}.crumbs,footer{font-size:.85rem;color:#888}a{color:#4361ee}.callout{background:#f0f4ff;border-left:3px solid #4361ee;padding:.8rem 1rem;margin:1rem 0}</style></head><body><header><nav><a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav><h1><a href="cookbook.html">The MentisDB Agent Memory Cookbook</a></h1><p>Patterns and recipes for building AI agents that remember</p></header><article><nav class="crumbs">Part 5 — Custom Agent Recipes · <a href="cookbook.html">Back to TOC</a></nav><h2>5.5 Daily Standup Memory Through Your Harness</h2><p>A standup memory chain turns daily progress into searchable project history. In normal use, ask your MCP-connected coding agent to write the memory for you instead of running CLI commands by hand.</p><h3>Save today's update</h3><pre data-cookbook-test="off"><code>Use MentisDB to save today's standup update.
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>5.5 Daily Standup Memory — The MentisDB Agent Memory Cookbook</title>
+  <style>
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.7;color:#1a1a2e;background:#fafafa;max-width:720px;margin:0 auto;padding:2rem 1.5rem}
+    header{margin-bottom:3rem;border-bottom:1px solid #e0e0e0;padding-bottom:1.5rem}
+    h1{font-size:1.8rem}
+    h1 a{color:#1a1a2e;text-decoration:none}
+    h2{font-size:1.4rem}
+    h3{font-size:1.15rem;margin-top:1.5rem}
+    pre{background:#f5f5f5;padding:1rem;border-radius:4px;overflow-x:auto}
+    code{background:#f0f0f0;padding:.15em .35em;border-radius:3px}
+    pre code{background:none;padding:0}
+    .crumbs,footer{font-size:.85rem;color:#888}
+    a{color:#4361ee}
+    .callout{background:#f0f4ff;border-left:3px solid #4361ee;padding:.8rem 1rem;margin:1rem 0}
+  </style>
+</head>
+<body>
+  <header>
+    <nav><a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+    <h1><a href="cookbook.html">The MentisDB Agent Memory Cookbook</a></h1>
+    <p>Patterns and recipes for building AI agents that remember</p>
+  </header>
 
-Chain: team-standup
-Thought type: TaskComplete
-Agent id: my-name-or-agent-name
-Content: Finished invoice export retry handling; blocked on staging credentials.
-Tags: standup, backend, blocked
-Concepts: billing, invoices, staging-credentials
+  <article>
+    <nav class="crumbs">Part 5 — Custom Agent Recipes · <a href="cookbook.html">Back to TOC</a></nav>
+    <h2>5.5 Daily Standup Memory Through Your Harness</h2>
 
-Before appending, search the chain for related invoice-export blockers so this does not duplicate an existing memory.</code></pre><h3>Search yesterday's blockers</h3><pre data-cookbook-test="off"><code>Search MentisDB in the team-standup chain for yesterday's blockers about staging credentials and invoice export. Summarize the top hits, including thought type, agent id, and whether each blocker is still unresolved.</code></pre><h3>What the agent should do</h3><ul><li>Call <code>mentisdb_ranked_search</code> before appending.</li><li>Append a typed <code>TaskComplete</code>, <code>Finding</code>, <code>Constraint</code>, or <code>Question</code> only if the update is durable.</li><li>Use tags for workflow labels like <code>standup</code> or <code>blocked</code>.</li><li>Use concepts for reusable topics like <code>invoice-export</code> or <code>staging-credentials</code>.</li></ul><div class="callout"><strong>Operator rule:</strong> if the agent cannot show the MCP search and append calls it made, treat the standup as not saved.</div><nav class="crumbs"><a href="cookbook-5-4-typescript-mcp.html">&larr; 5.4 TypeScript MCP</a> · <a href="cookbook-5-6-dashboard-archaeology.html">5.6 Dashboard Archaeology &rarr;</a></nav></article><footer>The MentisDB Agent Memory Cookbook · <a href="cookbook.html">Table of Contents</a></footer></body></html>
+    <p>
+      A standup memory chain turns daily progress into searchable project history.
+      In normal use, ask your MCP-connected coding agent to write the memory for you
+      instead of running CLI commands by hand.
+    </p>
+
+    <h3>Save today's update</h3>
+    <pre data-cookbook-test="off"><code>Use MentisDB to save today's standup update in the team-standup chain.
+
+I finished invoice export retry handling, and I am blocked on staging credentials.
+
+Before saving, search for related invoice-export blockers so this does not duplicate an existing memory. Include enough detail that tomorrow's agent can find this by searching for invoices, billing, staging credentials, backend work, or blocked standup items.</code></pre>
+
+    <h3>Search yesterday's blockers</h3>
+    <pre data-cookbook-test="off"><code>Search MentisDB in the team-standup chain for yesterday's blockers about staging credentials and invoice export. Summarize the top hits, who wrote them, and whether each blocker still looks unresolved.</code></pre>
+
+    <h3>What the agent should do</h3>
+    <ul>
+      <li>Search the standup chain before saving a new update.</li>
+      <li>Save the update only if it will matter to future work.</li>
+      <li>Include workflow labels like standup, backend, blocked, or done when saving.</li>
+      <li>Include reusable topics like invoice export, staging credentials, billing, and invoices when saving.</li>
+      <li>Connect the new update to any related blocker or previous completion it found.</li>
+    </ul>
+
+    <div class="callout">
+      <strong>Operator rule:</strong> if the agent cannot summarize what it searched and what it saved,
+      treat the standup as not saved.
+    </div>
+
+    <nav class="crumbs"><a href="cookbook-5-4-typescript-mcp.html">&larr; 5.4 TypeScript MCP</a> · <a href="cookbook-5-6-dashboard-archaeology.html">5.6 Dashboard Archaeology &rarr;</a></nav>
+  </article>
+
+  <footer>The MentisDB Agent Memory Cookbook · <a href="cookbook.html">Table of Contents</a></footer>
+</body>
+</html>
