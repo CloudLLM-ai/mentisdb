@@ -166,5 +166,22 @@ pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
                 "Claude Desktop exposes MCP servers through claude_desktop_config.json.".into(),
             ],
         },
+        IntegrationSpec {
+            integration: IntegrationKind::Grok,
+            platform,
+            config_target: IntegrationPathTarget::file(
+                paths.home.join(".grok").join("config.toml"),
+                "Grok CLI global config (MCP servers)",
+                IntegrationFileFormat::Toml,
+            ),
+            detection_probes: vec![IntegrationPathTarget::directory(
+                paths.home.join(".grok"),
+                "Grok CLI home directory",
+            )],
+            companion_targets: vec![],
+            notes: vec![
+                "Grok CLI stores MCP servers under [mcp_servers.mentisdb] in ~/.grok/config.toml.".into(),
+            ],
+        },
     ]
 }

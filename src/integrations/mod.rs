@@ -37,11 +37,13 @@ pub enum IntegrationKind {
     VsCodeCopilot,
     /// Claude Desktop app.
     ClaudeDesktop,
+    /// Grok CLI / Build TUI.
+    Grok,
 }
 
 impl IntegrationKind {
     /// Return every known integration in stable display order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Codex,
         Self::ClaudeCode,
         Self::GeminiCli,
@@ -50,6 +52,7 @@ impl IntegrationKind {
         Self::CopilotCli,
         Self::VsCodeCopilot,
         Self::ClaudeDesktop,
+        Self::Grok,
     ];
 
     /// Return a stable lowercase identifier for this integration.
@@ -63,6 +66,7 @@ impl IntegrationKind {
             Self::CopilotCli => "copilot",
             Self::VsCodeCopilot => "vscode-copilot",
             Self::ClaudeDesktop => "claude-desktop",
+            Self::Grok => "grok",
         }
     }
 
@@ -77,6 +81,7 @@ impl IntegrationKind {
             Self::CopilotCli => "GitHub Copilot CLI",
             Self::VsCodeCopilot => "VS Code / Copilot",
             Self::ClaudeDesktop => "Claude Desktop",
+            Self::Grok => "Grok CLI",
         }
     }
 }

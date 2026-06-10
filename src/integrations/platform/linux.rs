@@ -152,5 +152,22 @@ pub(super) fn specs(platform: HostPlatform, env: &PathEnvironment) -> Vec<Integr
                 "Linux Claude Desktop support is path-mapped to ~/.config/Claude/claude_desktop_config.json.".into(),
             ],
         },
+        IntegrationSpec {
+            integration: IntegrationKind::Grok,
+            platform,
+            config_target: IntegrationPathTarget::file(
+                paths.config_root.join("grok").join("config.toml"),
+                "Grok CLI global config (MCP servers)",
+                IntegrationFileFormat::Toml,
+            ),
+            detection_probes: vec![IntegrationPathTarget::directory(
+                paths.config_root.join("grok"),
+                "Grok CLI config directory",
+            )],
+            companion_targets: vec![],
+            notes: vec![
+                "Grok CLI stores MCP servers under [mcp_servers.mentisdb] in ~/.config/grok/config.toml (or ~/.grok).".into(),
+            ],
+        },
     ]
 }

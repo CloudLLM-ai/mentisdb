@@ -156,7 +156,9 @@ fn config_contains_mentisdb_entry(spec: &IntegrationSpec) -> bool {
     }
 
     match spec.integration {
-        IntegrationKind::Codex => toml_has_entry(path, &["mcp_servers", "mentisdb"]),
+        IntegrationKind::Codex | IntegrationKind::Grok => {
+            toml_has_entry(path, &["mcp_servers", "mentisdb"])
+        }
         IntegrationKind::ClaudeCode => json_has_entry(path, &["mcpServers", "mentisdb"]),
         IntegrationKind::GeminiCli
         | IntegrationKind::Qwen
