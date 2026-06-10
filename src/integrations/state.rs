@@ -36,8 +36,10 @@ impl IntegrationWriterSettings {
     ) -> Self {
         let mut next = self.clone();
         let url = url.into();
+        let is_https = url.starts_with("https://");
         match integration {
             IntegrationKind::ClaudeDesktop => next.default_https_url = url,
+            _ if is_https => next.default_https_url = url,
             _ => next.default_http_url = url,
         }
         next
@@ -50,6 +52,7 @@ impl IntegrationWriterSettings {
     pub(crate) fn url_for(&self, integration: IntegrationKind) -> &str {
         match integration {
             IntegrationKind::ClaudeDesktop => &self.default_https_url,
+            _ if self.default_https_url.starts_with("https://") => &self.default_https_url,
             _ => &self.default_http_url,
         }
     }
