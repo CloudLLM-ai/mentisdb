@@ -183,14 +183,29 @@ encryption. It is a compliance requirement, not optional.</code></pre>
     <h3>Inspecting the chain (optional)</h3>
 
     <p>
-      If you like dashboards, the same server exposes one. Run:
+      The same server exposes a web dashboard on a separate port. When you
+      started the daemon, the TUI printed a line like:
     </p>
 
-    <pre data-cookbook-test="off"><code>mentisdb --mode dashboard</code></pre>
+    <pre data-cookbook-test="off"><code>[mentisdb] Dashboard    https://127.0.0.1:9475/dashboard</code></pre>
 
     <p>
-      and open the URL it prints. You will see the chain you just wrote, the
-      three memories, and a search bar. It is read-only by default.
+      Open that URL in your browser. The default is
+      <code>https://127.0.0.1:9475/dashboard</code>. The dashboard is served
+      over HTTPS using a self-signed certificate that the daemon generates on
+      first start, so your browser will show a "not secure" / "proceed to
+      localhost" warning. That is expected for a local self-signed cert —
+      accept it once and the page loads.
+    </p>
+
+    <p>
+      You will see the chain you just wrote, the three memories, and a search
+      bar. Set <code>MENTISDB_DASHBOARD_PIN</code> in the daemon environment
+      to require a PIN before the dashboard unlocks — that is the supported
+      way to keep other people on the same machine from reading or changing
+      your memories. The dashboard port itself can be changed with
+      <code>MENTISDB_DASHBOARD_PORT</code> (set it to <code>0</code> to
+      disable the dashboard entirely).
     </p>
 
     <h3>What's next</h3>
