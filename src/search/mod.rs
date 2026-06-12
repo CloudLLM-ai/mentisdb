@@ -87,11 +87,11 @@ pub use summary_index::{
     SummarySourceThought,
 };
 pub use vector::{
-    cosine_similarity, embed_batch_to_documents, EmbeddingBuildError, EmbeddingInput,
-    EmbeddingMetadata, EmbeddingProvider, EmbeddingVector, LocalTextEmbeddingError,
-    LocalTextEmbeddingProvider, VectorDocument, VectorIndex, VectorIndexError, VectorQuery,
-    VectorSearchHit, LOCAL_TEXT_EMBEDDING_DIMENSION, LOCAL_TEXT_EMBEDDING_MODEL_ID,
-    LOCAL_TEXT_EMBEDDING_VERSION,
+    cosine_similarity, embed_batch_to_documents, select_backend_kind, EmbeddingBuildError,
+    EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector, LocalTextEmbeddingError,
+    LocalTextEmbeddingProvider, VectorBackendKind, VectorDocument, VectorIndex, VectorIndexError,
+    VectorQuery, VectorSearchBackend, VectorSearchHit, DEFAULT_EXACT_TO_HNSW_THRESHOLD,
+    LOCAL_TEXT_EMBEDDING_DIMENSION, LOCAL_TEXT_EMBEDDING_MODEL_ID, LOCAL_TEXT_EMBEDDING_VERSION,
 };
 
 #[cfg(feature = "local-embeddings")]

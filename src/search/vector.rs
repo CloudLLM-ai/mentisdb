@@ -359,6 +359,78 @@ pub struct VectorSearchHit {
     pub score: f32,
 }
 
+/// Backend selection for [`VectorIndex`] construction.
+///
+/// `Exact` is the deterministic in-memory linear-scan cosine backend and is
+/// always available. `Hnsw` is reserved for the upcoming approximate-nearest-
+/// neighbor backend (see ROADMAP.md 1.0.0 Track B) and is selected by
+/// [`select_backend_kind`] once the corpus crosses
+/// [`DEFAULT_EXACT_TO_HNSW_THRESHOLD`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VectorBackendKind {
+    /// Deterministic in-memory exact cosine over every stored vector.
+    Exact,
+    /// Approximate nearest neighbor backend (not yet implemented in H0).
+    Hnsw,
+}
+
+impl VectorBackendKind {
+    /// Human-readable label, useful for logs and the dashboard.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Hnsw => "hnsw",
+        }
+    }
+}
+
+/// Default corpus size at which the [`VectorBackendKind`] selection switches
+/// from [`VectorBackendKind::Exact`] to [`VectorBackendKind::Hnsw`].
+///
+/// The threshold is a single in-process default for the v1 release. Tier-
+/// specific defaults (Hobby, Starter, Pro, Enterprise) will replace it once
+/// multi-tenant work lands; see ROADMAP.md 1.0.0 Track B.
+pub const DEFAULT_EXACT_TO_HNSW_THRESHOLD: usize = 50_000;
+
+/// Pick the appropriate [`VectorBackendKind`] for one corpus size.
+///
+/// `Hnsw` is returned for any corpus at or above the threshold so the boundary
+/// is "exclusively Hnsw" (an empty corpus, or one smaller than the threshold,
+/// stays on the deterministic Exact backend).
+pub fn select_backend_kind(document_count: usize) -> VectorBackendKind {
+    if document_count >= DEFAULT_EXACT_TO_HNSW_THRESHOLD {
+        VectorBackendKind::Hnsw
+    } else {
+        VectorBackendKind::Exact
+    }
+}
+
+/// Pluggable backend for vector similarity search.
+///
+/// `VectorIndex` (the deterministic in-memory exact cosine) implements this
+/// trait today. The upcoming HNSW backend will be a second implementation;
+/// both will be reachable through the same `Box<dyn VectorSearchBackend>`
+/// boundary so callers do not need to special-case the kind.
+pub trait VectorSearchBackend {
+    /// Return immutable embedding metadata for this backend.
+    fn metadata(&self) -> &EmbeddingMetadata;
+
+    /// Return number of stored vector documents.
+    fn document_count(&self) -> usize;
+
+    /// Insert or replace one document vector by id.
+    fn upsert_document(&mut self, document: VectorDocument) -> Result<(), VectorIndexError>;
+
+    /// Remove one document by id, returning `true` when it existed.
+    fn remove_document(&mut self, document_id: &str) -> bool;
+
+    /// Return a clone of the stored vector for one document id, if present.
+    fn get_vector(&self, document_id: &str) -> Option<Vec<f32>>;
+
+    /// Rank indexed vectors by similarity to the query vector.
+    fn search(&self, query: &VectorQuery) -> Result<Vec<VectorSearchHit>, VectorIndexError>;
+}
+
 /// In-memory deterministic cosine index for vector documents.
 #[derive(Debug, Clone)]
 pub struct VectorIndex {
@@ -372,6 +444,30 @@ impl VectorIndex {
         Self {
             metadata,
             documents: BTreeMap::new(),
+        }
+    }
+
+    /// Build an index from existing vector documents, choosing the backend by
+    /// [`select_backend_kind`] on the resulting corpus size.
+    ///
+    /// In H0 only the [`VectorBackendKind::Exact`] branch is implemented; the
+    /// `Hnsw` branch is reserved for the upcoming HNSW phase and returns the
+    /// exact backend with a debug assertion that callers do not silently rely
+    /// on the swap before it ships.
+    pub fn with_backend_kind(
+        metadata: EmbeddingMetadata,
+        documents: Vec<VectorDocument>,
+        kind: VectorBackendKind,
+    ) -> Result<Self, VectorIndexError> {
+        match kind {
+            VectorBackendKind::Exact => Self::from_documents(metadata, documents),
+            VectorBackendKind::Hnsw => {
+                debug_assert!(
+                    false,
+                    "VectorBackendKind::Hnsw is reserved for the upcoming HNSW phase; falling back to Exact"
+                );
+                Self::from_documents(metadata, documents)
+            }
         }
     }
 
@@ -441,6 +537,32 @@ impl VectorIndex {
             hits.truncate(query.limit);
         }
         Ok(hits)
+    }
+}
+
+impl VectorSearchBackend for VectorIndex {
+    fn metadata(&self) -> &EmbeddingMetadata {
+        &self.metadata
+    }
+
+    fn document_count(&self) -> usize {
+        self.documents.len()
+    }
+
+    fn upsert_document(&mut self, document: VectorDocument) -> Result<(), VectorIndexError> {
+        VectorIndex::upsert_document(self, document)
+    }
+
+    fn remove_document(&mut self, document_id: &str) -> bool {
+        VectorIndex::remove_document(self, document_id)
+    }
+
+    fn get_vector(&self, document_id: &str) -> Option<Vec<f32>> {
+        VectorIndex::get_vector(self, document_id)
+    }
+
+    fn search(&self, query: &VectorQuery) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
+        VectorIndex::search(self, query)
     }
 }
 

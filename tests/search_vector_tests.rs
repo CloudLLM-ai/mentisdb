@@ -1,7 +1,8 @@
 use mentisdb::search::{
-    cosine_similarity, embed_batch_to_documents, EmbeddingBuildError, EmbeddingInput,
-    EmbeddingMetadata, EmbeddingProvider, EmbeddingVector, LocalTextEmbeddingProvider,
-    VectorDocument, VectorIndex, VectorIndexError, VectorQuery,
+    cosine_similarity, embed_batch_to_documents, select_backend_kind, EmbeddingBuildError,
+    EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector,
+    LocalTextEmbeddingProvider, VectorBackendKind, VectorDocument, VectorIndex, VectorIndexError,
+    VectorQuery, VectorSearchBackend, VectorSearchHit, DEFAULT_EXACT_TO_HNSW_THRESHOLD,
 };
 use std::error::Error;
 use std::fmt;
@@ -259,4 +260,173 @@ fn local_text_embedding_provider_is_deterministic_and_topic_sensitive() {
         similar > different,
         "expected topical overlap to score higher"
     );
+}
+
+// ---------------------------------------------------------------------------
+// H0: VectorSearchBackend trait + VectorBackendKind + threshold
+// ---------------------------------------------------------------------------
+
+#[test]
+fn vector_backend_kind_as_str_is_stable() {
+    assert_eq!(VectorBackendKind::Exact.as_str(), "exact");
+    assert_eq!(VectorBackendKind::Hnsw.as_str(), "hnsw");
+}
+
+#[test]
+fn select_backend_kind_uses_default_threshold() {
+    assert_eq!(DEFAULT_EXACT_TO_HNSW_THRESHOLD, 50_000);
+    // Below threshold -> Exact.
+    assert_eq!(select_backend_kind(0), VectorBackendKind::Exact);
+    assert_eq!(
+        select_backend_kind(DEFAULT_EXACT_TO_HNSW_THRESHOLD - 1),
+        VectorBackendKind::Exact
+    );
+    // At or above threshold -> Hnsw (boundary is "exclusively Hnsw").
+    assert_eq!(
+        select_backend_kind(DEFAULT_EXACT_TO_HNSW_THRESHOLD),
+        VectorBackendKind::Hnsw
+    );
+    assert_eq!(select_backend_kind(50_001), VectorBackendKind::Hnsw);
+    assert_eq!(select_backend_kind(10_000_000), VectorBackendKind::Hnsw);
+}
+
+#[test]
+fn with_backend_kind_exact_matches_from_documents() {
+    let metadata = EmbeddingMetadata::new("toy", 2, "v1");
+    let documents = vec![
+        VectorDocument::new("a", vec![1.0, 0.0]),
+        VectorDocument::new("b", vec![0.0, 1.0]),
+    ];
+
+    let via_explicit_kind = VectorIndex::with_backend_kind(
+        metadata.clone(),
+        documents.clone(),
+        VectorBackendKind::Exact,
+    )
+    .unwrap();
+    let via_default = VectorIndex::from_documents(metadata, documents).unwrap();
+
+    assert_eq!(via_explicit_kind.document_count(), 2);
+    assert_eq!(
+        via_explicit_kind.document_count(),
+        via_default.document_count()
+    );
+
+    let query = VectorQuery::new(vec![1.0, 0.0]).with_limit(2);
+    let explicit_hits = via_explicit_kind.search(&query).unwrap();
+    let default_hits = via_default.search(&query).unwrap();
+    assert_eq!(explicit_hits, default_hits);
+}
+
+#[test]
+fn with_backend_kind_hnsw_currently_falls_back_to_exact_in_h0() {
+    // H0 does not implement the Hnsw backend yet. In release builds the
+    // constructor succeeds and returns a usable Exact index. In debug builds
+    // the implementation emits a `debug_assert!` so any caller who tries to
+    // use the not-yet-shipped Hnsw backend gets a loud test failure; that
+    // case is covered by `with_backend_kind_hnsw_loudly_panics_in_debug_builds`
+    // below. This test runs in release builds only.
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let metadata = EmbeddingMetadata::new("toy", 2, "v1");
+    let documents = vec![VectorDocument::new("only", vec![0.7, 0.7])];
+    let index =
+        VectorIndex::with_backend_kind(metadata, documents, VectorBackendKind::Hnsw).unwrap();
+    let hits = index
+        .search(&VectorQuery::new(vec![0.7, 0.7]).with_limit(1))
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].document_id, "only");
+}
+
+#[test]
+fn with_backend_kind_hnsw_loudly_panics_in_debug_builds() {
+    if !cfg!(debug_assertions) {
+        // Release builds strip the debug_assert; nothing to assert.
+        return;
+    }
+    let metadata = EmbeddingMetadata::new("toy", 2, "v1");
+    let documents = vec![VectorDocument::new("only", vec![0.7, 0.7])];
+    let result = std::panic::catch_unwind(|| {
+        let _ = VectorIndex::with_backend_kind(metadata, documents, VectorBackendKind::Hnsw);
+    });
+    assert!(
+        result.is_err(),
+        "VectorBackendKind::Hnsw should panic under debug_assertions in H0"
+    );
+}
+
+#[test]
+fn trait_object_dispatch_matches_inherent_api() {
+    let metadata = EmbeddingMetadata::new("toy", 2, "v1");
+    let mut concrete = VectorIndex::from_documents(
+        metadata,
+        vec![
+            VectorDocument::new("alpha", vec![1.0, 0.0]),
+            VectorDocument::new("bravo", vec![0.0, 1.0]),
+        ],
+    )
+    .unwrap();
+    let trait_object: Box<dyn VectorSearchBackend> = Box::new(concrete.clone());
+
+    // Read paths through the trait object.
+    assert_eq!(trait_object.document_count(), 2);
+    assert_eq!(trait_object.document_count(), concrete.document_count());
+    assert_eq!(trait_object.metadata(), concrete.metadata());
+    assert_eq!(trait_object.get_vector("alpha"), Some(vec![1.0, 0.0]));
+    assert_eq!(trait_object.get_vector("missing"), None);
+
+    let trait_hits = trait_object
+        .search(&VectorQuery::new(vec![1.0, 0.0]).with_limit(2))
+        .unwrap();
+    let concrete_hits = concrete
+        .search(&VectorQuery::new(vec![1.0, 0.0]).with_limit(2))
+        .unwrap();
+    assert_eq!(trait_hits, concrete_hits);
+
+    // Write paths through the trait object.
+    let mut trait_object: Box<dyn VectorSearchBackend> = Box::new(concrete.clone());
+    trait_object
+        .upsert_document(VectorDocument::new("charlie", vec![0.5, 0.5]))
+        .unwrap();
+    assert!(trait_object.remove_document("alpha"));
+    assert_eq!(trait_object.document_count(), 2);
+    assert_eq!(trait_object.get_vector("alpha"), None);
+    assert_eq!(trait_object.get_vector("charlie"), Some(vec![0.5, 0.5]));
+
+    // Trait object must reject dimension mismatches identically to the
+    // inherent API.
+    let bad = trait_object
+        .upsert_document(VectorDocument::new("bad", vec![1.0, 0.0, 0.0]))
+        .unwrap_err();
+    let bad_inherent = concrete
+        .upsert_document(VectorDocument::new("bad", vec![1.0, 0.0, 0.0]))
+        .unwrap_err();
+    assert_eq!(bad, bad_inherent);
+    assert_eq!(
+        bad,
+        VectorIndexError::DimensionMismatch {
+            expected: 2,
+            actual: 3,
+            context: "document",
+            document_id: Some("bad".to_string()),
+        }
+    );
+}
+
+#[test]
+fn vector_search_hit_is_partial_eq_usable_in_tests() {
+    // Pin the equality semantics of the public hit type. This guards against
+    // accidental field changes that would break the trait-object tests
+    // above.
+    let left = VectorSearchHit {
+        document_id: "alpha".to_string(),
+        score: 0.5,
+    };
+    let right = VectorSearchHit {
+        document_id: "alpha".to_string(),
+        score: 0.5,
+    };
+    assert_eq!(left, right);
 }
