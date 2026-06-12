@@ -18,6 +18,11 @@ server = ["dep:axum", "dep:env_logger", "dep:if-addrs", "dep:log", "dep:tokio", 
 startup-sound = ["dep:rodio"]
 local-embeddings = ["dep:fastembed", "dep:rustls"]
 llm-extraction = ["dep:openai-rust2", "dep:anyhow"]
+# HNSW approximate-nearest-neighbor vector backend. Off by default so the
+# default build keeps the pure-Rust story. When enabled, `VectorIndex` and
+# `VectorSearchBackend` switch to the HNSW backend once the corpus crosses
+# `DEFAULT_EXACT_TO_HNSW_THRESHOLD` (see ROADMAP.md 1.0.0 Track B).
+hnsw-backend = ["dep:hnsw", "dep:rand_pcg", "dep:space"]
 
 [dependencies]
 async-trait = "0.1.89"
@@ -59,6 +64,12 @@ openai-rust2 = { version = "1.7.2", optional = true }
 anyhow = { version = "1", optional = true }
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 walkdir = "2.5"
+# HNSW approximate-nearest-neighbor backend (H1). Pure Rust, no_std-friendly
+# core; we enable it only when the `hnsw-backend` feature is on so the default
+# build is the exact-f32 linear-scan path. See ROADMAP.md 1.0.0 Track B.
+hnsw = { version = "0.11", optional = true }
+rand_pcg = { version = "0.3", optional = true }
+space = { version = "0.17", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

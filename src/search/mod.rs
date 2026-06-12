@@ -36,6 +36,10 @@ pub mod expansion;
 /// Graph adjacency and edge-provenance structures derived from committed
 /// thoughts.
 pub mod graph;
+/// Optional HNSW approximate-nearest-neighbor vector backend (H1). Compiled
+/// in only when the `hnsw-backend` feature is enabled.
+#[cfg(feature = "hnsw-backend")]
+pub mod hnsw_backend;
 /// Vector-similarity implicit edge overlay for augmenting graph expansion.
 pub mod implicit_edges;
 /// Irregular verb lemma expansion for lexical search queries.
@@ -73,6 +77,11 @@ pub use expansion::{
     GraphExpansionHit, GraphExpansionMode, GraphExpansionQuery, GraphExpansionResult,
     GraphExpansionStats,
 };
+#[cfg(feature = "local-embeddings")]
+pub use fastembed_provider::{
+    FastEmbedError, FastEmbedProvider, FASTEMBED_MINILM_DIMENSION, FASTEMBED_MINILM_MODEL_ID,
+    FASTEMBED_MINILM_VERSION,
+};
 pub use graph::{
     AdjacencyDirection, GraphEdge, GraphEdgeProvenance, ThoughtAdjacencyIndex, ThoughtLocator,
 };
@@ -89,13 +98,8 @@ pub use summary_index::{
 pub use vector::{
     cosine_similarity, embed_batch_to_documents, select_backend_kind, EmbeddingBuildError,
     EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector, LocalTextEmbeddingError,
-    LocalTextEmbeddingProvider, VectorBackendKind, VectorDocument, VectorIndex, VectorIndexError,
-    VectorQuery, VectorSearchBackend, VectorSearchHit, DEFAULT_EXACT_TO_HNSW_THRESHOLD,
-    LOCAL_TEXT_EMBEDDING_DIMENSION, LOCAL_TEXT_EMBEDDING_MODEL_ID, LOCAL_TEXT_EMBEDDING_VERSION,
-};
-
-#[cfg(feature = "local-embeddings")]
-pub use fastembed_provider::{
-    FastEmbedError, FastEmbedProvider, FASTEMBED_MINILM_DIMENSION, FASTEMBED_MINILM_MODEL_ID,
-    FASTEMBED_MINILM_VERSION,
+    LocalTextEmbeddingProvider, VectorBackend, VectorBackendKind, VectorDocument, VectorIndex,
+    VectorIndexError, VectorQuery, VectorSearchBackend, VectorSearchHit,
+    DEFAULT_EXACT_TO_HNSW_THRESHOLD, LOCAL_TEXT_EMBEDDING_DIMENSION, LOCAL_TEXT_EMBEDDING_MODEL_ID,
+    LOCAL_TEXT_EMBEDDING_VERSION,
 };

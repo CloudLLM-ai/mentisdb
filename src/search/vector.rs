@@ -384,6 +384,83 @@ impl VectorBackendKind {
     }
 }
 
+/// One concrete vector-search backend chosen by [`select_backend_kind`].
+///
+/// Returned by [`VectorIndex::with_backend_kind`]. Holds either the
+/// in-memory exact cosine [`VectorIndex`] or a boxed HNSW backend; both
+/// impl [`VectorSearchBackend`] so callers can dispatch through the trait.
+pub enum VectorBackend {
+    /// Deterministic in-memory exact cosine over every stored vector.
+    Exact(VectorIndex),
+    /// Approximate nearest neighbor backend; only available with the
+    /// `hnsw-backend` feature.
+    #[cfg(feature = "hnsw-backend")]
+    Hnsw(Box<dyn VectorSearchBackend>),
+}
+
+impl std::fmt::Debug for VectorBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Exact(index) => f.debug_tuple("Exact").field(index).finish(),
+            #[cfg(feature = "hnsw-backend")]
+            Self::Hnsw(_) => f
+                .debug_tuple("Hnsw")
+                .field(&"<dyn VectorSearchBackend>")
+                .finish(),
+        }
+    }
+}
+
+impl VectorSearchBackend for VectorBackend {
+    fn metadata(&self) -> &EmbeddingMetadata {
+        match self {
+            Self::Exact(index) => index.metadata(),
+            #[cfg(feature = "hnsw-backend")]
+            Self::Hnsw(backend) => backend.metadata(),
+        }
+    }
+
+    fn document_count(&self) -> usize {
+        match self {
+            Self::Exact(index) => index.document_count(),
+            #[cfg(feature = "hnsw-backend")]
+            Self::Hnsw(backend) => backend.document_count(),
+        }
+    }
+
+    fn upsert_document(&mut self, document: VectorDocument) -> Result<(), VectorIndexError> {
+        match self {
+            Self::Exact(index) => index.upsert_document(document),
+            #[cfg(feature = "hnsw-backend")]
+            Self::Hnsw(backend) => backend.upsert_document(document),
+        }
+    }
+
+    fn remove_document(&mut self, document_id: &str) -> bool {
+        match self {
+            Self::Exact(index) => index.remove_document(document_id),
+            #[cfg(feature = "hnsw-backend")]
+            Self::Hnsw(backend) => backend.remove_document(document_id),
+        }
+    }
+
+    fn get_vector(&self, document_id: &str) -> Option<Vec<f32>> {
+        match self {
+            Self::Exact(index) => index.get_vector(document_id),
+            #[cfg(feature = "hnsw-backend")]
+            Self::Hnsw(backend) => backend.get_vector(document_id),
+        }
+    }
+
+    fn search(&self, query: &VectorQuery) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
+        match self {
+            Self::Exact(index) => index.search(query),
+            #[cfg(feature = "hnsw-backend")]
+            Self::Hnsw(backend) => backend.search(query),
+        }
+    }
+}
+
 /// Default corpus size at which the [`VectorBackendKind`] selection switches
 /// from [`VectorBackendKind::Exact`] to [`VectorBackendKind::Hnsw`].
 ///
@@ -450,23 +527,41 @@ impl VectorIndex {
     /// Build an index from existing vector documents, choosing the backend by
     /// [`select_backend_kind`] on the resulting corpus size.
     ///
-    /// In H0 only the [`VectorBackendKind::Exact`] branch is implemented; the
-    /// `Hnsw` branch is reserved for the upcoming HNSW phase and returns the
-    /// exact backend with a debug assertion that callers do not silently rely
-    /// on the swap before it ships.
+    /// In H1 the [`VectorBackendKind::Exact`] branch always returns a
+    /// `VectorIndex`, and the [`VectorBackendKind::Hnsw`] branch returns a
+    /// `Box<dyn VectorSearchBackend>` so the caller can hold either backend
+    /// uniformly. The `Hnsw` branch is gated behind the `hnsw-backend`
+    /// feature; without it we silently return an Exact backend so the
+    /// build is still clean. Callers that need a real HNSW backend should
+    /// enable the feature and rebuild.
     pub fn with_backend_kind(
         metadata: EmbeddingMetadata,
         documents: Vec<VectorDocument>,
         kind: VectorBackendKind,
-    ) -> Result<Self, VectorIndexError> {
+    ) -> Result<VectorBackend, VectorIndexError> {
         match kind {
-            VectorBackendKind::Exact => Self::from_documents(metadata, documents),
+            VectorBackendKind::Exact => Ok(VectorBackend::Exact(Self::from_documents(
+                metadata, documents,
+            )?)),
             VectorBackendKind::Hnsw => {
-                debug_assert!(
-                    false,
-                    "VectorBackendKind::Hnsw is reserved for the upcoming HNSW phase; falling back to Exact"
-                );
-                Self::from_documents(metadata, documents)
+                #[cfg(feature = "hnsw-backend")]
+                {
+                    let backend =
+                        super::hnsw_backend::HnswBackend::from_documents(metadata, documents)?;
+                    Ok(VectorBackend::Hnsw(Box::new(backend)))
+                }
+                #[cfg(not(feature = "hnsw-backend"))]
+                {
+                    let _ = metadata;
+                    Ok(VectorBackend::Exact(Self::from_documents(
+                        EmbeddingMetadata::new(
+                            "stub",
+                            documents.first().map(|d| d.vector.len()).unwrap_or(0),
+                            "v0",
+                        ),
+                        documents,
+                    )?))
+                }
             }
         }
     }
@@ -644,8 +739,8 @@ pub fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f32> {
     }
 
     let mut dot = 0.0_f32;
-    let mut left_norm_sq = 0.0_f32;
-    let mut right_norm_sq = 0.0_f32;
+    let mut left_norm_sq = 0.0;
+    let mut right_norm_sq = 0.0;
     for (left_value, right_value) in left.iter().zip(right.iter()) {
         dot += left_value * right_value;
         left_norm_sq += left_value * left_value;
@@ -682,6 +777,19 @@ fn validate_vector(
         }
     }
     Ok(())
+}
+
+/// `pub(super)` accessor for [`validate_vector`] used by the optional
+/// HNSW backend. Crate-private, so user-facing callers go through
+/// `VectorIndex` / `VectorSearchBackend`.
+#[cfg(feature = "hnsw-backend")]
+pub(super) fn validate_vector_public(
+    vector: &[f32],
+    expected_dimension: usize,
+    document_id: Option<&str>,
+    context: &'static str,
+) -> Result<(), VectorIndexError> {
+    validate_vector(vector, expected_dimension, document_id, context)
 }
 
 fn accumulate_hashed_feature(vector: &mut [f32], feature: &[u8], weight: f32) {

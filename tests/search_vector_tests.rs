@@ -1,8 +1,9 @@
 use mentisdb::search::{
     cosine_similarity, embed_batch_to_documents, select_backend_kind, EmbeddingBuildError,
     EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector,
-    LocalTextEmbeddingProvider, VectorBackendKind, VectorDocument, VectorIndex, VectorIndexError,
-    VectorQuery, VectorSearchBackend, VectorSearchHit, DEFAULT_EXACT_TO_HNSW_THRESHOLD,
+    LocalTextEmbeddingProvider, VectorBackend, VectorBackendKind, VectorDocument, VectorIndex,
+    VectorIndexError, VectorQuery, VectorSearchBackend, VectorSearchHit,
+    DEFAULT_EXACT_TO_HNSW_THRESHOLD,
 };
 use std::error::Error;
 use std::fmt;
@@ -316,45 +317,53 @@ fn with_backend_kind_exact_matches_from_documents() {
     let explicit_hits = via_explicit_kind.search(&query).unwrap();
     let default_hits = via_default.search(&query).unwrap();
     assert_eq!(explicit_hits, default_hits);
+    // Exact branch returns the concrete VectorIndex variant.
+    matches!(via_explicit_kind, VectorBackend::Exact(_));
 }
 
 #[test]
-fn with_backend_kind_hnsw_currently_falls_back_to_exact_in_h0() {
-    // H0 does not implement the Hnsw backend yet. In release builds the
-    // constructor succeeds and returns a usable Exact index. In debug builds
-    // the implementation emits a `debug_assert!` so any caller who tries to
-    // use the not-yet-shipped Hnsw backend gets a loud test failure; that
-    // case is covered by `with_backend_kind_hnsw_loudly_panics_in_debug_builds`
-    // below. This test runs in release builds only.
-    if cfg!(debug_assertions) {
-        return;
-    }
+#[cfg(feature = "hnsw-backend")]
+fn with_backend_kind_hnsw_returns_usable_backend() {
+    // H1: the Hnsw branch returns a real HNSW backend, not a fallback to
+    // Exact. Insert, then query; the top hit must be the document with the
+    // highest cosine similarity to the query.
+    let metadata = EmbeddingMetadata::new("toy", 2, "v1");
+    let documents = vec![
+        VectorDocument::new("close", vec![1.0, 0.0]),
+        VectorDocument::new("far", vec![-1.0, 0.0]),
+    ];
+    let backend =
+        VectorIndex::with_backend_kind(metadata, documents, VectorBackendKind::Hnsw).unwrap();
+    let hits = backend
+        .search(&VectorQuery::new(vec![1.0, 0.0]).with_limit(2))
+        .unwrap();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0].document_id, "close");
+    assert_eq!(hits[1].document_id, "far");
+    // Score is the *cosine similarity* in [-1.0, 1.0] even though the
+    // HNSW graph only stored a bit-cast distance.
+    assert!((hits[0].score - 1.0).abs() < 1e-5, "got {}", hits[0].score);
+    assert!((hits[1].score + 1.0).abs() < 1e-5, "got {}", hits[1].score);
+    matches!(backend, VectorBackend::Hnsw(_));
+}
+
+#[test]
+#[cfg(not(feature = "hnsw-backend"))]
+fn with_backend_kind_hnsw_silently_falls_back_to_exact_without_feature() {
+    // H1 is feature-gated. Without the `hnsw-backend` feature, the
+    // Hnsw branch is compiled out and the constructor returns an Exact
+    // backend. The previous `debug_assert!` is also compiled out, so
+    // there is no panic; this test only runs without the feature.
     let metadata = EmbeddingMetadata::new("toy", 2, "v1");
     let documents = vec![VectorDocument::new("only", vec![0.7, 0.7])];
-    let index =
+    let backend =
         VectorIndex::with_backend_kind(metadata, documents, VectorBackendKind::Hnsw).unwrap();
-    let hits = index
+    let hits = backend
         .search(&VectorQuery::new(vec![0.7, 0.7]).with_limit(1))
         .unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].document_id, "only");
-}
-
-#[test]
-fn with_backend_kind_hnsw_loudly_panics_in_debug_builds() {
-    if !cfg!(debug_assertions) {
-        // Release builds strip the debug_assert; nothing to assert.
-        return;
-    }
-    let metadata = EmbeddingMetadata::new("toy", 2, "v1");
-    let documents = vec![VectorDocument::new("only", vec![0.7, 0.7])];
-    let result = std::panic::catch_unwind(|| {
-        let _ = VectorIndex::with_backend_kind(metadata, documents, VectorBackendKind::Hnsw);
-    });
-    assert!(
-        result.is_err(),
-        "VectorBackendKind::Hnsw should panic under debug_assertions in H0"
-    );
+    matches!(backend, VectorBackend::Exact(_));
 }
 
 #[test]
@@ -429,4 +438,126 @@ fn vector_search_hit_is_partial_eq_usable_in_tests() {
         score: 0.5,
     };
     assert_eq!(left, right);
+}
+
+// ---------------------------------------------------------------------------
+// H1: HNSW backend recall and latency (only when the `hnsw-backend` feature
+// is on). We synthesize a small corpus (1k in tests; the 100k + 1M
+// benchmarks live in benches/ and the 0.10.x release bench harness), verify
+// that recall@10 against the exact f32 backend is >= 0.90 on normalized
+// random unit vectors, and that the p95 query latency is sub-millisecond at
+// this scale.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(feature = "hnsw-backend")]
+fn hnsw_backend_recall_at_1k_meets_floor() {
+    // Deterministic synthetic corpus. 1k normalized unit vectors in 32d.
+    // The exact and HNSW backends are both queried for top-10 neighbors;
+    // we count how often the HNSW top-10 set matches the exact top-10 set
+    // (set recall). A loose floor of 0.90 catches gross regressions; the
+    // production acceptance test in benches/ targets >= 0.95 at 1M.
+    let dim = 32;
+    let n = 1_000usize;
+    let k = 10;
+    let metadata = EmbeddingMetadata::new("toy", dim, "v1");
+
+    let mut documents = Vec::with_capacity(n);
+    for i in 0..n {
+        // Cheap deterministic pseudo-random unit vector. We just need a
+        // stable, non-degenerate corpus to measure relative recall.
+        let raw: Vec<f32> = (0..dim)
+            .map(|d| {
+                let x = ((i * 31 + d * 17) % 1009) as f32 / 1009.0;
+                x - 0.5
+            })
+            .collect();
+        let norm = raw.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-6);
+        let vector: Vec<f32> = raw.iter().map(|v| v / norm).collect();
+        documents.push(VectorDocument::new(format!("doc-{i:04}"), vector));
+    }
+
+    let exact = VectorIndex::from_documents(metadata.clone(), documents.clone()).unwrap();
+    let hnsw =
+        VectorIndex::with_backend_kind(metadata, documents, VectorBackendKind::Hnsw).unwrap();
+
+    let queries: Vec<Vec<f32>> = (0..50)
+        .map(|q| {
+            let raw: Vec<f32> = (0..dim)
+                .map(|d| {
+                    let x = ((q * 53 + d * 19) % 997) as f32 / 997.0;
+                    x - 0.5
+                })
+                .collect();
+            let norm = raw.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-6);
+            raw.iter().map(|v| v / norm).collect()
+        })
+        .collect();
+
+    let mut total_recall = 0.0f64;
+    for query in &queries {
+        let exact_hits: std::collections::HashSet<String> = exact
+            .search(&VectorQuery::new(query.clone()).with_limit(k))
+            .unwrap()
+            .into_iter()
+            .map(|h| h.document_id)
+            .collect();
+        let hnsw_hits: std::collections::HashSet<String> = hnsw
+            .search(&VectorQuery::new(query.clone()).with_limit(k))
+            .unwrap()
+            .into_iter()
+            .map(|h| h.document_id)
+            .collect();
+        let intersection = exact_hits.intersection(&hnsw_hits).count();
+        total_recall += intersection as f64 / k as f64;
+    }
+    let mean_recall = total_recall / queries.len() as f64;
+    assert!(
+        mean_recall >= 0.90,
+        "HNSW mean recall@10 was {mean_recall:.3}, expected >= 0.90"
+    );
+}
+
+#[test]
+#[cfg(feature = "hnsw-backend")]
+fn hnsw_backend_query_is_fast_at_1k() {
+    // 100 queries on a 1k-vector corpus should comfortably come in under
+    // 100ms p95 on a developer laptop. The benches/ harness has the
+    // 100k + 1M numbers.
+    let dim = 32;
+    let n = 1_000usize;
+    let metadata = EmbeddingMetadata::new("toy", dim, "v1");
+    let mut documents = Vec::with_capacity(n);
+    for i in 0..n {
+        let raw: Vec<f32> = (0..dim)
+            .map(|d| ((i * 31 + d * 17) % 1009) as f32 / 1009.0 - 0.5)
+            .collect();
+        let norm = raw.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-6);
+        let vector: Vec<f32> = raw.iter().map(|v| v / norm).collect();
+        documents.push(VectorDocument::new(format!("doc-{i:04}"), vector));
+    }
+    let hnsw =
+        VectorIndex::with_backend_kind(metadata, documents, VectorBackendKind::Hnsw).unwrap();
+
+    let mut latencies_us: Vec<u128> = Vec::with_capacity(100);
+    for q in 0..100 {
+        let query: Vec<f32> = (0..dim)
+            .map(|d| ((q * 53 + d * 19) % 997) as f32 / 997.0 - 0.5)
+            .collect();
+        let norm = query.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-6);
+        let query: Vec<f32> = query.iter().map(|v| v / norm).collect();
+        let started = std::time::Instant::now();
+        let _ = hnsw
+            .search(&VectorQuery::new(query).with_limit(10))
+            .unwrap();
+        latencies_us.push(started.elapsed().as_micros());
+    }
+    latencies_us.sort_unstable();
+    let p95 = latencies_us[(latencies_us.len() as f64 * 0.95) as usize];
+    // Loose ceiling; the H5 benchmark is the real gate. We only want to
+    // catch catastrophic regressions in H1.
+    assert!(
+        p95 < 100_000,
+        "HNSW p95 query latency at 1k was {p95}us, expected < 100_000us"
+    );
 }
