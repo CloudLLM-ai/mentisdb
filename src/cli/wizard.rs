@@ -68,7 +68,7 @@ pub(super) fn run_wizard(
     };
 
     // Grok-specific warning: Grok CLI cannot skip self-signed certificate verification.
-    if selected.iter().any(|i| *i == IntegrationKind::Grok) {
+    if selected.contains(&IntegrationKind::Grok) {
         let grok_url = url_override
             .clone()
             .unwrap_or_else(|| default_url(IntegrationKind::Grok).to_string());
@@ -95,9 +95,13 @@ pub(super) fn run_wizard(
         let url = url_override
             .clone()
             .unwrap_or_else(|| default_url(integration).to_string());
-        let Some(plan) =
-            build_setup_plan_for_integration(integration, url, platform, &env, bearer_override.as_deref())
-        else {
+        let Some(plan) = build_setup_plan_for_integration(
+            integration,
+            url,
+            platform,
+            &env,
+            bearer_override.as_deref(),
+        ) else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unsupported integration target",
