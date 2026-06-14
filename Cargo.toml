@@ -70,6 +70,10 @@ walkdir = "2.5"
 hnsw = { version = "0.11", optional = true }
 rand_pcg = { version = "0.3", optional = true }
 space = { version = "0.17", optional = true }
+# Compressed bitmap set for vector metadata filters (H2). Always built-in:
+# it has no heavy dependencies, keeps the public API uniform across feature
+# combinations, and is usable with both Exact and HNSW backends.
+roaring = "0.10"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

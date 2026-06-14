@@ -98,8 +98,8 @@ pub use summary_index::{
 pub use vector::{
     cosine_similarity, embed_batch_to_documents, select_backend_kind, EmbeddingBuildError,
     EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector, LocalTextEmbeddingError,
-    LocalTextEmbeddingProvider, VectorBackend, VectorBackendKind, VectorDocument, VectorIndex,
-    VectorIndexError, VectorQuery, VectorSearchBackend, VectorSearchHit,
+    LocalTextEmbeddingProvider, VectorBackend, VectorBackendKind, VectorDocument, VectorFilter,
+    VectorIndex, VectorIndexError, VectorQuery, VectorSearchBackend, VectorSearchHit,
     DEFAULT_EXACT_TO_HNSW_THRESHOLD, LOCAL_TEXT_EMBEDDING_DIMENSION, LOCAL_TEXT_EMBEDDING_MODEL_ID,
     LOCAL_TEXT_EMBEDDING_VERSION,
 };

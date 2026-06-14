@@ -25,11 +25,12 @@
 
 use hnsw::{Hnsw, Params};
 use rand_pcg::Pcg64;
+use roaring::RoaringBitmap;
 use space::{Metric, Neighbor};
 
 use super::vector::{
-    EmbeddingMetadata, VectorDocument, VectorIndexError, VectorQuery, VectorSearchBackend,
-    VectorSearchHit,
+    EmbeddingMetadata, VectorDocument, VectorFilter, VectorIndexError, VectorQuery,
+    VectorSearchBackend, VectorSearchHit,
 };
 
 /// Default M parameter (max connections per node) for [`HnswBackend`].
@@ -194,6 +195,56 @@ impl VectorSearchBackend for HnswBackend {
     }
 
     fn search(&self, query: &VectorQuery) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
+        self.search_inner(query, None)
+    }
+
+    fn search_filtered(
+        &self,
+        query: &VectorQuery,
+        filter: &VectorFilter,
+    ) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
+        if filter.allows_all() {
+            return self.search(query);
+        }
+
+        let allowed = self.filter_to_bitmap(filter);
+        if allowed.is_empty() || self.doc_to_id.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.search_inner(query, Some(&allowed))
+    }
+}
+
+impl HnswBackend {
+    /// Translate a caller-facing [`VectorFilter`] into a bitmap of HNSW item
+    /// ids. The HNSW crate's internal item id (`neighbor.index`) is the
+    /// ordinal we use in the bitmap.
+    fn filter_to_bitmap(&self, filter: &VectorFilter) -> RoaringBitmap {
+        match filter {
+            VectorFilter::None => self
+                .doc_to_id
+                .values()
+                .map(|&id| id as u32)
+                .collect::<RoaringBitmap>(),
+            VectorFilter::Ids(ids) => ids
+                .iter()
+                .filter_map(|id| self.doc_to_id.get(id).map(|&id| id as u32))
+                .collect::<RoaringBitmap>(),
+        }
+    }
+
+    /// Shared search implementation for filtered and unfiltered queries.
+    ///
+    /// `allowed` is an optional bitmap of HNSW item ids. When present, the
+    /// search asks the approximate graph for more candidates than requested
+    /// (overshoot) and then discards those that are not in the bitmap before
+    /// re-scoring with exact cosine.
+    fn search_inner(
+        &self,
+        query: &VectorQuery,
+        allowed: Option<&RoaringBitmap>,
+    ) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
         super::vector::validate_vector_public(
             &query.vector,
             self.metadata.dimension,
@@ -205,39 +256,39 @@ impl VectorSearchBackend for HnswBackend {
             return Ok(Vec::new());
         }
 
-        // Search the HNSW graph for the top `ef` candidates, then take the
-        // best `query.limit`. HNSW returns Neighbor { index, distance } with
-        // the *bit-cast* of the cosine distance, so we re-rank in two ways:
-        //   1. We use the HNSW's index -> our document_id mapping
-        //      (self.id_to_doc) to translate the result, skipping any
-        //      tombstones that show up as empty strings.
-        //   2. We re-score the survivors against the exact cached vector
-        //      so the `score` field on the returned hit matches what the
-        //      Exact backend would have returned (cosine similarity in
-        //      [-1.0, 1.0]).
-        let k_candidate = query.limit.max(1).min(self.doc_to_id.len());
-        let ef = HNSW_EF_SEARCH.max(k_candidate);
+        // For unfiltered search we ask for exactly `limit` candidates. For
+        // filtered search we overshoot and then discard non-matching ids.
+        // The overshoot is capped by the live document count to avoid asking
+        // `nearest` for more candidates than exist.
+        let limit = query.limit.max(1).min(self.doc_to_id.len());
+        let candidate_count = allowed
+            .map(|_| (limit * 4).max(64).min(self.doc_to_id.len()))
+            .unwrap_or(limit);
+        let ef = HNSW_EF_SEARCH.max(candidate_count);
         let mut dest = vec![
             Neighbor {
                 distance: 0,
                 index: 0,
             };
-            k_candidate
+            candidate_count
         ];
         let mut searcher = self.searcher();
         let _ = self
             .hnsw
             .nearest(&query.vector, ef, &mut searcher, &mut dest);
 
-        // The crate sorts `dest` by distance ascending; we then re-rank by
-        // exact cosine to keep the `score` field semantically identical to
-        // the Exact backend.
         let mut exact_scored: Vec<VectorSearchHit> = dest
             .iter()
             .filter_map(|neighbor| {
+                let index = neighbor.index;
+                if let Some(allowed) = allowed {
+                    if !allowed.contains(index as u32) {
+                        return None;
+                    }
+                }
                 let doc_id = self
                     .id_to_doc
-                    .get(neighbor.index)
+                    .get(index)
                     .filter(|s| !s.is_empty())
                     .cloned()?;
                 let stored = self.vectors.get(&doc_id)?;
@@ -254,8 +305,8 @@ impl VectorSearchBackend for HnswBackend {
                 .total_cmp(&left.score)
                 .then_with(|| left.document_id.cmp(&right.document_id))
         });
-        if exact_scored.len() > query.limit {
-            exact_scored.truncate(query.limit);
+        if exact_scored.len() > limit {
+            exact_scored.truncate(limit);
         }
         Ok(exact_scored)
     }

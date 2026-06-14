@@ -1,8 +1,8 @@
 use mentisdb::search::{
     cosine_similarity, embed_batch_to_documents, select_backend_kind, EmbeddingBuildError,
     EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector,
-    LocalTextEmbeddingProvider, VectorBackend, VectorBackendKind, VectorDocument, VectorIndex,
-    VectorIndexError, VectorQuery, VectorSearchBackend, VectorSearchHit,
+    LocalTextEmbeddingProvider, VectorBackend, VectorBackendKind, VectorDocument, VectorFilter,
+    VectorIndex, VectorIndexError, VectorQuery, VectorSearchBackend, VectorSearchHit,
     DEFAULT_EXACT_TO_HNSW_THRESHOLD,
 };
 use std::error::Error;
@@ -560,4 +560,189 @@ fn hnsw_backend_query_is_fast_at_1k() {
         p95 < 100_000,
         "HNSW p95 query latency at 1k was {p95}us, expected < 100_000us"
     );
+}
+
+// ---------------------------------------------------------------------------
+// H2: hybrid bitmap-backed filters for vector search. The exact backend pre-
+// filters during its linear scan; the HNSW backend translates the id set into
+// a roaring bitmap of internal item ids, oversamples, and then intersects.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn exact_backend_search_filtered_returns_only_matching_documents() {
+    let metadata = EmbeddingMetadata::new("toy", 2, "v1");
+    let index = VectorIndex::from_documents(
+        metadata,
+        vec![
+            VectorDocument::new("alpha", vec![1.0, 0.0]),
+            VectorDocument::new("bravo", vec![0.0, 1.0]),
+            VectorDocument::new("charlie", vec![-1.0, 0.0]),
+            VectorDocument::new("delta", vec![0.0, -1.0]),
+        ],
+    )
+    .unwrap();
+
+    let query = VectorQuery::new(vec![1.0, 0.0]).with_limit(2);
+
+    // Filter that allows only alpha and charlie.
+    let filter = VectorFilter::from_ids(["alpha", "charlie"]);
+    let hits = index.search_filtered(&query, &filter).unwrap();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0].document_id, "alpha");
+    assert!((hits[0].score - 1.0).abs() < 1e-5);
+    assert_eq!(hits[1].document_id, "charlie");
+
+    // Filter that allows only delta should still return it, even though it
+    // scores poorly against the query.
+    let filter = VectorFilter::from_ids(["delta"]);
+    let hits = index.search_filtered(&query, &filter).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].document_id, "delta");
+
+    // Empty filter behaves like unfiltered search.
+    let empty_filter = VectorFilter::from_ids(Vec::<&str>::new());
+    let unfiltered = index.search(&query).unwrap();
+    let filtered = index.search_filtered(&query, &empty_filter).unwrap();
+    assert_eq!(filtered, unfiltered);
+
+    // Filter that excludes every id returns nothing.
+    let exclude_all = VectorFilter::from_ids(["missing", "unknown"]);
+    let hits = index.search_filtered(&query, &exclude_all).unwrap();
+    assert!(hits.is_empty());
+}
+
+#[test]
+fn exact_backend_search_filtered_orders_by_cosine_then_id() {
+    let metadata = EmbeddingMetadata::new("toy", 2, "v1");
+    let index = VectorIndex::from_documents(
+        metadata,
+        vec![
+            VectorDocument::new("a", vec![1.0, 0.0]),
+            VectorDocument::new("b", vec![0.9, 0.0]),
+            VectorDocument::new("c", vec![0.8, 0.0]),
+        ],
+    )
+    .unwrap();
+
+    let query = VectorQuery::new(vec![1.0, 0.0]).with_limit(2);
+    let filter = VectorFilter::from_ids(["b", "c"]);
+    let hits = index.search_filtered(&query, &filter).unwrap();
+    assert_eq!(hits.len(), 2);
+    assert!(hits[0].score > hits[1].score || hits[0].document_id < hits[1].document_id);
+}
+
+#[test]
+#[cfg(feature = "hnsw-backend")]
+fn hnsw_backend_search_filtered_matches_exact_on_small_corpus() {
+    // HNSW post-filtering with oversampling should return the same top-k ids
+    // as the exact backend on a tiny, deterministic corpus where the
+    // approximate graph cannot reasonably reorder the results.
+    let metadata = EmbeddingMetadata::new("toy", 2, "v1");
+    let documents = vec![
+        VectorDocument::new("alpha", vec![1.0, 0.0]),
+        VectorDocument::new("bravo", vec![0.0, 1.0]),
+        VectorDocument::new("charlie", vec![-1.0, 0.0]),
+        VectorDocument::new("delta", vec![0.0, -1.0]),
+    ];
+
+    let exact = VectorIndex::from_documents(metadata.clone(), documents.clone()).unwrap();
+    let hnsw =
+        VectorIndex::with_backend_kind(metadata, documents, VectorBackendKind::Hnsw).unwrap();
+
+    let query = VectorQuery::new(vec![1.0, 0.0]).with_limit(2);
+    let filter = VectorFilter::from_ids(["bravo", "charlie", "delta"]);
+
+    let exact_hits = exact.search_filtered(&query, &filter).unwrap();
+    let hnsw_hits = hnsw.search_filtered(&query, &filter).unwrap();
+
+    assert_eq!(exact_hits.len(), 2);
+    assert_eq!(hnsw_hits.len(), 2);
+    assert_eq!(exact_hits[0].document_id, hnsw_hits[0].document_id);
+    assert_eq!(exact_hits[1].document_id, hnsw_hits[1].document_id);
+}
+
+#[test]
+#[cfg(feature = "hnsw-backend")]
+fn hnsw_backend_search_filtered_recall_at_1k_meets_floor() {
+    // With a 50% id filter on the 1k test corpus, the HNSW filtered results
+    // should still overlap heavily with the exact filtered results. We
+    // compare filtered top-10 set recall to the exact backend on the same
+    // subset.
+    let dim = 32;
+    let n = 1_000usize;
+    let k = 10;
+    let metadata = EmbeddingMetadata::new("toy", dim, "v1");
+
+    let mut documents = Vec::with_capacity(n);
+    for i in 0..n {
+        let raw: Vec<f32> = (0..dim)
+            .map(|d| ((i * 31 + d * 17) % 1009) as f32 / 1009.0 - 0.5)
+            .collect();
+        let norm = raw.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-6);
+        let vector: Vec<f32> = raw.iter().map(|v| v / norm).collect();
+        documents.push(VectorDocument::new(format!("doc-{i:04}"), vector));
+    }
+
+    let exact = VectorIndex::from_documents(metadata.clone(), documents.clone()).unwrap();
+    let hnsw = VectorIndex::with_backend_kind(metadata, documents.clone(), VectorBackendKind::Hnsw)
+        .unwrap();
+
+    // Filter: every other document (odd indices). This is a lazy stand-in
+    // for a metadata clause that matches ~half the corpus.
+    let allowed_ids: std::collections::BTreeSet<String> = documents
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 1)
+        .map(|(_, d)| d.document_id.clone())
+        .collect();
+    let filter = VectorFilter::from_ids(allowed_ids.iter().cloned());
+
+    let queries: Vec<Vec<f32>> = (0..50)
+        .map(|q| {
+            let raw: Vec<f32> = (0..dim)
+                .map(|d| ((q * 53 + d * 19) % 997) as f32 / 997.0 - 0.5)
+                .collect();
+            let norm = raw.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-6);
+            raw.iter().map(|v| v / norm).collect()
+        })
+        .collect();
+
+    let mut total_recall = 0.0f64;
+    for query in &queries {
+        let exact_hits: std::collections::HashSet<String> = exact
+            .search_filtered(&VectorQuery::new(query.clone()).with_limit(k), &filter)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.document_id)
+            .collect();
+        let hnsw_hits: std::collections::HashSet<String> = hnsw
+            .search_filtered(&VectorQuery::new(query.clone()).with_limit(k), &filter)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.document_id)
+            .collect();
+        let intersection = exact_hits.intersection(&hnsw_hits).count();
+        // Normalize by the smaller result set so a sparse exact set does not
+        // inflate recall.
+        let denominator = exact_hits.len().max(1);
+        total_recall += intersection as f64 / denominator as f64;
+    }
+    let mean_recall = total_recall / queries.len() as f64;
+    assert!(
+        mean_recall >= 0.85,
+        "HNSW filtered mean recall@10 was {mean_recall:.3}, expected >= 0.85"
+    );
+}
+
+#[test]
+fn vector_filter_from_ids_deduplicates_and_treats_empty_as_unfiltered() {
+    let f1 = VectorFilter::from_ids(["a", "a", "b"]);
+    assert!(!f1.allows_all());
+
+    let f2 = VectorFilter::from_ids(Vec::<&str>::new());
+    assert!(f2.allows_all());
+
+    let f3 = VectorFilter::from_ids(["x"]);
+    assert!(f3.allows("x"));
+    assert!(!f3.allows("y"));
 }

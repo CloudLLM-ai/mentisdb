@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
@@ -350,6 +350,47 @@ impl VectorQuery {
     }
 }
 
+/// Filter that restricts vector search to a subset of indexed documents.
+///
+/// `VectorFilter` is a lightweight predicate evaluated over document ids.
+/// The caller is responsible for translating metadata clauses such as
+/// `agent_id = "x"` or `timestamp > y` into a set of allowed ids and then into
+/// a `VectorFilter` variant. The exact backend applies the filter during the
+/// linear scan; the HNSW backend applies it after retrieving an oversampled
+/// candidate set from the approximate graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VectorFilter {
+    /// No filtering; semantically equivalent to [`VectorSearchBackend::search`].
+    None,
+    /// Include only documents whose id appears in this set.
+    Ids(BTreeSet<String>),
+}
+
+impl VectorFilter {
+    /// Create a filter from a collection of document ids.
+    pub fn from_ids(ids: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        let set: BTreeSet<String> = ids.into_iter().map(Into::into).collect();
+        if set.is_empty() {
+            Self::None
+        } else {
+            Self::Ids(set)
+        }
+    }
+
+    /// Return `true` if the filter allows every document.
+    pub fn allows_all(&self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    /// Return true when `document_id` passes the filter.
+    pub fn allows(&self, document_id: &str) -> bool {
+        match self {
+            Self::None => true,
+            Self::Ids(ids) => ids.contains(document_id),
+        }
+    }
+}
+
 /// Ranked vector-search hit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorSearchHit {
@@ -459,6 +500,18 @@ impl VectorSearchBackend for VectorBackend {
             Self::Hnsw(backend) => backend.search(query),
         }
     }
+
+    fn search_filtered(
+        &self,
+        query: &VectorQuery,
+        filter: &VectorFilter,
+    ) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
+        match self {
+            Self::Exact(index) => index.search_filtered(query, filter),
+            #[cfg(feature = "hnsw-backend")]
+            Self::Hnsw(backend) => backend.search_filtered(query, filter),
+        }
+    }
 }
 
 /// Default corpus size at which the [`VectorBackendKind`] selection switches
@@ -506,6 +559,32 @@ pub trait VectorSearchBackend {
 
     /// Rank indexed vectors by similarity to the query vector.
     fn search(&self, query: &VectorQuery) -> Result<Vec<VectorSearchHit>, VectorIndexError>;
+
+    /// Rank indexed vectors by similarity, restricted to documents that pass
+    /// the supplied filter.
+    ///
+    /// The default implementation delegates to [`Self::search`] and then
+    /// filters the results. Backends may override this for better performance
+    /// (e.g. pre-filtering during an exact scan, or post-filtering with
+    /// oversampling in an approximate backend).
+    fn search_filtered(
+        &self,
+        query: &VectorQuery,
+        filter: &VectorFilter,
+    ) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
+        let hits = self.search(query)?;
+        Ok(filter_hits(hits, filter))
+    }
+}
+
+/// Post-filter a ranked hit list by a [`VectorFilter`].
+fn filter_hits(hits: Vec<VectorSearchHit>, filter: &VectorFilter) -> Vec<VectorSearchHit> {
+    if filter.allows_all() {
+        return hits;
+    }
+    hits.into_iter()
+        .filter(|hit| filter.allows(&hit.document_id))
+        .collect()
 }
 
 /// In-memory deterministic cosine index for vector documents.
@@ -610,13 +689,52 @@ impl VectorIndex {
         self.documents.get(document_id).cloned()
     }
 
-    /// Rank indexed vectors by cosine similarity to the query vector.
+    /// Rank indexed vectors by cosine similarity to the query vector,
+    /// optionally restricted by a [`VectorFilter`].
     pub fn search(&self, query: &VectorQuery) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
         validate_vector(&query.vector, self.metadata.dimension, None, "query")?;
 
         let mut hits: Vec<VectorSearchHit> = self
             .documents
             .iter()
+            .map(|(document_id, vector)| VectorSearchHit {
+                document_id: document_id.clone(),
+                score: cosine_similarity(&query.vector, vector).unwrap_or(0.0),
+            })
+            .collect();
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.document_id.cmp(&right.document_id))
+        });
+        if hits.len() > query.limit {
+            hits.truncate(query.limit);
+        }
+        Ok(hits)
+    }
+
+    /// Rank indexed vectors by cosine similarity, restricted by a
+    /// [`VectorFilter`].
+    ///
+    /// This pre-filters during the linear scan: only matching documents are
+    /// scored, so no work is wasted on excluded vectors. The returned list is
+    /// still limited to `query.limit`.
+    pub fn search_filtered(
+        &self,
+        query: &VectorQuery,
+        filter: &VectorFilter,
+    ) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
+        validate_vector(&query.vector, self.metadata.dimension, None, "query")?;
+
+        if filter.allows_all() {
+            return self.search(query);
+        }
+
+        let mut hits: Vec<VectorSearchHit> = self
+            .documents
+            .iter()
+            .filter(|(document_id, _)| filter.allows(document_id))
             .map(|(document_id, vector)| VectorSearchHit {
                 document_id: document_id.clone(),
                 score: cosine_similarity(&query.vector, vector).unwrap_or(0.0),
@@ -659,8 +777,15 @@ impl VectorSearchBackend for VectorIndex {
     fn search(&self, query: &VectorQuery) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
         VectorIndex::search(self, query)
     }
-}
 
+    fn search_filtered(
+        &self,
+        query: &VectorQuery,
+        filter: &VectorFilter,
+    ) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
+        VectorIndex::search_filtered(self, query, filter)
+    }
+}
 /// Failure while validating vectors or executing search.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VectorIndexError {
