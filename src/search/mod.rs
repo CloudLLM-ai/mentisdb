@@ -40,6 +40,9 @@ pub mod graph;
 /// in only when the `hnsw-backend` feature is enabled.
 #[cfg(feature = "hnsw-backend")]
 pub mod hnsw_backend;
+/// Quantized HNSW backend that stores vectors as 8-bit scalars (H3).
+#[cfg(feature = "hnsw-backend")]
+pub mod hnsw_quantized_backend;
 /// Vector-similarity implicit edge overlay for augmenting graph expansion.
 pub mod implicit_edges;
 /// Irregular verb lemma expansion for lexical search queries.
@@ -50,6 +53,9 @@ pub mod lexical;
 pub mod ppr;
 /// Provenance path structures for graph expansion starting from lexical seeds.
 pub mod provenance;
+/// Vector quantization primitives for reducing memory usage in the HNSW
+/// graph (H3).
+pub mod quantization;
 /// Pseudo-relevance feedback query expansion primitives.
 pub mod query_expansion;
 /// Deterministic query intent classification and route weighting.
@@ -103,3 +109,11 @@ pub use vector::{
     DEFAULT_EXACT_TO_HNSW_THRESHOLD, LOCAL_TEXT_EMBEDDING_DIMENSION, LOCAL_TEXT_EMBEDDING_MODEL_ID,
     LOCAL_TEXT_EMBEDDING_VERSION,
 };
+
+pub use quantization::Scalar8BitQuantizer;
+
+#[cfg(feature = "hnsw-backend")]
+pub use quantization::{QuantizedCosineDistance, QuantizedVector};
+
+#[cfg(feature = "hnsw-backend")]
+pub use hnsw_quantized_backend::QuantizedHnswBackend;

@@ -1,12 +1,16 @@
+use mentisdb::search::quantization::Quantizer;
 use mentisdb::search::{
     cosine_similarity, embed_batch_to_documents, select_backend_kind, EmbeddingBuildError,
     EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector,
-    LocalTextEmbeddingProvider, VectorBackend, VectorBackendKind, VectorDocument, VectorFilter,
-    VectorIndex, VectorIndexError, VectorQuery, VectorSearchBackend, VectorSearchHit,
-    DEFAULT_EXACT_TO_HNSW_THRESHOLD,
+    LocalTextEmbeddingProvider, Scalar8BitQuantizer, VectorBackend, VectorBackendKind,
+    VectorDocument, VectorFilter, VectorIndex, VectorIndexError, VectorQuery, VectorSearchBackend,
+    VectorSearchHit, DEFAULT_EXACT_TO_HNSW_THRESHOLD,
 };
 use std::error::Error;
 use std::fmt;
+
+#[cfg(feature = "hnsw-backend")]
+use mentisdb::search::QuantizedHnswBackend;
 
 #[test]
 fn cosine_similarity_returns_expected_values() {
@@ -745,4 +749,122 @@ fn vector_filter_from_ids_deduplicates_and_treats_empty_as_unfiltered() {
     let f3 = VectorFilter::from_ids(["x"]);
     assert!(f3.allows("x"));
     assert!(!f3.allows("y"));
+}
+
+// ---------------------------------------------------------------------------
+// H3: quantized HNSW backend. The graph stores 8-bit quantized vectors,
+// reducing memory footprint ~4x versus the f32 HNSW graph. Exact f32 vectors
+// are still cached for final re-scoring, so hit scores remain cosine in
+// [-1.0, 1.0].
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scalar_quantizer_reduces_dimension_to_one_byte() {
+    let dim = 128;
+    let vectors = vec![(0..dim).map(|d| d as f32 / 64.0 - 1.0).collect::<Vec<_>>(); 10];
+    let quantizer = Scalar8BitQuantizer::train(&vectors);
+    let encoded = quantizer.encode(&vectors[0]);
+    assert_eq!(encoded.len(), dim);
+    assert_eq!(std::mem::size_of_val(encoded.as_slice()), dim);
+}
+
+#[test]
+#[cfg(feature = "hnsw-backend")]
+fn quantized_hnsw_backend_matches_exact_on_small_corpus() {
+    let metadata = EmbeddingMetadata::new("toy", 2, "v1");
+    let documents = vec![
+        VectorDocument::new("alpha", vec![1.0, 0.0]),
+        VectorDocument::new("bravo", vec![0.0, 1.0]),
+        VectorDocument::new("charlie", vec![-1.0, 0.0]),
+        VectorDocument::new("delta", vec![0.0, -1.0]),
+    ];
+    let exact = VectorIndex::from_documents(metadata.clone(), documents.clone()).unwrap();
+    let quantized = QuantizedHnswBackend::from_documents(metadata, documents).unwrap();
+
+    let query = VectorQuery::new(vec![1.0, 0.0]).with_limit(3);
+    let exact_hits = exact.search(&query).unwrap();
+    let quantized_hits = quantized.search(&query).unwrap();
+
+    assert_eq!(exact_hits.len(), quantized_hits.len());
+    assert_eq!(exact_hits[0].document_id, quantized_hits[0].document_id);
+}
+
+#[test]
+#[cfg(feature = "hnsw-backend")]
+fn quantized_hnsw_backend_recall_at_1k_meets_floor() {
+    // Same protocol as the f32 HNSW recall gate, but with quantized graph
+    // storage. Recall should be only slightly lower than the f32 graph.
+    let dim = 32;
+    let n = 1_000usize;
+    let k = 10;
+    let metadata = EmbeddingMetadata::new("toy", dim, "v1");
+
+    let mut documents = Vec::with_capacity(n);
+    for i in 0..n {
+        let raw: Vec<f32> = (0..dim)
+            .map(|d| ((i * 31 + d * 17) % 1009) as f32 / 1009.0 - 0.5)
+            .collect();
+        let norm = raw.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-6);
+        let vector: Vec<f32> = raw.iter().map(|v| v / norm).collect();
+        documents.push(VectorDocument::new(format!("doc-{i:04}"), vector));
+    }
+
+    let exact = VectorIndex::from_documents(metadata.clone(), documents.clone()).unwrap();
+    let quantized = QuantizedHnswBackend::from_documents(metadata, documents).unwrap();
+
+    let queries: Vec<Vec<f32>> = (0..50)
+        .map(|q| {
+            let raw: Vec<f32> = (0..dim)
+                .map(|d| ((q * 53 + d * 19) % 997) as f32 / 997.0 - 0.5)
+                .collect();
+            let norm = raw.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-6);
+            raw.iter().map(|v| v / norm).collect()
+        })
+        .collect();
+
+    let mut total_recall = 0.0f64;
+    for query in &queries {
+        let exact_hits: std::collections::HashSet<String> = exact
+            .search(&VectorQuery::new(query.clone()).with_limit(k))
+            .unwrap()
+            .into_iter()
+            .map(|h| h.document_id)
+            .collect();
+        let quantized_hits: std::collections::HashSet<String> = quantized
+            .search(&VectorQuery::new(query.clone()).with_limit(k))
+            .unwrap()
+            .into_iter()
+            .map(|h| h.document_id)
+            .collect();
+        let intersection = exact_hits.intersection(&quantized_hits).count();
+        total_recall += intersection as f64 / k as f64;
+    }
+    let mean_recall = total_recall / queries.len() as f64;
+    assert!(
+        mean_recall >= 0.85,
+        "Quantized HNSW mean recall@10 was {mean_recall:.3}, expected >= 0.85"
+    );
+}
+
+#[test]
+#[cfg(feature = "hnsw-backend")]
+fn quantized_hnsw_backend_search_filtered_matches_exact() {
+    let metadata = EmbeddingMetadata::new("toy", 2, "v1");
+    let documents = vec![
+        VectorDocument::new("alpha", vec![1.0, 0.0]),
+        VectorDocument::new("bravo", vec![0.0, 1.0]),
+        VectorDocument::new("charlie", vec![-1.0, 0.0]),
+        VectorDocument::new("delta", vec![0.0, -1.0]),
+    ];
+    let exact = VectorIndex::from_documents(metadata.clone(), documents.clone()).unwrap();
+    let quantized = QuantizedHnswBackend::from_documents(metadata, documents).unwrap();
+
+    let query = VectorQuery::new(vec![1.0, 0.0]).with_limit(2);
+    let filter = VectorFilter::from_ids(["bravo", "charlie", "delta"]);
+
+    let exact_hits = exact.search_filtered(&query, &filter).unwrap();
+    let quantized_hits = quantized.search_filtered(&query, &filter).unwrap();
+
+    assert_eq!(exact_hits.len(), quantized_hits.len());
+    assert_eq!(exact_hits[0].document_id, quantized_hits[0].document_id);
 }

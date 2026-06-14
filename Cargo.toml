@@ -115,6 +115,11 @@ harness = false
 name = "search_ranked"
 harness = false
 
+[[bench]]
+name = "hnsw_comparison"
+harness = false
+required-features = ["hnsw-backend"]
+
 [[bin]]
 name = "mentisdb"
 path = "src/bin/mentisdb.rs"
