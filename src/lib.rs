@@ -334,6 +334,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+use crate::search::vector::VectorSearchBackend;
+
 pub use skills::{
     export_skill, import_skill, migrate_skill_registry, SkillDocument, SkillEntry, SkillFormat,
     SkillQuery, SkillReadOutput, SkillRegistry, SkillRegistryManifest,
@@ -3860,9 +3862,11 @@ trait ManagedEmbeddingProvider: Send + Sync {
 struct ManagedSidecarEntry {
     provider: Box<dyn ManagedEmbeddingProvider>,
     auto_sync: bool,
-    // In-memory index rebuilt after each successful sidecar sync.
-    // None until the first sidecar load/rebuild completes.
-    cached_index: Option<crate::search::VectorIndex>,
+    // In-memory vector backend rebuilt after each successful sidecar sync.
+    // None until the first sidecar load/rebuild completes. Holds either the
+    // deterministic Exact backend or an approximate HNSW backend depending on
+    // corpus size and feature flags.
+    cached_index: Option<crate::search::VectorBackend>,
 }
 
 struct RegisteredEmbeddingProvider<P> {
@@ -6351,6 +6355,26 @@ impl MentisDb {
         ))
     }
 
+    /// Return the deterministic on-disk path for one HNSW graph sidecar.
+    pub fn vector_hnsw_graph_path(
+        &self,
+        metadata: &crate::search::EmbeddingMetadata,
+    ) -> io::Result<PathBuf> {
+        let Some(persistence) = &self.persistence else {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this MentisDb handle does not expose stable persistence metadata",
+            ));
+        };
+
+        Ok(chain_vector_hnsw_graph_path(
+            &persistence.chain_dir,
+            &persistence.chain_key,
+            persistence.storage_kind,
+            metadata,
+        ))
+    }
+
     /// Load and integrity-check one vector sidecar for the requested embedding space.
     pub fn load_vector_sidecar(
         &self,
@@ -6460,18 +6484,10 @@ impl MentisDb {
             }
             _ => self.rebuild_vector_sidecar(&provider)?,
         };
+        let graph_path = self.vector_hnsw_graph_path(provider.metadata()).ok();
         let cached_index = {
-            let documents: Vec<crate::search::VectorDocument> = sidecar
-                .entries
-                .iter()
-                .map(|entry| {
-                    crate::search::VectorDocument::new(
-                        entry.thought_id.to_string(),
-                        entry.vector.clone(),
-                    )
-                })
-                .collect();
-            crate::search::VectorIndex::from_documents(provider.metadata().clone(), documents).ok()
+            let documents = sidecar_entries_to_documents(&sidecar.entries);
+            build_vector_backend(provider.metadata(), documents, graph_path.as_deref())
         };
         self.managed_vector_sidecars.insert(
             provider.metadata().clone(),
@@ -6496,23 +6512,14 @@ impl MentisDb {
         &mut self,
         provider: P,
     ) {
+        let graph_path = self.vector_hnsw_graph_path(provider.metadata()).ok();
         let cached_index = self
             .load_vector_sidecar(provider.metadata())
             .ok()
             .flatten()
             .and_then(|sidecar| {
-                let documents: Vec<crate::search::VectorDocument> = sidecar
-                    .entries
-                    .iter()
-                    .map(|entry| {
-                        crate::search::VectorDocument::new(
-                            entry.thought_id.to_string(),
-                            entry.vector.clone(),
-                        )
-                    })
-                    .collect();
-                crate::search::VectorIndex::from_documents(provider.metadata().clone(), documents)
-                    .ok()
+                let documents = sidecar_entries_to_documents(&sidecar.entries);
+                build_vector_backend(provider.metadata(), documents, graph_path.as_deref())
             });
         self.managed_vector_sidecars.insert(
             provider.metadata().clone(),
@@ -6705,18 +6712,10 @@ impl MentisDb {
                 let sidecar = self
                     .rebuild_vector_sidecar(&provider)
                     .map_err(vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>)?;
-                let documents: Vec<crate::search::VectorDocument> = sidecar
-                    .entries
-                    .iter()
-                    .map(|entry| {
-                        crate::search::VectorDocument::new(
-                            entry.thought_id.to_string(),
-                            entry.vector.clone(),
-                        )
-                    })
-                    .collect();
+                let documents = sidecar_entries_to_documents(&sidecar.entries);
+                let graph_path = self.vector_hnsw_graph_path(&metadata).ok();
                 let cached_index =
-                    crate::search::VectorIndex::from_documents(metadata.clone(), documents).ok();
+                    build_vector_backend(&metadata, documents, graph_path.as_deref());
                 if enabled {
                     self.managed_vector_sidecars.insert(
                         metadata,
@@ -6738,18 +6737,10 @@ impl MentisDb {
                 let sidecar = self
                     .rebuild_vector_sidecar(&provider)
                     .map_err(|e| io::Error::other(format!("fastembed sidecar rebuild: {e}")))?;
-                let documents: Vec<crate::search::VectorDocument> = sidecar
-                    .entries
-                    .iter()
-                    .map(|entry| {
-                        crate::search::VectorDocument::new(
-                            entry.thought_id.to_string(),
-                            entry.vector.clone(),
-                        )
-                    })
-                    .collect();
+                let documents = sidecar_entries_to_documents(&sidecar.entries);
+                let graph_path = self.vector_hnsw_graph_path(&metadata).ok();
                 let cached_index =
-                    crate::search::VectorIndex::from_documents(metadata.clone(), documents).ok();
+                    build_vector_backend(&metadata, documents, graph_path.as_deref());
                 if enabled {
                     self.managed_vector_sidecars.insert(
                         metadata,
@@ -6778,6 +6769,11 @@ impl MentisDb {
         let path = self.vector_sidecar_path(&metadata)?;
         if path.exists() {
             fs::remove_file(&path)?;
+        }
+        if let Ok(graph_path) = self.vector_hnsw_graph_path(&metadata) {
+            if graph_path.exists() {
+                let _ = fs::remove_file(&graph_path);
+            }
         }
         self.sync_managed_vector_sidecar_now(provider_kind)
     }
@@ -7105,9 +7101,7 @@ impl MentisDb {
                         .collect();
                     {
                         let entry = self.managed_vector_sidecars.get_mut(&metadata).unwrap();
-                        entry.cached_index =
-                            crate::search::VectorIndex::from_documents(metadata.clone(), documents)
-                                .ok();
+                        entry.cached_index = build_vector_backend(&metadata, documents, None);
                     }
                     new_sidecar
                 }
@@ -8613,6 +8607,80 @@ fn chain_vector_sidecar_path(
         "{stem}.vectors.{model}.{version}.{}d.json",
         metadata.dimension
     ))
+}
+
+fn chain_vector_hnsw_graph_path(
+    chain_dir: &Path,
+    chain_key: &str,
+    storage_kind: StorageAdapterKind,
+    metadata: &crate::search::EmbeddingMetadata,
+) -> PathBuf {
+    let storage_file = chain_storage_filename(chain_key, storage_kind);
+    let stem = storage_file
+        .strip_suffix(&format!(".{}", storage_kind.file_extension()))
+        .unwrap_or(&storage_file);
+    let model = sanitize_sidecar_component(&metadata.model_id);
+    let version = sanitize_sidecar_component(&metadata.embedding_version);
+    chain_dir.join(format!(
+        "{stem}.vectors.{model}.{version}.{}d.hnsw.bin",
+        metadata.dimension
+    ))
+}
+
+fn sidecar_entries_to_documents(
+    entries: &[crate::search::VectorSidecarEntry],
+) -> Vec<crate::search::VectorDocument> {
+    entries
+        .iter()
+        .map(|entry| {
+            crate::search::VectorDocument::new(entry.thought_id.to_string(), entry.vector.clone())
+        })
+        .collect()
+}
+
+#[cfg(feature = "hnsw-backend")]
+fn load_or_build_hnsw_backend(
+    path: &Path,
+    metadata: &crate::search::EmbeddingMetadata,
+    documents: Vec<crate::search::VectorDocument>,
+) -> Option<crate::search::VectorBackend> {
+    if path.exists() {
+        if let Ok(backend) =
+            crate::search::hnsw_backend::HnswBackend::load_from_path(path, metadata)
+        {
+            if backend.document_count() == documents.len() {
+                return Some(crate::search::VectorBackend::Hnsw(Box::new(backend)));
+            }
+        }
+    }
+
+    let backend =
+        crate::search::hnsw_backend::HnswBackend::from_documents(metadata.clone(), documents)
+            .ok()?;
+    let _ = backend.persist_to_path(path);
+    Some(crate::search::VectorBackend::Hnsw(Box::new(backend)))
+}
+
+fn build_vector_backend(
+    metadata: &crate::search::EmbeddingMetadata,
+    documents: Vec<crate::search::VectorDocument>,
+    _graph_path: Option<&Path>,
+) -> Option<crate::search::VectorBackend> {
+    #[cfg(feature = "hnsw-backend")]
+    {
+        let kind = crate::search::select_backend_kind(documents.len());
+        if kind == crate::search::VectorBackendKind::Hnsw {
+            if let Some(path) = _graph_path {
+                return load_or_build_hnsw_backend(path, metadata, documents);
+            }
+        }
+    }
+    crate::search::VectorIndex::with_backend_kind(
+        metadata.clone(),
+        documents,
+        crate::search::VectorBackendKind::Exact,
+    )
+    .ok()
 }
 
 fn chain_vector_sidecar_config_path(
