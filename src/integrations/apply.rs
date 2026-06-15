@@ -67,8 +67,8 @@ pub fn apply_setup_with_environment(
     env: &PathEnvironment,
     bearer_token: Option<String>,
 ) -> io::Result<ApplyResult> {
-    let setup_plan =
-        build_setup_plan_for_integration(integration, url, platform, env, None).ok_or_else(|| {
+    let setup_plan = build_setup_plan_for_integration(integration, url, platform, env, None)
+        .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unsupported integration target",

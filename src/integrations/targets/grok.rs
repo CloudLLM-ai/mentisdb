@@ -17,13 +17,23 @@ pub(super) fn build(
         );
     if let Some(token) = settings.bearer_token() {
         patch = patch.set_path(
-            ["mcp_servers", settings.server_name(), "headers", "Authorization"],
+            [
+                "mcp_servers",
+                settings.server_name(),
+                "headers",
+                "Authorization",
+            ],
             TomlValue::from(format!("Bearer {}", token)),
         );
         // Only needed for https + self-signed certs. Plain http does not need it.
         if settings.url_for(plan.integration).starts_with("https://") {
             patch = patch.set_path(
-                ["mcp_servers", settings.server_name(), "env", "NODE_TLS_REJECT_UNAUTHORIZED"],
+                [
+                    "mcp_servers",
+                    settings.server_name(),
+                    "env",
+                    "NODE_TLS_REJECT_UNAUTHORIZED",
+                ],
                 TomlValue::from("0"),
             );
         }

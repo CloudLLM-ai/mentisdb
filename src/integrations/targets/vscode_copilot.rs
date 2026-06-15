@@ -15,7 +15,12 @@ pub(super) fn build(
         );
     if let Some(token) = settings.bearer_token() {
         patch = patch.set_path(
-            ["servers", settings.server_name(), "headers", "Authorization"],
+            [
+                "servers",
+                settings.server_name(),
+                "headers",
+                "Authorization",
+            ],
             json!(format!("Bearer {}", token)),
         );
     }

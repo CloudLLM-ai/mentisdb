@@ -20,7 +20,12 @@ pub(super) fn build(
         );
     if let Some(token) = settings.bearer_token() {
         patch = patch.set_path(
-            ["mcpServers", settings.server_name(), "headers", "Authorization"],
+            [
+                "mcpServers",
+                settings.server_name(),
+                "headers",
+                "Authorization",
+            ],
             json!(format!("Bearer {}", token)),
         );
     }

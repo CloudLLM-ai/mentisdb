@@ -4,8 +4,6 @@
 //!
 //! * Exact (`VectorIndex`) — linear scan cosine, the pre-HNSW baseline.
 //! * HNSW (`HnswBackend`) — approximate graph over raw f32 vectors.
-//! * Quantized HNSW (`QuantizedHnswBackend`) — approximate graph over 8-bit
-//!   quantized vectors.
 //!
 //! Run with:
 //!
@@ -20,13 +18,12 @@ use std::collections::HashSet;
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use mentisdb::search::{
-    EmbeddingMetadata, QuantizedHnswBackend, VectorDocument, VectorIndex, VectorQuery,
-    VectorSearchBackend,
+    EmbeddingMetadata, VectorDocument, VectorIndex, VectorQuery, VectorSearchBackend,
 };
 
 /// Dimension and corpus size for the comparison. 10k vectors is small enough
 /// to run in CI but large enough that the exact scan is noticeably slower
-/// than the approximate backends.
+/// than the approximate backend.
 const DIM: usize = 128;
 const N: usize = 10_000;
 const K: usize = 10;
@@ -62,21 +59,10 @@ fn bench_group(c: &mut Criterion) {
     let queries = build_queries(100);
 
     let exact = VectorIndex::from_documents(metadata.clone(), documents.clone()).unwrap();
-    let hnsw = mentisdb::search::hnsw_backend::HnswBackend::from_documents(
-        metadata.clone(),
-        documents.clone(),
-    )
-    .unwrap();
-    let quantized = QuantizedHnswBackend::from_documents(metadata, documents).unwrap();
-
-    let exact_recall = || -> f64 {
-        // Recall is always 1.0 against itself; this keeps the data shape
-        // uniform in the report.
-        1.0
-    };
+    let hnsw =
+        mentisdb::search::hnsw_backend::HnswBackend::from_documents(metadata, documents).unwrap();
 
     let hnsw_recall = compute_recall(&exact, &hnsw, &queries);
-    let quantized_recall = compute_recall(&exact, &quantized, &queries);
 
     // Latency measurements: p95 over repeated queries.
     let mut group = c.benchmark_group("hnsw_comparison_latency");
@@ -107,30 +93,13 @@ fn bench_group(c: &mut Criterion) {
         );
     });
 
-    group.bench_function("quantized_hnsw", |b| {
-        b.iter_batched(
-            || queries.clone(),
-            |qs| {
-                for q in qs {
-                    let _ = black_box(
-                        quantized
-                            .search(&VectorQuery::new(q).with_limit(K))
-                            .unwrap(),
-                    );
-                }
-            },
-            BatchSize::SmallInput,
-        );
-    });
-
     group.finish();
 
     // Recall summary (not a real benchmark; just printed by Criterion as
     // custom counters would be overkill).
     println!("\n=== hnsw_comparison recall@10 (n={N}, dim={DIM}, k={K}) ===");
-    println!("exact          : {:.3}", exact_recall());
-    println!("hnsw           : {:.3}", hnsw_recall);
-    println!("quantized_hnsw : {:.3}", quantized_recall);
+    println!("exact : 1.000");
+    println!("hnsw  : {:.3}", hnsw_recall);
 }
 
 fn compute_recall<B: VectorSearchBackend>(

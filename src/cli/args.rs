@@ -894,7 +894,11 @@ fn parse_wizard(args: Vec<String>) -> Result<CliCommand, String> {
         }
     }
 
-    Ok(CliCommand::Wizard(WizardCommand { url, bearer_token, assume_yes }))
+    Ok(CliCommand::Wizard(WizardCommand {
+        url,
+        bearer_token,
+        assume_yes,
+    }))
 }
 
 pub(super) fn parse_integration(value: &str) -> Option<IntegrationKind> {
