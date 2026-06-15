@@ -22,7 +22,7 @@ llm-extraction = ["dep:openai-rust2", "dep:anyhow"]
 # default build keeps the pure-Rust story. When enabled, `VectorIndex` and
 # `VectorSearchBackend` switch to the HNSW backend once the corpus crosses
 # `DEFAULT_EXACT_TO_HNSW_THRESHOLD` (see ROADMAP.md 1.0.0 Track B).
-hnsw-backend = ["dep:hnsw", "dep:rand_pcg", "dep:space"]
+hnsw-backend = ["dep:hnsw", "dep:rand_pcg", "dep:space", "hnsw/serde1", "rand_pcg/serde1"]
 
 [dependencies]
 async-trait = "0.1.89"
@@ -67,7 +67,7 @@ walkdir = "2.5"
 # HNSW approximate-nearest-neighbor backend (H1). Pure Rust, no_std-friendly
 # core; we enable it only when the `hnsw-backend` feature is on so the default
 # build is the exact-f32 linear-scan path. See ROADMAP.md 1.0.0 Track B.
-hnsw = { version = "0.11", optional = true }
+hnsw = { version = "0.11", optional = true, features = ["serde1"] }
 rand_pcg = { version = "0.3", optional = true }
 space = { version = "0.17", optional = true }
 # Compressed bitmap set for vector metadata filters (H2). Always built-in:

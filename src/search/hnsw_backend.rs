@@ -23,9 +23,16 @@
 //! [`space::Metric`]: https://docs.rs/space/0.17.0/space/trait.Metric.html
 //! [`hnsw`]: https://docs.rs/hnsw/0.11.0/hnsw/
 
+use std::collections::BTreeMap;
+use std::fs::{self, File};
+use std::io::{self, BufReader, BufWriter, Write};
+use std::path::Path;
+
+use bincode;
 use hnsw::{Hnsw, Params};
 use rand_pcg::Pcg64;
 use roaring::RoaringBitmap;
+use serde::{Deserialize, Serialize};
 use space::{Metric, Neighbor};
 
 use super::vector::{
@@ -59,7 +66,7 @@ const DISTANCE_SCALE: f32 = 1_000_000.0;
 
 /// Cosine-distance metric that encodes `1.0 - cosine_similarity` as a `u32`.
 /// See the module rustdoc and [`DISTANCE_SCALE`] for the trade-off.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 struct CosineDistance;
 
 impl Metric<Vec<f32>> for CosineDistance {
@@ -82,18 +89,19 @@ impl Metric<Vec<f32>> for CosineDistance {
 /// Built on `hnsw` 0.11 with the [`CosineDistance`] metric. Selected
 /// automatically by [`super::vector::select_backend_kind`] once the corpus
 /// crosses [`DEFAULT_EXACT_TO_HNSW_THRESHOLD`].
+#[derive(Serialize, Deserialize)]
 pub struct HnswBackend {
     metadata: EmbeddingMetadata,
     hnsw: Hnsw<CosineDistance, Vec<f32>, Pcg64, HNSW_M, HNSW_M0>,
     /// HNSW item id (assigned at insert time) -> our `document_id`.
     id_to_doc: Vec<String>,
     /// Our `document_id` -> HNSW item id, for upsert / remove.
-    doc_to_id: std::collections::BTreeMap<String, usize>,
+    doc_to_id: BTreeMap<String, usize>,
     /// Cached exact vectors so we can return the score in the same units the
     /// Exact backend would. The HNSW graph itself does not store a
     /// user-visible "score" (only the integer distance); the hit's `score`
     /// field is therefore recomputed from the cached exact vector.
-    vectors: std::collections::BTreeMap<String, Vec<f32>>,
+    vectors: BTreeMap<String, Vec<f32>>,
 }
 
 impl HnswBackend {
@@ -326,5 +334,50 @@ impl std::fmt::Debug for HnswBackend {
             .field("hnsw_len", &self.hnsw.len())
             .field("hnsw_layers", &self.hnsw.layers())
             .finish()
+    }
+}
+
+impl HnswBackend {
+    /// Persist the HNSW graph and its exact-vector cache to `path`.
+    ///
+    /// The contents are serialized with bincode and atomically swapped into
+    /// place so readers never see a partial file. Callers should pair this
+    /// with the sidecar integrity metadata so stale graphs can be rejected on
+    /// load.
+    pub fn persist_to_path(&self, path: &Path) -> io::Result<()> {
+        let bytes = bincode::serde::encode_to_vec(self, bincode::config::standard())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error}")))?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let temp_path = path.with_extension("tmp");
+        let file = File::create(&temp_path)?;
+        let mut writer = BufWriter::new(file);
+        std::io::Write::write_all(&mut writer, &bytes)?;
+        writer.flush()?;
+        drop(writer);
+
+        // fs::rename is atomic on POSIX and most modern filesystems.
+        fs::rename(temp_path, path)
+    }
+
+    /// Load a persisted HNSW graph from `path`.
+    ///
+    /// Returns an error if the file is corrupt or if the persisted metadata
+    /// does not match the supplied `metadata`. This prevents a graph built
+    /// for one embedding space from being reused for another.
+    pub fn load_from_path(path: &Path, metadata: &EmbeddingMetadata) -> io::Result<Self> {
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let backend: Self =
+            bincode::serde::decode_from_reader(&mut reader, bincode::config::standard())
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error}")))?;
+        if &backend.metadata != metadata {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HNSW graph metadata does not match the requested embedding space",
+            ));
+        }
+        Ok(backend)
     }
 }

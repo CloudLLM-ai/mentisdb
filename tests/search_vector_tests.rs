@@ -746,3 +746,59 @@ fn vector_filter_from_ids_deduplicates_and_treats_empty_as_unfiltered() {
     assert!(f3.allows("x"));
     assert!(!f3.allows("y"));
 }
+
+// ---------------------------------------------------------------------------
+// H4: HNSW graph persistence. We serialize the full in-memory graph and its
+// exact-vector cache with bincode so daemon restarts can reuse a previously
+// built graph instead of rebuilding from the sidecar entries.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(feature = "hnsw-backend")]
+fn hnsw_backend_persistence_round_trip() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("hnsw.graph.bin");
+    let metadata = EmbeddingMetadata::new("toy", 2, "v1");
+    let documents = vec![
+        VectorDocument::new("alpha", vec![1.0, 0.0]),
+        VectorDocument::new("bravo", vec![0.0, 1.0]),
+        VectorDocument::new("charlie", vec![-1.0, 0.0]),
+        VectorDocument::new("delta", vec![0.0, -1.0]),
+    ];
+
+    let backend =
+        mentisdb::search::hnsw_backend::HnswBackend::from_documents(metadata.clone(), documents)
+            .unwrap();
+    let query = VectorQuery::new(vec![1.0, 0.0]).with_limit(3);
+    let expected = backend.search(&query).unwrap();
+
+    backend.persist_to_path(&path).unwrap();
+    assert!(path.exists());
+
+    let loaded =
+        mentisdb::search::hnsw_backend::HnswBackend::load_from_path(&path, &metadata).unwrap();
+    let actual = loaded.search(&query).unwrap();
+
+    assert_eq!(loaded.document_count(), backend.document_count());
+    assert_eq!(loaded.metadata(), &metadata);
+    assert_eq!(expected, actual);
+}
+
+#[test]
+#[cfg(feature = "hnsw-backend")]
+fn hnsw_backend_load_rejects_metadata_mismatch() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("hnsw.graph.bin");
+    let metadata = EmbeddingMetadata::new("toy", 2, "v1");
+    let documents = vec![VectorDocument::new("only", vec![1.0, 0.0])];
+
+    let backend =
+        mentisdb::search::hnsw_backend::HnswBackend::from_documents(metadata.clone(), documents)
+            .unwrap();
+    backend.persist_to_path(&path).unwrap();
+
+    let wrong_metadata = EmbeddingMetadata::new("toy", 3, "v1");
+    let error = mentisdb::search::hnsw_backend::HnswBackend::load_from_path(&path, &wrong_metadata)
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+}
