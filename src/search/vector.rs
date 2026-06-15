@@ -541,7 +541,7 @@ pub fn select_backend_kind(document_count: usize) -> VectorBackendKind {
 /// trait today. The upcoming HNSW backend will be a second implementation;
 /// both will be reachable through the same `Box<dyn VectorSearchBackend>`
 /// boundary so callers do not need to special-case the kind.
-pub trait VectorSearchBackend {
+pub trait VectorSearchBackend: Send + Sync {
     /// Return immutable embedding metadata for this backend.
     fn metadata(&self) -> &EmbeddingMetadata;
 
