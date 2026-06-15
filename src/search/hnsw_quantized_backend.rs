@@ -19,13 +19,13 @@ use super::vector::{
 };
 
 /// Default M parameter (max connections per node) for [`QuantizedHnswBackend`].
-const HNSW_M: usize = 16;
+const HNSW_M: usize = 48;
 
 /// Default `ef_construction` for [`QuantizedHnswBackend`].
-const HNSW_EF_CONSTRUCTION: usize = 200;
+const HNSW_EF_CONSTRUCTION: usize = 400;
 
 /// Default `ef_search` for [`QuantizedHnswBackend`].
-const HNSW_EF_SEARCH: usize = 64;
+const HNSW_EF_SEARCH: usize = 128;
 
 /// Top layer size (`M0`) for [`QuantizedHnswBackend`].
 const HNSW_M0: usize = HNSW_M * 2;

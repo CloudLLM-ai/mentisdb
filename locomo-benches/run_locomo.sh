@@ -56,14 +56,15 @@ echo "mentisdb is up."
 # Step 3 — download dataset if not present
 # ---------------------------------------------------------------------------
 mkdir -p "$DATA_DIR"
-for F in locomo_items.jsonl locomo_test.jsonl; do
-    if [ ! -f "$DATA_DIR/$F" ]; then
+for F in items.jsonl test.jsonl; do
+    OUT_F="locomo_${F}"
+    if [ ! -f "$DATA_DIR/$OUT_F" ]; then
         echo "Downloading $F from HuggingFace…"
         curl -sL "https://huggingface.co/datasets/Nithish2410/benchmark-locomo/resolve/main/$F" \
-            -o "$DATA_DIR/$F"
-        echo "Saved to $DATA_DIR/$F"
+            -o "$DATA_DIR/$OUT_F"
+        echo "Saved to $DATA_DIR/$OUT_F"
     else
-        echo "Dataset file present: $DATA_DIR/$F"
+        echo "Dataset file present: $DATA_DIR/$OUT_F"
     fi
 done
 

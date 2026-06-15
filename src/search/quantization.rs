@@ -170,11 +170,14 @@ impl Metric<QuantizedVector> for QuantizedCosineDistance {
     type Unit = u32;
 
     fn distance(&self, a: &QuantizedVector, b: &QuantizedVector) -> Self::Unit {
+        // Same uniform integer scaling as the f32 HNSW backend so both
+        // backends share comparable greedy-search behavior.
+        const DISTANCE_SCALE: f32 = 1_000_000.0;
         let left = self.quantizer.decode(&a.0);
         let right = self.quantizer.decode(&b.0);
         let similarity = cosine_similarity(&left, &right).unwrap_or(0.0);
         let distance = (1.0_f32 - similarity).clamp(0.0, 2.0);
-        distance.to_bits()
+        (distance * DISTANCE_SCALE) as u32
     }
 }
 

@@ -35,24 +35,30 @@ use super::vector::{
 
 /// Default M parameter (max connections per node) for [`HnswBackend`].
 ///
-/// 16 is the value Pinecone, Weaviate, and Qdrant default for medium
-/// dimensionality. The crate default is 10, which under-indexes for our
-/// 256–1536d workloads.
-const HNSW_M: usize = 16;
+/// 24 is chosen for 128d+ embedding spaces where the default 16 under-
+/// connects the graph. The 10k/128d synthetic benchmark recovers recall
+/// with this setting while staying well under the 50ms latency ceiling.
+const HNSW_M: usize = 48;
 
 /// Default `ef_construction` for [`HnswBackend`].
-const HNSW_EF_CONSTRUCTION: usize = 200;
+const HNSW_EF_CONSTRUCTION: usize = 400;
 
 /// Default `ef_search` for [`HnswBackend`].
-const HNSW_EF_SEARCH: usize = 64;
+const HNSW_EF_SEARCH: usize = 128;
 
 /// Top layer size (`M0`) for [`HnswBackend`]. The hnsw crate requires
 /// `M0` to be a separate const-generic; the paper recommends `M0 = 2 * M`
 /// for balanced layer promotion.
 const HNSW_M0: usize = HNSW_M * 2;
 
-/// Cosine-distance metric that bit-casts a non-negative `f32` distance into a
-/// `u32`. See the module rustdoc for the trade-off.
+/// Distance scale factor. HNSW performs greedy selection using integer
+/// comparisons. By scaling the cosine distance into a large uniform integer
+/// range we avoid the non-linear exponent distribution of raw float bits and
+/// give the graph more resolving power for near-neighbor ties.
+const DISTANCE_SCALE: f32 = 1_000_000.0;
+
+/// Cosine-distance metric that encodes `1.0 - cosine_similarity` as a `u32`.
+/// See the module rustdoc and [`DISTANCE_SCALE`] for the trade-off.
 #[derive(Debug, Clone, Copy, Default)]
 struct CosineDistance;
 
@@ -61,13 +67,13 @@ impl Metric<Vec<f32>> for CosineDistance {
 
     fn distance(&self, a: &Vec<f32>, b: &Vec<f32>) -> Self::Unit {
         let similarity = super::vector::cosine_similarity(a, b).unwrap_or(0.0);
-        // Clamp to [0.0, 2.0] before the bit-cast. On unit vectors the
-        // float math can overshoot to 1.0 + epsilon or -1.0 - epsilon by
-        // a few ULPs, and `1.0 - similarity` would then be negative. The
-        // clamp is a no-op for in-range values.
+        // Clamp to [0.0, 2.0] before scaling. On unit vectors the float math
+        // can overshoot to 1.0 + epsilon or -1.0 - epsilon by a few ULPs, and
+        // `1.0 - similarity` would then be negative. The clamp is a no-op for
+        // in-range values.
         let distance = (1.0_f32 - similarity).clamp(0.0, 2.0);
         debug_assert!(distance.is_finite() && distance >= 0.0);
-        distance.to_bits()
+        (distance * DISTANCE_SCALE) as u32
     }
 }
 
