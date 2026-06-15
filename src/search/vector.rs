@@ -407,7 +407,7 @@ pub struct VectorSearchHit {
 /// neighbor backend (see ROADMAP.md 1.0.0 Track B) and is selected by
 /// [`select_backend_kind`] once the corpus crosses
 /// [`DEFAULT_EXACT_TO_HNSW_THRESHOLD`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum VectorBackendKind {
     /// Deterministic in-memory exact cosine over every stored vector.
     Exact,
@@ -448,6 +448,17 @@ impl std::fmt::Debug for VectorBackend {
                 .debug_tuple("Hnsw")
                 .field(&"<dyn VectorSearchBackend>")
                 .finish(),
+        }
+    }
+}
+
+impl VectorBackend {
+    /// Return the underlying backend kind for this instance.
+    pub fn kind(&self) -> VectorBackendKind {
+        match self {
+            Self::Exact(_) => VectorBackendKind::Exact,
+            #[cfg(feature = "hnsw-backend")]
+            Self::Hnsw(_) => VectorBackendKind::Hnsw,
         }
     }
 }
@@ -522,13 +533,27 @@ impl VectorSearchBackend for VectorBackend {
 /// multi-tenant work lands; see ROADMAP.md 1.0.0 Track B.
 pub const DEFAULT_EXACT_TO_HNSW_THRESHOLD: usize = 50_000;
 
+/// Active HNSW corpus-size threshold.
+///
+/// Uses `MENTISDB_HNSW_THRESHOLD` when set, otherwise falls back to
+/// [`DEFAULT_EXACT_TO_HNSW_THRESHOLD`]. Reading from the environment on each
+/// call lets operators and the dashboard change the cut-over without
+/// recompiling.
+pub fn hnsw_threshold() -> usize {
+    std::env::var("MENTISDB_HNSW_THRESHOLD")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&threshold| threshold > 0)
+        .unwrap_or(DEFAULT_EXACT_TO_HNSW_THRESHOLD)
+}
+
 /// Pick the appropriate [`VectorBackendKind`] for one corpus size.
 ///
 /// `Hnsw` is returned for any corpus at or above the threshold so the boundary
 /// is "exclusively Hnsw" (an empty corpus, or one smaller than the threshold,
 /// stays on the deterministic Exact backend).
 pub fn select_backend_kind(document_count: usize) -> VectorBackendKind {
-    if document_count >= DEFAULT_EXACT_TO_HNSW_THRESHOLD {
+    if document_count >= hnsw_threshold() {
         VectorBackendKind::Hnsw
     } else {
         VectorBackendKind::Exact

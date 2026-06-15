@@ -53,6 +53,36 @@ const HNSW_EF_CONSTRUCTION: usize = 400;
 /// Default `ef_search` for [`HnswBackend`].
 const HNSW_EF_SEARCH: usize = 128;
 
+/// Read `MENTISDB_HNSW_EF_CONSTRUCTION` or fall back to the default.
+fn hnsw_ef_construction() -> usize {
+    std::env::var("MENTISDB_HNSW_EF_CONSTRUCTION")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(HNSW_EF_CONSTRUCTION)
+}
+
+/// Read `MENTISDB_HNSW_EF_SEARCH` or fall back to the default.
+fn hnsw_ef_search() -> usize {
+    std::env::var("MENTISDB_HNSW_EF_SEARCH")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(HNSW_EF_SEARCH)
+}
+
+/// Whether background HNSW graph construction is enabled.
+///
+/// Controlled by `MENTISDB_HNSW_BACKGROUND_BUILD`. Defaults to `true` so the
+/// daemon stays responsive while large sidecars initialize their approximate
+/// index.
+pub fn hnsw_background_build_enabled() -> bool {
+    std::env::var("MENTISDB_HNSW_BACKGROUND_BUILD")
+        .ok()
+        .map(|value| value.eq_ignore_ascii_case("true"))
+        .unwrap_or(true)
+}
+
 /// Top layer size (`M0`) for [`HnswBackend`]. The hnsw crate requires
 /// `M0` to be a separate const-generic; the paper recommends `M0 = 2 * M`
 /// for balanced layer promotion.
@@ -112,7 +142,7 @@ impl HnswBackend {
         // generics on `Hnsw<...>`. `Params::default()` ships with
         // ef_construction=400 (overkill for our workloads) so we override
         // to `HNSW_EF_CONSTRUCTION` for a faster build at our recall target.
-        let params = Params::default().ef_construction(HNSW_EF_CONSTRUCTION);
+        let params = Params::default().ef_construction(hnsw_ef_construction());
         // `hnsw::Hnsw::new_params` is deterministic when its PRNG is
         // deterministic, and `Pcg64::default()` uses a fixed seed, so the
         // graph is reproducible across processes. That is important for
@@ -278,7 +308,7 @@ impl HnswBackend {
         let candidate_count = allowed
             .map(|_| (limit * 4).max(64).min(self.doc_to_id.len()))
             .unwrap_or(limit);
-        let ef = HNSW_EF_SEARCH.max(candidate_count);
+        let ef = hnsw_ef_search().max(candidate_count);
         let mut dest = vec![
             Neighbor {
                 distance: 0,

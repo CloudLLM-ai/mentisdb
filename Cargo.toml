@@ -88,6 +88,8 @@ bincode = { version = "2.0.1", features = ["serde"] }
 chrono = { version = "0.4.44", features = ["serde"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 ed25519-dalek = { version = "2", features = ["alloc"] }
+rand = "0.8"
+rand_distr = "0.4"
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.10.9"
 tempfile = "3"
@@ -117,6 +119,11 @@ harness = false
 
 [[bench]]
 name = "hnsw_comparison"
+harness = false
+required-features = ["hnsw-backend"]
+
+[[bench]]
+name = "hnsw_scale"
 harness = false
 required-features = ["hnsw-backend"]
 

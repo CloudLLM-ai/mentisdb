@@ -1,4 +1,7 @@
-use mentisdb::search::{EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector};
+use mentisdb::search::{
+    EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector,
+    LocalTextEmbeddingProvider, VectorBackendKind,
+};
 use mentisdb::{
     chain_storage_filename, MentisDb, RankedSearchBackend, RankedSearchQuery, StorageAdapterKind,
     ThoughtQuery, ThoughtType, VectorSearchQuery,
@@ -422,6 +425,66 @@ fn small_managed_vector_sidecar_does_not_create_hnsw_graph() {
         !graph_path.exists(),
         "expected no HNSW graph for small corpus"
     );
+}
+
+#[test]
+#[cfg(feature = "hnsw-backend")]
+fn managed_vector_sidecar_builds_hnsw_in_background() {
+    let previous_threshold = std::env::var("MENTISDB_HNSW_THRESHOLD").ok();
+    std::env::set_var("MENTISDB_HNSW_THRESHOLD", "5");
+
+    let tempdir = TempDir::new().unwrap();
+    let chain_dir = PathBuf::from(tempdir.path());
+    let mut chain = MentisDb::open_with_key(&chain_dir, "hnsw-bg").unwrap();
+    let provider = LocalTextEmbeddingProvider::new();
+
+    for index in 0..10 {
+        chain
+            .append(
+                "agent",
+                ThoughtType::Idea,
+                &format!("invoice record {index}"),
+            )
+            .unwrap();
+    }
+
+    chain.manage_vector_sidecar(provider.clone()).unwrap();
+
+    let status = chain
+        .managed_vector_sidecar_statuses()
+        .unwrap()
+        .into_iter()
+        .find(|s| s.provider_key == "local-text-v1")
+        .unwrap();
+    assert_eq!(status.backend_kind, Some(VectorBackendKind::Hnsw));
+    assert!(status.backend_building);
+
+    for _ in 0..200 {
+        chain.poll_vector_backend_upgrades();
+        let status = chain
+            .managed_vector_sidecar_statuses()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.provider_key == "local-text-v1")
+            .unwrap();
+        if !status.backend_building {
+            assert_eq!(status.backend_kind, Some(VectorBackendKind::Hnsw));
+            if let Some(previous) = previous_threshold {
+                std::env::set_var("MENTISDB_HNSW_THRESHOLD", previous);
+            } else {
+                std::env::remove_var("MENTISDB_HNSW_THRESHOLD");
+            }
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    if let Some(previous) = previous_threshold {
+        std::env::set_var("MENTISDB_HNSW_THRESHOLD", previous);
+    } else {
+        std::env::remove_var("MENTISDB_HNSW_THRESHOLD");
+    }
+    panic!("HNSW background build did not complete");
 }
 
 #[test]

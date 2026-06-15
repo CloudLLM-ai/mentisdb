@@ -34,6 +34,7 @@ fn apply_setup_preserves_existing_codex_toml_keys() {
         "http://127.0.0.1:9471".to_string(),
         HostPlatform::Macos,
         &env,
+        None,
     )
     .unwrap();
 
@@ -75,6 +76,7 @@ fn apply_setup_supports_jsonc_and_preserves_existing_keys() {
         "http://127.0.0.1:9471".to_string(),
         HostPlatform::Macos,
         &env,
+        None,
     )
     .unwrap();
 
@@ -115,6 +117,7 @@ fn apply_setup_merges_claude_code_mcp_server_into_settings_json() {
         "http://127.0.0.1:9471".to_string(),
         HostPlatform::Macos,
         &env,
+        None,
     )
     .unwrap();
 
@@ -168,6 +171,7 @@ fn apply_setup_merges_current_copilot_mcp_servers_shape() {
         "http://127.0.0.1:9471".to_string(),
         HostPlatform::Macos,
         &env,
+        None,
     )
     .unwrap();
 
@@ -206,6 +210,7 @@ fn apply_setup_respects_https_url_override_for_non_claude_desktop() {
         "https://my.mentisdb.com:9473".to_string(),
         HostPlatform::Macos,
         &env,
+        None,
     )
     .unwrap();
 
@@ -234,6 +239,7 @@ fn apply_setup_is_idempotent_for_qwen() {
         "http://127.0.0.1:9471".to_string(),
         HostPlatform::Macos,
         &env,
+        None,
     )
     .unwrap();
     let second = apply_setup_with_environment(
@@ -241,6 +247,7 @@ fn apply_setup_is_idempotent_for_qwen() {
         "http://127.0.0.1:9471".to_string(),
         HostPlatform::Macos,
         &env,
+        None,
     )
     .unwrap();
 
@@ -265,6 +272,7 @@ fn apply_setup_writes_copilot_cli_config_under_xdg_root() {
         "http://127.0.0.1:9471".to_string(),
         HostPlatform::Linux,
         &env,
+        None,
     )
     .unwrap();
 
@@ -316,6 +324,7 @@ fn apply_claude_desktop_uses_stdio_mode() {
         "https://my.mentisdb.com:9473".to_string(),
         HostPlatform::Macos,
         &env,
+        None,
     )
     .unwrap();
 
@@ -365,6 +374,7 @@ fn claude_desktop_plan_snippet_uses_stdio_mode() {
         "https://my.mentisdb.com:9473",
         HostPlatform::Macos,
         &env,
+        None,
     )
     .unwrap();
 

@@ -16,6 +16,7 @@
 //!
 //! If neither is present the request is redirected to `/dashboard/login`.
 
+use crate::search::DEFAULT_EXACT_TO_HNSW_THRESHOLD;
 use crate::{
     auth::{
         parse_bearer_token_access, BearerTokenError, BearerTokenRecord, BearerTokenScope,
@@ -2893,6 +2894,39 @@ async fn api_settings(
             kind: "boolean".to_string(),
             hot_reload: true,
         },
+        DashboardSetting {
+            name: "MENTISDB_HNSW_THRESHOLD".to_string(),
+            value: std::env::var("MENTISDB_HNSW_THRESHOLD")
+                .unwrap_or_else(|_| DEFAULT_EXACT_TO_HNSW_THRESHOLD.to_string()),
+            default_value: DEFAULT_EXACT_TO_HNSW_THRESHOLD.to_string(),
+            description: "Minimum number of vectors before the HNSW approximate backend is selected.".to_string(),
+            kind: "number".to_string(),
+            hot_reload: true,
+        },
+        DashboardSetting {
+            name: "MENTISDB_HNSW_EF_CONSTRUCTION".to_string(),
+            value: std::env::var("MENTISDB_HNSW_EF_CONSTRUCTION").unwrap_or_else(|_| "400".to_string()),
+            default_value: "400".to_string(),
+            description: "Search width during HNSW graph construction (higher = better recall, slower build).".to_string(),
+            kind: "number".to_string(),
+            hot_reload: true,
+        },
+        DashboardSetting {
+            name: "MENTISDB_HNSW_EF_SEARCH".to_string(),
+            value: std::env::var("MENTISDB_HNSW_EF_SEARCH").unwrap_or_else(|_| "128".to_string()),
+            default_value: "128".to_string(),
+            description: "Search width during HNSW queries (higher = better recall, slower search).".to_string(),
+            kind: "number".to_string(),
+            hot_reload: true,
+        },
+        DashboardSetting {
+            name: "MENTISDB_HNSW_BACKGROUND_BUILD".to_string(),
+            value: std::env::var("MENTISDB_HNSW_BACKGROUND_BUILD").unwrap_or_else(|_| "true".to_string()),
+            default_value: "true".to_string(),
+            description: "Build large HNSW graphs in a background thread so the daemon stays responsive.".to_string(),
+            kind: "boolean".to_string(),
+            hot_reload: true,
+        },
     ];
     Ok(Json(settings))
 }
@@ -2957,7 +2991,11 @@ async fn api_update_settings(
             | "MENTISDB_UPDATE_CHECK"
             | "MENTISDB_UPDATE_REPO"
             | "MENTISDB_STARTUP_SOUND"
-            | "MENTISDB_THOUGHT_SOUNDS" => {
+            | "MENTISDB_THOUGHT_SOUNDS"
+            | "MENTISDB_HNSW_THRESHOLD"
+            | "MENTISDB_HNSW_EF_CONSTRUCTION"
+            | "MENTISDB_HNSW_EF_SEARCH"
+            | "MENTISDB_HNSW_BACKGROUND_BUILD" => {
                 // These are read from env on demand
             }
             _ => {

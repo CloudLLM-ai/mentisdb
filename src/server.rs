@@ -560,6 +560,10 @@ impl MentisDbServiceConfig {
 /// | `MENTISDB_TLS_KEY` | `<MENTISDB_DIR>/tls/key.pem` | Path to the TLS private-key PEM. |
 /// | `MENTISDB_DASHBOARD_PORT` | `9475` | Port for the HTTPS web dashboard (set to `0` to disable). |
 /// | `MENTISDB_DASHBOARD_PIN` | *(none)* | Optional PIN that protects dashboard access. |
+/// | `MENTISDB_HNSW_THRESHOLD` | `50000` | Minimum vector count to switch from exact scan to HNSW. |
+/// | `MENTISDB_HNSW_EF_CONSTRUCTION` | `400` | Search width during HNSW graph construction. |
+/// | `MENTISDB_HNSW_EF_SEARCH` | `128` | Search width during HNSW queries. |
+/// | `MENTISDB_HNSW_BACKGROUND_BUILD` | `true` | Build HNSW graphs on a background thread. |
 ///
 /// ## Examples
 ///

@@ -13,6 +13,10 @@ pub(crate) struct IntegrationWriterSettings {
     default_http_url: String,
     /// Default HTTPS MCP URL used by bridge-based clients.
     default_https_url: String,
+    /// Whether [`default_http_url`](Self::default_http_url) was explicitly set.
+    http_url_overridden: bool,
+    /// Whether [`default_https_url`](Self::default_https_url) was explicitly set.
+    https_url_overridden: bool,
     /// Optional bearer token to inject as Authorization header for remote integrations.
     bearer_token: Option<String>,
 }
@@ -23,6 +27,8 @@ impl Default for IntegrationWriterSettings {
             server_name: "mentisdb".to_owned(),
             default_http_url: "http://127.0.0.1:9471".to_owned(),
             default_https_url: "https://my.mentisdb.com:9473".to_owned(),
+            http_url_overridden: false,
+            https_url_overridden: false,
             bearer_token: None,
         }
     }
@@ -38,9 +44,18 @@ impl IntegrationWriterSettings {
         let url = url.into();
         let is_https = url.starts_with("https://");
         match integration {
-            IntegrationKind::ClaudeDesktop => next.default_https_url = url,
-            _ if is_https => next.default_https_url = url,
-            _ => next.default_http_url = url,
+            IntegrationKind::ClaudeDesktop => {
+                next.default_https_url = url;
+                next.https_url_overridden = true;
+            }
+            _ if is_https => {
+                next.default_https_url = url;
+                next.https_url_overridden = true;
+            }
+            _ => {
+                next.default_http_url = url;
+                next.http_url_overridden = true;
+            }
         }
         next
     }
@@ -52,8 +67,7 @@ impl IntegrationWriterSettings {
     pub(crate) fn url_for(&self, integration: IntegrationKind) -> &str {
         match integration {
             IntegrationKind::ClaudeDesktop => &self.default_https_url,
-            _ if self.default_http_url.starts_with("http://") => &self.default_http_url,
-            _ if self.default_https_url.starts_with("https://") => &self.default_https_url,
+            _ if self.https_url_overridden => &self.default_https_url,
             _ => &self.default_http_url,
         }
     }

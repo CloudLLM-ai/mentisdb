@@ -3867,6 +3867,45 @@ struct ManagedSidecarEntry {
     // deterministic Exact backend or an approximate HNSW backend depending on
     // corpus size and feature flags.
     cached_index: Option<crate::search::VectorBackend>,
+    /// A background HNSW build that was started because the corpus is large
+    /// enough to benefit from approximate search. While the build runs the
+    /// cached index is an Exact placeholder so queries stay available.
+    #[cfg(feature = "hnsw-backend")]
+    pending_hnsw_build: Option<PendingVectorBackendBuild>,
+}
+
+impl ManagedSidecarEntry {
+    fn new<P: crate::search::EmbeddingProvider + Send + Sync + 'static>(
+        provider: P,
+        auto_sync: bool,
+        build_result: VectorBackendBuildResult,
+    ) -> Self {
+        Self {
+            provider: Box::new(RegisteredEmbeddingProvider { provider }),
+            auto_sync,
+            cached_index: build_result.backend,
+            #[cfg(feature = "hnsw-backend")]
+            pending_hnsw_build: build_result.pending,
+        }
+    }
+}
+
+#[cfg(feature = "hnsw-backend")]
+struct PendingVectorBackendBuild {
+    handle: std::thread::JoinHandle<Option<crate::search::VectorBackend>>,
+}
+
+#[cfg(feature = "hnsw-backend")]
+impl PendingVectorBackendBuild {
+    /// True when the background thread has finished building the graph.
+    fn is_finished(&self) -> bool {
+        self.handle.is_finished()
+    }
+
+    /// Take the finished backend, if any.
+    fn join(self) -> Option<crate::search::VectorBackend> {
+        self.handle.join().ok().flatten()
+    }
 }
 
 struct RegisteredEmbeddingProvider<P> {
@@ -4017,6 +4056,10 @@ pub struct ManagedVectorSidecarStatus {
     pub indexed_thought_count: Option<usize>,
     /// Timestamp when the current sidecar file was generated, when loaded.
     pub generated_at: Option<DateTime<Utc>>,
+    /// Active vector backend kind, if the sidecar is loaded in memory.
+    pub backend_kind: Option<crate::search::VectorBackendKind>,
+    /// Whether an HNSW graph is currently being built in the background.
+    pub backend_building: bool,
 }
 
 /// Legacy `ThoughtRelation` used when reading schema-v0 binary chains.
@@ -6485,20 +6528,91 @@ impl MentisDb {
             _ => self.rebuild_vector_sidecar(&provider)?,
         };
         let graph_path = self.vector_hnsw_graph_path(provider.metadata()).ok();
-        let cached_index = {
+        let build_result = {
             let documents = sidecar_entries_to_documents(&sidecar.entries);
-            build_vector_backend(provider.metadata(), documents, graph_path.as_deref())
+            build_vector_backend_async(provider.metadata(), documents, graph_path.as_deref())
         };
         self.managed_vector_sidecars.insert(
             provider.metadata().clone(),
-            ManagedSidecarEntry {
-                provider: Box::new(RegisteredEmbeddingProvider { provider }),
-                auto_sync: true,
-                cached_index,
-            },
+            ManagedSidecarEntry::new(provider, true, build_result),
         );
         self.load_or_rebuild_implicit_edge_overlay();
         Ok(sidecar)
+    }
+
+    /// Check for finished background HNSW graph builds and swap them into the
+    /// cached index.
+    ///
+    /// If a background build finished with a document count that no longer
+    /// matches the current sidecar, it is discarded and a new background build
+    /// is started from the fresh sidecar. This is normally called automatically
+    /// before append-time sync and explicit sidecar rebuilds; long-running
+    /// services may also call it periodically if they want read-only queries to
+    /// pick up the approximate backend as soon as it is ready.
+    pub fn poll_vector_backend_upgrades(&mut self) {
+        #[cfg(feature = "hnsw-backend")]
+        {
+            let keys: Vec<crate::search::EmbeddingMetadata> =
+                self.managed_vector_sidecars.keys().cloned().collect();
+            for metadata in keys {
+                let pending = self
+                    .managed_vector_sidecars
+                    .get_mut(&metadata)
+                    .and_then(|entry| entry.pending_hnsw_build.take());
+                let Some(pending) = pending else {
+                    continue;
+                };
+                if !pending.is_finished() {
+                    self.managed_vector_sidecars
+                        .get_mut(&metadata)
+                        .unwrap()
+                        .pending_hnsw_build = Some(pending);
+                    continue;
+                }
+
+                let expected_count = self
+                    .load_vector_sidecar(&metadata)
+                    .ok()
+                    .flatten()
+                    .map(|sidecar| sidecar.entries.len());
+                let backend = pending.join();
+
+                let accepted = if let (Some(count), Some(backend)) = (expected_count, backend) {
+                    if backend.document_count() == count {
+                        self.managed_vector_sidecars
+                            .get_mut(&metadata)
+                            .unwrap()
+                            .cached_index = Some(backend);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if !accepted {
+                    // The build was stale or failed; start a fresh one from the
+                    // current sidecar if the corpus still warrants HNSW.
+                    if let Some(sidecar) = self.load_vector_sidecar(&metadata).ok().flatten() {
+                        let count = sidecar.entries.len();
+                        if crate::search::select_backend_kind(count)
+                            == crate::search::VectorBackendKind::Hnsw
+                        {
+                            let documents = sidecar_entries_to_documents(&sidecar.entries);
+                            if let Ok(graph_path) = self.vector_hnsw_graph_path(&metadata) {
+                                let result =
+                                    load_or_build_hnsw_backend(&graph_path, &metadata, documents);
+                                let entry =
+                                    self.managed_vector_sidecars.get_mut(&metadata).unwrap();
+                                entry.cached_index = result.backend;
+                                entry.pending_hnsw_build = result.pending;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Register a provider for search scoring only — no sidecar rebuild, no append-time sync.
@@ -6513,21 +6627,18 @@ impl MentisDb {
         provider: P,
     ) {
         let graph_path = self.vector_hnsw_graph_path(provider.metadata()).ok();
-        let cached_index = self
+        let build_result = self
             .load_vector_sidecar(provider.metadata())
             .ok()
             .flatten()
-            .and_then(|sidecar| {
+            .map(|sidecar| {
                 let documents = sidecar_entries_to_documents(&sidecar.entries);
-                build_vector_backend(provider.metadata(), documents, graph_path.as_deref())
-            });
+                build_vector_backend_async(provider.metadata(), documents, graph_path.as_deref())
+            })
+            .unwrap_or_else(VectorBackendBuildResult::ready);
         self.managed_vector_sidecars.insert(
             provider.metadata().clone(),
-            ManagedSidecarEntry {
-                provider: Box::new(RegisteredEmbeddingProvider { provider }),
-                auto_sync: false,
-                cached_index,
-            },
+            ManagedSidecarEntry::new(provider, false, build_result),
         );
         self.load_or_rebuild_implicit_edge_overlay();
     }
@@ -6698,6 +6809,7 @@ impl MentisDb {
         &mut self,
         provider_kind: ManagedVectorProviderKind,
     ) -> io::Result<ManagedVectorSidecarStatus> {
+        self.poll_vector_backend_upgrades();
         let enabled = self
             .persisted_managed_vector_sidecar_config()?
             .providers
@@ -6714,16 +6826,12 @@ impl MentisDb {
                     .map_err(vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>)?;
                 let documents = sidecar_entries_to_documents(&sidecar.entries);
                 let graph_path = self.vector_hnsw_graph_path(&metadata).ok();
-                let cached_index =
-                    build_vector_backend(&metadata, documents, graph_path.as_deref());
+                let build_result =
+                    build_vector_backend_async(&metadata, documents, graph_path.as_deref());
                 if enabled {
                     self.managed_vector_sidecars.insert(
                         metadata,
-                        ManagedSidecarEntry {
-                            provider: Box::new(RegisteredEmbeddingProvider { provider }),
-                            auto_sync: true,
-                            cached_index,
-                        },
+                        ManagedSidecarEntry::new(provider, true, build_result),
                     );
                 } else {
                     self.unmanage_vector_sidecar(&metadata);
@@ -6739,16 +6847,12 @@ impl MentisDb {
                     .map_err(|e| io::Error::other(format!("fastembed sidecar rebuild: {e}")))?;
                 let documents = sidecar_entries_to_documents(&sidecar.entries);
                 let graph_path = self.vector_hnsw_graph_path(&metadata).ok();
-                let cached_index =
-                    build_vector_backend(&metadata, documents, graph_path.as_deref());
+                let build_result =
+                    build_vector_backend_async(&metadata, documents, graph_path.as_deref());
                 if enabled {
                     self.managed_vector_sidecars.insert(
                         metadata,
-                        ManagedSidecarEntry {
-                            provider: Box::new(RegisteredEmbeddingProvider { provider }),
-                            auto_sync: true,
-                            cached_index,
-                        },
+                        ManagedSidecarEntry::new(provider, true, build_result),
                     );
                 } else {
                     self.unmanage_vector_sidecar(&metadata);
@@ -6765,6 +6869,7 @@ impl MentisDb {
         &mut self,
         provider_kind: ManagedVectorProviderKind,
     ) -> io::Result<ManagedVectorSidecarStatus> {
+        self.poll_vector_backend_upgrades();
         let metadata = provider_kind.metadata();
         let path = self.vector_sidecar_path(&metadata)?;
         if path.exists() {
@@ -7018,6 +7123,7 @@ impl MentisDb {
     }
 
     fn sync_managed_vector_sidecars_for_append(&mut self, thought: &Thought) -> io::Result<()> {
+        self.poll_vector_backend_upgrades();
         let Some(persistence) = &self.persistence else {
             return Ok(());
         };
@@ -7101,7 +7207,12 @@ impl MentisDb {
                         .collect();
                     {
                         let entry = self.managed_vector_sidecars.get_mut(&metadata).unwrap();
-                        entry.cached_index = build_vector_backend(&metadata, documents, None);
+                        let build_result = build_vector_backend_async(&metadata, documents, None);
+                        entry.cached_index = build_result.backend;
+                        #[cfg(feature = "hnsw-backend")]
+                        {
+                            entry.pending_hnsw_build = build_result.pending;
+                        }
                     }
                     new_sidecar
                 }
@@ -7252,6 +7363,23 @@ impl MentisDb {
             }
         }
 
+        let (backend_kind, backend_building) = self
+            .managed_vector_sidecars
+            .get(&metadata)
+            .map(|entry| {
+                let kind = entry.cached_index.as_ref().map(|backend| backend.kind());
+                let _pending = false;
+                #[cfg(feature = "hnsw-backend")]
+                let _pending = entry.pending_hnsw_build.is_some();
+                let kind = if _pending && kind != Some(crate::search::VectorBackendKind::Hnsw) {
+                    Some(crate::search::VectorBackendKind::Hnsw)
+                } else {
+                    kind
+                };
+                (kind, _pending)
+            })
+            .unwrap_or((None, false));
+
         Ok(ManagedVectorSidecarStatus {
             provider_kind,
             provider_key: provider_kind.key().to_string(),
@@ -7265,6 +7393,8 @@ impl MentisDb {
             thought_count: self.thoughts.len(),
             indexed_thought_count,
             generated_at,
+            backend_kind,
+            backend_building,
         })
     }
 
@@ -8643,29 +8773,88 @@ fn load_or_build_hnsw_backend(
     path: &Path,
     metadata: &crate::search::EmbeddingMetadata,
     documents: Vec<crate::search::VectorDocument>,
-) -> Option<crate::search::VectorBackend> {
+) -> VectorBackendBuildResult {
     if path.exists() {
         if let Ok(backend) =
             crate::search::hnsw_backend::HnswBackend::load_from_path(path, metadata)
         {
             if backend.document_count() == documents.len() {
-                return Some(crate::search::VectorBackend::Hnsw(Box::new(backend)));
+                return VectorBackendBuildResult::ready(Some(crate::search::VectorBackend::Hnsw(
+                    Box::new(backend),
+                )));
             }
         }
     }
 
-    let backend =
-        crate::search::hnsw_backend::HnswBackend::from_documents(metadata.clone(), documents)
+    // Keep an Exact placeholder available while the approximate graph is built
+    // so ranked/vector queries can continue to return results.
+    let placeholder = crate::search::VectorIndex::with_backend_kind(
+        metadata.clone(),
+        documents.clone(),
+        crate::search::VectorBackendKind::Exact,
+    )
+    .ok();
+
+    if crate::search::hnsw_backend::hnsw_background_build_enabled() {
+        let metadata_for_thread = metadata.clone();
+        let path_for_thread = path.to_path_buf();
+        let handle = std::thread::spawn(move || {
+            let backend = crate::search::hnsw_backend::HnswBackend::from_documents(
+                metadata_for_thread,
+                documents,
+            )
             .ok()?;
-    let _ = backend.persist_to_path(path);
-    Some(crate::search::VectorBackend::Hnsw(Box::new(backend)))
+            let _ = backend.persist_to_path(&path_for_thread);
+            Some(crate::search::VectorBackend::Hnsw(Box::new(backend)))
+        });
+        return VectorBackendBuildResult::with_pending(
+            placeholder,
+            PendingVectorBackendBuild { handle },
+        );
+    }
+
+    if let Ok(backend) = crate::search::hnsw_backend::HnswBackend::from_documents(metadata.clone(), documents) {
+        let _ = backend.persist_to_path(path);
+        VectorBackendBuildResult::ready(Some(crate::search::VectorBackend::Hnsw(Box::new(backend))))
+    } else {
+        VectorBackendBuildResult::ready(None)
+    }
 }
 
-fn build_vector_backend(
+/// Result of constructing a [`VectorBackend`], potentially with an ongoing
+/// background HNSW graph build.
+struct VectorBackendBuildResult {
+    backend: Option<crate::search::VectorBackend>,
+    #[cfg(feature = "hnsw-backend")]
+    pending: Option<PendingVectorBackendBuild>,
+}
+
+impl VectorBackendBuildResult {
+    fn ready(backend: Option<crate::search::VectorBackend>) -> Self {
+        Self {
+            backend,
+            #[cfg(feature = "hnsw-backend")]
+            pending: None,
+        }
+    }
+
+    #[cfg(feature = "hnsw-backend")]
+    fn with_pending(
+        backend: Option<crate::search::VectorBackend>,
+        pending: PendingVectorBackendBuild,
+    ) -> Self {
+        Self {
+            backend,
+            pending: Some(pending),
+        }
+    }
+}
+
+fn build_vector_backend_async(
     metadata: &crate::search::EmbeddingMetadata,
     documents: Vec<crate::search::VectorDocument>,
     _graph_path: Option<&Path>,
-) -> Option<crate::search::VectorBackend> {
+) -> VectorBackendBuildResult {
     #[cfg(feature = "hnsw-backend")]
     {
         let kind = crate::search::select_backend_kind(documents.len());
@@ -8675,12 +8864,14 @@ fn build_vector_backend(
             }
         }
     }
-    crate::search::VectorIndex::with_backend_kind(
-        metadata.clone(),
-        documents,
-        crate::search::VectorBackendKind::Exact,
+    VectorBackendBuildResult::ready(
+        crate::search::VectorIndex::with_backend_kind(
+            metadata.clone(),
+            documents,
+            crate::search::VectorBackendKind::Exact,
+        )
+        .ok(),
     )
-    .ok()
 }
 
 fn chain_vector_sidecar_config_path(

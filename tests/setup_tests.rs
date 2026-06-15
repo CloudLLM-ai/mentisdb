@@ -435,6 +435,7 @@ fn macos_vscode_copilot_plan_uses_application_support_path() {
         "http://127.0.0.1:9471",
         HostPlatform::Macos,
         &env,
+        None,
     )
     .unwrap();
 
@@ -460,6 +461,7 @@ fn rendered_setup_plan_includes_status_and_action() {
         "http://127.0.0.1:9471",
         HostPlatform::Macos,
         &env,
+        None,
     )
     .unwrap();
     let rendered = render_setup_plan(&plan);
