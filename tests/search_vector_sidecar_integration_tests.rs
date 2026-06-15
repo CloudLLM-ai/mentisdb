@@ -409,3 +409,69 @@ fn test_no_overlay_without_vector_sidecar() {
     assert_eq!(chain.implicit_edge_count(), 0);
     assert_eq!(chain.implicit_edge_thought_coverage(), 0);
 }
+
+#[test]
+fn small_managed_vector_sidecar_does_not_create_hnsw_graph() {
+    let (_tempdir, mut chain) = build_chain();
+    let provider = TestSemanticProvider::new("local-test", "v1");
+
+    chain.manage_vector_sidecar(provider.clone()).unwrap();
+
+    let graph_path = chain.vector_hnsw_graph_path(provider.metadata()).unwrap();
+    assert!(
+        !graph_path.exists(),
+        "expected no HNSW graph for small corpus"
+    );
+}
+
+#[test]
+#[cfg(feature = "hnsw-backend")]
+#[ignore = "slow: builds a 50k HNSW graph"]
+fn managed_vector_sidecar_persists_and_reloads_hnsw_graph() {
+    let tempdir = TempDir::new().unwrap();
+    let chain_dir = PathBuf::from(tempdir.path());
+    let mut chain = MentisDb::open_with_key(&chain_dir, "hnsw-persist").unwrap();
+    let provider = TestSemanticProvider::new("hnsw-test", "v1");
+
+    // Append one more than the HNSW threshold so the backend is selected and
+    // the implicit-edge overlay short-circuits to an empty overlay.
+    let target_count = 50_001usize;
+    for index in 0..target_count {
+        chain
+            .append(
+                "agent",
+                ThoughtType::Idea,
+                &format!("invoice reconciliation record {index}"),
+            )
+            .unwrap();
+    }
+
+    let sidecar = chain.manage_vector_sidecar(provider.clone()).unwrap();
+    assert_eq!(sidecar.entries.len(), target_count);
+
+    let graph_path = chain.vector_hnsw_graph_path(provider.metadata()).unwrap();
+    assert!(
+        graph_path.exists(),
+        "expected HNSW graph to be persisted after managing a large sidecar"
+    );
+
+    // Reopen the chain and manage again. The fresh sidecar and persisted graph
+    // should be reused instead of rebuilding the graph from scratch.
+    drop(chain);
+    let mut chain = MentisDb::open_with_key(&chain_dir, "hnsw-persist").unwrap();
+    let reloaded_sidecar = chain.manage_vector_sidecar(provider.clone()).unwrap();
+    assert_eq!(reloaded_sidecar.entries.len(), target_count);
+    assert!(
+        graph_path.exists(),
+        "expected HNSW graph to still exist after reopen"
+    );
+
+    // Vector search should still return results using the reloaded state.
+    let result = chain
+        .query_vector(
+            &provider,
+            &VectorSearchQuery::new("invoice payment").with_limit(5),
+        )
+        .unwrap();
+    assert!(!result.hits.is_empty());
+}
