@@ -1,7 +1,8 @@
 use mentisdb::search::{
     EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector,
-    LocalTextEmbeddingProvider, VectorBackendKind,
 };
+#[cfg(feature = "hnsw-backend")]
+use mentisdb::search::{LocalTextEmbeddingProvider, VectorBackendKind};
 use mentisdb::{
     chain_storage_filename, MentisDb, RankedSearchBackend, RankedSearchQuery, StorageAdapterKind,
     ThoughtQuery, ThoughtType, VectorSearchQuery,
