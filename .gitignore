@@ -2,6 +2,7 @@ target/
 \#*\#
 .claude/
 .qwen/
+.grok/
 results/
 .fastembed_cache/
 data/
