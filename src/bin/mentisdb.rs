@@ -800,6 +800,8 @@ pub(crate) fn build_cargo_install_args(tag: &str, repo: &str) -> Vec<OsString> {
         OsString::from(tag),
         OsString::from("--locked"),
         OsString::from("--force"),
+        OsString::from("--features"),
+        OsString::from("local-embeddings"),
         OsString::from("--bin"),
         OsString::from(UPDATE_BINARY_NAME),
         OsString::from(UPDATE_CRATE_NAME),
@@ -1669,7 +1671,7 @@ async fn run_startup_sequence(
                     eprintln!("mentisdb update available: {current_version} -> {latest_display}",);
                     eprintln!(
                         "Non-interactive terminal. Update manually:\n\
-                         cargo install --git https://github.com/{} --tag {} --locked --force --bin {UPDATE_BINARY_NAME} {UPDATE_CRATE_NAME}",
+                         cargo install --git https://github.com/{} --tag {} --locked --force --features local-embeddings --bin {UPDATE_BINARY_NAME} {UPDATE_CRATE_NAME}",
                         update_config.repo, release.tag_name
                     );
                     eprintln!("Continuing with current version…");
@@ -2487,7 +2489,7 @@ async fn run_update_standalone(force: bool) -> ExitCode {
         if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
             eprintln!(
                 "Non-interactive terminal. Run manually:\n\
-                 cargo install --git https://github.com/{} --tag {} --locked --force --bin {UPDATE_BINARY_NAME} {UPDATE_CRATE_NAME}",
+                 cargo install --git https://github.com/{} --tag {} --locked --force --features local-embeddings --bin {UPDATE_BINARY_NAME} {UPDATE_CRATE_NAME}",
                 update_config.repo, latest.tag_name
             );
             return ExitCode::from(1);

@@ -46,6 +46,8 @@ fn cargo_install_args_target_the_requested_repo_tag_and_binary() {
         "0.6.0.12",
         "--locked",
         "--force",
+        "--features",
+        "local-embeddings",
         "--bin",
         "mentisdb",
         "mentisdb",

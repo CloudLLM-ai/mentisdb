@@ -1,4 +1,8 @@
 0.10.2.47 JUN/20/2026
+  - fix(auto-update): `build_cargo_install_args` now includes
+    `--features local-embeddings` so auto-updates preserve the
+    `fastembed-minilm` vector provider instead of silently regressing to
+    `local-text-v1`.
   - feat(wizard): interactive setup wizard now supports Grok CLI / Build TUI
     harness (writes to ~/.grok/config.toml on macOS, ~/.config/grok on Linux,
     %APPDATA%\grok on Windows).

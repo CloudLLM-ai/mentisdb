@@ -78,8 +78,10 @@ This produces a smaller binary with no audio dependencies.
 Install the daemon (after completing the platform-specific prerequisites above):
 
 ```bash
-cargo install mentisdb
+cargo install mentisdb --features local-embeddings
 ```
+
+The `local-embeddings` feature enables the built-in `fastembed-minilm` ONNX embedding provider for real semantic vector search. Without it, MentisDB falls back to `local-text-v1` (text hashing). The auto-updater also installs with `--features local-embeddings`.
 
 Connect your local AI tools the fast way:
 
@@ -182,7 +184,7 @@ make clippy         # cargo fmt + clippy --all-targets -D warnings
 make test           # cargo test
 make bench          # Criterion benchmarks, output tee'd to /tmp/mentisdb_bench_results.txt
 make doc            # cargo doc --all-features
-make install        # cargo install --path . --locked
+make install        # cargo install --path . --locked --features local-embeddings
 make publish        # cargo publish
 make publish-dry-run
 make clean
