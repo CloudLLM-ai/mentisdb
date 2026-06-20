@@ -1743,3 +1743,128 @@ async fn fresh_session_token_unlocks_dashboard() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── PIN cookie Secure-flag regression tests ──────────────────────────────────
+
+/// Regression: when the dashboard sits behind a TLS-terminating reverse proxy
+/// that talks plain HTTP to the daemon, the browser silently drops `Secure`
+/// cookies. The login POST would succeed and send `Set-Cookie: …; Secure`, but
+/// the browser would discard it, so the redirect to `/dashboard` would look
+/// unauthenticated and bounce back to `/dashboard/login` — the user could never
+/// log in.
+///
+/// The fix: only emit `Secure` when the request was actually HTTPS (detected
+/// via `X-Forwarded-Proto`). This test verifies that a login forwarded by a
+/// proxy over HTTP (`X-Forwarded-Proto: http`) issues a cookie WITHOUT `Secure`,
+/// and that the cookie successfully unlocks the dashboard on the next request.
+#[tokio::test]
+async fn pin_login_behind_http_proxy_issues_cookie_without_secure_and_unlocks_dashboard() {
+    let dir = unique_chain_dir();
+    let router = dashboard_router_with_pin(&dir, "1234");
+
+    // 1. Without auth → redirect to login.
+    let resp = router
+        .clone()
+        .oneshot(Request::builder().uri("/dashboard").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    // 2. POST login with correct PIN, simulating a reverse proxy that
+    //    terminates TLS externally but talks plain HTTP to the daemon.
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/dashboard/login")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("x-forwarded-proto", "http")
+                .body(Body::from("pin=1234"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    let set_cookie = resp
+        .headers()
+        .get(axum::http::header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .expect("expected Set-Cookie after successful login");
+
+    // The cookie must NOT have the Secure attribute when the request was HTTP.
+    assert!(
+        !set_cookie.to_ascii_lowercase().contains("secure"),
+        "cookie issued over HTTP must not have Secure attribute, got: {set_cookie}"
+    );
+
+    // Extract the session token.
+    let token = set_cookie
+        .split(';')
+        .next()
+        .unwrap()
+        .trim()
+        .strip_prefix("mentisdb_session=")
+        .map(|s| s.to_string())
+        .expect("expected mentisdb_session cookie");
+
+    // 3. Use the session cookie → should get 200, not redirect.
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard")
+                .header("cookie", format!("mentisdb_session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "session cookie without Secure must unlock the dashboard over HTTP"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Regression: when the request comes through a TLS-terminating proxy that
+/// sets `X-Forwarded-Proto: https`, the `Secure` attribute SHOULD be present
+/// so the cookie is only transmitted over encrypted channels.
+#[tokio::test]
+async fn pin_login_behind_https_proxy_sets_secure_cookie() {
+    let dir = unique_chain_dir();
+    let router = dashboard_router_with_pin(&dir, "1234");
+
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/dashboard/login")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("x-forwarded-proto", "https")
+                .body(Body::from("pin=1234"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    let set_cookie = resp
+        .headers()
+        .get(axum::http::header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .expect("expected Set-Cookie after successful login");
+
+    assert!(
+        set_cookie.to_ascii_lowercase().contains("secure"),
+        "cookie issued behind HTTPS proxy must have Secure attribute, got: {set_cookie}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

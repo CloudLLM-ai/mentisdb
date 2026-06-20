@@ -30,7 +30,7 @@ use crate::{
 
 use axum::{
     extract::{Path, Query, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
     routing::{delete, get, post},
@@ -337,6 +337,32 @@ pub(crate) const RATE_LIMIT_WINDOW_SECS: u64 = 300; // 5 minutes
 /// coupled two unrelated concerns. We now make the session lifetime explicit.
 pub(crate) const SESSION_TIMEOUT_SECS: u64 = 8 * 60 * 60; // 8 hours
 
+/// Decide whether the `Secure` attribute should be set on a dashboard cookie.
+///
+/// Browsers refuse to persist a `Secure` cookie when the page was loaded over
+/// plain HTTP, so a session cookie issued over a non-TLS connection (or behind
+/// a TLS-terminating reverse proxy that talks plain HTTP to the daemon) would
+/// be silently dropped — every subsequent request to `/dashboard` would look
+/// unauthenticated and bounce back to `/dashboard/login`.
+///
+/// We set `Secure` only when the originating request was HTTPS, detected via
+/// the de-facto standard `X-Forwarded-Proto` header (used by nginx, Caddy,
+/// Traefik, and cloud load balancers) or, as a fallback, when the request has
+/// no forwarding header at all and we assume the daemon's own TLS listener is
+/// the transport (the dashboard is always served through `start_tls_router`).
+pub(crate) fn should_set_secure_cookie(headers: &HeaderMap) -> bool {
+    if let Some(proto) = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_ascii_lowercase())
+    {
+        return proto == "https";
+    }
+    // No forwarding header: the dashboard is served through the daemon's own
+    // TLS listener, so the direct connection is HTTPS and `Secure` is safe.
+    true
+}
+
 /// Form body for the `/dashboard/login` POST.
 #[derive(Deserialize)]
 struct LoginForm {
@@ -345,7 +371,13 @@ struct LoginForm {
 
 /// Handle a login form submission.
 ///
-/// On success sets the `mentisdb_pin` cookie and redirects to `/dashboard`.
+/// On success issues a random `mentisdb_session` server-side token (the PIN
+/// itself is never written to the browser), sets it as an
+/// `HttpOnly; SameSite=Strict` cookie, and redirects to `/dashboard`. The
+/// `Secure` attribute is added only when the originating request was HTTPS
+/// (detected via `X-Forwarded-Proto`), so logins performed through a
+/// TLS-terminating reverse proxy that talks plain HTTP to the daemon still
+/// persist the cookie successfully.
 /// On failure redirects back to `/dashboard/login?error=1`.
 ///
 /// Rate limiting is applied per source IP. Since the dashboard binds to localhost by
@@ -353,6 +385,7 @@ struct LoginForm {
 /// automated brute-force attacks from the same machine.
 async fn handle_login(
     State(state): State<DashboardState>,
+    headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
     let ip_key = "localhost"; // Dashboard binds to 127.0.0.1; all clients share this key.
@@ -401,13 +434,23 @@ async fn handle_login(
                 .retain(|_, issued_at| issued_at.elapsed().as_secs() < SESSION_TIMEOUT_SECS);
             sessions.insert(session_token.clone(), Instant::now());
         }
+        // Only emit the `Secure` attribute when the originating request was
+        // HTTPS. Browsers silently drop `Secure` cookies over plain HTTP,
+        // which would leave the user unable to reach `/dashboard` even after
+        // a correct login (e.g. behind a TLS-terminating reverse proxy that
+        // talks plain HTTP to the daemon).
+        let secure_attr = if should_set_secure_cookie(&headers) {
+            "; Secure"
+        } else {
+            ""
+        };
         (
             StatusCode::SEE_OTHER,
             [
                 (
                     header::SET_COOKIE,
                     format!(
-                        "mentisdb_session={}; Path=/; HttpOnly; Secure; SameSite=Strict",
+                        "mentisdb_session={}; Path=/; HttpOnly{secure_attr}; SameSite=Strict",
                         session_token
                     ),
                 ),
