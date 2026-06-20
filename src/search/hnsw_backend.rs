@@ -1,8 +1,8 @@
 //! HNSW approximate-nearest-neighbor backend for [`VectorIndex`].
 //!
-//! This module is compiled when the `hnsw-backend` feature is enabled
-//! (on by default since 0.10.2). It implements the [`VectorSearchBackend`]
-//! trait for an in-memory HNSW graph built on top of the pure-Rust
+//! This module is unconditionally compiled since 0.10.4.49. It implements the
+//! [`VectorSearchBackend`] trait for an in-memory HNSW graph built on top of
+//! the pure-Rust
 //! [`hnsw`](https://docs.rs/hnsw) crate and is selected automatically by
 //! [`VectorBackendKind::Hnsw`] once the corpus crosses
 //! [`DEFAULT_EXACT_TO_HNSW_THRESHOLD`].

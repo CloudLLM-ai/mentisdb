@@ -4,7 +4,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use axum::{body::Body, http::{Request, StatusCode}};
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+};
 use dashmap::DashMap;
 pub use mentisdb::auth;
 pub use mentisdb::search;
@@ -1626,9 +1629,9 @@ fn session_timeout_is_independent_of_rate_limit_window() {
     );
     // The session timeout must outlast the rate-limit window — a session
     // that expires faster than the brute-force lockout would be unusable.
-    assert!(
+    const _: () = assert!(
         SESSION_TIMEOUT_SECS > RATE_LIMIT_WINDOW_SECS,
-        "session timeout ({SESSION_TIMEOUT_SECS}s) must exceed rate-limit window ({RATE_LIMIT_WINDOW_SECS}s)"
+        "session timeout must exceed rate-limit window"
     );
     // Pin the documented value so a future edit is deliberate.
     assert_eq!(SESSION_TIMEOUT_SECS, 8 * 60 * 60);
@@ -1640,8 +1643,8 @@ fn session_timeout_is_independent_of_rate_limit_window() {
 /// `/dashboard` redirects to login instead of granting access.
 #[tokio::test]
 async fn expired_session_token_is_rejected_by_pin_middleware() {
-    use std::time::{Duration, Instant};
     use dashboard_impl::SESSION_TIMEOUT_SECS;
+    use std::time::{Duration, Instant};
 
     let dir = unique_chain_dir();
     let router = dashboard_router_with_pin(&dir, "1234");
@@ -1692,7 +1695,12 @@ async fn fresh_session_token_unlocks_dashboard() {
     // Without auth → redirect to login.
     let resp = router
         .clone()
-        .oneshot(Request::builder().uri("/dashboard").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
@@ -1765,7 +1773,12 @@ async fn pin_login_behind_http_proxy_issues_cookie_without_secure_and_unlocks_da
     // 1. Without auth → redirect to login.
     let resp = router
         .clone()
-        .oneshot(Request::builder().uri("/dashboard").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);

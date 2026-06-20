@@ -3869,12 +3869,11 @@ struct ManagedSidecarEntry {
     // In-memory vector backend rebuilt after each successful sidecar sync.
     // None until the first sidecar load/rebuild completes. Holds either the
     // deterministic Exact backend or an approximate HNSW backend depending on
-    // corpus size and feature flags.
+    // corpus size.
     cached_index: Option<crate::search::VectorBackend>,
     /// A background HNSW build that was started because the corpus is large
     /// enough to benefit from approximate search. While the build runs the
     /// cached index is an Exact placeholder so queries stay available.
-    #[cfg(feature = "hnsw-backend")]
     pending_hnsw_build: Option<PendingVectorBackendBuild>,
 }
 
@@ -3888,18 +3887,15 @@ impl ManagedSidecarEntry {
             provider: Box::new(RegisteredEmbeddingProvider { provider }),
             auto_sync,
             cached_index: build_result.backend,
-            #[cfg(feature = "hnsw-backend")]
             pending_hnsw_build: build_result.pending,
         }
     }
 }
 
-#[cfg(feature = "hnsw-backend")]
 struct PendingVectorBackendBuild {
     handle: std::thread::JoinHandle<Option<crate::search::VectorBackend>>,
 }
 
-#[cfg(feature = "hnsw-backend")]
 impl PendingVectorBackendBuild {
     /// True when the background thread has finished building the graph.
     fn is_finished(&self) -> bool {
@@ -6567,64 +6563,60 @@ impl MentisDb {
     /// services may also call it periodically if they want read-only queries to
     /// pick up the approximate backend as soon as it is ready.
     pub fn poll_vector_backend_upgrades(&mut self) {
-        #[cfg(feature = "hnsw-backend")]
-        {
-            let keys: Vec<crate::search::EmbeddingMetadata> =
-                self.managed_vector_sidecars.keys().cloned().collect();
-            for metadata in keys {
-                let pending = self
-                    .managed_vector_sidecars
+        let keys: Vec<crate::search::EmbeddingMetadata> =
+            self.managed_vector_sidecars.keys().cloned().collect();
+        for metadata in keys {
+            let pending = self
+                .managed_vector_sidecars
+                .get_mut(&metadata)
+                .and_then(|entry| entry.pending_hnsw_build.take());
+            let Some(pending) = pending else {
+                continue;
+            };
+            if !pending.is_finished() {
+                self.managed_vector_sidecars
                     .get_mut(&metadata)
-                    .and_then(|entry| entry.pending_hnsw_build.take());
-                let Some(pending) = pending else {
-                    continue;
-                };
-                if !pending.is_finished() {
+                    .unwrap()
+                    .pending_hnsw_build = Some(pending);
+                continue;
+            }
+
+            let expected_count = self
+                .load_vector_sidecar(&metadata)
+                .ok()
+                .flatten()
+                .map(|sidecar| sidecar.entries.len());
+            let backend = pending.join();
+
+            let accepted = if let (Some(count), Some(backend)) = (expected_count, backend) {
+                if backend.document_count() == count {
                     self.managed_vector_sidecars
                         .get_mut(&metadata)
                         .unwrap()
-                        .pending_hnsw_build = Some(pending);
-                    continue;
-                }
-
-                let expected_count = self
-                    .load_vector_sidecar(&metadata)
-                    .ok()
-                    .flatten()
-                    .map(|sidecar| sidecar.entries.len());
-                let backend = pending.join();
-
-                let accepted = if let (Some(count), Some(backend)) = (expected_count, backend) {
-                    if backend.document_count() == count {
-                        self.managed_vector_sidecars
-                            .get_mut(&metadata)
-                            .unwrap()
-                            .cached_index = Some(backend);
-                        true
-                    } else {
-                        false
-                    }
+                        .cached_index = Some(backend);
+                    true
                 } else {
                     false
-                };
+                }
+            } else {
+                false
+            };
 
-                if !accepted {
-                    // The build was stale or failed; start a fresh one from the
-                    // current sidecar if the corpus still warrants HNSW.
-                    if let Some(sidecar) = self.load_vector_sidecar(&metadata).ok().flatten() {
-                        let count = sidecar.entries.len();
-                        if crate::search::select_backend_kind(count)
-                            == crate::search::VectorBackendKind::Hnsw
-                        {
-                            let documents = sidecar_entries_to_documents(&sidecar.entries);
-                            if let Ok(graph_path) = self.vector_hnsw_graph_path(&metadata) {
-                                let result =
-                                    load_or_build_hnsw_backend(&graph_path, &metadata, documents);
-                                let entry =
-                                    self.managed_vector_sidecars.get_mut(&metadata).unwrap();
-                                entry.cached_index = result.backend;
-                                entry.pending_hnsw_build = result.pending;
-                            }
+            if !accepted {
+                // The build was stale or failed; start a fresh one from the
+                // current sidecar if the corpus still warrants HNSW.
+                if let Some(sidecar) = self.load_vector_sidecar(&metadata).ok().flatten() {
+                    let count = sidecar.entries.len();
+                    if crate::search::select_backend_kind(count)
+                        == crate::search::VectorBackendKind::Hnsw
+                    {
+                        let documents = sidecar_entries_to_documents(&sidecar.entries);
+                        if let Ok(graph_path) = self.vector_hnsw_graph_path(&metadata) {
+                            let result =
+                                load_or_build_hnsw_backend(&graph_path, &metadata, documents);
+                            let entry = self.managed_vector_sidecars.get_mut(&metadata).unwrap();
+                            entry.cached_index = result.backend;
+                            entry.pending_hnsw_build = result.pending;
                         }
                     }
                 }
@@ -7231,10 +7223,7 @@ impl MentisDb {
                         let entry = self.managed_vector_sidecars.get_mut(&metadata).unwrap();
                         let build_result = build_vector_backend_async(&metadata, documents, None);
                         entry.cached_index = build_result.backend;
-                        #[cfg(feature = "hnsw-backend")]
-                        {
-                            entry.pending_hnsw_build = build_result.pending;
-                        }
+                        entry.pending_hnsw_build = build_result.pending;
                     }
                     new_sidecar
                 }
@@ -7390,8 +7379,6 @@ impl MentisDb {
             .get(&metadata)
             .map(|entry| {
                 let kind = entry.cached_index.as_ref().map(|backend| backend.kind());
-                let _pending = false;
-                #[cfg(feature = "hnsw-backend")]
                 let _pending = entry.pending_hnsw_build.is_some();
                 let kind = if _pending && kind != Some(crate::search::VectorBackendKind::Hnsw) {
                     Some(crate::search::VectorBackendKind::Hnsw)
@@ -8790,7 +8777,6 @@ fn sidecar_entries_to_documents(
         .collect()
 }
 
-#[cfg(feature = "hnsw-backend")]
 fn load_or_build_hnsw_backend(
     path: &Path,
     metadata: &crate::search::EmbeddingMetadata,
@@ -8855,7 +8841,6 @@ fn load_or_build_hnsw_backend(
 /// background HNSW graph build.
 struct VectorBackendBuildResult {
     backend: Option<crate::search::VectorBackend>,
-    #[cfg(feature = "hnsw-backend")]
     pending: Option<PendingVectorBackendBuild>,
 }
 
@@ -8863,12 +8848,10 @@ impl VectorBackendBuildResult {
     fn ready(backend: Option<crate::search::VectorBackend>) -> Self {
         Self {
             backend,
-            #[cfg(feature = "hnsw-backend")]
             pending: None,
         }
     }
 
-    #[cfg(feature = "hnsw-backend")]
     fn with_pending(
         backend: Option<crate::search::VectorBackend>,
         pending: PendingVectorBackendBuild,
@@ -8883,15 +8866,12 @@ impl VectorBackendBuildResult {
 fn build_vector_backend_async(
     metadata: &crate::search::EmbeddingMetadata,
     documents: Vec<crate::search::VectorDocument>,
-    _graph_path: Option<&Path>,
+    graph_path: Option<&Path>,
 ) -> VectorBackendBuildResult {
-    #[cfg(feature = "hnsw-backend")]
-    {
-        let kind = crate::search::select_backend_kind(documents.len());
-        if kind == crate::search::VectorBackendKind::Hnsw {
-            if let Some(path) = _graph_path {
-                return load_or_build_hnsw_backend(path, metadata, documents);
-            }
+    let kind = crate::search::select_backend_kind(documents.len());
+    if kind == crate::search::VectorBackendKind::Hnsw {
+        if let Some(path) = graph_path {
+            return load_or_build_hnsw_backend(path, metadata, documents);
         }
     }
     VectorBackendBuildResult::ready(

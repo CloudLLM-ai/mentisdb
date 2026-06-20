@@ -36,9 +36,8 @@ pub mod expansion;
 /// Graph adjacency and edge-provenance structures derived from committed
 /// thoughts.
 pub mod graph;
-/// HNSW approximate-nearest-neighbor vector backend. Compiled in when the
-/// `hnsw-backend` feature is enabled (on by default since 0.10.2).
-#[cfg(feature = "hnsw-backend")]
+/// HNSW approximate-nearest-neighbor vector backend (unconditionally compiled
+/// since 0.10.4.49).
 pub mod hnsw_backend;
 /// Vector-similarity implicit edge overlay for augmenting graph expansion.
 pub mod implicit_edges;

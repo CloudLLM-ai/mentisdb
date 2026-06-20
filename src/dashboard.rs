@@ -430,8 +430,7 @@ async fn handle_login(
         let session_token = Uuid::new_v4().to_string();
         if let Ok(mut sessions) = state.sessions.lock() {
             // Evict expired sessions to prevent unbounded growth.
-            sessions
-                .retain(|_, issued_at| issued_at.elapsed().as_secs() < SESSION_TIMEOUT_SECS);
+            sessions.retain(|_, issued_at| issued_at.elapsed().as_secs() < SESSION_TIMEOUT_SECS);
             sessions.insert(session_token.clone(), Instant::now());
         }
         // Only emit the `Secure` attribute when the originating request was

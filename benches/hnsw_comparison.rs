@@ -8,7 +8,7 @@
 //! Run with:
 //!
 //! ```bash
-//! cargo bench --bench hnsw_comparison --features hnsw-backend
+//! cargo bench --bench hnsw_comparison
 //! ```
 //!
 //! The benchmark uses synthetic unit vectors so it is deterministic and does

@@ -10,14 +10,14 @@
 //! Run with:
 //!
 //! ```bash
-//! cargo bench --bench hnsw_scale --features hnsw-backend
+//! cargo bench --bench hnsw_scale
 //! ```
 //!
 //! To include the 100k and 1M corpora:
 //!
 //! ```bash
 //! MENTISDB_BENCH_HNSW_100K=1 MENTISDB_BENCH_HNSW_1M=1 \\
-//!     cargo bench --bench hnsw_scale --features hnsw-backend
+//!     cargo bench --bench hnsw_scale
 //! ```
 
 use std::collections::HashSet;

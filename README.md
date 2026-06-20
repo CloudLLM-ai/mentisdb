@@ -901,8 +901,8 @@ public APIs and hybrid/ranked search results stay the same:
 - `MENTISDB_HNSW_BACKGROUND_BUILD` (default true) builds the graph off-thread
   while the daemon keeps answering queries
 
-End users see lower latency transparently. The HNSW backend can be disabled at
-build time by opting out of the `hnsw-backend` Cargo feature.
+End users see lower latency transparently. The HNSW backend is always compiled
+in since 0.10.4.49.
 
 ### REST Lexical Search
 

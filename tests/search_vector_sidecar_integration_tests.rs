@@ -1,5 +1,5 @@
 use mentisdb::search::{EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector};
-#[cfg(feature = "hnsw-backend")]
+#[cfg(feature = "local-embeddings")]
 use mentisdb::search::{LocalTextEmbeddingProvider, VectorBackendKind};
 use mentisdb::{
     chain_storage_filename, MentisDb, RankedSearchBackend, RankedSearchQuery, StorageAdapterKind,
@@ -427,7 +427,7 @@ fn small_managed_vector_sidecar_does_not_create_hnsw_graph() {
 }
 
 #[test]
-#[cfg(feature = "hnsw-backend")]
+#[cfg(feature = "local-embeddings")]
 fn managed_vector_sidecar_builds_hnsw_in_background() {
     let previous_threshold = std::env::var("MENTISDB_HNSW_THRESHOLD").ok();
     std::env::set_var("MENTISDB_HNSW_THRESHOLD", "5");
@@ -487,7 +487,7 @@ fn managed_vector_sidecar_builds_hnsw_in_background() {
 }
 
 #[test]
-#[cfg(feature = "hnsw-backend")]
+#[cfg(feature = "local-embeddings")]
 #[ignore = "slow: builds a 50k HNSW graph"]
 fn managed_vector_sidecar_persists_and_reloads_hnsw_graph() {
     let tempdir = TempDir::new().unwrap();

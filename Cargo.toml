@@ -13,16 +13,11 @@ categories = ["data-structures", "development-tools", "asynchronous"]
 exclude = ["data/", "docs/", "lme-benches/", ".fastembed_cache/", ".github/", "start_mentisdb"]
 
 [features]
-default = ["server", "startup-sound", "llm-extraction", "hnsw-backend"]
+default = ["server", "startup-sound", "llm-extraction", "local-embeddings"]
 server = ["dep:axum", "dep:env_logger", "dep:if-addrs", "dep:log", "dep:tokio", "mcp/server", "dep:rcgen", "dep:axum-server", "dep:rustls-pemfile", "dep:x509-parser", "dep:reqwest", "dep:rustls"]
 startup-sound = ["dep:rodio"]
 local-embeddings = ["dep:fastembed", "dep:rustls"]
 llm-extraction = ["dep:openai-rust2", "dep:anyhow"]
-# HNSW approximate-nearest-neighbor vector backend. Included in the default
-# feature set in 0.10.2.47; disable it to keep the pure-Rust exact-scan path
-# only. When enabled, `VectorIndex` and `VectorSearchBackend` switch to the
-# HNSW backend once the corpus crosses `DEFAULT_EXACT_TO_HNSW_THRESHOLD`.
-hnsw-backend = ["dep:hnsw", "dep:rand_pcg", "dep:space", "hnsw/serde1", "rand_pcg/serde1"]
 
 [dependencies]
 async-trait = "0.1.89"
@@ -67,11 +62,14 @@ anyhow = { version = "1", optional = true }
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 walkdir = "2.5"
 # HNSW approximate-nearest-neighbor backend (H1). Pure Rust, no_std-friendly
-# core; we enable it only when the `hnsw-backend` feature is on so the default
-# build is the exact-f32 linear-scan path. See ROADMAP.md 1.0.0 Track B.
-hnsw = { version = "0.11", optional = true, features = ["serde1"] }
-rand_pcg = { version = "0.3", optional = true }
-space = { version = "0.17", optional = true }
+# core. Unconditionally compiled in since 0.10.4.49 — the exact f32 linear-scan
+# path remains the fallback for small sidecars; once a managed sidecar exceeds
+# `MENTISDB_HNSW_THRESHOLD` (default 50,000 vectors) MentisDB switches to the
+# HNSW backend automatically. The public API and hybrid/ranked search semantics
+# are unchanged.
+hnsw = { version = "0.11", features = ["serde1"] }
+rand_pcg = { version = "0.3", features = ["serde1"] }
+space = "0.17"
 # Compressed bitmap set for vector metadata filters (H2). Always built-in:
 # it has no heavy dependencies, keeps the public API uniform across feature
 # combinations, and is usable with both Exact and HNSW backends.
@@ -122,12 +120,10 @@ harness = false
 [[bench]]
 name = "hnsw_comparison"
 harness = false
-required-features = ["hnsw-backend"]
 
 [[bench]]
 name = "hnsw_scale"
 harness = false
-required-features = ["hnsw-backend"]
 
 [[bin]]
 name = "mentisdb"

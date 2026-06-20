@@ -404,7 +404,7 @@ pub struct VectorSearchHit {
 ///
 /// `Exact` is the deterministic in-memory linear-scan cosine backend and is
 /// always available. `Hnsw` is the approximate-nearest-neighbor backend
-/// (enabled by default via the `hnsw-backend` feature) and is selected by
+/// (unconditionally compiled since 0.10.4.49) and is selected by
 /// [`select_backend_kind`] once the corpus crosses
 /// [`DEFAULT_EXACT_TO_HNSW_THRESHOLD`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -433,9 +433,7 @@ impl VectorBackendKind {
 pub enum VectorBackend {
     /// Deterministic in-memory exact cosine over every stored vector.
     Exact(VectorIndex),
-    /// Approximate nearest neighbor backend; only available with the
-    /// `hnsw-backend` feature.
-    #[cfg(feature = "hnsw-backend")]
+    /// Approximate nearest neighbor backend (HNSW graph).
     Hnsw(Box<dyn VectorSearchBackend>),
 }
 
@@ -443,7 +441,7 @@ impl std::fmt::Debug for VectorBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Exact(index) => f.debug_tuple("Exact").field(index).finish(),
-            #[cfg(feature = "hnsw-backend")]
+
             Self::Hnsw(_) => f
                 .debug_tuple("Hnsw")
                 .field(&"<dyn VectorSearchBackend>")
@@ -457,7 +455,7 @@ impl VectorBackend {
     pub fn kind(&self) -> VectorBackendKind {
         match self {
             Self::Exact(_) => VectorBackendKind::Exact,
-            #[cfg(feature = "hnsw-backend")]
+
             Self::Hnsw(_) => VectorBackendKind::Hnsw,
         }
     }
@@ -467,7 +465,7 @@ impl VectorSearchBackend for VectorBackend {
     fn metadata(&self) -> &EmbeddingMetadata {
         match self {
             Self::Exact(index) => index.metadata(),
-            #[cfg(feature = "hnsw-backend")]
+
             Self::Hnsw(backend) => backend.metadata(),
         }
     }
@@ -475,7 +473,7 @@ impl VectorSearchBackend for VectorBackend {
     fn document_count(&self) -> usize {
         match self {
             Self::Exact(index) => index.document_count(),
-            #[cfg(feature = "hnsw-backend")]
+
             Self::Hnsw(backend) => backend.document_count(),
         }
     }
@@ -483,7 +481,7 @@ impl VectorSearchBackend for VectorBackend {
     fn upsert_document(&mut self, document: VectorDocument) -> Result<(), VectorIndexError> {
         match self {
             Self::Exact(index) => index.upsert_document(document),
-            #[cfg(feature = "hnsw-backend")]
+
             Self::Hnsw(backend) => backend.upsert_document(document),
         }
     }
@@ -491,7 +489,7 @@ impl VectorSearchBackend for VectorBackend {
     fn remove_document(&mut self, document_id: &str) -> bool {
         match self {
             Self::Exact(index) => index.remove_document(document_id),
-            #[cfg(feature = "hnsw-backend")]
+
             Self::Hnsw(backend) => backend.remove_document(document_id),
         }
     }
@@ -499,7 +497,7 @@ impl VectorSearchBackend for VectorBackend {
     fn get_vector(&self, document_id: &str) -> Option<Vec<f32>> {
         match self {
             Self::Exact(index) => index.get_vector(document_id),
-            #[cfg(feature = "hnsw-backend")]
+
             Self::Hnsw(backend) => backend.get_vector(document_id),
         }
     }
@@ -507,7 +505,7 @@ impl VectorSearchBackend for VectorBackend {
     fn search(&self, query: &VectorQuery) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
         match self {
             Self::Exact(index) => index.search(query),
-            #[cfg(feature = "hnsw-backend")]
+
             Self::Hnsw(backend) => backend.search(query),
         }
     }
@@ -519,7 +517,7 @@ impl VectorSearchBackend for VectorBackend {
     ) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
         match self {
             Self::Exact(index) => index.search_filtered(query, filter),
-            #[cfg(feature = "hnsw-backend")]
+
             Self::Hnsw(backend) => backend.search_filtered(query, filter),
         }
     }
@@ -635,8 +633,7 @@ impl VectorIndex {
     /// The [`VectorBackendKind::Exact`] branch always returns a
     /// `VectorIndex`, and the [`VectorBackendKind::Hnsw`] branch returns a
     /// `Box<dyn VectorSearchBackend>` so the caller can hold either backend
-    /// uniformly. The `Hnsw` branch is gated behind the `hnsw-backend`
-    /// feature; without it the call returns an error.
+    /// uniformly.
     pub fn with_backend_kind(
         metadata: EmbeddingMetadata,
         documents: Vec<VectorDocument>,
@@ -647,17 +644,9 @@ impl VectorIndex {
                 metadata, documents,
             )?)),
             VectorBackendKind::Hnsw => {
-                #[cfg(feature = "hnsw-backend")]
-                {
-                    let backend =
-                        super::hnsw_backend::HnswBackend::from_documents(metadata, documents)?;
-                    Ok(VectorBackend::Hnsw(Box::new(backend)))
-                }
-                #[cfg(not(feature = "hnsw-backend"))]
-                {
-                    let _ = (metadata, documents);
-                    Err(VectorIndexError::HnswBackendNotEnabled)
-                }
+                let backend =
+                    super::hnsw_backend::HnswBackend::from_documents(metadata, documents)?;
+                Ok(VectorBackend::Hnsw(Box::new(backend)))
             }
         }
     }
@@ -826,9 +815,6 @@ pub enum VectorIndexError {
         /// Index of the non-finite value.
         value_index: usize,
     },
-    /// HNSW backend was requested but the `hnsw-backend` Cargo feature is
-    /// disabled. Enable the feature or use [`VectorBackendKind::Exact`].
-    HnswBackendNotEnabled,
 }
 
 impl fmt::Display for VectorIndexError {
@@ -868,12 +854,6 @@ impl fmt::Display for VectorIndexError {
                         "{context} vector contains non-finite value at index {value_index}"
                     )
                 }
-            }
-            Self::HnswBackendNotEnabled => {
-                write!(
-                    f,
-                    "HNSW backend requested but the `hnsw-backend` Cargo feature is not enabled"
-                )
             }
         }
     }

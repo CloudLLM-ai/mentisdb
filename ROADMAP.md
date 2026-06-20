@@ -3,7 +3,7 @@
 ## Shipped (0.8.2 -> 0.10.3.48)
 
 ### 0.10.3.48 - HNSW Approximate Vector Search, Background Builds, and HNSW Runtime Tuning
-- **HNSW approximate-nearest-neighbor vector backend** — enabled by default via the `hnsw-backend` Cargo feature. The exact f32 cosine scan remains the fallback for small sidecars; once a managed sidecar exceeds `MENTISDB_HNSW_THRESHOLD` (default 50,000 vectors) MentisDB switches to a pure-Rust HNSW graph automatically. The public API and hybrid/ranked search semantics are unchanged.
+- **HNSW approximate-nearest-neighbor vector backend** — unconditionally compiled since 0.10.4.49. The exact f32 cosine scan remains the fallback for small sidecars; once a managed sidecar exceeds `MENTISDB_HNSW_THRESHOLD` (default 50,000 vectors) MentisDB switches to a pure-Rust HNSW graph automatically. The public API and hybrid/ranked search semantics are unchanged.
 - **HNSW graph persistence** — built graphs are serialized to disk and reloaded on startup when the vector count matches; stale graphs are deleted during a from-scratch rebuild. Writes are atomic (temp file + rename) so readers never see partial state.
 - **Background HNSW construction** — `MENTISDB_HNSW_BACKGROUND_BUILD` (default true) starts an Exact placeholder immediately and builds the graph off-thread, then swaps it into the cached sidecar when ready. Dashboard `backend_kind` and `backend_building` expose the current state.
 - **HNSW runtime knobs** — `MENTISDB_HNSW_THRESHOLD`, `MENTISDB_HNSW_EF_CONSTRUCTION`, `MENTISDB_HNSW_EF_SEARCH`, and `MENTISDB_HNSW_BACKGROUND_BUILD` are surfaced in Dashboard Settings and read on demand.

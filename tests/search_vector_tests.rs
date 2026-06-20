@@ -322,7 +322,6 @@ fn with_backend_kind_exact_matches_from_documents() {
 }
 
 #[test]
-#[cfg(feature = "hnsw-backend")]
 fn with_backend_kind_hnsw_returns_usable_backend() {
     // HNSW backend: the Hnsw branch returns a real HNSW backend, not a
     // fallback to Exact. Insert, then query; the top hit must be the document
@@ -345,21 +344,6 @@ fn with_backend_kind_hnsw_returns_usable_backend() {
     assert!((hits[0].score - 1.0).abs() < 1e-5, "got {}", hits[0].score);
     assert!((hits[1].score + 1.0).abs() < 1e-5, "got {}", hits[1].score);
     assert!(matches!(backend, VectorBackend::Hnsw(_)));
-}
-
-#[test]
-#[cfg(not(feature = "hnsw-backend"))]
-fn with_backend_kind_hnsw_returns_error_without_feature() {
-    // Without the `hnsw-backend` feature, requesting an Hnsw backend
-    // returns an explicit error instead of silently degrading.
-    let metadata = EmbeddingMetadata::new("toy", 2, "v1");
-    let documents = vec![VectorDocument::new("only", vec![0.7, 0.7])];
-    let result = VectorIndex::with_backend_kind(metadata, documents, VectorBackendKind::Hnsw);
-    assert!(result.is_err());
-    match result.unwrap_err() {
-        VectorIndexError::HnswBackendNotEnabled => {}
-        other => panic!("expected HnswBackendNotEnabled, got {other:?}"),
-    }
 }
 
 #[test]
@@ -437,8 +421,7 @@ fn vector_search_hit_is_partial_eq_usable_in_tests() {
 }
 
 // ---------------------------------------------------------------------------
-// HNSW backend recall and latency (only when the `hnsw-backend` feature
-// is on). We synthesize a small corpus (1k in tests; the 100k + 1M
+// HNSW backend recall and latency. We synthesize a small corpus (1k in
 // benchmarks live in benches/ and the release bench harness), verify
 // that recall@10 against the exact f32 backend is >= 0.90 on normalized
 // random unit vectors, and that the p95 query latency is sub-millisecond at
@@ -446,7 +429,6 @@ fn vector_search_hit_is_partial_eq_usable_in_tests() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[cfg(feature = "hnsw-backend")]
 fn hnsw_backend_recall_at_1k_meets_floor() {
     // Deterministic synthetic corpus. 1k normalized unit vectors in 32d.
     // The exact and HNSW backends are both queried for top-10 neighbors;
@@ -515,7 +497,6 @@ fn hnsw_backend_recall_at_1k_meets_floor() {
 }
 
 #[test]
-#[cfg(feature = "hnsw-backend")]
 fn hnsw_backend_query_is_fast_at_1k() {
     // 100 queries on a 1k-vector corpus should comfortably come in under
     // 100ms p95 on a developer laptop. The benches/ harness has the
@@ -629,7 +610,6 @@ fn exact_backend_search_filtered_orders_by_cosine_then_id() {
 }
 
 #[test]
-#[cfg(feature = "hnsw-backend")]
 fn hnsw_backend_search_filtered_matches_exact_on_small_corpus() {
     // HNSW post-filtering with oversampling should return the same top-k ids
     // as the exact backend on a tiny, deterministic corpus where the
@@ -659,7 +639,6 @@ fn hnsw_backend_search_filtered_matches_exact_on_small_corpus() {
 }
 
 #[test]
-#[cfg(feature = "hnsw-backend")]
 fn hnsw_backend_search_filtered_recall_at_1k_meets_floor() {
     // With a 50% id filter on the 1k test corpus, the HNSW filtered results
     // should still overlap heavily with the exact filtered results. We
@@ -751,7 +730,6 @@ fn vector_filter_from_ids_deduplicates_and_treats_empty_as_unfiltered() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[cfg(feature = "hnsw-backend")]
 fn hnsw_backend_persistence_round_trip() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("hnsw.graph.bin");
@@ -782,7 +760,6 @@ fn hnsw_backend_persistence_round_trip() {
 }
 
 #[test]
-#[cfg(feature = "hnsw-backend")]
 fn hnsw_backend_load_rejects_metadata_mismatch() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("hnsw.graph.bin");
