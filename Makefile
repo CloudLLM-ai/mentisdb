@@ -53,9 +53,9 @@ publish: ## Publish mentisdb to crates.io
 publish-dry-run: ## Dry-run publish to crates.io
 	${CARGO_CMD} publish --dry-run
 
-# Install the mentisdb executable locally
-install: ## Install mentisdb via cargo install
-	${CARGO_CMD} install --path . --locked
+# Install the mentisdb executable locally (with local-embeddings for fastembed-minilm vectors)
+install: ## Install mentisdb via cargo install (with local-embeddings feature)
+	${CARGO_CMD} install --path . --locked --features local-embeddings
 
 # Clean build artifacts
 clean: ## Remove build artifacts using cargo clean
