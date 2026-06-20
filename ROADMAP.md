@@ -1,6 +1,12 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 -> 0.10.3.48)
+## Shipped (0.8.2 -> 0.10.4.49)
+
+### 0.10.4.49 - Dashboard Login Fix, Session Lifetime Fix, HNSW Unconditional
+- **Dashboard login fix** — the session cookie's `Secure` attribute is now conditional on `X-Forwarded-Proto`, fixing login behind TLS-terminating reverse proxies that talk plain HTTP to the daemon.
+- **Session lifetime fix** — replaced `RATE_LIMIT_WINDOW_SECS * 60` (5 hours, due to a unit mismatch) with an explicit `SESSION_TIMEOUT_SECS` (8 hours), independent of the brute-force rate-limit window.
+- **HNSW unconditional** — the `hnsw-backend` Cargo feature has been removed; HNSW is always compiled in. The `HnswBackendNotEnabled` error variant and its test have been deleted.
+- **`local-embeddings` is now a default feature** — `cargo install` and the self-updater no longer need `--features local-embeddings`. The Makefile install target, `build_cargo_install_args`, and the non-interactive update messages have been simplified.
 
 ### 0.10.3.48 - HNSW Approximate Vector Search, Background Builds, and HNSW Runtime Tuning
 - **HNSW approximate-nearest-neighbor vector backend** — unconditionally compiled since 0.10.4.49. The exact f32 cosine scan remains the fallback for small sidecars; once a managed sidecar exceeds `MENTISDB_HNSW_THRESHOLD` (default 50,000 vectors) MentisDB switches to a pure-Rust HNSW graph automatically. The public API and hybrid/ranked search semantics are unchanged.

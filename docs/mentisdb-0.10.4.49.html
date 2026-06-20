@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.10.4.49 — Dashboard Login Fix, Session Lifetime, HNSW Unconditional</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article .meta { color: #888; font-size: 0.85rem; margin-bottom: 1rem; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    .callout { background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px; padding: 1rem; margin-bottom: 1rem; }
+    .hotfix { background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 4px; padding: 0.5rem 1rem; display: inline-block; font-weight: 600; color: #721c24; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="index.html">MentisDB Blog</a></h1>
+    <p>Durable memory for AI agents</p>
+  </header>
+
+  <article>
+    <span class="hotfix">Hotfix</span>
+    <h2>MentisDB 0.10.4.49 &mdash; Dashboard Login Fix, Session Lifetime, HNSW Unconditional</h2>
+    <div class="meta">June 20, 2026</div>
+
+    <p>
+      This hotfix fixes a dashboard login bug introduced in 0.10.2.47, corrects a session-lifetime
+      miscalculation, and simplifies the build by making HNSW and <code>local-embeddings</code>
+      unconditional default features. For the full feature list and benchmark numbers from the
+      prior release, see the <a href="mentisdb-0.10.3.48.html">0.10.3.48 release notes</a>.
+    </p>
+
+    <h3>Dashboard Login Fix (C5/C6 regression)</h3>
+    <p>
+      The 0.10.2.47 security audit replaced the <code>mentisdb_pin</code> cookie with a server-side
+      session token (<code>mentisdb_session</code>). The session cookie was hardcoded with the
+      <code>Secure</code> attribute, which browsers silently drop over plain HTTP. When the dashboard
+      sat behind a TLS-terminating reverse proxy (nginx, Caddy, Traefik) that talked plain HTTP to
+      the daemon, the browser would discard the cookie after a successful login &mdash; every
+      subsequent request to <code>/dashboard</code> looked unauthenticated and bounced back to
+      <code>/dashboard/login</code>.
+    </p>
+    <p>
+      The <code>Secure</code> attribute is now conditional: it is emitted only when the originating
+      request was HTTPS, detected via the de-facto standard <code>X-Forwarded-Proto</code> header.
+      When a proxy reports <code>http</code>, the cookie is sent as
+      <code>HttpOnly; SameSite=Strict</code> only. Direct access to the daemon's own TLS listener
+      (no forwarding header) keeps <code>Secure</code> on.
+    </p>
+
+    <h3>Session Lifetime Fix</h3>
+    <p>
+      The session timeout was <strong>5 hours</strong> instead of the intended <strong>8 hours</strong>.
+      The login handler and PIN middleware both used <code>RATE_LIMIT_WINDOW_SECS * 60</code> for
+      session expiry &mdash; but <code>RATE_LIMIT_WINDOW_SECS</code> is already in seconds (300),
+      so the <code>* 60</code> produced 18,000 seconds (5 hours) and coupled two unrelated concerns
+      (brute-force lockout vs. session lifetime). Replaced with an explicit
+      <code>SESSION_TIMEOUT_SECS</code> constant (8 hours), independent of the rate-limit window.
+    </p>
+
+    <h3>HNSW Is Now Unconditional</h3>
+    <p>
+      The <code>hnsw-backend</code> Cargo feature has been removed entirely. HNSW is always compiled
+      in &mdash; no feature flag needed. The <code>hnsw</code>, <code>rand_pcg</code>, and
+      <code>space</code> dependencies are now non-optional, all
+      <code>#[cfg(feature = "hnsw-backend")]</code> guards have been removed, and the
+      <code>HnswBackendNotEnabled</code> error variant has been deleted along with its test.
+    </p>
+
+    <h3>local-embeddings Is Now a Default Feature</h3>
+    <p>
+      <code>local-embeddings</code> (which enables the <code>fastembed-minilm</code> ONNX vector
+      provider) is now part of the default feature set. This means:
+    </p>
+    <ul>
+      <li><code>cargo install mentisdb</code> just works &mdash; no <code>--features</code> flag needed</li>
+      <li>The self-updater no longer needs <code>--features local-embeddings</code> in its <code>cargo install</code> args</li>
+      <li>The Makefile <code>install</code> target is simplified</li>
+      <li>The 0.10.3.48 hotfix that added <code>--features local-embeddings</code> to the self-updater is now superseded</li>
+    </ul>
+    <p>
+      Library users who don't need embeddings can still opt out with
+      <code>--no-default-features</code>.
+    </p>
+
+    <h3>Upgrade</h3>
+    <pre><code>cargo install mentisdb --force</code></pre>
+    <p>
+      No <code>--features</code> flag needed anymore &mdash; HNSW and local-embeddings are both
+      included by default.
+    </p>
+
+    <h3>Links</h3>
+    <ul>
+      <li>GitHub Release: <a href="https://github.com/CloudLLM-ai/mentisdb/releases/tag/0.10.4.49">0.10.4.49</a></li>
+      <li>Prior release: <a href="mentisdb-0.10.3.48.html">0.10.3.48 &mdash; HNSW Vector Search, Hardened Security, 16 Critical Fixes</a></li>
+      <li>Changelog: <a href="https://github.com/CloudLLM-ai/mentisdb/blob/master/changelog.txt">changelog.txt</a></li>
+      <li>Documentation: <a href="https://docs.mentisdb.com">docs.mentisdb.com</a></li>
+    </ul>
+  </article>
+
+  <footer>
+    <a href="index.html">&larr; Back to blog</a>
+  </footer>
+</body>
+</html>

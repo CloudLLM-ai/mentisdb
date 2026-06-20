@@ -1,3 +1,20 @@
+0.10.4.49 JUN/20/2026
+  - fix(dashboard): session cookie `Secure` attribute is now conditional on
+    `X-Forwarded-Proto` — browsers were silently dropping the cookie when the
+    dashboard sat behind a TLS-terminating reverse proxy that talked plain HTTP
+    to the daemon, making login impossible.
+  - fix(dashboard): session timeout was 5 hours instead of the intended 8 hours
+    due to `RATE_LIMIT_WINDOW_SECS * 60` being used for session expiry. Replaced
+    with an explicit `SESSION_TIMEOUT_SECS` constant independent of the
+    brute-force rate-limit window.
+  - refactor: HNSW is no longer a separate Cargo feature — it is unconditionally
+    compiled in. The `hnsw-backend` feature gate has been removed along with the
+    `HnswBackendNotEnabled` error variant.
+  - refactor: `local-embeddings` is now a default feature, so `cargo install`
+    and the self-updater no longer need `--features local-embeddings`. The
+    Makefile install target, `build_cargo_install_args`, and the non-interactive
+    update messages have been simplified accordingly.
+
 0.10.3.48 JUN/20/2026
   - fix(auto-update): `build_cargo_install_args` now includes
     `--features local-embeddings` so auto-updates preserve the
