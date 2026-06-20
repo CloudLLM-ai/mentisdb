@@ -34,6 +34,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
@@ -365,6 +366,10 @@ impl From<serde_json::Error> for BearerTokenError {
 #[derive(Debug, Clone)]
 pub struct BearerTokenStore {
     path: PathBuf,
+    /// File-level lock to prevent concurrent read-modify-write races
+    /// between `create`, `revoke`, and `authorize_matching` calls.
+    /// The lock is per-store instance; clones share the same lock.
+    lock: Arc<std::sync::Mutex<()>>,
 }
 
 impl BearerTokenStore {
@@ -376,6 +381,7 @@ impl BearerTokenStore {
     pub fn new(mentisdb_dir: impl AsRef<Path>) -> Self {
         Self {
             path: mentisdb_dir.as_ref().join(BEARER_TOKEN_REGISTRY_FILENAME),
+            lock: Arc::new(std::sync::Mutex::new(())),
         }
     }
 
@@ -423,6 +429,7 @@ impl BearerTokenStore {
     ) -> Result<CreatedBearerToken, BearerTokenError> {
         validate_alias(alias)?;
         scope.validate()?;
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut records = self.load_records()?;
         if records.iter().any(|record| record.alias == alias) {
             return Err(BearerTokenError::AliasExists(alias.to_string()));
@@ -466,6 +473,7 @@ impl BearerTokenStore {
     /// `alias`, or an I/O/JSON error when the registry cannot be updated.
     pub fn revoke(&self, alias: &str) -> Result<BearerTokenRecord, BearerTokenError> {
         validate_alias(alias)?;
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut records = self.load_records()?;
         let now = Utc::now();
         let Some(index) = records.iter().position(|record| record.alias == alias) else {
@@ -527,6 +535,7 @@ impl BearerTokenStore {
         token: &str,
         matches_scope: impl Fn(&BearerTokenRecord) -> bool,
     ) -> bool {
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let Ok(mut records) = self.load_records() else {
             return false;
         };
@@ -543,7 +552,9 @@ impl BearerTokenStore {
             return false;
         };
         records[index].last_used_at = Some(Utc::now());
-        let _ = self.save_records(&records);
+        if let Err(e) = self.save_records(&records) {
+            eprintln!("[mentisdb] failed to persist last_used_at for bearer token: {e}");
+        }
         true
     }
 

@@ -97,7 +97,7 @@ use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 // TLS
 use axum_server::tls_rustls::RustlsConfig;
-use rcgen::{date_time_ymd, CertificateParams, DistinguishedName, DnType, KeyPair, SanType};
+use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, SanType};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1481,6 +1481,7 @@ pub async fn start_servers(
             mentisdb_dir: config.service.chain_dir.clone(),
             default_chain_key: config.service.default_chain_key.clone(),
             dashboard_pin: config.dashboard_pin.clone(),
+            sessions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             default_storage_adapter: config.service.default_storage_adapter,
             auto_flush: Arc::new(AtomicBool::new(config.service.auto_flush)),
             bearer_token_access: config.service.bearer_token_access.clone(),
@@ -5898,8 +5899,22 @@ pub fn ensure_tls_cert_with_sans(
     }
     params.subject_alt_names = sans.clone();
 
-    params.not_before = date_time_ymd(2025, 1, 1);
-    params.not_after = date_time_ymd(2027, 1, 1);
+    // Cert validity: from 1 day ago (to avoid clock-skew rejection) to
+    // 2 years in the future. This is computed at generation time so the
+    // cert is always valid for a reasonable window relative to when it
+    // was created, rather than using a fixed expiry date.
+    let now = time::OffsetDateTime::now_utc();
+    let not_before = now.checked_sub(time::Duration::days(1)).unwrap_or(now);
+    let not_after = now
+        .checked_add(time::Duration::days(365 * 2))
+        .unwrap_or(now);
+    params.not_before = rcgen::date_time_ymd(
+        not_before.year(),
+        not_before.month().into(),
+        not_before.day(),
+    );
+    params.not_after =
+        rcgen::date_time_ymd(not_after.year(), not_after.month().into(), not_after.day());
 
     let cert = params.self_signed(&key_pair)?;
     let cert_pem = cert.pem();
@@ -5912,7 +5927,19 @@ pub fn ensure_tls_cert_with_sans(
     }
 
     fs::write(cert_path, &cert_pem)?;
-    fs::write(key_path, &key_pem)?;
+
+    // Write the private key with restrictive permissions (0600 on Unix)
+    // so only the daemon user can read it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(key_path, &key_pem)?;
+        fs::set_permissions(key_path, fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(key_path, &key_pem)?;
+    }
 
     let san_strings = sans.iter().map(san_to_string).collect::<Vec<_>>();
     let fingerprint = sha256_fingerprint_of_pem(&cert_pem);
@@ -6188,24 +6215,108 @@ pub(crate) async fn rest_bearer_auth_middleware(
     }
 
     let route = request.uri().path().to_string();
-    let action = format!("rest:{}", request.method().as_str().to_ascii_lowercase());
+    let method = request.method().as_str().to_ascii_lowercase();
     let authorizer = MentisDbBearerAuthorizer::new(&service.config);
+
+    // Buffer the request body so we can extract chain keys for scope-aware
+    // authorization, then reconstruct the request for the downstream handler.
+    let (parts, body) = request.into_parts();
+    let body_bytes = axum::body::to_bytes(body, 1024 * 1024)
+        .await
+        .unwrap_or_default();
+    let payload: Option<Value> = serde_json::from_slice(&body_bytes).ok();
+
+    // Extract chain keys from the JSON body (if any) and from the URI path.
+    let mut chain_keys: BTreeSet<String> = BTreeSet::new();
+    if let Some(ref json) = payload {
+        collect_chain_keys(json, &mut chain_keys);
+    }
+    // Also check query parameters for chain_key (used by GET endpoints).
+    if let Some(query) = parts.uri.query() {
+        for (key, value) in urlencoded_query_pairs(query) {
+            if matches!(
+                key.as_str(),
+                "chain_key" | "source_chain_key" | "target_chain_key" | "branch_chain_key"
+            ) {
+                chain_keys.insert(value);
+            }
+        }
+    }
+
+    let reconstructed = axum::http::Request::from_parts(parts, axum::body::Body::from(body_bytes));
+
+    // Endpoints that don't target a specific chain (listing, health, skills)
+    // accept any active token. Everything else requires a token scoped to the
+    // chain(s) it touches, or a global token.
+    let is_global_rest_route = matches!(
+        route.as_str(),
+        "/health"
+            | "/v1/chains"
+            | "/v1/agents"
+            | "/v1/skills"
+            | "/v1/skills/manifest"
+            | "/v1/skills/search"
+            | "/v1/skills/upload"
+            | "/v1/skills/read"
+            | "/v1/skills/versions"
+            | "/v1/skills/deprecate"
+            | "/v1/skills/revoke"
+            | "/v1/admin/flush"
+            | "/v1/webhooks"
+            | "/mentisdb_skill_md"
+    ) || route.starts_with("/v1/skills/");
+
+    let target = if is_global_rest_route {
+        BearerAuthTarget::AnyActiveToken
+    } else if chain_keys.is_empty() {
+        // No chain key found — require a global token for safety.
+        BearerAuthTarget::GlobalOnly
+    } else {
+        BearerAuthTarget::Chains(chain_keys.into_iter().collect())
+    };
+
     let context = BearerAuthContext {
         client_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
         route: route.clone(),
-        action,
-        payload: None,
+        action: format!("rest:{method}"),
+        payload: payload.clone(),
     };
 
-    let provided = request
-        .headers()
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-
-    let authorized = match provided {
-        Some(token) => authorizer.authorize_bearer_token(token, &context),
-        None => authorizer.allow_missing_bearer_token(&context),
+    let authorized = match target {
+        BearerAuthTarget::AnyActiveToken => {
+            // For global routes, still check if a token is needed.
+            let provided = reconstructed
+                .headers()
+                .get("Authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "));
+            match provided {
+                Some(token) => authorizer.store.authorize(token),
+                None => authorizer.allow_missing_bearer_token(&context),
+            }
+        }
+        BearerAuthTarget::Chains(keys) => {
+            let provided = reconstructed
+                .headers()
+                .get("Authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "));
+            match provided {
+                Some(token) => authorizer.store.authorize_for_chains(token, &keys),
+                None => authorizer.allow_missing_bearer_token(&context),
+            }
+        }
+        BearerAuthTarget::GlobalOnly => {
+            let provided = reconstructed
+                .headers()
+                .get("Authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "));
+            match provided {
+                Some(token) => authorizer.store.authorize_global(token),
+                None => authorizer.allow_missing_bearer_token(&context),
+            }
+        }
     };
 
     if !authorized {
@@ -6213,7 +6324,20 @@ pub(crate) async fn rest_bearer_auth_middleware(
         return (status, body).into_response();
     }
 
-    next.run(request).await
+    next.run(reconstructed).await
+}
+
+/// Parse `application/x-www-form-urlencoded` query pairs from a query string.
+fn urlencoded_query_pairs(query: &str) -> Vec<(String, String)> {
+    query
+        .split('&')
+        .filter_map(|pair| {
+            let mut iter = pair.splitn(2, '=');
+            let key = iter.next()?.to_string();
+            let value = iter.next().unwrap_or("").to_string();
+            Some((key, value))
+        })
+        .collect()
 }
 
 async fn rest_bootstrap_handler(

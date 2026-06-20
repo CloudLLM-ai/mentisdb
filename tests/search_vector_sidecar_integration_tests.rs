@@ -1,6 +1,4 @@
-use mentisdb::search::{
-    EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector,
-};
+use mentisdb::search::{EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector};
 #[cfg(feature = "hnsw-backend")]
 use mentisdb::search::{LocalTextEmbeddingProvider, VectorBackendKind};
 use mentisdb::{

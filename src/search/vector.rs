@@ -403,15 +403,15 @@ pub struct VectorSearchHit {
 /// Backend selection for [`VectorIndex`] construction.
 ///
 /// `Exact` is the deterministic in-memory linear-scan cosine backend and is
-/// always available. `Hnsw` is reserved for the upcoming approximate-nearest-
-/// neighbor backend (see ROADMAP.md 1.0.0 Track B) and is selected by
+/// always available. `Hnsw` is the approximate-nearest-neighbor backend
+/// (enabled by default via the `hnsw-backend` feature) and is selected by
 /// [`select_backend_kind`] once the corpus crosses
 /// [`DEFAULT_EXACT_TO_HNSW_THRESHOLD`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum VectorBackendKind {
     /// Deterministic in-memory exact cosine over every stored vector.
     Exact,
-    /// Approximate nearest neighbor backend (not yet implemented in H0).
+    /// Approximate nearest neighbor backend (HNSW graph).
     Hnsw,
 }
 
@@ -562,10 +562,11 @@ pub fn select_backend_kind(document_count: usize) -> VectorBackendKind {
 
 /// Pluggable backend for vector similarity search.
 ///
-/// `VectorIndex` (the deterministic in-memory exact cosine) implements this
-/// trait today. The upcoming HNSW backend will be a second implementation;
-/// both will be reachable through the same `Box<dyn VectorSearchBackend>`
-/// boundary so callers do not need to special-case the kind.
+/// `VectorIndex` (the deterministic in-memory exact cosine) and
+/// [`HnswBackend`](super::hnsw_backend::HnswBackend) (approximate nearest
+/// neighbor) both implement this trait. Both are reachable through the same
+/// `Box<dyn VectorSearchBackend>` boundary so callers do not need to
+/// special-case the kind.
 pub trait VectorSearchBackend: Send + Sync {
     /// Return immutable embedding metadata for this backend.
     fn metadata(&self) -> &EmbeddingMetadata;
@@ -631,13 +632,11 @@ impl VectorIndex {
     /// Build an index from existing vector documents, choosing the backend by
     /// [`select_backend_kind`] on the resulting corpus size.
     ///
-    /// In H1 the [`VectorBackendKind::Exact`] branch always returns a
+    /// The [`VectorBackendKind::Exact`] branch always returns a
     /// `VectorIndex`, and the [`VectorBackendKind::Hnsw`] branch returns a
     /// `Box<dyn VectorSearchBackend>` so the caller can hold either backend
     /// uniformly. The `Hnsw` branch is gated behind the `hnsw-backend`
-    /// feature; without it we silently return an Exact backend so the
-    /// build is still clean. Callers that need a real HNSW backend should
-    /// enable the feature and rebuild.
+    /// feature; without it the call returns an error.
     pub fn with_backend_kind(
         metadata: EmbeddingMetadata,
         documents: Vec<VectorDocument>,
@@ -656,15 +655,8 @@ impl VectorIndex {
                 }
                 #[cfg(not(feature = "hnsw-backend"))]
                 {
-                    let _ = metadata;
-                    Ok(VectorBackend::Exact(Self::from_documents(
-                        EmbeddingMetadata::new(
-                            "stub",
-                            documents.first().map(|d| d.vector.len()).unwrap_or(0),
-                            "v0",
-                        ),
-                        documents,
-                    )?))
+                    let _ = (metadata, documents);
+                    Err(VectorIndexError::HnswBackendNotEnabled)
                 }
             }
         }
@@ -834,6 +826,9 @@ pub enum VectorIndexError {
         /// Index of the non-finite value.
         value_index: usize,
     },
+    /// HNSW backend was requested but the `hnsw-backend` Cargo feature is
+    /// disabled. Enable the feature or use [`VectorBackendKind::Exact`].
+    HnswBackendNotEnabled,
 }
 
 impl fmt::Display for VectorIndexError {
@@ -874,6 +869,12 @@ impl fmt::Display for VectorIndexError {
                     )
                 }
             }
+            Self::HnswBackendNotEnabled => {
+                write!(
+                    f,
+                    "HNSW backend requested but the `hnsw-backend` Cargo feature is not enabled"
+                )
+            }
         }
     }
 }
@@ -903,7 +904,7 @@ pub fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f32> {
     Some(dot / (left_norm_sq.sqrt() * right_norm_sq.sqrt()))
 }
 
-fn validate_vector(
+pub(super) fn validate_vector(
     vector: &[f32],
     expected_dimension: usize,
     document_id: Option<&str>,
@@ -927,19 +928,6 @@ fn validate_vector(
         }
     }
     Ok(())
-}
-
-/// `pub(super)` accessor for [`validate_vector`] used by the optional
-/// HNSW backend. Crate-private, so user-facing callers go through
-/// `VectorIndex` / `VectorSearchBackend`.
-#[cfg(feature = "hnsw-backend")]
-pub(super) fn validate_vector_public(
-    vector: &[f32],
-    expected_dimension: usize,
-    document_id: Option<&str>,
-    context: &'static str,
-) -> Result<(), VectorIndexError> {
-    validate_vector(vector, expected_dimension, document_id, context)
 }
 
 fn accumulate_hashed_feature(vector: &mut [f32], feature: &[u8], weight: f32) {

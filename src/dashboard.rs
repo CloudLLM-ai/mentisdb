@@ -43,7 +43,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -75,6 +75,10 @@ pub(crate) struct DashboardState {
     pub default_chain_key: String,
     /// Optional PIN required to access the dashboard.
     pub dashboard_pin: Option<String>,
+    /// Server-side session tokens issued after successful PIN login.
+    /// Maps random session token → issue time, so the PIN itself is never
+    /// stored in the browser cookie.
+    pub sessions: Arc<StdMutex<HashMap<String, Instant>>>,
     /// Storage adapter kind used when opening chains from disk.
     pub default_storage_adapter: StorageAdapterKind,
     /// Whether newly opened chains should flush immediately on each append.
@@ -228,7 +232,7 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
 /// When a PIN is set it accepts:
 ///
 /// - `Authorization: Bearer <pin>` header
-/// - `mentisdb_pin=<pin>` cookie
+/// - `mentisdb_session=<token>` cookie (random token issued at login)
 ///
 /// Any other request is redirected to `/dashboard/login`.
 async fn pin_auth_middleware(
@@ -236,35 +240,59 @@ async fn pin_auth_middleware(
     request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    let Some(required_pin) = &state.dashboard_pin else {
+    if state.dashboard_pin.is_none() {
         // No PIN configured — open access.
         return next.run(request).await;
-    };
+    }
+    let required_pin = state.dashboard_pin.clone().unwrap_or_default();
 
+    // Extract auth-relevant headers into owned values so no borrow of
+    // `request` is held when we call `next.run(request).await` below.
     let headers = request.headers();
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let cookie_header = headers
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    // No more borrows of `request` from here on.
 
     // ── Check Authorization: Bearer <pin> header ──────────────────────────
-    if let Some(auth_val) = headers.get(header::AUTHORIZATION) {
-        if let Ok(auth_str) = auth_val.to_str() {
-            if let Some(provided) = auth_str.strip_prefix("Bearer ") {
-                if provided == required_pin.as_str() {
-                    return next.run(request).await;
+    let mut bearer_valid = false;
+    if let Some(auth_str) = auth_header.as_deref() {
+        if let Some(provided) = auth_str.strip_prefix("Bearer ") {
+            // Constant-time comparison to prevent timing attacks.
+            if subtle::ConstantTimeEq::ct_eq(provided.as_bytes(), required_pin.as_bytes()).into() {
+                bearer_valid = true;
+            }
+        }
+    }
+
+    // ── Check mentisdb_session cookie ─────────────────────────────────────
+    // The cookie contains a random session token, not the PIN itself.
+    // The token is validated against the server-side session map.
+    let mut session_valid = false;
+    if let Some(cookie_str) = cookie_header.as_deref() {
+        for part in cookie_str.split(';') {
+            if let Some(token) = part.trim().strip_prefix("mentisdb_session=") {
+                // Check the session token against the server-side map.
+                // Expire sessions older than the rate-limit window.
+                if let Ok(sessions) = state.sessions.lock() {
+                    if let Some(&issued_at) = sessions.get(token) {
+                        if issued_at.elapsed().as_secs() < RATE_LIMIT_WINDOW_SECS * 60 {
+                            session_valid = true;
+                            break;
+                        }
+                    }
                 }
             }
         }
     }
 
-    // ── Check mentisdb_pin cookie ─────────────────────────────────────────
-    if let Some(cookie_val) = headers.get(header::COOKIE) {
-        if let Ok(cookie_str) = cookie_val.to_str() {
-            for part in cookie_str.split(';') {
-                if let Some(pin) = part.trim().strip_prefix("mentisdb_pin=") {
-                    if pin == required_pin.as_str() {
-                        return next.run(request).await;
-                    }
-                }
-            }
-        }
+    if bearer_valid || session_valid {
+        return next.run(request).await;
     }
 
     // ── Neither matched — redirect to login ───────────────────────────────
@@ -355,14 +383,23 @@ async fn handle_login(
 
     if pin_matches {
         RATE_LIMIT_MAP.lock().unwrap().remove(ip_key);
+        // Issue a random session token so the PIN itself is never stored in
+        // the browser cookie.
+        let session_token = Uuid::new_v4().to_string();
+        if let Ok(mut sessions) = state.sessions.lock() {
+            // Evict expired sessions to prevent unbounded growth.
+            sessions
+                .retain(|_, issued_at| issued_at.elapsed().as_secs() < RATE_LIMIT_WINDOW_SECS * 60);
+            sessions.insert(session_token.clone(), Instant::now());
+        }
         (
             StatusCode::SEE_OTHER,
             [
                 (
                     header::SET_COOKIE,
                     format!(
-                        "mentisdb_pin={}; Path=/; HttpOnly; Secure; SameSite=Strict",
-                        form.pin
+                        "mentisdb_session={}; Path=/; HttpOnly; Secure; SameSite=Strict",
+                        session_token
                     ),
                 ),
                 (header::LOCATION, "/dashboard".to_string()),
@@ -2957,6 +2994,53 @@ struct RestartDaemonResponse {
 /// Accepts changed setting values, updates the environment, hot-reloads
 /// applicable fields in DashboardState, and persists the changes to a
 /// `.env` file in the mentisdb directory.
+/// Whitelist of environment variables that the dashboard settings API is
+/// allowed to modify. Any key not in this list is rejected with HTTP 400.
+const ALLOWED_SETTING_KEYS: &[&str] = &[
+    "MENTISDB_DIR",
+    "MENTISDB_BIND_HOST",
+    "MENTISDB_MCP_PORT",
+    "MENTISDB_REST_PORT",
+    "MENTISDB_DASHBOARD_PORT",
+    "MENTISDB_TLS_CERT",
+    "MENTISDB_TLS_KEY",
+    "MENTISDB_BEARER_TOKEN_ACCESS",
+    "MENTISDB_DASHBOARD_PIN",
+    "MENTISDB_AUTO_FLUSH",
+    "MENTISDB_VERBOSE",
+    "MENTISDB_LOG_FILE",
+    "MENTISDB_DEFAULT_CHAIN_KEY",
+    "MENTISDB_STORAGE_ADAPTER",
+    "MENTISDB_STARTUP_SOUND",
+    "MENTISDB_THOUGHT_SOUNDS",
+    "MENTISDB_UPDATE_CHECK",
+    "MENTISDB_UPDATE_REPO",
+    "MENTISDB_HNSW_THRESHOLD",
+    "MENTISDB_HNSW_EF_CONSTRUCTION",
+    "MENTISDB_HNSW_EF_SEARCH",
+    "MENTISDB_HNSW_BACKGROUND_BUILD",
+    "MENTISDB_DEDUP_THRESHOLD",
+    "MENTISDB_DEDUP_SCAN_WINDOW",
+    "MENTISDB_AUTO_EDGE_THRESHOLD",
+    "MENTISDB_AUTO_EDGE_K",
+];
+
+/// Validate that a setting name is in the whitelist and the value does not
+/// contain newline characters (which would allow `.env` injection).
+fn validate_setting(name: &str, value: &str) -> Result<(), String> {
+    if !ALLOWED_SETTING_KEYS.contains(&name) {
+        return Err(format!(
+            "Unknown setting '{name}'. Allowed settings are limited to MENTISDB_* variables."
+        ));
+    }
+    if value.contains('\n') || value.contains('\r') {
+        return Err(format!(
+            "Setting value for '{name}' contains a newline, which is not allowed."
+        ));
+    }
+    Ok(())
+}
+
 async fn api_update_settings(
     State(state): State<DashboardState>,
     Json(body): Json<SettingsUpdateRequest>,
@@ -2965,6 +3049,14 @@ async fn api_update_settings(
     let mut updated = Vec::new();
 
     for (name, value) in &body.settings {
+        // Validate before mutating any process state.
+        if let Err(msg) = validate_setting(name, value) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "Invalid setting", "message": msg })),
+            ));
+        }
+
         let old_value = std::env::var(name).unwrap_or_default();
         if old_value == *value {
             continue;

@@ -1,24 +1,25 @@
-//! Optional HNSW approximate-nearest-neighbor backend for [`VectorIndex`].
+//! HNSW approximate-nearest-neighbor backend for [`VectorIndex`].
 //!
-//! This module is only compiled when the `hnsw-backend` feature is enabled.
-//! It implements the [`VectorSearchBackend`] trait for an in-memory HNSW
-//! graph built on top of the pure-Rust [`hnsw`](https://docs.rs/hnsw) crate
-//! and is selected automatically by [`VectorBackendKind::Hnsw`] once the
-//! corpus crosses [`DEFAULT_EXACT_TO_HNSW_THRESHOLD`].
+//! This module is compiled when the `hnsw-backend` feature is enabled
+//! (on by default since 0.10.2). It implements the [`VectorSearchBackend`]
+//! trait for an in-memory HNSW graph built on top of the pure-Rust
+//! [`hnsw`](https://docs.rs/hnsw) crate and is selected automatically by
+//! [`VectorBackendKind::Hnsw`] once the corpus crosses
+//! [`DEFAULT_EXACT_TO_HNSW_THRESHOLD`].
 //!
 //! ## Metric
 //!
 //! [`hnsw`] 0.11 is built around an unsigned-integer metric (see
 //! [`space::Metric`]). Cosine similarity lives in `[-1.0, 1.0]`, which is
 //! not a metric space. [`HnswBackend`] therefore encodes the *distance*
-//! `1.0 - cosine_similarity` as a non-negative `f32` in `[0.0, 2.0]` and
-//! bit-casts that into the metric's `u32` unit. Order is preserved (the
-//! `to_bits` encoding of a non-negative `f32` is monotonically increasing),
-//! the triangle inequality is satisfied up to `f32` rounding noise on
-//! normalized inputs, and nearest-neighbor queries are answered correctly.
-//! The bit-cast is lossy in the sense that the integer "distance" no longer
-//! carries a physical meaning; that is fine for an HNSW graph that is only
-//! ever consulted for "which items are most similar" questions.
+//! `1.0 - cosine_similarity` as a non-negative `f32` in `[0.0, 2.0]`,
+//! scales it by [`DISTANCE_SCALE`] (`1_000_000.0`), and truncates to a
+//! `u32`. The scaled integer preserves order (larger distance = larger
+//! integer), the triangle inequality is satisfied up to `f32` rounding
+//! noise on normalized inputs, and nearest-neighbor queries are answered
+//! correctly. The integer "distance" does not carry a physical meaning
+//! beyond ordering; that is fine for an HNSW graph that is only ever
+//! consulted for "which items are most similar" questions.
 //!
 //! [`space::Metric`]: https://docs.rs/space/0.17.0/space/trait.Metric.html
 //! [`hnsw`]: https://docs.rs/hnsw/0.11.0/hnsw/
@@ -42,7 +43,7 @@ use super::vector::{
 
 /// Default M parameter (max connections per node) for [`HnswBackend`].
 ///
-/// 24 is chosen for 128d+ embedding spaces where the default 16 under-
+/// 48 is chosen for 128d+ embedding spaces where the default 16 under-
 /// connects the graph. The 10k/128d synthetic benchmark recovers recall
 /// with this setting while staying well under the 50ms latency ceiling.
 const HNSW_M: usize = 48;
@@ -114,7 +115,7 @@ impl Metric<Vec<f32>> for CosineDistance {
     }
 }
 
-/// Optional HNSW backend for [`VectorIndex`].
+/// HNSW backend for [`VectorIndex`].
 ///
 /// Built on `hnsw` 0.11 with the [`CosineDistance`] metric. Selected
 /// automatically by [`super::vector::select_backend_kind`] once the corpus
@@ -171,13 +172,6 @@ impl HnswBackend {
         }
         Ok(backend)
     }
-
-    /// A reusable search scratch buffer to amortize `Searcher` allocation.
-    /// HNSW queries build a `Searcher` per call; reusing the buffer means we
-    /// pay that allocation once per backend instance.
-    fn searcher(&self) -> hnsw::Searcher<u32> {
-        hnsw::Searcher::default()
-    }
 }
 
 impl VectorSearchBackend for HnswBackend {
@@ -190,29 +184,26 @@ impl VectorSearchBackend for HnswBackend {
     }
 
     fn upsert_document(&mut self, document: VectorDocument) -> Result<(), VectorIndexError> {
-        super::vector::validate_vector_public(
+        super::vector::validate_vector(
             &document.vector,
             self.metadata.dimension,
             Some(document.document_id.as_str()),
             "document",
         )?;
 
-        if let Some(&existing_id) = self.doc_to_id.get(&document.document_id) {
-            // The HNSW crate is append-only: a re-insert would just
-            // allocate a new id. We mirror the Exact backend's "replace
-            // by id" semantics by overwriting the cached vector for the
-            // score, then inserting a fresh graph node. The previous
-            // graph node becomes a tombstone and is dropped on the next
-            // rebuild. Full tombstone compaction is an H4 concern.
+        if self.doc_to_id.contains_key(&document.document_id) {
+            // The HNSW crate (0.11) is append-only: graph nodes cannot be
+            // updated or removed. On an upsert we refresh the cached exact
+            // vector so the score reported by search_inner stays correct.
+            // The graph topology still navigates using the original vector,
+            // which is a minor approximation; a full graph rebuild is needed
+            // to pick up topology changes. This matches the Exact backend's
+            // "replace by id" semantics for the score path.
             self.vectors
-                .insert(document.document_id.clone(), document.vector.clone());
-            let _ = existing_id; // silence unused while semantics are
-                                 // "best-effort upsert"
-            let _ = self.hnsw.insert(document.vector, &mut self.searcher());
+                .insert(document.document_id.clone(), document.vector);
         } else {
-            let hnsw_id = self
-                .hnsw
-                .insert(document.vector.clone(), &mut self.searcher());
+            let mut searcher = hnsw::Searcher::default();
+            let hnsw_id = self.hnsw.insert(document.vector.clone(), &mut searcher);
             self.id_to_doc.push(document.document_id.clone());
             self.doc_to_id.insert(document.document_id.clone(), hnsw_id);
             self.vectors.insert(document.document_id, document.vector);
@@ -225,7 +216,7 @@ impl VectorSearchBackend for HnswBackend {
         // Tombstone: drop our local id map so the next query does not
         // return the stale HNSW id. The HNSW graph itself does not
         // support remove in 0.11; the graph node is reclaimed on the
-        // next rebuild (H4).
+        // next full rebuild.
         if let Some(hnsw_id) = self.doc_to_id.remove(document_id) {
             if hnsw_id < self.id_to_doc.len() {
                 self.id_to_doc[hnsw_id] = String::new();
@@ -264,6 +255,10 @@ impl HnswBackend {
     /// Translate a caller-facing [`VectorFilter`] into a bitmap of HNSW item
     /// ids. The HNSW crate's internal item id (`neighbor.index`) is the
     /// ordinal we use in the bitmap.
+    ///
+    /// Only [`VectorFilter::Ids`] reaches this method because
+    /// [`VectorFilter::None`] short-circuits to unfiltered search in
+    /// [`VectorSearchBackend::search_filtered`].
     fn filter_to_bitmap(&self, filter: &VectorFilter) -> RoaringBitmap {
         match filter {
             VectorFilter::None => self
@@ -289,12 +284,7 @@ impl HnswBackend {
         query: &VectorQuery,
         allowed: Option<&RoaringBitmap>,
     ) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
-        super::vector::validate_vector_public(
-            &query.vector,
-            self.metadata.dimension,
-            None,
-            "query",
-        )?;
+        super::vector::validate_vector(&query.vector, self.metadata.dimension, None, "query")?;
 
         if self.doc_to_id.is_empty() {
             return Ok(Vec::new());
@@ -316,7 +306,7 @@ impl HnswBackend {
             };
             candidate_count
         ];
-        let mut searcher = self.searcher();
+        let mut searcher = hnsw::Searcher::default();
         let _ = self
             .hnsw
             .nearest(&query.vector, ef, &mut searcher, &mut dest);

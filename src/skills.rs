@@ -2064,7 +2064,21 @@ pub fn migrate_skill_registry<P: AsRef<Path>>(
     };
     let encoded = bincode::serde::encode_to_vec(&new_persisted, bincode::config::standard())
         .map_err(|e| io::Error::other(format!("encode error: {e}")))?;
-    fs::write(&path, &encoded)?;
+
+    // Write atomically: temp file + rename, matching the pattern used by
+    // SkillRegistry::persist. A crash mid-write would otherwise corrupt the
+    // registry file and brick the chain on next open.
+    let temp_path = path.with_extension("tmp");
+    {
+        let file = fs::File::create(&temp_path)?;
+        let mut writer = std::io::BufWriter::new(file);
+        use std::io::Write;
+        writer.write_all(&encoded)?;
+        writer.flush()?;
+        drop(writer);
+    }
+    fs::rename(&temp_path, &path)?;
+
     Ok(Some(SkillRegistryMigrationReport {
         path,
         skills_migrated,

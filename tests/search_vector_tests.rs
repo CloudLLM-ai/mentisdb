@@ -264,7 +264,7 @@ fn local_text_embedding_provider_is_deterministic_and_topic_sensitive() {
 }
 
 // ---------------------------------------------------------------------------
-// H0: VectorSearchBackend trait + VectorBackendKind + threshold
+// VectorSearchBackend trait + VectorBackendKind + threshold
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -318,15 +318,15 @@ fn with_backend_kind_exact_matches_from_documents() {
     let default_hits = via_default.search(&query).unwrap();
     assert_eq!(explicit_hits, default_hits);
     // Exact branch returns the concrete VectorIndex variant.
-    matches!(via_explicit_kind, VectorBackend::Exact(_));
+    assert!(matches!(via_explicit_kind, VectorBackend::Exact(_)));
 }
 
 #[test]
 #[cfg(feature = "hnsw-backend")]
 fn with_backend_kind_hnsw_returns_usable_backend() {
-    // H1: the Hnsw branch returns a real HNSW backend, not a fallback to
-    // Exact. Insert, then query; the top hit must be the document with the
-    // highest cosine similarity to the query.
+    // HNSW backend: the Hnsw branch returns a real HNSW backend, not a
+    // fallback to Exact. Insert, then query; the top hit must be the document
+    // with the highest cosine similarity to the query.
     let metadata = EmbeddingMetadata::new("toy", 2, "v1");
     let documents = vec![
         VectorDocument::new("close", vec![1.0, 0.0]),
@@ -341,29 +341,25 @@ fn with_backend_kind_hnsw_returns_usable_backend() {
     assert_eq!(hits[0].document_id, "close");
     assert_eq!(hits[1].document_id, "far");
     // Score is the *cosine similarity* in [-1.0, 1.0] even though the
-    // HNSW graph only stored a bit-cast distance.
+    // HNSW graph only stored a scaled-integer distance.
     assert!((hits[0].score - 1.0).abs() < 1e-5, "got {}", hits[0].score);
     assert!((hits[1].score + 1.0).abs() < 1e-5, "got {}", hits[1].score);
-    matches!(backend, VectorBackend::Hnsw(_));
+    assert!(matches!(backend, VectorBackend::Hnsw(_)));
 }
 
 #[test]
 #[cfg(not(feature = "hnsw-backend"))]
-fn with_backend_kind_hnsw_silently_falls_back_to_exact_without_feature() {
-    // H1 is feature-gated. Without the `hnsw-backend` feature, the
-    // Hnsw branch is compiled out and the constructor returns an Exact
-    // backend. The previous `debug_assert!` is also compiled out, so
-    // there is no panic; this test only runs without the feature.
+fn with_backend_kind_hnsw_returns_error_without_feature() {
+    // Without the `hnsw-backend` feature, requesting an Hnsw backend
+    // returns an explicit error instead of silently degrading.
     let metadata = EmbeddingMetadata::new("toy", 2, "v1");
     let documents = vec![VectorDocument::new("only", vec![0.7, 0.7])];
-    let backend =
-        VectorIndex::with_backend_kind(metadata, documents, VectorBackendKind::Hnsw).unwrap();
-    let hits = backend
-        .search(&VectorQuery::new(vec![0.7, 0.7]).with_limit(1))
-        .unwrap();
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].document_id, "only");
-    matches!(backend, VectorBackend::Exact(_));
+    let result = VectorIndex::with_backend_kind(metadata, documents, VectorBackendKind::Hnsw);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        VectorIndexError::HnswBackendNotEnabled => {}
+        other => panic!("expected HnswBackendNotEnabled, got {other:?}"),
+    }
 }
 
 #[test]
@@ -441,9 +437,9 @@ fn vector_search_hit_is_partial_eq_usable_in_tests() {
 }
 
 // ---------------------------------------------------------------------------
-// H1: HNSW backend recall and latency (only when the `hnsw-backend` feature
+// HNSW backend recall and latency (only when the `hnsw-backend` feature
 // is on). We synthesize a small corpus (1k in tests; the 100k + 1M
-// benchmarks live in benches/ and the 0.10.x release bench harness), verify
+// benchmarks live in benches/ and the release bench harness), verify
 // that recall@10 against the exact f32 backend is >= 0.90 on normalized
 // random unit vectors, and that the p95 query latency is sub-millisecond at
 // this scale.
@@ -554,8 +550,8 @@ fn hnsw_backend_query_is_fast_at_1k() {
     }
     latencies_us.sort_unstable();
     let p95 = latencies_us[(latencies_us.len() as f64 * 0.95) as usize];
-    // Loose ceiling; the H5 benchmark is the real gate. We only want to
-    // catch catastrophic regressions in H1.
+    // Loose ceiling; the scale benchmark is the real gate. We only want
+    // to catch catastrophic regressions.
     assert!(
         p95 < 100_000,
         "HNSW p95 query latency at 1k was {p95}us, expected < 100_000us"
@@ -563,9 +559,10 @@ fn hnsw_backend_query_is_fast_at_1k() {
 }
 
 // ---------------------------------------------------------------------------
-// H2: hybrid bitmap-backed filters for vector search. The exact backend pre-
-// filters during its linear scan; the HNSW backend translates the id set into
-// a roaring bitmap of internal item ids, oversamples, and then intersects.
+// Hybrid bitmap-backed filters for vector search. The exact backend pre-
+// filters during its linear scan; the HNSW backend translates the id set
+// into a roaring bitmap of internal item ids, oversamples, and then
+// intersects.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -748,7 +745,7 @@ fn vector_filter_from_ids_deduplicates_and_treats_empty_as_unfiltered() {
 }
 
 // ---------------------------------------------------------------------------
-// H4: HNSW graph persistence. We serialize the full in-memory graph and its
+// HNSW graph persistence. We serialize the full in-memory graph and its
 // exact-vector cache with bincode so daemon restarts can reuse a previously
 // built graph instead of rebuilding from the sidecar entries.
 // ---------------------------------------------------------------------------

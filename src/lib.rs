@@ -610,8 +610,12 @@ impl StorageAdapter for LegacyJsonlReadAdapter {
 /// ## Clone behaviour
 ///
 /// Cloning creates a *new* adapter for the same file path with a fresh, empty
-/// write state (no background writer). The clone is suitable for use by a
-/// second independent reader/writer.
+/// write state (no background writer). The clone shares no state with the
+/// original. **Do not use both the original and the clone for writes
+/// concurrently** — each maintains its own in-memory view of the chain tip
+/// (`prev_hash`), so concurrent appends will produce records whose `prev_hash`
+/// values don't link, corrupting the hash chain. Use clones only as read-only
+/// views of the same file.
 ///
 /// # Example
 ///
@@ -4358,6 +4362,19 @@ impl MentisDb {
 
         let mut id_to_index = HashMap::new();
         let mut hash_to_index = HashMap::new();
+
+        // Reset thought_count on all loaded records before re-observing.
+        // The persisted registry already has the correct counts from the
+        // last session; calling observe() would double them. By resetting
+        // to 0, the observation loop rebuilds the correct count from
+        // scratch while preserving display_name, aliases, public_keys, etc.
+        for record in agent_registry.agents.values_mut() {
+            record.thought_count = 0;
+        }
+        for record in entity_type_registry.entity_types.values_mut() {
+            record.thought_count = 0;
+        }
+
         for (position, thought) in thoughts.iter().enumerate() {
             if thought.index != position as u64 {
                 return Err(io::Error::new(
@@ -6635,7 +6652,7 @@ impl MentisDb {
                 let documents = sidecar_entries_to_documents(&sidecar.entries);
                 build_vector_backend_async(provider.metadata(), documents, graph_path.as_deref())
             })
-            .unwrap_or_else(VectorBackendBuildResult::ready);
+            .unwrap_or_else(|| VectorBackendBuildResult::ready(None));
         self.managed_vector_sidecars.insert(
             provider.metadata().clone(),
             ManagedSidecarEntry::new(provider, false, build_result),
@@ -7181,7 +7198,12 @@ impl MentisDb {
                                     last_entry.thought_id.to_string(),
                                     last_entry.vector.clone(),
                                 );
-                                let _ = cached.upsert_document(document);
+                                if let Err(e) = cached.upsert_document(document) {
+                                    eprintln!(
+                                        "[mentisdb] sync_managed_vector_sidecars_for_append: \
+                                         failed to upsert into cached backend: {e}"
+                                    );
+                                }
                             }
                         }
                     }
@@ -8804,7 +8826,11 @@ fn load_or_build_hnsw_backend(
                 documents,
             )
             .ok()?;
-            let _ = backend.persist_to_path(&path_for_thread);
+            if let Err(e) = backend.persist_to_path(&path_for_thread) {
+                eprintln!(
+                    "[mentisdb] background HNSW build: failed to persist graph to {path_for_thread:?}: {e}"
+                );
+            }
             Some(crate::search::VectorBackend::Hnsw(Box::new(backend)))
         });
         return VectorBackendBuildResult::with_pending(
@@ -8813,8 +8839,12 @@ fn load_or_build_hnsw_backend(
         );
     }
 
-    if let Ok(backend) = crate::search::hnsw_backend::HnswBackend::from_documents(metadata.clone(), documents) {
-        let _ = backend.persist_to_path(path);
+    if let Ok(backend) =
+        crate::search::hnsw_backend::HnswBackend::from_documents(metadata.clone(), documents)
+    {
+        if let Err(e) = backend.persist_to_path(path) {
+            eprintln!("[mentisdb] HNSW build: failed to persist graph to {path:?}: {e}");
+        }
         VectorBackendBuildResult::ready(Some(crate::search::VectorBackend::Hnsw(Box::new(backend))))
     } else {
         VectorBackendBuildResult::ready(None)
@@ -10610,9 +10640,13 @@ fn compute_thought_hash(thought: &Thought) -> String {
     // Chains written before this algorithm was adopted are migrated transparently on
     // first open via `compute_thought_hash_legacy` + `rehash_chain_to_bincode`.
     //
-    // NOTE: entity_type is intentionally excluded from the hash to maintain
-    // backward compatibility with existing chains. When entity_type is set on
-    // a thought, it is indexed but does not affect the chain's hash integrity.
+    // INTEGRITY GAP: `entity_type` and `source_episode` are excluded from
+    // the hash for backward compatibility. This means a malicious actor with
+    // write access to the chain file could alter these fields without
+    // breaking the hash chain or invalidating detached signatures. This is
+    // a known limitation documented on the `Thought` struct. A future schema
+    // version should include these fields in the canonical hash with a
+    // migration path.
     #[derive(Serialize)]
     struct CanonicalThought<'a> {
         schema_version: u32,

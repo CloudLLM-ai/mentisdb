@@ -215,12 +215,19 @@ impl WebhookManager {
     /// - `url`: The HTTP endpoint to call on thought append events.
     /// - `chain_key_filter`: If Some, only fire for this chain; None = all chains.
     /// - `thought_type_filter`: If Some, only fire for these thought types; None = all types.
+    ///
+    /// # URL validation
+    ///
+    /// Only `http://` and `https://` schemes are accepted. URLs pointing to
+    /// loopback, private, or link-local addresses are rejected to prevent
+    /// server-side request forgery (SSRF).
     pub fn register_webhook(
         &self,
         url: String,
         chain_key_filter: Option<String>,
         thought_type_filter: Option<HashSet<ThoughtType>>,
     ) -> io::Result<WebhookRegistration> {
+        validate_webhook_url(&url)?;
         let registration = WebhookRegistration {
             id: Uuid::new_v4(),
             url,
@@ -401,6 +408,72 @@ async fn deliver_once(
         .error_for_status()
         .map_err(|e| io::Error::other(format!("webhook response error: {}", e)))?;
     Ok(())
+}
+
+/// Validate that a webhook URL is safe to deliver to.
+///
+/// Rejects non-HTTP(S) schemes and URLs pointing to loopback, private, or
+/// link-local IP addresses to prevent server-side request forgery (SSRF).
+fn validate_webhook_url(url: &str) -> io::Result<()> {
+    let parsed = url::Url::parse(url).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid webhook URL: {e}"),
+        )
+    })?;
+
+    match parsed.scheme() {
+        "http" | "https" => {}
+        scheme => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("webhook URL scheme '{scheme}' is not allowed; use http or https"),
+            ));
+        }
+    }
+
+    if let Some(host) = parsed.host_str() {
+        // Reject well-known internal hostnames.
+        if host == "localhost" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "webhook URLs pointing to localhost are not allowed",
+            ));
+        }
+
+        // Try to parse as an IP address and check against blocked ranges.
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            if is_blocked_ip(&ip) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("webhook URL points to a blocked IP address ({ip}); private, loopback, and link-local addresses are not allowed"),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Returns `true` if the IP address is in a private, loopback, or link-local
+/// range that should not be reachable from a webhook delivery worker.
+fn is_blocked_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                // Shared address space (100.64.0.0/10, CGNAT)
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // ULA
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // link-local
+        }
+    }
 }
 
 #[cfg(test)]
@@ -599,5 +672,22 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(450)).await;
         assert!(max_seen.load(Ordering::SeqCst) <= WEBHOOK_MAX_CONCURRENT_DELIVERIES);
         server.abort();
+    }
+
+    #[test]
+    fn validate_webhook_url_rejects_private_addresses() {
+        assert!(validate_webhook_url("http://127.0.0.1:8080/hook").is_err());
+        assert!(validate_webhook_url("http://localhost:8080/hook").is_err());
+        assert!(validate_webhook_url("http://10.0.0.1/hook").is_err());
+        assert!(validate_webhook_url("http://192.168.1.1/hook").is_err());
+        assert!(validate_webhook_url("http://169.254.169.254/latest/meta-data").is_err());
+        assert!(validate_webhook_url("file:///etc/passwd").is_err());
+        assert!(validate_webhook_url("gopher://evil.com").is_err());
+    }
+
+    #[test]
+    fn validate_webhook_url_accepts_public_addresses() {
+        assert!(validate_webhook_url("https://example.com/webhook").is_ok());
+        assert!(validate_webhook_url("http://8.8.8.8/webhook").is_ok());
     }
 }

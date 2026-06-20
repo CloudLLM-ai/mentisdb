@@ -377,7 +377,43 @@ pub fn lemmatize(token: &str) -> Option<String> {
     let t = token.to_ascii_lowercase();
 
     // Strip -ing
-    if t.ends_with("ing") && t.len() > 4 {
+    // Common nouns ending in -ing that should not be lemmatized.
+    const ING_NOUN_DENYLIST: &[&str] = &[
+        "thing",
+        "string",
+        "ring",
+        "bring",
+        "swing",
+        "morning",
+        "evening",
+        "ceiling",
+        "wing",
+        "king",
+        "sing",
+        "cling",
+        "fling",
+        "sting",
+        "sling",
+        "spring",
+        "offspring",
+        "nursing",
+        "erring",
+        "shilling",
+        "farthing",
+        "pudding",
+        "dumpling",
+        "darling",
+        "sterling",
+        "shelling",
+        "booking",
+        "meaning",
+        "warning",
+        "meeting",
+        "training",
+        "painting",
+        "drawing",
+    ];
+    if t.ends_with("ing") && t.len() > 4 && !ING_NOUN_DENYLIST.contains(&t.as_str()) {
         let base = &t[..t.len() - 3];
         // Doubled consonant: running -> run
         if base.len() > 1 {
@@ -412,7 +448,7 @@ pub fn lemmatize(token: &str) -> Option<String> {
         if base.ends_with('p') && base.len() > 1 {
             let without_p = &base[..base.len() - 1];
             if without_p.ends_with('o') {
-                // Additional check for common silent e pattern
+                return Some(format!("{without_p}e"));
             }
         }
         // -ied: carried -> carry

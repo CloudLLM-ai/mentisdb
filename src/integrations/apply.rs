@@ -35,7 +35,16 @@ impl FileSystem for OsFileSystem {
     }
 
     fn write_string(&self, path: &Path, content: &str) -> io::Result<()> {
-        fs::write(path, content)
+        fs::write(path, content)?;
+        // If the content contains a bearer token, restrict file permissions
+        // to owner-only on Unix to prevent other local users from reading
+        // the token.
+        #[cfg(unix)]
+        if content.contains("Bearer ") {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
     }
 }
 

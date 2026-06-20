@@ -1,6 +1,6 @@
 [package]
 name = "mentisdb"
-version = "0.10.1"
+version = "0.10.2"
 authors = ["Angel Leon <gubatron@gmail.com>"]
 edition = "2021"
 license = "MIT"
@@ -13,15 +13,15 @@ categories = ["data-structures", "development-tools", "asynchronous"]
 exclude = ["data/", "docs/", "lme-benches/", ".fastembed_cache/", ".github/", "start_mentisdb"]
 
 [features]
-default = ["server", "startup-sound", "llm-extraction"]
+default = ["server", "startup-sound", "llm-extraction", "hnsw-backend"]
 server = ["dep:axum", "dep:env_logger", "dep:if-addrs", "dep:log", "dep:tokio", "mcp/server", "dep:rcgen", "dep:axum-server", "dep:rustls-pemfile", "dep:x509-parser", "dep:reqwest", "dep:rustls"]
 startup-sound = ["dep:rodio"]
 local-embeddings = ["dep:fastembed", "dep:rustls"]
 llm-extraction = ["dep:openai-rust2", "dep:anyhow"]
-# HNSW approximate-nearest-neighbor vector backend. Off by default so the
-# default build keeps the pure-Rust story. When enabled, `VectorIndex` and
-# `VectorSearchBackend` switch to the HNSW backend once the corpus crosses
-# `DEFAULT_EXACT_TO_HNSW_THRESHOLD` (see ROADMAP.md 1.0.0 Track B).
+# HNSW approximate-nearest-neighbor vector backend. Included in the default
+# feature set in 0.10.2.47; disable it to keep the pure-Rust exact-scan path
+# only. When enabled, `VectorIndex` and `VectorSearchBackend` switch to the
+# HNSW backend once the corpus crosses `DEFAULT_EXACT_TO_HNSW_THRESHOLD`.
 hnsw-backend = ["dep:hnsw", "dep:rand_pcg", "dep:space", "hnsw/serde1", "rand_pcg/serde1"]
 
 [dependencies]
@@ -48,6 +48,7 @@ if-addrs = { version = "0.15", optional = true }
 env_logger = { version = "0.11.8", optional = true }
 log = { version = "0.4.28", optional = true }
 rcgen = { version = "0.14", optional = true }
+time = "0.3.49"
 rustls-pemfile = { version = "2", optional = true }
 x509-parser = { version = "0.18", optional = true }
 rodio = { version = "0.22", optional = true }
@@ -58,6 +59,7 @@ fastembed = { version = "5.13.1", optional = true }
 # and ring are compiled in, rustls refuses to auto-select a default provider.
 rustls = { version = "0.23", features = ["ring"], optional = true }
 ureq = { version = "2", features = ["json"] }
+url = "2.5.8"
 arboard = { version = "3", default-features = false }
 dotenvy = "0.15"
 openai-rust2 = { version = "1.7.2", optional = true }
