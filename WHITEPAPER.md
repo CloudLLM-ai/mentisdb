@@ -2,7 +2,7 @@
 
 **Author:** Angel Leon
 Universidad Católica Andrés Bello, Venezuela
-**Version:** 0.10.2.47
+**Version:** 0.10.3.48
 **Date:** 2026-06-16
 
 ## Abstract

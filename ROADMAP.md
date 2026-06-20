@@ -1,8 +1,8 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 -> 0.10.2.47)
+## Shipped (0.8.2 -> 0.10.3.48)
 
-### 0.10.2.47 - HNSW Approximate Vector Search, Background Builds, and HNSW Runtime Tuning
+### 0.10.3.48 - HNSW Approximate Vector Search, Background Builds, and HNSW Runtime Tuning
 - **HNSW approximate-nearest-neighbor vector backend** — enabled by default via the `hnsw-backend` Cargo feature. The exact f32 cosine scan remains the fallback for small sidecars; once a managed sidecar exceeds `MENTISDB_HNSW_THRESHOLD` (default 50,000 vectors) MentisDB switches to a pure-Rust HNSW graph automatically. The public API and hybrid/ranked search semantics are unchanged.
 - **HNSW graph persistence** — built graphs are serialized to disk and reloaded on startup when the vector count matches; stale graphs are deleted during a from-scratch rebuild. Writes are atomic (temp file + rename) so readers never see partial state.
 - **Background HNSW construction** — `MENTISDB_HNSW_BACKGROUND_BUILD` (default true) starts an Exact placeholder immediately and builds the graph off-thread, then swaps it into the cached sidecar when ready. Dashboard `backend_kind` and `backend_building` expose the current state.
@@ -241,13 +241,13 @@ Search starts at the top layer, greedily walks toward the query vector, drops do
 
 ### Integration Path for MentisDB
 1. **Keep exact f32 as reference** — never lose deterministic, auditable search
-2. **HNSW as a `VectorSearchBackend` implementation** — same trait, swapped implementation; shipped in 0.10.2.47 and enabled by default
+2. **HNSW as a `VectorSearchBackend` implementation** — same trait, swapped implementation; shipped in 0.10.3.48 and enabled by default
 3. **Quantized HNSW** — deferred; raw f32 HNSW outperformed the quantized prototype on both recall and latency
 4. **Filter-aware search** — HNSW with bitmap/pre-filter support (MentisDB's filter-first model maps well)
 5. **Incremental build** — HNSW supports online inserts; deletes via tombstone + periodic rebuild
 
 ### Rust Crates Evaluated
-- `hnsw` — selected for the 0.10.2.47 backend; pure Rust, no BLAS, no_std-friendly core, serde support for persistence
+- `hnsw` — selected for the 0.10.3.48 backend; pure Rust, no BLAS, no_std-friendly core, serde support for persistence
 - `arroy` — used by Meilisearch, supports mmap, incremental
 - `vectorsearch` — newer, SIMD-optimized
 - Or wrap `faiss`/`hnswlib` via FFI (heavier deps)
