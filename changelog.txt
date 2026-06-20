@@ -1,4 +1,4 @@
-0.10.2.47 UNRELEASED
+0.10.2.47 JUN/20/2026
   - feat(wizard): interactive setup wizard now supports Grok CLI / Build TUI
     harness (writes to ~/.grok/config.toml on macOS, ~/.config/grok on Linux,
     %APPDATA%\grok on Windows).
@@ -22,6 +22,78 @@
     recommend using the plain http:// URL on port 9471 instead.
   - feat(wizard): setup plan summary now shows a masked bearer token hint
     (first 8 chars + *****) when a bearer token is provided.
+  - feat(search): HNSW approximate-nearest-neighbor vector backend is now
+    enabled by default. The exact f32 cosine scan remains the fallback for small
+    sidecars; once a managed sidecar exceeds `MENTISDB_HNSW_THRESHOLD` vectors
+    (default 50,000) MentisDB switches to HNSW automatically. Both backends
+    implement the same `VectorSearchBackend` trait, so public APIs and
+    hybrid/ranked search semantics are unchanged. Build without the feature by
+    disabling `hnsw-backend` in your Cargo feature set.
+  - feat(search): HNSW graph persistence. Built graphs are serialized to disk
+    and reloaded on daemon startup when the persisted thought count matches the
+    live chain; stale graphs are deleted when a sidecar is rebuilt from scratch.
+    Rebuilding uses an atomic temp-file + rename so readers never see a partial
+    graph.
+  - feat(search): background HNSW graph construction. When enabled via
+    `MENTISDB_HNSW_BACKGROUND_BUILD` (default true), the daemon keeps an exact
+    placeholder while the HNSW graph is built off-thread, then swaps the graph
+    into the cached sidecar without interrupting queries. Dashboard status
+    exposes `backend_kind` and `backend_building`.
+  - feat(config): four new runtime environment variables for HNSW tuning:
+    `MENTISDB_HNSW_THRESHOLD`, `MENTISDB_HNSW_EF_CONSTRUCTION`,
+    `MENTISDB_HNSW_EF_SEARCH`, and `MENTISDB_HNSW_BACKGROUND_BUILD`. Dashboard
+    Settings lists all four and reads them on demand.
+  - feat(bench): `benches/hnsw_scale.rs` evaluates build time, recall@10, and
+    per-query latency at 50k (default), 100k, and 1M vectors; 100k/1M are
+    opt-in via env vars.
+  - chore(search): removed the experimental quantized HNSW path; raw f32 HNSW
+    yielded higher recall and lower latency than the quantized prototype.
+  - fix(search): HNSW code review fixes. Module doc corrected (scaled-cast
+    encoding, not bit-cast). `upsert_document` no longer wastes an orphan graph
+    node on updates. `searcher()` method removed (was allocating fresh each
+    call despite "reusable" doc). `HNSW_M` doc fixed (48, not 24).
+    `with_backend_kind` returns `HnswBackendNotEnabled` error instead of
+    silently creating a stub-metadata Exact backend. Removed
+    `validate_vector_public` wrapper. Swallowed persistence/upsert errors now
+    logged. All stale "upcoming"/"H0"/"H1" docs updated to present tense.
+    `matches!()` test no-ops converted to `assert!(matches!())`.
+  - fix(server): REST bearer-token middleware now extracts chain keys from the
+    request body and query string to enforce chain-scoped token authorization.
+    Previously, all REST endpoints accepted any active token regardless of
+    scope, allowing chain-scoped tokens to access any chain.
+  - fix(dashboard): settings API validates setting names against a whitelist
+    and rejects values containing newlines, preventing arbitrary environment
+    variable injection and `.env` file injection.
+  - fix(dashboard): PIN authentication middleware now uses constant-time
+    comparison (`subtle::ConstantTimeEq`) for all PIN checks, matching the
+    login handler. The session cookie is now a random UUID token instead of
+    the PIN itself.
+  - fix(server): TLS certificates now use dynamic validity (now - 1 day to
+    now + 2 years) instead of the hardcoded 2025-01-01 to 2027-01-01 range.
+  - fix(server): TLS private key file is now written with 0600 permissions on
+    Unix to prevent other local users from reading it.
+  - fix(webhooks): webhook URL registration now validates the scheme (http/https
+    only) and rejects URLs pointing to loopback, private, link-local, and
+    CGNAT IP addresses to prevent server-side request forgery (SSRF).
+  - fix(auth): `BearerTokenStore` now uses a mutex around the
+    read-modify-write cycle on `bearer-tokens.json` to prevent concurrent token
+    creation from silently losing tokens. `authorize_matching` save errors are
+    now logged instead of silently swallowed.
+  - fix(integrations): config files written by `mentisdb setup` / wizard that
+    contain bearer tokens are now created with 0600 permissions on Unix.
+  - fix(lib): agent registry and entity-type registry `thought_count` no longer
+    doubles on every chain reopen. Loaded records are reset to zero before
+    re-observing all thoughts.
+  - fix(lib): `compute_thought_hash` integrity gap for `entity_type` and
+    `source_episode` is now documented. These fields are excluded from the
+    canonical hash for backward compatibility.
+  - fix(lib): `BinaryStorageAdapter::clone` documentation now warns that
+    concurrent writes from both original and clone will corrupt the hash chain.
+  - fix(skills): `migrate_skill_registry` now writes atomically (temp file +
+    rename) to prevent registry corruption on crash during migration.
+  - fix(lemmas): `-ed` stripping no longer produces wrong lemmas for silent-e
+    verbs (e.g. "hoped" → "hope" instead of "hop"). `-ing` stripping now skips
+    common nouns (thing, string, morning, etc.) via a denylist.
 
 0.10.1.46 JUN/05/2026
   - feat(auth): built-in bearer-token authentication for remote MCP servers.

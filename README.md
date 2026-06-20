@@ -884,6 +884,24 @@ Operational flow:
   - rebuild the sidecar from scratch after an explicit confirmation that the previous file will be deleted and recreated
 - if auto-sync is disabled, new thoughts can make the sidecar stale until the user syncs or rebuilds it
 
+### HNSW approximate-nearest-neighbor vector backend
+
+By default MentisDB uses an exact cosine scan over the managed vector sidecar.
+Once the sidecar reaches `MENTISDB_HNSW_THRESHOLD` vectors (default 50,000) the
+backend automatically switches to an **HNSW** approximate graph for that
+sidecar. The same `VectorSearchBackend` trait powers both implementations, so
+public APIs and hybrid/ranked search results stay the same:
+
+- small corpora keep the deterministic exact backend
+- large corpora get sub-linear approximate search with no query change
+- `MENTISDB_HNSW_EF_CONSTRUCTION` and `MENTISDB_HNSW_EF_SEARCH` tune accuracy
+  versus latency
+- `MENTISDB_HNSW_BACKGROUND_BUILD` (default true) builds the graph off-thread
+  while the daemon keeps answering queries
+
+End users see lower latency transparently. The HNSW backend can be disabled at
+build time by opting out of the `hnsw-backend` Cargo feature.
+
 ### REST Lexical Search
 
 The daemon also exposes the Phase 1 ranked lexical surface over REST at `POST /v1/lexical-search`.

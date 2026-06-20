@@ -50,7 +50,7 @@
 \large A Hash-Chained Semantic Memory Substrate for Agentic Systems}
 \author{Angel Leon\\
 \small Universidad Cat\'olica Andr\'es Bello, Venezuela\\[0.3em]
-\small Version 0.9.9 \quad \textemdash \quad May 26, 2026}
+\small Version 0.10.2.47 \quad \textemdash \quad June 20, 2026}
 \date{}
 
 \begin{document}
@@ -58,11 +58,11 @@
 
 \begin{abstract}
 Contemporary agent frameworks treat long-term memory as an afterthought, relying on ad hoc prompt stuffing, unstructured Markdown files, or proprietary session state that is opaque, non-transferable, and easily lost. We introduce \textbf{MentisDB}, a durable, semantically typed memory engine that formalizes agent memory as an append-only, hash-chained ledger of structured \emph{thoughts}.
-Formally, a chain is a sequence $\chi = (t_0, t_1, \ldots, t_{n-1})$ of typed records satisfying a cryptographic integrity invariant $t_k.h = H(\sigma(t_k \setminus \{h\}))$ and $t_k.\hprev = t_{k-1}.h$, where $H$ is SHA-256 and $\sigma$ is canonical bincode serialization. On top of $\chi$ we define a retrieval function $R : (\chi, Q) \to \mathcal{P}(\chi)$ that composes BM25 lexical scoring with per-field document-frequency gating, query-time synonym expansion via a comprehensive static thesaurus (\textapprox 900 headwords) coupled with irregular-verb lemmatization, smooth exponential vector--lexical fusion, bidirectional graph expansion over typed relation edges augmented by vector-cosine-inferred implicit edges, temporal edge validity predicates, session cohesion, and rank-based fusion via Reciprocal Rank Fusion (RRF). Deduplication is implemented as a Jaccard-similarity test over normalized token sets, emitting $\mathsf{Supersedes}$ edges consulted in constant time via a precomputed invalidation set.
+Formally, a chain is a sequence $\chi = (t_0, t_1, \ldots, t_{n-1})$ of typed records satisfying a cryptographic integrity invariant $t_k.h = H(\sigma(t_k \setminus \{h\}))$ and $t_k.\hprev = t_{k-1}.h$, where $H$ is SHA-256 and $\sigma$ is canonical bincode serialization. On top of $\chi$ we define a retrieval function $R : (\chi, Q) \to \mathcal{P}(\chi)$ that composes BM25 lexical scoring with per-field document-frequency gating, query-time synonym expansion via a comprehensive static thesaurus ($\sim$ 900 headwords) coupled with irregular-verb lemmatization, smooth exponential vector--lexical fusion, bidirectional graph expansion over typed relation edges augmented by vector-cosine-inferred implicit edges, temporal edge validity predicates, session cohesion, rank-based fusion via Reciprocal Rank Fusion (RRF), and an HNSW approximate-nearest-neighbor backend for large vector sidecars. Deduplication is implemented as a Jaccard-similarity test over normalized token sets, emitting $\mathsf{Supersedes}$ edges consulted in constant time via a precomputed invalidation set.
 On canonical long-term memory benchmarks, MentisDB attains $R@10 = 88.7\%$ on LoCoMo-2P, $R@10 = 71.9\%$ on LoCoMo-10P, and $R@5 = 66.8\%$ / $R@10 = 72.2\%$ / $R@20 = 78.0\%$ on LongMemEval (v0.8.9, fresh chain, default retrieval settings). Results are deterministic and reproducible across independent runs. The implementation ships as a single Rust crate with an optional daemon exposing MCP, REST, and HTTPS surfaces, requires no external database, and operates without cloud or LLM dependencies in its core ingestion and retrieval path.
 
 \medskip
-\noindent\textbf{Keywords:} agent memory, hash-chained ledger, BM25, synonym expansion, reciprocal rank fusion, graph expansion, implicit edge inference, temporal knowledge graphs, retrieval-augmented generation.
+\noindent\textbf{Keywords:} agent memory, hash-chained ledger, BM25, synonym expansion, reciprocal rank fusion, graph expansion, implicit edge inference, approximate nearest neighbor search, HNSW, temporal knowledge graphs, retrieval-augmented generation.
 \end{abstract}
 
 \section{Introduction}
@@ -76,10 +76,11 @@ This paper makes the following contributions:
     \item \textbf{Semantic typing.} We introduce a 30-variant $\TType$ algebra and an 8-variant $\TRole$ algebra, separating content semantics from workflow mechanics (Section~\ref{sec:semantics}).
     \item \textbf{Temporal edges.} We extend typed graph relations with a validity interval $[\mathtt{valid\_at}, \mathtt{invalid\_at}]$ enabling point-in-time queries via a predicate $\pi_\tau$ (Section~\ref{subsec:temporal}).
     \item \textbf{Hybrid retrieval.} We describe a composable retrieval pipeline~---~per-field BM25 with DF gating, query-time synonym expansion, smooth exponential vector--lexical fusion, bounded graph BFS with typed edge weights, session cohesion, importance weighting, and RRF~---~and characterize each signal mathematically (Section~\ref{sec:retrieval}).
-    \item \textbf{Synonym expansion.} We introduce a static thesaurus of \textapprox 900 headwords embedded into the binary at compile time, coupled with irregular-verb lemmatization (300+ entries), enabling query terms like \texttt{went} to find documents containing \texttt{go} and \texttt{travel}. Synonym matches receive a configurable weight penalty (default $0.7$) relative to exact term matches, and a fast path in the BM25 scorer eliminates overhead when no synonyms are configured (Section~\ref{subsec:synonyms}).
+    \item \textbf{Synonym expansion.} We introduce a static thesaurus of $\sim$ 900 headwords embedded into the binary at compile time, coupled with irregular-verb lemmatization (300+ entries), enabling query terms like \texttt{went} to find documents containing \texttt{go} and \texttt{travel}. Synonym matches receive a configurable weight penalty (default $0.7$) relative to exact term matches, and a fast path in the BM25 scorer eliminates overhead when no synonyms are configured (Section~\ref{subsec:synonyms}).
     \item \textbf{Deduplication.} We give a Jaccard-threshold algorithm that auto-emits $\mathsf{Supersedes}$ edges, with constant-time consultation via a precomputed invalidation set $\Inv(\chi)$ (Section~\ref{sec:dedup}).
     \item \textbf{Empirical evaluation.} We report results on LoCoMo and LongMemEval, and provide near-miss analyses for both benchmarks characterizing the residual lexical ceiling (Section~\ref{sec:eval}).
     \item \textbf{Implicit edge overlay.} We introduce $\mathsf{ImplicitEdgeOverlay}$, a rebuildable per-chain sidecar that derives $\mathsf{RelatedTo}$ edges from vector cosine similarity above a configurable threshold $\theta$, enriching graph expansion for chains where agents author few explicit relations (Section~\ref{subsec:overlay}).
+    \item \textbf{Approximate vector search.} We describe an HNSW approximate-nearest-neighbor backend that shares the same $\mathsf{VectorSearchBackend}$ trait as the exact cosine engine, scaling vector sidecars to millions of entries while preserving the public retrieval semantics (Section~\ref{subsec:hnsw}).
 \end{enumerate}
 
 \subsection{Paper Organization}
@@ -332,11 +333,11 @@ S_\ell(d, Q) = \sum_{q \in Q} \sum_{f} \gamma_f(q) \cdot w_f \cdot \mathrm{score
 
 A term violating $\gamma_f$ in one field may still contribute through other fields whose cutoffs it respects. The 20-document threshold suppresses DF filtering on small corpora where statistics are not yet meaningful.
 
-Normalization applies Porter stemming~\cite{porter1980} before indexing and querying. An irregular-verb lemma table of \textapprox 300 entries expands query-time tokens (e.g.\ \texttt{went}~$\to$~\texttt{go}, \texttt{saw}~$\to$~\texttt{see}), because Porter stemming cannot normalize suppletive forms. Regular suffix stripping (\texttt{-ing}, \texttt{-ed}, \texttt{-ies}, \texttt{-s}) handles predictable verb forms automatically.
+Normalization applies Porter stemming~\cite{porter1980} before indexing and querying. An irregular-verb lemma table of $\sim$ 300 entries expands query-time tokens (e.g.\ \texttt{went}~$\to$~\texttt{go}, \texttt{saw}~$\to$~\texttt{see}), because Porter stemming cannot normalize suppletive forms. Regular suffix stripping (\texttt{-ing}, \texttt{-ed}, \texttt{-ies}, \texttt{-s}) handles predictable verb forms automatically.
 
 \subsection{Static Thesaurus Synonym Expansion}\label{subsec:synonyms}
 
-Query terms are expanded via a static thesaurus of \textapprox 900 headwords covering common English verbs, nouns, adjectives, adverbs, and software-engineering terminology. The thesaurus data is embedded into the binary at compile time (\texttt{include\_str!}), requiring no external files or network calls at runtime.
+Query terms are expanded via a static thesaurus of $\sim$ 900 headwords covering common English verbs, nouns, adjectives, adverbs, and software-engineering terminology. The thesaurus data is embedded into the binary at compile time (\texttt{include\_str!}), requiring no external files or network calls at runtime.
 
 \begin{definition}[Synonym Expansion]
 Given query $Q$ and thesaurus $\Theta : \Sstar \to \mathcal{P}(\Sstar)$, the expanded term set is
@@ -447,6 +448,32 @@ If the loaded overlay's $(\theta, K)$ parameters differ from the current configu
 
 \paragraph{Integration with BFS.}
 $\Expand$ (Definition~\ref{def:expand}) checks the overlay after exhausting each node's explicit adjacency list. Implicit neighbors are synthesized as $\mathsf{RelatedTo}$ graph edges and participate in the same seen-set, depth budget, and visit budget as explicit relations.
+
+\subsection{HNSW Approximate Vector Backend}\label{subsec:hnsw}
+
+For managed vector sidecars above a configurable size threshold, MentisDB uses a
+Hierarchical Navigable Small World (HNSW) graph to approximate nearest-neighbor
+search instead of the exact cosine scan. The exact backend remains the default
+for small corpora and the fallback if the HNSW graph is unavailable or
+mismatched.
+
+Let $T \in \mathbb{N}$ be the HNSW activation threshold (\texttt{MENTISDB\_HNSW\_THRESHOLD},
+default $50{,}000$). Given a sidecar $\mathcal{S}$ with $|\mathcal{S}|$ vectors,
+the active backend is
+\[
+\mathsf{Backend}(\mathcal{S}) =
+\begin{cases}
+\mathsf{Exact} & \text{if } |\mathcal{S}| < T \text{ or HNSW is disabled}, \\
+\mathsf{Hnsw} & \text{otherwise}.
+\end{cases}
+\]
+Both backends implement the same $\mathsf{VectorSearchBackend}$ trait and return
+candidates in the same order-preserving cosine-score units, so the surrounding
+hybrid retrieval pipeline is unchanged. The HNSW graph is persisted to disk and
+reloaded on startup when the stored thought count matches the live chain; stale
+graphs are atomically rebuilt. For large sidecars the graph can be constructed
+in a background thread while the daemon continues to serve queries with the
+exact backend.
 
 \subsection{Decomposed Scores}
 Each ranked hit exposes a score vector
@@ -598,6 +625,7 @@ Storage & embedded file & external DB & Neo4j / FalkorDB & external DB \\
 LLM required for core & \textbf{No} & Yes & Yes & Yes \\
 Cryptographic integrity & \textbf{SHA-256 chain} & -- & -- & -- \\
 Hybrid retrieval & BM25+vec+graph & vec+keyword & sem+kw+graph & -- \\
+Approximate NN (HNSW) & \textbf{Yes (default)} & --- & --- & --- \\
 Implicit graph inference & \textbf{cosine-inferred} & -- & LLM-extracted & -- \\
 Temporal facts & $[\mathtt{v}_{\ast}, \mathtt{v}^{\ast}]$ & update-only & $[\mathtt{v}_{\ast}, \mathtt{v}^{\ast}]$ & -- \\
 Deduplication & Jaccard+$\mathsf{Supersedes}$ & LLM-based & merge & -- \\

@@ -1,6 +1,14 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 -> 0.10.1.46)
+## Shipped (0.8.2 -> 0.10.2.47)
+
+### 0.10.2.47 - HNSW Approximate Vector Search, Background Builds, and HNSW Runtime Tuning
+- **HNSW approximate-nearest-neighbor vector backend** — enabled by default via the `hnsw-backend` Cargo feature. The exact f32 cosine scan remains the fallback for small sidecars; once a managed sidecar exceeds `MENTISDB_HNSW_THRESHOLD` (default 50,000 vectors) MentisDB switches to a pure-Rust HNSW graph automatically. The public API and hybrid/ranked search semantics are unchanged.
+- **HNSW graph persistence** — built graphs are serialized to disk and reloaded on startup when the vector count matches; stale graphs are deleted during a from-scratch rebuild. Writes are atomic (temp file + rename) so readers never see partial state.
+- **Background HNSW construction** — `MENTISDB_HNSW_BACKGROUND_BUILD` (default true) starts an Exact placeholder immediately and builds the graph off-thread, then swaps it into the cached sidecar when ready. Dashboard `backend_kind` and `backend_building` expose the current state.
+- **HNSW runtime knobs** — `MENTISDB_HNSW_THRESHOLD`, `MENTISDB_HNSW_EF_CONSTRUCTION`, `MENTISDB_HNSW_EF_SEARCH`, and `MENTISDB_HNSW_BACKGROUND_BUILD` are surfaced in Dashboard Settings and read on demand.
+- **Scale benchmark** — `benches/hnsw_scale.rs` measures build time, recall@10, and per-query latency at 50k/100k/1M vectors (100k/1M opt-in via env var).
+- **Removed experimental quantized HNSW** — raw f32 HNSW outperformed the quantized prototype on both recall and latency, so the quantized path was deleted.
 
 ### 0.10.1.46 - Built-in Bearer Token Auth, TLS Cert CLI, and Search-First Discipline
 - **Built-in bearer-token authentication** — `MENTISDB_BEARER_TOKEN_ACCESS=true` protects Streamable HTTP MCP and legacy HTTP MCP routes with `Authorization: Bearer ...`; tokens stored as SHA-256 hashes only. Prerequisite for any non-loopback HTTPS MCP/REST deployment.
@@ -176,7 +184,7 @@ The next phase closes the remaining competitive gaps and ships what enterprise u
 **Track B: Managed Cloud Service (Secondary — After Library Maturity)**
 - **Multi-tenancy** — org/workspace/chains isolation, per-tenant API keys, RBAC
 - **Managed embeddings** — pre-warmed FastEmbed/OpenAI-compatible model server, no cold starts
-- **HNSW/Quantized ANN** — sub-100ms p95 at 10M+ vectors (see HNSW note below)
+- **Managed HNSW and cloud optimizations** — hosted HNSW with persistence sharding, horizontal replication, and optional quantization for sub-100ms p95 at 10M+ vectors in the managed service
 - **Usage metering & billing** — per-request, per-GB, per-seat tiers
 - **SLA/observability** — health endpoints, latency percentiles, backup/restore API, audit logs
 - **Import/Export UX** — one-click JSONL/CSV/Parquet, schema migration
@@ -233,13 +241,13 @@ Search starts at the top layer, greedily walks toward the query vector, drops do
 
 ### Integration Path for MentisDB
 1. **Keep exact f32 as reference** — never lose deterministic, auditable search
-2. **HNSW as optional `VectorSearchBackend`** — same trait, swapped implementation
-3. **Quantized HNSW** — store compressed vectors in graph nodes (TurboQuant/4-bit), exact vectors on disk for rerank
+2. **HNSW as a `VectorSearchBackend` implementation** — same trait, swapped implementation; shipped in 0.10.2.47 and enabled by default
+3. **Quantized HNSW** — deferred; raw f32 HNSW outperformed the quantized prototype on both recall and latency
 4. **Filter-aware search** — HNSW with bitmap/pre-filter support (MentisDB's filter-first model maps well)
 5. **Incremental build** — HNSW supports online inserts; deletes via tombstone + periodic rebuild
 
-### Rust Crates to Evaluate
-- `hnsw` — pure Rust, no BLAS, used by Qdrant's early versions
+### Rust Crates Evaluated
+- `hnsw` — selected for the 0.10.2.47 backend; pure Rust, no BLAS, no_std-friendly core, serde support for persistence
 - `arroy` — used by Meilisearch, supports mmap, incremental
 - `vectorsearch` — newer, SIMD-optimized
 - Or wrap `faiss`/`hnswlib` via FFI (heavier deps)

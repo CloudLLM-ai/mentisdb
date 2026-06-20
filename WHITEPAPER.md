@@ -2,14 +2,14 @@
 
 **Author:** Angel Leon
 Universidad Católica Andrés Bello, Venezuela
-**Version:** 0.9.9
-**Date:** 2026-05-29
+**Version:** 0.10.2.47
+**Date:** 2026-06-16
 
 ## Abstract
 
 Contemporary agent frameworks treat long-term memory as an afterthought, relying on ad hoc prompt stuffing, unstructured Markdown files, or proprietary session state that is opaque, non-transferable, and easily lost. We introduce **MentisDB**, a durable, semantically typed memory engine that formalizes agent memory as an append-only, hash-chained ledger of structured *thoughts*.
 
-Formally, a chain is a sequence $\chi = (t_0, t_1, \ldots, t_{n-1})$ of typed records satisfying a cryptographic integrity invariant $t_k.h = H(\sigma(t_k \setminus \{h\}))$ and $t_k.h_{\mathrm{prev}} = t_{k-1}.h$, where $H$ is SHA-256 and $\sigma$ is canonical bincode serialization. On top of $\chi$ we define a retrieval function $R: (\chi, Q) \to \mathcal{P}(\chi)$ that composes BM25 lexical scoring with per-field document-frequency gating, smooth exponential vector-lexical fusion, bidirectional graph expansion over typed relation edges augmented by vector-cosine-inferred implicit edges, temporal edge validity predicates, session cohesion, and rank-based fusion via Reciprocal Rank Fusion (RRF). Deduplication is implemented as a Jaccard-similarity test over normalized token sets, emitting $\mathsf{Supersedes}$ edges that are consulted in constant time via a precomputed invalidation set.
+Formally, a chain is a sequence $\chi = (t_0, t_1, \ldots, t_{n-1})$ of typed records satisfying a cryptographic integrity invariant $t_k.h = H(\sigma(t_k \setminus \{h\}))$ and $t_k.h_{\mathrm{prev}} = t_{k-1}.h$, where $H$ is SHA-256 and $\sigma$ is canonical bincode serialization. On top of $\chi$ we define a retrieval function $R: (\chi, Q) \to \mathcal{P}(\chi)$ that composes BM25 lexical scoring with per-field document-frequency gating, smooth exponential vector-lexical fusion, bidirectional graph expansion over typed relation edges augmented by vector-cosine-inferred implicit edges, temporal edge validity predicates, session cohesion, rank-based fusion via Reciprocal Rank Fusion (RRF), and an HNSW approximate-nearest-neighbor backend for large vector sidecars. Deduplication is implemented as a Jaccard-similarity test over normalized token sets, emitting $\mathsf{Supersedes}$ edges that are consulted in constant time via a precomputed invalidation set.
 
 On canonical long-term memory benchmarks with the thesaurus now applying automatically by default, MentisDB attains $R@10 = 72.6\%$ on LoCoMo-10P and $R@5 = 66.8\%$ on LongMemEval (v0.9.9, full fastembed-minilm vectors). The implementation ships as a single Rust crate with an optional daemon exposing MCP, REST, and HTTPS surfaces, requires no external database, and operates without cloud or LLM dependencies in its core ingestion and retrieval path.
 
@@ -32,6 +32,7 @@ This paper makes the following contributions:
 5. **Deduplication.** We give a Jaccard-threshold algorithm that auto-emits $\mathsf{Supersedes}$ edges, with constant-time consultation via a precomputed invalidation set $\mathcal{I}(\chi)$ (Section 7).
 6. **Empirical evaluation.** We report results on LoCoMo and LongMemEval, and provide near-miss analyses for both benchmarks characterizing the residual lexical ceiling (Section 9).
 7. **Implicit edge overlay.** We introduce the $\mathsf{ImplicitEdgeOverlay}$, a rebuildable per-chain sidecar that derives $\mathsf{RelatedTo}$ edges from vector cosine similarity above a configurable threshold $\theta$, enriching graph expansion for chains where agents author few explicit relations (Section 6.12).
+8. **Approximate vector search.** We describe an HNSW approximate-nearest-neighbor backend that shares the same `VectorSearchBackend` trait as the exact cosine engine. It is selected automatically once a managed vector sidecar crosses a configurable size threshold, retaining the same public semantics while scaling to millions of vectors (Section 6.13).
 
 ### 1.2 Paper Organization
 
@@ -364,7 +365,33 @@ restricted so that each source node $u_i$ retains at most $K$ neighbors sorted b
 
 **Integration with BFS.** $\mathrm{Expand}$ (Definition 9) checks the overlay after exhausting each node's explicit adjacency list. Implicit neighbors are synthesized as $\mathsf{RelatedTo}$ graph edges and participate in the same seen-set, depth budget, and visit budget as explicit relations.
 
-### 6.13 Decomposed Scores
+### 6.13 HNSW Approximate Vector Backend
+
+For managed vector sidecars above a configurable size threshold, MentisDB uses a
+Hierarchical Navigable Small World (HNSW) graph to approximate nearest-neighbor
+search instead of the exact cosine scan. The exact backend remains the default
+for small corpora and the fallback if the HNSW graph is unavailable or
+mismatched.
+
+Let $T \in \mathbb{N}$ be the HNSW activation threshold (`MENTISDB_HNSW_THRESHOLD`,
+default $50{,}000$). Given a sidecar $\mathcal{S}$ with $|\mathcal{S}|$ vectors,
+the active backend is
+$$
+\mathsf{Backend}(\mathcal{S}) =
+\begin{cases}
+\mathsf{Exact} & \text{if } |\mathcal{S}| < T \text{ or HNSW is disabled}, \\
+\mathsf{Hnsw} & \text{otherwise}.
+\end{cases}
+$$
+Both backends implement the same $\mathsf{VectorSearchBackend}$ trait and return
+candidates in the same order-preserving cosine-score units, so the surrounding
+hybrid retrieval pipeline is unchanged. The HNSW graph is persisted to disk and
+reloaded on startup when the stored thought count matches the live chain; stale
+graphs are atomically rebuilt. For large sidecars the graph can be constructed
+in a background thread while the daemon continues to serve queries with the
+exact backend.
+
+### 6.14 Decomposed Scores
 
 Each ranked hit exposes a score vector
 $$
@@ -506,6 +533,7 @@ Criterion micro-benchmarks span five domains: append throughput (`thought_chain`
 | LLM required for core | **No** | Yes | Yes | Yes |
 | Cryptographic integrity | **SHA-256 hash chain** | — | — | — |
 | Hybrid retrieval | BM25 + vector + graph | vector + keyword | semantic + keyword + graph | — |
+| Approximate NN (HNSW) | **Yes (default)** | — | — | — |
 | Implicit graph inference | **cosine-inferred edges** | — | LLM-extracted | — |
 | Temporal facts | $[\mathtt{v}_\ast, \mathtt{v}^\ast]$ (0.8.2+) | update-only | $[\mathtt{v}_\ast, \mathtt{v}^\ast]$ | — |
 | Deduplication | **Jaccard + $\mathsf{Supersedes}$** | LLM-based | merge | — |
