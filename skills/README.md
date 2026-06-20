@@ -24,6 +24,10 @@ phrase, load the full skill before proceeding.
 
 - **`engineering-pipeline.md`** — release engineering pipeline (Phases 1-5).
   Triggers: "release pipeline", "ship mentisdb", "version bump", "release checklist".
+- **`hotfix-release.md`** — fast-path release pipeline for hotfixes. Skips
+  benchmarks and full review when the change is a small fix on top of a
+  just-shipped release. Triggers: "hotfix release", "re-release",
+  "patch release", "quick release".
 - **`cookbook-as-test.md`** — pipeline for keeping the cookbook's code
   examples honest: HTML → extract → compile → fix. Triggers:
   "cookbook as test", "extract cookbook examples", "API drift in docs",
