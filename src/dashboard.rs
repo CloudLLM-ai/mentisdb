@@ -278,10 +278,10 @@ async fn pin_auth_middleware(
         for part in cookie_str.split(';') {
             if let Some(token) = part.trim().strip_prefix("mentisdb_session=") {
                 // Check the session token against the server-side map.
-                // Expire sessions older than the rate-limit window.
+                // Expire sessions older than the session timeout.
                 if let Ok(sessions) = state.sessions.lock() {
                     if let Some(&issued_at) = sessions.get(token) {
-                        if issued_at.elapsed().as_secs() < RATE_LIMIT_WINDOW_SECS * 60 {
+                        if issued_at.elapsed().as_secs() < SESSION_TIMEOUT_SECS {
                             session_valid = true;
                             break;
                         }
@@ -325,8 +325,17 @@ async fn serve_login() -> impl IntoResponse {
 static RATE_LIMIT_MAP: std::sync::LazyLock<std::sync::Mutex<HashMap<String, (u32, Instant)>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
-const RATE_LIMIT_MAX_ATTEMPTS: u32 = 5;
-const RATE_LIMIT_WINDOW_SECS: u64 = 300; // 5 minutes
+pub(crate) const RATE_LIMIT_MAX_ATTEMPTS: u32 = 5;
+pub(crate) const RATE_LIMIT_WINDOW_SECS: u64 = 300; // 5 minutes
+
+/// How long a server-side session token remains valid after login.
+///
+/// This is intentionally independent of the brute-force rate-limit window
+/// above. The previous code reused `RATE_LIMIT_WINDOW_SECS * 60` for session
+/// expiry — since the rate-limit window is already in seconds (300), the `* 60`
+/// made sessions valid for 5 hours instead of the intended 5 minutes, and
+/// coupled two unrelated concerns. We now make the session lifetime explicit.
+pub(crate) const SESSION_TIMEOUT_SECS: u64 = 8 * 60 * 60; // 8 hours
 
 /// Form body for the `/dashboard/login` POST.
 #[derive(Deserialize)]
@@ -389,7 +398,7 @@ async fn handle_login(
         if let Ok(mut sessions) = state.sessions.lock() {
             // Evict expired sessions to prevent unbounded growth.
             sessions
-                .retain(|_, issued_at| issued_at.elapsed().as_secs() < RATE_LIMIT_WINDOW_SECS * 60);
+                .retain(|_, issued_at| issued_at.elapsed().as_secs() < SESSION_TIMEOUT_SECS);
             sessions.insert(session_token.clone(), Instant::now());
         }
         (
