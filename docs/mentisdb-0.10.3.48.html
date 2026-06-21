@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.10.3.48 — HNSW Vector Search by Default, Hardened Security, and 16 Critical Fixes</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article .meta { color: #888; font-size: 0.85rem; margin-bottom: 1rem; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="index.html">MentisDB Blog</a></h1>
+    <p>Durable memory for AI agents</p>
+  </header>
+
+  <article>
+    <h2>MentisDB 0.10.3.48 &mdash; HNSW Vector Search by Default, Hardened Security, and 16 Critical Fixes</h2>
+    <div class="meta">June 20, 2026</div>
+
+    <p>
+      This release ships two things: <strong>HNSW approximate-nearest-neighbor vector search</strong>
+      enabled by default, and a <strong>comprehensive security and correctness audit</strong> that
+      fixed 16 critical issues across REST auth, dashboard, TLS, webhooks, and the lemma engine.
+      The HNSW backend delivers a <strong>10.9&times; query speedup</strong> at 10k vectors with
+      91.4% recall, and <strong>100% recall at 50k vectors</strong> &mdash; all transparent to
+      existing APIs.
+    </p>
+
+    <h3>HNSW Vector Backend (Headline Feature)</h3>
+    <p>
+      MentisDB now ships with a Hierarchical Navigable Small World (HNSW) graph backend for
+      approximate nearest-neighbor search, enabled by default via the <code>hnsw-backend</code>
+      Cargo feature. The existing exact f32 cosine scan remains the fallback for small sidecars;
+      once a managed vector sidecar exceeds <code>MENTISDB_HNSW_THRESHOLD</code> vectors
+      (default 50,000), MentisDB switches to HNSW automatically.
+    </p>
+    <p>
+      Both backends implement the same <code>VectorSearchBackend</code> trait, so the public API,
+      hybrid scoring, and ranked search semantics are unchanged. You can disable HNSW at build
+      time by opting out of the <code>hnsw-backend</code> Cargo feature.
+    </p>
+
+    <h4>Benchmark Results</h4>
+    <table>
+      <tr><th>Corpus</th><th>Backend</th><th>Query Latency (100 queries)</th><th>Recall@10</th><th>Speedup</th></tr>
+      <tr><td>10k &times; 128d</td><td>Exact (linear scan)</td><td>95.1 ms</td><td>100.0%</td><td>&mdash;</td></tr>
+      <tr><td>10k &times; 128d</td><td><strong>HNSW</strong></td><td><strong>8.75 ms</strong></td><td>91.4%</td><td><strong>10.9&times;</strong></td></tr>
+      <tr><td>50k &times; 128d</td><td><strong>HNSW</strong></td><td><strong>4.23 ms/query</strong></td><td><strong>100.0%</strong></td><td>&mdash;</td></tr>
+    </table>
+    <p>
+      The 50k result is remarkable: <strong>100% recall at 4.23ms per query</strong>. Build time
+      was 232s (one-time, background). HNSW graph persistence means the graph is serialized to
+      disk and reloaded on daemon startup &mdash; no rebuild needed after restart.
+    </p>
+
+    <h4>LoCoMo Regression Check</h4>
+    <p>
+      Full LoCoMo benchmark (1,977 queries, <code>fastembed-minilm</code> vectors) confirmed
+      <strong>no regression</strong>:
+    </p>
+    <table>
+      <tr><th>Category</th><th>Baseline (0.9.9)</th><th>0.10.3.48</th><th>Delta</th></tr>
+      <tr><td>Overall R@10</td><td>72.64%</td><td>72.53%</td><td>&minus;0.11pp (within variance)</td></tr>
+      <tr><td>Single R@10</td><td>76.77%</td><td>76.77%</td><td>0.00pp (identical)</td></tr>
+      <tr><td>Multi R@10</td><td>57.45%</td><td>56.97%</td><td>&minus;0.48pp (borderline)</td></tr>
+    </table>
+
+    <h4>HNSW Runtime Tuning</h4>
+    <p>Four new environment variables control HNSW behavior:</p>
+    <ul>
+      <li><code>MENTISDB_HNSW_THRESHOLD</code> &mdash; corpus size to trigger HNSW (default 50,000)</li>
+      <li><code>MENTISDB_HNSW_EF_CONSTRUCTION</code> &mdash; build-time search width (default 200)</li>
+      <li><code>MENTISDB_HNSW_EF_SEARCH</code> &mdash; query-time search width (default 100)</li>
+      <li><code>MENTISDB_HNSW_BACKGROUND_BUILD</code> &mdash; build off-thread with Exact placeholder (default true)</li>
+    </ul>
+    <p>
+      When background build is enabled, the daemon serves queries from an Exact placeholder
+      while the HNSW graph is constructed off-thread, then swaps the graph in without
+      interrupting queries. Dashboard status exposes <code>backend_kind</code> and
+      <code>backend_building</code> fields.
+    </p>
+
+    <h4>HNSW Graph Persistence</h4>
+    <p>
+      Built graphs are serialized to <code>{stem}.vectors.{model}.{version}.{dim}d.hnsw.bin</code>
+      and reloaded on daemon startup when the persisted thought count matches the live chain.
+      Stale graphs are deleted when a sidecar is rebuilt from scratch. Writes use an atomic
+      temp-file + rename so readers never see a partial graph.
+    </p>
+
+    <h3>Security &amp; Correctness Audit &mdash; 16 Critical Fixes</h3>
+    <p>
+      A full codebase review identified and fixed 16 critical issues. Here are the most
+      significant:
+    </p>
+
+    <h4>REST Bearer Auth Scope Bypass (C1)</h4>
+    <p>
+      The REST bearer-token middleware now extracts chain keys from the request body and query
+      string to enforce chain-scoped token authorization. Previously, all REST endpoints accepted
+      any active token regardless of scope, allowing chain-scoped tokens to access any chain.
+    </p>
+
+    <h4>Dashboard Settings Injection (C2, C3)</h4>
+    <p>
+      The settings API now validates setting names against a whitelist (<code>ALLOWED_SETTING_KEYS</code>)
+      and rejects values containing newlines, preventing arbitrary environment variable injection
+      and <code>.env</code> file injection.
+    </p>
+
+    <h4>Webhook SSRF Defense (C4)</h4>
+    <p>
+      Webhook URL registration now validates the scheme (http/https only) and rejects URLs
+      pointing to loopback, private, link-local, and CGNAT IP addresses to prevent server-side
+      request forgery.
+    </p>
+
+    <h4>Constant-Time PIN + Session Tokens (C5, C6)</h4>
+    <p>
+      PIN authentication middleware now uses <code>subtle::ConstantTimeEq</code> for all PIN
+      checks. The session cookie is now a random UUID token instead of the PIN itself, stored
+      in an in-memory <code>sessions</code> map on <code>DashboardState</code>.
+    </p>
+
+    <h4>TLS Certificate &amp; Key Hardening (C7, C8)</h4>
+    <p>
+      TLS certificates now use dynamic validity (now &minus; 1 day to now + 2 years) instead of
+      the hardcoded 2025&ndash;2027 range. TLS private key files are written with
+      <code>0600</code> permissions on Unix.
+    </p>
+
+    <h4>Bearer Token Store Concurrency (C9, C10)</h4>
+    <p>
+      <code>BearerTokenStore</code> now uses a mutex around the read-modify-write cycle on
+      <code>bearer-tokens.json</code> to prevent concurrent token creation from silently losing
+      tokens. Integration config files containing bearer tokens are created with
+      <code>0600</code> permissions on Unix.
+    </p>
+
+    <h4>Other Fixes</h4>
+    <ul>
+      <li>Agent/entity-type <code>thought_count</code> no longer doubles on every chain reopen (C11)</li>
+      <li><code>compute_thought_hash</code> integrity gap for <code>entity_type</code> and <code>source_episode</code> documented (C12)</li>
+      <li><code>BinaryStorageAdapter::clone</code> documentation warns against concurrent writes (C13)</li>
+      <li><code>migrate_skill_registry</code> now writes atomically (temp file + rename) (C14)</li>
+      <li>Lemma <code>-ed</code> stripping: "hoped" &rarr; "hope" (was "hop") (C15)</li>
+      <li>Lemma <code>-ing</code> denylist for common nouns (thing, string, morning, etc.) (C16)</li>
+    </ul>
+
+    <h3>Setup Wizard: Grok CLI Support</h3>
+    <p>
+      The interactive setup wizard (<code>mentisdb wizard</code>) now supports <strong>Grok CLI</strong>
+      as an integration target, writing to <code>~/.grok/config.toml</code> on macOS,
+      <code>~/.config/grok</code> on Linux, and <code>%APPDATA%\grok</code> on Windows. Bearer
+      token collection is now available via <code>--bearer</code> / <code>--token</code> flag or
+      interactive prompt.
+    </p>
+
+    <h3>Upgrade</h3>
+    <pre><code>cargo install mentisdb --force</code></pre>
+    <p>
+      For full vector support (real semantic embeddings via ONNX), build with:
+    </p>
+    <pre><code>cargo install mentisdb --force --features local-embeddings</code></pre>
+
+    <h3>Links</h3>
+    <ul>
+      <li>GitHub Release: <a href="https://github.com/CloudLLM-ai/mentisdb/releases/tag/0.10.3.48">0.10.3.48</a></li>
+      <li>Changelog: <a href="https://github.com/CloudLLM-ai/mentisdb/blob/master/changelog.txt">changelog.txt</a></li>
+      <li>Documentation: <a href="https://docs.mentisdb.com">docs.mentisdb.com</a></li>
+    </ul>
+  </article>
+
+  <footer>
+    <a href="index.html">&larr; Back to blog</a>
+  </footer>
+</body>
+</html>
