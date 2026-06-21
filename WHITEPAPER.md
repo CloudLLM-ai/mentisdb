@@ -1,403 +1,836 @@
-# MentisDB: A Hash-Chained Semantic Memory Substrate for Agentic Systems
+# MentisDB: Durable Semantic Memory for Software Agents
 
 **Author:** Angel Leon
-Universidad Católica Andrés Bello, Venezuela
 **Version:** 0.10.4.49
-**Date:** 2026-06-16
+**Date:** 2026-06-20
+
+---
 
 ## Abstract
 
-Contemporary agent frameworks treat long-term memory as an afterthought, relying on ad hoc prompt stuffing, unstructured Markdown files, or proprietary session state that is opaque, non-transferable, and easily lost. We introduce **MentisDB**, a durable, semantically typed memory engine that formalizes agent memory as an append-only, hash-chained ledger of structured *thoughts*.
+Most agent frameworks treat long-term memory as an afterthought — ad-hoc prompt stuffing,
+unstructured Markdown files, or opaque session state that's non-portable and easily lost.
+MentisDB is a durable, semantically typed memory engine built in Rust that treats agent
+memory as an append-only, hash-chained ledger of structured records called *thoughts*.
 
-Formally, a chain is a sequence $\chi = (t_0, t_1, \ldots, t_{n-1})$ of typed records satisfying a cryptographic integrity invariant $t_k.h = H(\sigma(t_k \setminus \{h\}))$ and $t_k.h_{\mathrm{prev}} = t_{k-1}.h$, where $H$ is SHA-256 and $\sigma$ is canonical bincode serialization. On top of $\chi$ we define a retrieval function $R: (\chi, Q) \to \mathcal{P}(\chi)$ that composes BM25 lexical scoring with per-field document-frequency gating, smooth exponential vector-lexical fusion, bidirectional graph expansion over typed relation edges augmented by vector-cosine-inferred implicit edges, temporal edge validity predicates, session cohesion, rank-based fusion via Reciprocal Rank Fusion (RRF), and an HNSW approximate-nearest-neighbor backend for large vector sidecars. Deduplication is implemented as a Jaccard-similarity test over normalized token sets, emitting $\mathsf{Supersedes}$ edges that are consulted in constant time via a precomputed invalidation set.
+Every thought is cryptographically linked to its predecessor via SHA-256, making the chain
+tamper-evident. On top of this ledger, MentisDB provides a retrieval pipeline that combines
+BM25 lexical scoring, vector similarity, typed graph expansion, implicit edge inference,
+and Reciprocal Rank Fusion (RRF) — all without requiring an external database or LLM service
+in the core path.
 
-On canonical long-term memory benchmarks with the thesaurus now applying automatically by default, MentisDB attains $R@10 = 72.6\%$ on LoCoMo-10P and $R@5 = 66.8\%$ on LongMemEval (v0.9.9, full fastembed-minilm vectors). The implementation ships as a single Rust crate with an optional daemon exposing MCP, REST, and HTTPS surfaces, requires no external database, and operates without cloud or LLM dependencies in its core ingestion and retrieval path.
-
-**Keywords:** agent memory, hash-chained ledger, BM25, reciprocal rank fusion, graph expansion, implicit edge inference, temporal knowledge graphs, retrieval-augmented generation.
-
----
-
-## 1. Introduction
-
-The proliferation of large-language-model (LLM) agents has exposed a fundamental gap in the systems that support them: the absence of a durable, queryable, and tamper-evident memory substrate. Ephemeral context windows, hand-rolled Markdown files, and provider-specific key-value stores fail to provide the properties that multi-agent coordination demands — namely (i) *integrity* under adversarial or accidental mutation, (ii) *semantic typing* to distinguish decisions from observations from corrections, (iii) *temporal validity* to support point-in-time queries, (iv) *hybrid retrieval* combining lexical, semantic, and graph signals, and (v) *portability* across harnesses (Claude Code, Codex, Copilot, Cursor, Qwen, and beyond).
-
-### 1.1 Contributions
-
-This paper makes the following contributions:
-
-1. **Formal model.** We define agent memory as an append-only, hash-chained ledger of *thoughts* — structured, typed, attributable records — with a precise integrity invariant and explicit schema evolution semantics (Sections 2, 3).
-2. **Semantic typing.** We introduce a 30-variant $\mathsf{ThoughtType}$ algebra and an 8-variant $\mathsf{ThoughtRole}$ algebra, separating content semantics from workflow mechanics (Section 4).
-3. **Temporal edges.** We extend typed graph relations with a validity interval $[\mathtt{valid\_at}, \mathtt{invalid\_at}]$ enabling point-in-time queries via a predicate $\pi_\tau$ (Section 4.4).
-4. **Hybrid retrieval.** We describe a composable retrieval pipeline — per-field BM25 with DF gating, smooth exponential vector-lexical fusion, bounded graph BFS with typed edge weights, session cohesion, importance weighting, and RRF — and characterize each signal mathematically (Section 6).
-5. **Deduplication.** We give a Jaccard-threshold algorithm that auto-emits $\mathsf{Supersedes}$ edges, with constant-time consultation via a precomputed invalidation set $\mathcal{I}(\chi)$ (Section 7).
-6. **Empirical evaluation.** We report results on LoCoMo and LongMemEval, and provide near-miss analyses for both benchmarks characterizing the residual lexical ceiling (Section 9).
-7. **Implicit edge overlay.** We introduce the $\mathsf{ImplicitEdgeOverlay}$, a rebuildable per-chain sidecar that derives $\mathsf{RelatedTo}$ edges from vector cosine similarity above a configurable threshold $\theta$, enriching graph expansion for chains where agents author few explicit relations (Section 6.12).
-8. **Approximate vector search.** We describe an HNSW approximate-nearest-neighbor backend that shares the same `VectorSearchBackend` trait as the exact cosine engine. It is selected automatically once a managed vector sidecar crosses a configurable size threshold, retaining the same public semantics while scaling to millions of vectors (Section 6.13).
-
-### 1.2 Paper Organization
-
-Section 2 presents the core data model and integrity invariant. Section 3 formalizes schema evolution. Section 4 defines the semantic memory algebra. Section 5 describes the storage layer. Section 6 develops the retrieval pipeline. Section 7 gives the deduplication algorithm. Section 8 describes the operational surfaces (CLI, MCP). Section 9 reports empirical results. Section 10 compares against related systems. Section 11 concludes.
+On standard long-term memory benchmarks, MentisDB achieves 72.6% Recall@10 on LoCoMo-10P
+and 66.8% Recall@5 on LongMemEval. The implementation ships as a single Rust crate with an
+optional daemon exposing MCP, REST, and HTTPS surfaces.
 
 ---
 
-## 2. System Model and Core Data
+## 1. System Overview
 
-### 2.1 Thought Record
+### 1.1 The Problem
 
-**Definition 1 (Thought).** Let $\mathsf{UUID}$ denote the set of RFC 4122 universally unique identifiers, $\mathcal{T}$ the set of UTC timestamps, $\Sigma^\star$ the set of finite UTF-8 strings, and $\mathcal{H} = \{0,1\}^{256}$ the codomain of SHA-256. A *thought* is a tuple
-$$ t = \bigl(v, \mathrm{id}, i, \tau, a, \kappa, \sigma, \varphi, \rho, c, \mathbf{T}, \mathbf{C}, f_{\mathrm{conf}}, f_{\mathrm{imp}}, s, \mathbf{R}, \mathbf{E}, h_{\mathrm{prev}}, h\bigr) $$
-with components:
+LLM agents need memory that is:
 
-| Symbol | Domain | Role |
-|---|---|---|
-| $v$ | $\mathbb{N}$ | schema version (see §3) |
-| $\mathrm{id}$ | $\mathsf{UUID}$ | stable identity |
-| $i$ | $\mathbb{N}$ | append-order index |
-| $\tau$ | $\mathcal{T}$ | commit timestamp |
-| $a$ | $\Sigma^\star$ | agent identifier |
-| $\kappa$ | $\Sigma^\star \cup \{\bot\}$ | signing key identifier |
-| $\sigma$ | $\{0,1\}^\star \cup \{\bot\}$ | Ed25519 signature |
-| $\varphi$ | $\mathsf{ThoughtType}$ | semantic class (§4.1) |
-| $\rho$ | $\mathsf{ThoughtRole}$ | workflow role (§4.2) |
-| $c$ | $\Sigma^\star$ | content |
-| $\mathbf{T}, \mathbf{C}$ | $\mathcal{P}(\Sigma^\star)$ | tags, concepts |
-| $f_{\mathrm{conf}}, f_{\mathrm{imp}}$ | $[0,1]$ | confidence, importance |
-| $s$ | $\mathsf{Scope} \cup \{\bot\}$ | visibility scope |
-| $\mathbf{R}$ | $\mathcal{P}(\mathbb{N})$ | positional back-references |
-| $\mathbf{E}$ | $\mathcal{P}(\mathsf{Relation})$ | typed edges (§2.3) |
-| $h_{\mathrm{prev}}, h$ | $\mathcal{H}$ | chain-integrity hashes |
+- **Durable** — survives process restarts and context window resets
+- **Queryable** — not just a flat file, but searchable by text, semantics, and graph relationships
+- **Tamper-evident** — you can detect if someone modified the memory log
+- **Portable** — works with Claude Code, Codex, Copilot, Cursor, or any MCP client
+- **Attributable** — every record carries the agent ID that wrote it
 
-A *thought input* $t^\circ$ is the caller-authored subset $(v, a, \varphi, \rho, c, \mathbf{T}, \mathbf{C}, f_{\mathrm{conf}}, f_{\mathrm{imp}}, s, \mathbf{R}, \mathbf{E}^\circ)$. The chain-managed fields $\{\mathrm{id}, i, \tau, h_{\mathrm{prev}}, h\}$ are assigned on commit; this asymmetry prevents agents from forging chain mechanics.
+Existing solutions fail one or more of these. Markdown files aren't queryable. Provider
+session state isn't portable. Vector databases don't have integrity guarantees. LLM-based
+memory extraction adds latency and cost to every write.
 
-### 2.2 Hash-Chained Ledger
+### 1.2 The Approach
 
-**Definition 2 (Chain).** Let $\sigma: \mathsf{Thought} \to \{0,1\}^\star$ denote canonical bincode serialization of the tuple $t \setminus \{h\}$. A *chain* is a sequence $\chi = (t_0, t_1, \ldots, t_{n-1})$ satisfying the *integrity invariant*
-$$
-\forall k \in \{0, \ldots, n-1\}: \quad t_k.h = H\bigl(\sigma(t_k)\bigr),
-\qquad
-\forall k \geq 1: \quad t_k.h_{\mathrm{prev}} = t_{k-1}.h,
-$$
-where $H$ is SHA-256. For $t_0$, $t_0.h_{\mathrm{prev}}$ is the empty string.
+MentisDB models agent memory as a hash-chained append-only log — similar to a blockchain,
+but without consensus or distributed systems complexity. Each entry (a "thought") is a
+typed, structured record with semantic metadata, signed by the agent that produced it.
 
-**Proposition 1 (Tamper Evidence).** Let $\chi' = (t'_0, \ldots, t'_{n-1})$ differ from $\chi$ at index $j$, i.e., $t'_j \neq t_j$, with all other components unchanged. Then either $t'_j.h \neq H(\sigma(t'_j))$ (local inconsistency detectable at index $j$) or $t'_{j+1}.h_{\mathrm{prev}} \neq t'_j.h$ (cascading inconsistency detectable at index $j+1$). Consequently, forging a modification requires recomputing every subsequent hash, touching $n - j$ records.
+Retrieval is a multi-signal pipeline: lexical search (BM25), vector similarity (cosine
+over ONNX embeddings), graph traversal (typed edges between thoughts), and rank fusion
+(RRF). All of this runs locally — no network calls, no LLM API bills for the core path.
 
-*Proof sketch.* By collision resistance of $H$, $t'_j \neq t_j \Rightarrow H(\sigma(t'_j)) \neq H(\sigma(t_j))$ with overwhelming probability. Either the adversary preserves $t'_j.h = H(\sigma(t'_j))$ (then $t'_j.h \neq t_j.h$, breaking $t'_{j+1}.h_{\mathrm{prev}}$), or leaves $t'_j.h = t_j.h$ (then $t'_j.h \neq H(\sigma(t'_j))$, local check fails). $\square$
+### 1.3 Architecture at a Glance
 
-This is a practical integrity mechanism for agent memory; it does not imply a consensus protocol or distributed-ledger guarantees. Optional Ed25519 signatures $(\kappa, \sigma)$ are layered on individual thoughts for stronger provenance when the producing agent has registered a public key in the agent registry.
-
-### 2.3 Typed Relation Edges
-
-**Definition 3 (Relation).** A relation is a tuple $e = (\kappa, \mathrm{id}^\ast, \chi^\ast, \mathtt{v}_\ast, \mathtt{v}^\ast)$ where $\kappa \in \mathsf{ThoughtRelationKind}$ (§4.3), $\mathrm{id}^\ast \in \mathsf{UUID}$ is the target thought identifier, $\chi^\ast \in \Sigma^\star \cup \{\bot\}$ is an optional cross-chain key, and $\mathtt{v}_\ast, \mathtt{v}^\ast \in \mathcal{T} \cup \{\bot\}$ bound the edge's validity interval.
-
-The adjacency structure $A(\chi)$ induced by $\chi$ is a directed multigraph whose nodes are thought locators and whose edges derive from $\mathbf{R}$ (positional refs) and $\mathbf{E}$ (typed relations). We denote outgoing and incoming neighborhoods by $N^+(v)$ and $N^-(v)$ respectively; bidirectional expansion considers $N^+(v) \cup N^-(v)$.
-
-### 2.4 Agent Registry
-
-To avoid duplicating identity metadata inside every record, MentisDB maintains a per-chain registry $\mathcal{A}(\chi)$ mapping $a \mapsto (\mathtt{display\_name}, \mathtt{owner}, \mathtt{description}, \mathtt{aliases}, \mathtt{status}, \mathtt{public\_keys}, \mathtt{counters})$. Thoughts carry only the stable $a$; the registry is resolved at read time. The registry is itself administrable through library calls, MCP tools, and REST endpoints, permitting pre-registration, documentation, revocation, or key rotation prior to any appended thought.
-
----
-
-## 3. Schema Evolution
-
-### 3.1 Version Lattice
-
-MentisDB exposes a linearly ordered schema version space $\mathcal{V} = \{V_0, V_1, V_2, V_3\}$:
-
-| Version | Additions relative to predecessor |
-|---|---|
-| $V_0$ | original format; no explicit $v$ field |
-| $V_1$ | explicit $v$, optional $(\kappa, \sigma)$, agent registry sidecar |
-| $V_2$ | $\varphi := \varphi \cup \{\mathsf{Reframe}\}$, $\kappa := \kappa \cup \{\mathsf{Supersedes}\}$, optional cross-chain $\chi^\ast$ |
-| $V_3$ | edge validity fields $\mathtt{valid\_at}, \mathtt{invalid\_at}$ |
-
-The current constant is $V_\mathrm{cur} = V_3$.
-
-### 3.2 Migration as Idempotent Transformation
-
-Each migration $\mu_{V_k \to V_{k+1}}: \chi_{V_k} \to \chi_{V_{k+1}}$ satisfies
-$$
-\mu_{V_k \to V_{k+1}} \circ \mu_{V_k \to V_{k+1}} = \mu_{V_k \to V_{k+1}} \quad \text{(idempotence)}
-$$
-and is composable: $\chi_{V_0}$ is upgraded via $\mu_{V_2 \to V_3} \circ \mu_{V_1 \to V_2} \circ \mu_{V_0 \to V_1}$. Because bincode encodes enum variants by integer tag, new variants are appended to the end of an enum to preserve binary compatibility; mid-enum insertion would violate the injectivity of the serialization map. After each migration the hash chain is rebuilt under $V_\mathrm{cur}$ and persisted in native format, so subsequent opens incur no migration cost.
-
-### 3.3 Version Detection
-
-Version is inferred by peeking the first record's $v$ field. A subtle edge case arises for $V_0$ chains that lack the field entirely: the bincode "empty-Vec fast path" for $V_0$ reads $v = 0$, which is disambiguated from a non-empty $V_0$ chain by the residual byte-length check. Practically, this provides reliable version detection in $O(1)$ regardless of chain length.
-
----
-
-## 4. Semantic Memory Algebra
-
-### 4.1 ThoughtType
-
-$\mathsf{ThoughtType}$ partitions the semantic space into 30 disjoint classes across seven categories:
-
-| Category | Variants |
-|---|---|
-| User / relationship | $\mathsf{PreferenceUpdate}, \mathsf{UserTrait}, \mathsf{RelationshipUpdate}$ |
-| Observation | $\mathsf{Finding}, \mathsf{Insight}, \mathsf{FactLearned}, \mathsf{PatternDetected}, \mathsf{Hypothesis}, \mathsf{Surprise}$ |
-| Error / correction | $\mathsf{Mistake}, \mathsf{Correction}, \mathsf{LessonLearned}, \mathsf{AssumptionInvalidated}, \mathsf{Reframe}$ |
-| Planning | $\mathsf{Constraint}, \mathsf{Plan}, \mathsf{Subgoal}, \mathsf{Goal}, \mathsf{Decision}, \mathsf{StrategyShift}$ |
-| Exploration | $\mathsf{Wonder}, \mathsf{Question}, \mathsf{Idea}, \mathsf{Experiment}$ |
-| Execution | $\mathsf{ActionTaken}, \mathsf{TaskComplete}$ |
-| State | $\mathsf{Checkpoint}, \mathsf{StateSnapshot}, \mathsf{Handoff}, \mathsf{Summary}$ |
-
-### 4.2 ThoughtRole
-
-$\mathsf{ThoughtRole}$ is orthogonal to $\mathsf{ThoughtType}$, specifying *how* the system uses a memory:
-$$
-\mathsf{ThoughtRole} = \{\mathsf{Memory}, \mathsf{WorkingMemory}, \mathsf{Summary}, \mathsf{Compression}, \mathsf{Checkpoint}, \mathsf{Handoff}, \mathsf{Audit}, \mathsf{Retrospective}\}.
-$$
-
-The product $\mathsf{ThoughtType} \times \mathsf{ThoughtRole}$ yields 240 distinguishable semantic positions. A retrospective lesson is encoded as, e.g., $(\mathsf{LessonLearned}, \mathsf{Retrospective})$.
-
-### 4.3 ThoughtRelationKind
-
-The twelve-element relation algebra:
-$$
-\mathsf{ThoughtRelationKind} = \{\mathsf{References}, \mathsf{Summarizes}, \mathsf{Corrects}, \mathsf{Invalidates}, \mathsf{CausedBy},
-$$
-$$
-\mathsf{Supports}, \mathsf{Contradicts}, \mathsf{DerivedFrom}, \mathsf{ContinuesFrom}, \mathsf{BranchesFrom}, \mathsf{RelatedTo}, \mathsf{Supersedes}\}.
-$$
-
-$\mathsf{Supersedes}$ is distinguished from $\mathsf{Corrects}$: the former replaces a prior framing without asserting an error, while the latter asserts a factual correction.
-
-### 4.4 Temporal Edge Validity
-
-**Definition 4 (As-Of Predicate).** For a relation $e$ with validity interval $[\mathtt{v}_\ast, \mathtt{v}^\ast]$ (treating $\bot$ on either bound as $-\infty$ and $+\infty$ respectively), define
-$$
-\pi_\tau(e) \equiv \bigl(\mathtt{v}_\ast = \bot \lor \mathtt{v}_\ast \le \tau\bigr) \land \bigl(\mathtt{v}^\ast = \bot \lor \tau < \mathtt{v}^\ast\bigr).
-$$
-Graph expansion restricted by $\tau$ considers only edges satisfying $\pi_\tau$. Combined with the append-ordering invariant ($i(t) < n$), this yields point-in-time retrieval semantics: "what did the agent know at $\tau$?"
-
-### 4.5 Invalidation Set
-
-**Definition 5 (Invalidation Set).** Given $\chi$,
-$$
-\mathcal{I}(\chi) = \bigl\{ e.\mathrm{id}^\ast : e \in \bigcup_{t \in \chi} \mathbf{E}(t),\; \kappa(e) \in \{\mathsf{Supersedes}, \mathsf{Corrects}, \mathsf{Invalidates}\} \bigr\}.
-$$
-$\mathcal{I}(\chi)$ is precomputed at chain open time as a $\mathsf{HashSet}\langle\mathsf{UUID}\rangle$, enabling $O(1)$ superseded-thought detection during retrieval.
-
----
-
-## 5. Storage Layer
-
-### 5.1 Storage Adapter Abstraction
-
-The trait $\mathsf{StorageAdapter}$ abstracts persistence:
 ```
-load_thoughts : ∅ → Vec<Thought>
-append_thought : Thought → ()
-flush : ∅ → ()
-set_auto_flush : Bool → ()
+┌─────────────────────────────────────────────────────────┐
+│                     Agent (Claude, Codex, ...)          │
+│                    via MCP / REST / CLI                  │
+└────────────────────────┬────────────────────────────────┘
+                         │
+              ┌──────────▼──────────┐
+              │   mentisdb daemon   │
+              │  (single binary)    │
+              ├─────────────────────┤
+              │  MCP server (:9471) │
+              │  REST API (:9472)   │
+              │  Dashboard (:9473)  │
+              ├─────────────────────┤
+              │  MentisDb core      │
+              │  ├─ Hash-chained    │
+              │  │  thought ledger  │
+              │  ├─ BM25 + vector   │
+              │  │  + graph search  │
+              │  ├─ Dedup (Jaccard) │
+              │  └─ Agent registry  │
+              ├─────────────────────┤
+              │  Storage adapters   │
+              │  ├─ Binary (.tcbin) │
+              │  └─ JSON-L (legacy) │
+              └──────────┬──────────┘
+                         │
+              ┌──────────▼──────────┐
+              │   ~/.cloudllm/      │
+              │   mentisdb/         │
+              │   ├─ *.tcbin        │
+              │   ├─ *.agents.json  │
+              │   ├─ *.vectors.bin  │
+              │   └─ *.auto_edges   │
+              └─────────────────────┘
 ```
-This allows the chain semantics to remain invariant under backend substitution.
 
-### 5.2 BinaryStorageAdapter
+The daemon is a single static binary with no external dependencies. Storage is embedded
+files on disk. No database server, no Redis, no Neo4j.
 
-The default backend serializes each thought as a length-prefixed bincode record:
-$$
-\underbrace{\ell_0}_{\text{4-byte LE}}\underbrace{\sigma(t_0)}_{\ell_0\text{ bytes}} \| \underbrace{\ell_1}_{\text{4-byte LE}}\underbrace{\sigma(t_1)}_{\ell_1\text{ bytes}} \| \cdots
-$$
-with file extension `.tcbin`.
+---
 
-Two durability modes are supported:
+## 2. The Thought Data Model
 
-- **Strict** ($\mathtt{auto\_flush} = \mathrm{true}$): appends are routed through a dedicated writer thread; callers block until the flush acknowledgment returns. A group-commit window of $\Delta_{\mathrm{gc}}$ (default 2 ms, configurable via `MENTISDB_GROUP_COMMIT_MS`) amortizes flush cost across concurrent writers.
-- **Buffered** ($\mathtt{auto\_flush} = \mathrm{false}$): records are queued and batched; the writer flushes every $\Phi = 16$ records. Up to $\Phi - 1 = 15$ records may be lost on a hard crash, with a corresponding throughput gain for multi-agent hubs.
+### 2.1 The Thought Record
 
-### 5.3 Legacy Adapters
+The core unit of memory is a *thought* — a structured, typed, hash-chained record. Here's
+a simplified view of the Rust struct:
 
-`LegacyJsonlReadAdapter` is a read-only compatibility shim for migrating $V_0$ `.jsonl` chains; it cannot be used for new writes.
+```rust
+struct Thought {
+    // Schema version for forward-compatible migrations
+    schema_version: u32,
 
-### 5.4 File Layout
+    // Identity (assigned by the chain on commit)
+    thought_id: Uuid,           // stable UUID
+    index: u64,                 // append-order position (0, 1, 2, ...)
+    timestamp: DateTime<Utc>,   // commit time
 
-Each chain's storage files share a common stem derived from the chain key and a hash of its genesis thought, preventing accidental cross-chain file sharing:
+    // Attribution
+    agent_id: String,           // who wrote this (stable ID, resolved via agent registry)
+    signing_key_id: Option<String>,    // optional Ed25519 key ID
+    thought_signature: Option<Vec<u8>>, // optional detached signature
+
+    // Semantics
+    thought_type: ThoughtType,  // what kind of memory (Decision, Mistake, Insight, ...)
+    thought_role: ThoughtRole,  // how the system uses it (Memory, Checkpoint, Handoff, ...)
+    content: String,            // the actual memory text
+    tags: Vec<String>,          // free-form tags
+    concepts: Vec<String>,      // semantic concept labels
+
+    // Scoring metadata
+    confidence: Option<f64>,    // 0.0–1.0
+    importance: Option<f64>,    // 0.0–1.0
+
+    // Relationships
+    refs: Vec<u64>,             // positional back-references (append-order indices)
+    relations: Vec<ThoughtRelation>, // typed edges to other thoughts
+
+    // Chain integrity (assigned by the chain on commit)
+    prev_hash: String,          // SHA-256 of the previous thought
+    hash: String,               // SHA-256 of this thought (minus the hash field itself)
+}
+```
+
+The key design decision: the agent authors the *content* fields (type, role, content,
+tags, concepts, relations) but cannot forge the *chain* fields (id, index, timestamp,
+hashes). Those are assigned by the chain on commit.
+
+### 2.2 The Hash Chain
+
+Every thought is linked to its predecessor via SHA-256. Think of it as a git-like
+history, but for memory records instead of source code:
+
+```rust
+// Simplified: how the chain computes a thought's hash
+fn compute_thought_hash(thought: &Thought) -> String {
+    // Serialize everything EXCEPT the hash field itself
+    // using a canonical binary format (bincode)
+    let canonical_bytes = bincode::serialize(&CanonicalThought {
+        schema_version: thought.schema_version,
+        thought_id: thought.thought_id,
+        index: thought.index,
+        // ... all fields except `hash`
+        prev_hash: thought.prev_hash.clone(),
+        // hash is intentionally excluded
+    });
+
+    // SHA-256 of the canonical bytes
+    sha256(&canonical_bytes)
+}
+```
+
+The integrity invariant is simple:
+
+```rust
+// Every thought must satisfy:
+//   thought.hash == sha256(canonical_serialize(thought_without_hash))
+//   thought.prev_hash == previous_thought.hash
+```
+
+If someone modifies any field of any thought, the hash breaks. If they recompute the
+hash to fix it, the *next* thought's `prev_hash` no longer matches — so the tamper
+cascades forward through the entire chain. Detecting tampering is O(1): just check
+that each record's `prev_hash` matches the previous record's `hash`.
+
+This is tamper *evidence*, not tamper *prevention*. An attacker with write access to
+the file can rebuild the whole chain. For stronger provenance, individual thoughts can
+be Ed25519-signed by the producing agent using a registered public key.
+
+### 2.3 Typed Relations
+
+Thoughts can link to each other via typed edges. There are 12 relation kinds:
+
+```rust
+enum ThoughtRelationKind {
+    References,      // generic link
+    Summarizes,      // this thought summarizes another
+    Corrects,        // factual correction of a prior thought
+    Invalidates,     // marks a prior thought as no longer valid
+    CausedBy,        // causal link
+    Supports,        // evidence for
+    Contradicts,     // evidence against
+    DerivedFrom,     // computed from
+    ContinuesFrom,   // sequential continuation
+    BranchesFrom,    // chain branch point
+    RelatedTo,       // semantic similarity (used by implicit edges)
+    Supersedes,      // replaces a prior framing (non-error, e.g. updated plan)
+}
+```
+
+Each relation carries an optional validity interval (`valid_at` / `invalid_at`), enabling
+point-in-time queries: "what did the agent know at timestamp T?"
+
+```rust
+struct ThoughtRelation {
+    kind: ThoughtRelationKind,
+    target_thought_id: Uuid,         // which thought this edge points to
+    target_chain_key: Option<String>, // for cross-chain relations
+    valid_at: Option<DateTime<Utc>>,  // when this edge became true
+    invalid_at: Option<DateTime<Utc>>, // when this edge stopped being true
+}
+```
+
+### 2.4 The Invalidation Set
+
+When a thought is superseded, corrected, or invalidated, we don't delete it — we mark it.
+At chain open time, we precompute a set of all invalidated thought IDs:
+
+```rust
+// Pseudocode: build the invalidation set at chain open
+fn build_invalidation_set(chain: &[Thought]) -> HashSet<Uuid> {
+    let mut invalidated = HashSet::new();
+    for thought in chain {
+        for relation in &thought.relations {
+            match relation.kind {
+                ThoughtRelationKind::Supersedes
+                | ThoughtRelationKind::Corrects
+                | ThoughtRelationKind::Invalidates => {
+                    invalidated.insert(relation.target_thought_id);
+                }
+                _ => {}
+            }
+        }
+    }
+    invalidated
+}
+```
+
+During retrieval, checking "is this thought superseded?" is an O(1) HashSet lookup.
+
+### 2.5 Agent Registry
+
+To avoid duplicating identity metadata in every thought, MentisDB maintains a per-chain
+agent registry. Thoughts carry only the stable `agent_id` string; display names, owners,
+descriptions, aliases, public keys, and thought counters live in the registry:
+
+```rust
+struct AgentRecord {
+    agent_id: String,
+    display_name: Option<String>,
+    owner: Option<String>,
+    description: Option<String>,
+    aliases: Vec<String>,
+    status: AgentStatus,           // Active or Revoked
+    public_keys: Vec<PublicKey>,
+    thought_count: u64,            // updated as thoughts are appended
+}
+```
+
+The registry is administrable through library calls, MCP tools, and REST endpoints,
+allowing pre-registration before any thoughts are written.
+
+---
+
+## 3. Semantic Typing
+
+### 3.1 ThoughtType — What Kind of Memory
+
+Every thought carries a semantic type from a 30-variant enum, organized into seven
+categories:
+
+```rust
+enum ThoughtType {
+    // User / relationship
+    PreferenceUpdate, UserTrait, RelationshipUpdate,
+
+    // Observation
+    Finding, Insight, FactLearned, PatternDetected,
+    Hypothesis, Surprise,
+
+    // Error / correction
+    Mistake, Correction, LessonLearned, AssumptionInvalidated, Reframe,
+
+    // Planning
+    Constraint, Plan, Subgoal, Goal, Decision, StrategyShift,
+
+    // Exploration
+    Wonder, Question, Idea, Experiment,
+
+    // Execution
+    ActionTaken, TaskComplete,
+
+    // State
+    Checkpoint, StateSnapshot, Handoff, Summary,
+}
+```
+
+This lets agents and retrieval code distinguish "the user changed their preference" from
+"the agent made a mistake" from "this is a checkpoint for context compaction."
+
+### 3.2 ThoughtRole — How the System Uses It
+
+Orthogonal to type, every thought has a role that tells the system how to handle it:
+
+```rust
+enum ThoughtRole {
+    Memory,         // standard durable memory
+    WorkingMemory,  // short-term, may be pruned
+    Summary,        // compressed representation of prior thoughts
+    Compression,    // compression artifact
+    Checkpoint,     // save point for context restoration
+    Handoff,        // handoff to another agent
+    Audit,          // audit trail entry
+    Retrospective,  // post-hoc lesson
+}
+```
+
+The combination of type × role gives 240 distinguishable semantic positions. A
+retrospective lesson is `(LessonLearned, Retrospective)`. A context-compression checkpoint
+is `(Summary, Checkpoint)`.
+
+---
+
+## 4. Storage Layer
+
+### 4.1 Storage Adapter Trait
+
+Persistence is abstracted behind a trait, allowing the chain semantics to stay the same
+regardless of backend:
+
+```rust
+trait StorageAdapter {
+    fn load_thoughts(&self) -> io::Result<Vec<Thought>>;
+    fn append_thought(&self, thought: &Thought) -> io::Result<()>;
+    fn flush(&self) -> io::Result<()>;
+    fn set_auto_flush(&self, auto: bool);
+}
+```
+
+### 4.2 Binary Storage (Default)
+
+The default backend (`BinaryStorageAdapter`) writes each thought as a length-prefixed
+bincode record:
+
+```
+[4-byte LE length] [bincode(thought_0)]
+[4-byte LE length] [bincode(thought_1)]
+[4-byte LE length] [bincode(thought_2)]
+...
+```
+
+File extension: `.tcbin`. This format is compact (typically 40–60% smaller than JSON) and
+deserializes faster than text-based formats.
+
+Two durability modes:
+
+| Mode | Behavior | Tradeoff |
+|------|----------|----------|
+| **Strict** (`auto_flush = true`) | Each append blocks until the writer thread flushes to disk. Group-commit window of 2ms amortizes cost across concurrent writers. | Maximum durability; slight throughput cost. |
+| **Buffered** (`auto_flush = false`) | Records are queued; the writer flushes every 16 records. | Higher throughput; up to 15 records may be lost on a hard crash. |
+
+### 4.3 File Layout
+
+Each chain's files share a stem derived from the chain key and a hash of its genesis
+thought, preventing accidental cross-chain file sharing:
 
 ```
 ~/.cloudllm/mentisdb/
-  mentisdb-registry.json
-  mentisdb-skills.bin
-  mentisdb-webhooks.json
-  <chain-key>-<hash8>.tcbin
-  <chain-key>-<hash8>.agents.json
+  mentisdb-registry.json          # chain registry
+  mentisdb-skills.bin             # skill registry
+  mentisdb-webhooks.json          # webhook registrations
+  <chain-key>-<hash8>.tcbin       # the thought chain (hash-chained ledger)
+  <chain-key>-<hash8>.agents.json # agent registry for this chain
   <chain-key>-<hash8>.entity-types.json
-  <chain-key>-<hash8>.vectors.<model>-<dim>-<ver>.bin
-  <chain-key>-<hash8>.vectors.managed.json
-  <chain-key>-<hash8>.auto_edges.bin
-  tls/{cert.pem, key.pem}
+  <chain-key>-<hash8>.vectors.<model>-<dim>-<ver>.bin  # vector sidecar
+  <chain-key>-<hash8>.vectors.managed.json             # managed sidecar config
+  <chain-key>-<hash8>.auto_edges.bin                   # implicit edge overlay
+  tls/{cert.pem, key.pem}                              # self-signed TLS cert
 ```
 
-The `.auto_edges.bin` file is a bincode-serialized $\mathsf{ImplicitEdgeOverlay}$ (§6.12) and is rebuildable from the vector sidecar at any time; it is not part of the hash chain and carries no integrity invariant of its own. Backups include it alongside the vector sidecar.
+The `.auto_edges.bin` file is a bincode-serialized implicit edge overlay (Section 6.7).
+It's rebuildable from the vector sidecar and is not part of the hash chain.
 
 ---
 
-## 6. Retrieval
+## 5. Schema Evolution
 
-Retrieval separates a deterministic filter-first baseline from a scored ranked pipeline.
+### 5.1 Version Lattice
 
-### 6.1 Baseline Filter
+MentisDB has a linear schema version history:
 
-The baseline $R_\mathrm{base}(\chi, Q)$ narrows candidates by indexed fields $(\varphi, \rho, a, \mathbf{T}, \mathbf{C})$ and applies a case-insensitive substring predicate over $(c, \mathtt{agent\_meta}, \mathbf{T}, \mathbf{C})$. Results return in append order. This path is explainable and has no BM25, vector, or graph component.
+| Version | What was added |
+|---------|---------------|
+| V0 | Original format; no version field |
+| V1 | Explicit version field, optional Ed25519 signatures, agent registry sidecar |
+| V2 | New ThoughtType variant (`Reframe`), new relation kind (`Supersedes`), cross-chain relations |
+| V3 | Edge validity fields (`valid_at`, `invalid_at`) |
 
-### 6.2 Ranked Pipeline
+### 5.2 Idempotent Migrations
 
-Ranked search $R_\mathrm{rank}$ selects a backend based on query features:
+Each migration is an idempotent transformation — running it twice produces the same
+result as running it once. Migrations compose: a V0 chain is upgraded by applying
+V0→V1, then V1→V2, then V2→V3:
 
-| Query features | Backend |
+```rust
+// Pseudocode: migration pipeline
+fn migrate_chain(chain: Vec<Thought>) -> Vec<Thought> {
+    let chain = migrate_v0_to_v1(chain);
+    let chain = migrate_v1_to_v2(chain);
+    let chain = migrate_v2_to_v3(chain);
+    chain // now at V3 (current)
+}
+```
+
+A critical constraint: because bincode encodes enum variants by integer tag, new variants
+must be appended to the end of an enum. Reordering or inserting mid-enum would silently
+corrupt persisted data.
+
+After migration, the hash chain is rebuilt under the current schema and persisted in
+binary format, so subsequent opens pay no migration cost.
+
+---
+
+## 6. Retrieval Pipeline
+
+Retrieval is the heart of MentisDB. There are two paths: a deterministic filter (baseline
+search) and a scored ranked pipeline.
+
+### 6.1 Baseline Filter Search
+
+The baseline path narrows candidates by indexed fields (type, role, agent_id, tags,
+concepts) and applies a case-insensitive substring predicate over content and metadata.
+Results return in append order. No BM25, no vectors, no graph — just fast filtering:
+
+```rust
+// Simplified: baseline filter
+fn baseline_search(chain: &[Thought], query: &ThoughtQuery) -> Vec<&Thought> {
+    chain
+        .iter()
+        .filter(|t| matches_type(t, query))
+        .filter(|t| matches_agent(t, query))
+        .filter(|t| matches_tags(t, query))
+        .filter(|t| text_contains(t, query.text.as_deref()))
+        .collect() // append order preserved
+}
+```
+
+### 6.2 Ranked Search — Backend Selection
+
+Ranked search selects a backend based on what signals are available:
+
+| Query has... | Backend |
 |---|---|
-| non-empty text, no vector sidecar | $\mathsf{Lexical}$ |
-| non-empty text, vector sidecar | $\mathsf{Hybrid}$ |
-| non-empty text, graph enabled, no vector | $\mathsf{LexicalGraph}$ |
-| non-empty text, graph enabled, vector sidecar | $\mathsf{HybridGraph}$ |
-| empty or absent text | $\mathsf{Heuristic}$ |
+| Text, no vectors | Lexical (BM25 only) |
+| Text + vectors | Hybrid (BM25 + vector fusion) |
+| Text + graph, no vectors | LexicalGraph |
+| Text + graph + vectors | HybridGraph (full pipeline) |
+| No text | Heuristic (importance/recency scoring) |
 
 ### 6.3 BM25 with Per-Field DF Gating
 
-**Definition 6 (BM25 Field Score).** Let $N = |\chi|$ be corpus size, $\mathrm{df}(q)$ the document frequency of term $q$, and for field $f \in \{\mathrm{content}, \mathrm{tags}, \mathrm{concepts}, \mathrm{agent\_id}, \mathrm{agent\_registry}\}$ let $\mathrm{tf}_f(d, q)$ and $|d|_f$ denote term frequency and field length respectively, with $\overline{|d|_f}$ the corpus mean. With $k_1 = 1.2$, $b = 0.75$:
-$$
-\mathrm{idf}(q) = \ln\!\left(\frac{N - \mathrm{df}(q) + 0.5}{\mathrm{df}(q) + 0.5} + 1\right),
-$$
-$$
-\mathrm{score}_f(d, q) = \mathrm{idf}(q) \cdot \frac{\mathrm{tf}_f(d, q)\,(k_1 + 1)}{\mathrm{tf}_f(d, q) + k_1\!\left(1 - b + b\,\dfrac{|d|_f}{\overline{|d|_f}}\right)}.
-$$
+The lexical score uses BM25 — the standard ranking function from information retrieval —
+applied across five fields: content, tags, concepts, agent_id, and agent_registry. Each
+field has its own weight and document-frequency gate.
 
-**Definition 7 (DF Gate).** For per-field cutoff $\tau_f \in [0, 1]$:
-$$
-\gamma_f(q) = \mathbb{1}\!\left[\frac{\mathrm{df}(q)}{N} \le \tau_f \;\lor\; N < 20\right].
-$$
-Defaults: $\tau_{\mathrm{content}} = \tau_{\mathrm{tags}} = \tau_{\mathrm{concepts}} = 0.30$, $\tau_{\mathrm{agent\_registry}} = 0.60$, $\tau_{\mathrm{agent\_id}} = 0.70$.
+```rust
+// Simplified: BM25 score for a single term in a single field
+fn bm25_field_score(
+    term_freq: f64,      // how many times the term appears in this field
+    doc_field_len: f64,  // length of this field in the document
+    avg_field_len: f64,  // average field length across the corpus
+    doc_freq: usize,     // how many documents contain this term in this field
+    corpus_size: usize,  // total number of documents
+) -> f64 {
+    let k1 = 1.2;
+    let b = 0.75;
 
-**Definition 8 (Lexical Score).** With per-field weights $w_f$ (defaults $w_{\mathrm{content}} = 1.0$, $w_{\mathrm{tags}} = 1.6$, $w_{\mathrm{concepts}} = 1.4$, $w_{\mathrm{agent\_id}} = 1.5$, $w_{\mathrm{agent\_registry}} = 1.1$):
-$$
-S_\ell(d, Q) = \sum_{q \in Q} \sum_{f} \gamma_f(q) \cdot w_f \cdot \mathrm{score}_f(d, q).
-$$
+    // Inverse Document Frequency: rare terms score higher
+    let idf = ((corpus_size as f64 - doc_freq as f64 + 0.5)
+        / (doc_freq as f64 + 0.5)
+        + 1.0).ln();
 
-A term violating $\gamma_f$ in one field may still contribute through other fields whose cutoffs it respects. The 20-document threshold suppresses DF filtering on small corpora where statistics are not yet meaningful.
+    // BM25 term frequency saturation
+    let tf_norm = (term_freq * (k1 + 1.0))
+        / (term_freq + k1 * (1.0 - b + b * (doc_field_len / avg_field_len)));
 
-Normalization applies Porter stemming [Porter, 1980] before indexing and querying. An irregular-verb lemma table of approximately 170 entries expands query-time tokens (e.g., `went` $\to$ `go`, `saw` $\to$ `see`), because Porter stemming cannot normalize suppletive forms.
+    idf * tf_norm
+}
+```
+
+**Per-field DF gating** prevents common terms from dominating. If a term appears in more
+than 30% of documents (in the content field), it's filtered out of that field's scoring —
+it's too common to be a useful signal. Each field has its own cutoff:
+
+| Field | DF cutoff | Weight |
+|-------|-----------|--------|
+| content | 30% | 1.0 |
+| tags | 30% | 1.6 |
+| concepts | 30% | 1.4 |
+| agent_id | 70% | 1.5 |
+| agent_registry | 60% | 1.1 |
+
+A term that's too common in one field can still contribute through another field whose
+cutoff it respects.
+
+Text normalization applies Porter stemming (e.g., "running" → "run") plus an irregular
+verb lemma table (~170 entries: "went" → "go", "saw" → "see") since stemming can't
+handle suppletive forms.
 
 ### 6.4 Smooth Vector-Lexical Fusion
 
-When a managed vector sidecar provides cosine similarity $s_v(d, Q) \in [-1, 1]$ (e.g., via ONNX-embedded `fastembed-minilm`), the hybrid contribution is
-$$
-S_\mathrm{fuse}(d, Q) = s_v(d, Q) \cdot \Bigl(1 + \alpha \exp\!\bigl(-S_\ell(d, Q)/\beta\bigr)\Bigr),
-$$
-with $\alpha = 35$ and $\beta = 3$. This yields $\sim 36\times$ amplification for pure-semantic matches ($S_\ell = 0$), decays to $\sim 12\times$ at $S_\ell = 3$, and approaches additive composition for $S_\ell \ge 6$. The smooth exponential eliminates the discontinuities that step-function boost tiers introduce at bin boundaries.
+When a vector sidecar is available, each thought has an embedding vector. The query text
+is also embedded, and cosine similarity provides a semantic score. The fusion function
+combines the lexical and vector scores:
 
-The managed vector sidecar is loaded once at chain open and held in an in-memory $\mathsf{VectorIndex}$ (a $\mathsf{HashMap}$ from thought UUID to normalized embedding vector). This eliminates per-query disk I/O and keeps search latency proportional to $N$ rather than to storage throughput.
+```rust
+// Simplified: smooth exponential fusion
+fn fuse_scores(lexical_score: f64, vector_similarity: f64) -> f64 {
+    let alpha = 35.0;
+    let beta = 3.0;
+
+    // When lexical score is 0 (no text overlap), the vector signal gets
+    // amplified ~36x. As lexical score increases, the amplification decays
+    // exponentially, so strong lexical matches aren't drowned out.
+    vector_similarity * (1.0 + alpha * (-lexical_score / beta).exp())
+}
+```
+
+This means: a thought that shares no words with the query but is semantically similar
+gets a strong boost. A thought that matches both lexically and semantically gets both
+signals additively. The exponential decay eliminates the discontinuities that step-function
+boost tiers introduce at bin boundaries.
 
 ### 6.5 Graph-Aware Expansion
 
-**Definition 9 (Bounded BFS Expansion).** Given seed set $\Sigma_0 \subseteq \chi$ with $|\Sigma_0| \le 20$, adjacency index $A(\chi)$, implicit edge overlay $\mathcal{O}$ (Definition 13), and traversal mode $M \in \{\mathsf{Out}, \mathsf{In}, \mathsf{Bi}\}$, graph expansion is the BFS
-$$
-\mathrm{Expand}_{d_\max, V_\max, M}(\Sigma_0, \mathcal{O}) = \bigl\{(v, d, \pi) : v \in \chi,\; d \le d_\max,\; \mathrm{path}(\pi) \subseteq \chi\bigr\}
-$$
-bounded by maximum depth $d_\max$ and visit budget $V_\max$, with edges drawn from $A(\chi)$ (explicit typed relations, optionally filtered by $\pi_\tau$) and from $\mathcal{O}$ (implicit cosine-inferred $\mathsf{RelatedTo}$ edges). Both sources share the seen-set, so a node reached via an explicit edge is not revisited via an implicit one and vice versa.
+Thoughts linked by typed relations form a directed graph. When the ranked search has
+seeds (top lexical/vector hits), it expands outward via BFS to find related thoughts:
 
-**Edge weights.** For traversals along a typed relation of kind $\kappa$, the edge contributes $b_\mathrm{rel}(\kappa)$:
+```rust
+// Simplified: bounded BFS graph expansion
+fn expand_graph(
+    seeds: &[&Thought],
+    adjacency: &AdjacencyIndex,
+    implicit_edges: &ImplicitEdgeOverlay,
+    max_depth: usize,
+    max_visits: usize,
+    mode: TraversalMode, // Out, In, or Bidirectional
+) -> Vec<GraphHit> {
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    let mut results = Vec::new();
 
-| $\kappa$ | $b_\mathrm{rel}$ | $\kappa$ | $b_\mathrm{rel}$ |
-|---|---|---|---|
-| $\mathsf{ContinuesFrom}$ | 0.60 | $\mathsf{Summarizes}$ | 0.20 |
-| $\mathsf{BranchesFrom}$ | 0.55 | $\mathsf{CausedBy}$ | 0.20 |
-| $\mathsf{Corrects}, \mathsf{Invalidates}$ | 0.50 | $\mathsf{Supports}, \mathsf{Contradicts}$ | 0.15 |
-| $\mathsf{Supersedes}$ | 0.45 | $\mathsf{RelatedTo}$ | 0.08 |
-| $\mathsf{DerivedFrom}$ | 0.40 | $\mathsf{References}$ | 0.06 |
+    // Seed the BFS with the lexical/vector hits
+    for seed in seeds {
+        queue.push_back((seed, 0)); // (thought, depth)
+    }
 
-Implicit edges synthesized from $\mathcal{O}$ are presented as $\mathsf{RelatedTo}$ and receive $b_\mathrm{rel} = 0.08$.
+    while let Some((thought, depth)) = queue.pop_front() {
+        if depth > max_depth || results.len() >= max_visits {
+            break;
+        }
+        if !visited.insert(thought.thought_id) {
+            continue; // already seen
+        }
 
-**Graph proximity.** For a hit at depth $d \ge 1$, $S_\mathrm{graph}(d) = 1/d$.
+        // Score by graph proximity: 1/depth
+        results.push(GraphHit {
+            thought_id: thought.thought_id,
+            depth,
+            graph_score: 1.0 / (depth as f64),
+        });
+
+        // Traverse explicit edges (typed relations)
+        for neighbor in adjacency.neighbors(thought, mode) {
+            queue.push_back((neighbor, depth + 1));
+        }
+
+        // Traverse implicit edges (cosine-inferred RelatedTo)
+        for neighbor in implicit_edges.neighbors(thought) {
+            queue.push_back((neighbor, depth + 1));
+        }
+    }
+
+    results
+}
+```
+
+Each typed relation carries a weight — a `ContinuesFrom` edge (weight 0.60) is stronger
+than a `References` edge (weight 0.06):
+
+| Relation kind | Weight |
+|---|---|
+| ContinuesFrom | 0.60 |
+| BranchesFrom | 0.55 |
+| Corrects, Invalidates | 0.50 |
+| Supersedes | 0.45 |
+| DerivedFrom | 0.40 |
+| Summarizes | 0.20 |
+| CausedBy | 0.20 |
+| Supports, Contradicts | 0.15 |
+| RelatedTo (implicit) | 0.08 |
+| References | 0.06 |
+
+Graph proximity decays with depth: a hit at depth 1 gets a score of 1.0, depth 2 gets 0.5,
+depth 3 gets 0.33, etc.
 
 ### 6.6 Session Cohesion
 
-**Definition 10 (Session Cohesion Boost).** For a seed $\sigma \in \Sigma_0$ with lexical score $S_\ell(\sigma) \in [\theta_\mathrm{seed}, \theta_\mathrm{solo}) = [3, 5)$, and a candidate $d$ with $|i(d) - i(\sigma)| \le 8$,
-$$
-S_\mathrm{coh}(d) = \max_{\sigma \in \Sigma_0} \max\!\Bigl(0,\; 0.8 \cdot \bigl(1 - |i(d) - i(\sigma)|/8\bigr) \cdot \mathbb{1}[\theta_\mathrm{seed} \le S_\ell(\sigma) < \theta_\mathrm{solo}]\Bigr).
-$$
-Seeds above $\theta_\mathrm{solo}$ are excluded because they are strong enough to stand on their own; the cohesion boost is meant to surface *evidence turns* adjacent to a match that share no direct lexical terms.
+When a seed thought has a moderate lexical score (not strong enough to stand alone, but
+not noise), thoughts adjacent to it in append order get a proximity boost. This surfaces
+"evidence turns" — thoughts that happened right after a match and share context even if
+they don't share vocabulary:
 
-### 6.7 Importance Weighting
+```rust
+// Simplified: session cohesion boost
+fn cohesion_score(
+    candidate_index: u64,
+    seed_index: u64,
+    seed_lexical_score: f64,
+) -> f64 {
+    let radius = 8;       // max append-order distance
+    let boost = 0.8;      // max cohesion boost
+    let seed_threshold_min = 3.0;
+    let seed_threshold_max = 5.0;
 
-**Definition 11 (Importance Boost).**
-$$
-S_\mathrm{imp}(d, Q) = S_\ell(d, Q) \cdot (f_\mathrm{imp}(d) - 0.5) \cdot 0.3.
-$$
-User-originated thoughts ($f_\mathrm{imp} \approx 0.8$) outrank verbose assistant responses ($f_\mathrm{imp} \approx 0.2$) in close BM25 races. The differential structure prevents flat multipliers from overwhelming lexical signal.
+    // Only apply when the seed is moderately strong (not solo-strong, not noise)
+    if seed_lexical_score < seed_threshold_min
+        || seed_lexical_score >= seed_threshold_max
+    {
+        return 0.0;
+    }
 
-### 6.8 Reciprocal Rank Fusion
+    let distance = (candidate_index as f64 - seed_index as f64).abs();
+    if distance > radius as f64 {
+        return 0.0;
+    }
 
-When $\mathtt{enable\_reranking}$ is set, the top $K = \mathtt{rerank\_k}$ candidates (default 50) are reranked via RRF [Cormack et al., 2009].
+    boost * (1.0 - distance / radius as f64)
+}
+```
 
-**Definition 12 (Reciprocal Rank Fusion).** Given $m$ ranked lists $L_1, \ldots, L_m$ of candidate documents, with $\mathrm{rank}_i(d)$ the 1-indexed position of $d$ in $L_i$ (or $+\infty$ if absent), and damping constant $k = 60$,
-$$
-S_\mathrm{RRF}(d) = \sum_{i=1}^{m} \frac{1}{k + \mathrm{rank}_i(d)}.
-$$
+### 6.7 Implicit Edge Overlay
 
-MentisDB produces three single-signal rankings — lexical-only ($S_\ell$), vector-only ($s_v$), and graph-only ($S_\mathrm{graph} + b_\mathrm{rel} + S_\mathrm{seed}$) — and fuses them via $S_\mathrm{RRF}$. The RRF total replaces the additive blend. Non-rankable signals ($S_\mathrm{imp}, S_\mathrm{coh}, f_\mathrm{conf}$, recency) are then added as small tie-breaking adjustments. RRF is pure arithmetic: no LLM, no external service, no network round trip.
+In practice, most agents append thoughts without authoring explicit relation edges. For
+such chains, the graph is sparse and graph expansion contributes nothing. The implicit
+edge overlay closes this gap by deriving `RelatedTo` edges automatically from vector
+cosine similarity.
 
-### 6.9 Memory Scopes
+```rust
+// Simplified: building the implicit edge overlay
+fn build_implicit_edges(
+    vectors: &HashMap<Uuid, Vec<f32>>, // thought_id → embedding
+    threshold: f64,                     // cosine similarity cutoff (default 0.85)
+    max_neighbors: usize,               // K: max edges per node (default 5)
+) -> HashMap<Uuid, Vec<ImplicitNeighbor>> {
+    let mut overlay = HashMap::new();
+    let ids: Vec<_> = vectors.keys().collect();
 
-$\mathsf{Scope} = \{\mathsf{User}, \mathsf{Session}, \mathsf{Agent}\}$, stored as tag markers `scope:{variant}`. A query with scope $s$ filters hits such that $s(d) = s$; absence of a scope filter returns all scopes.
+    for &source_id in &ids {
+        let source_vec = &vectors[source_id];
+        let mut neighbors: Vec<(Uuid, f64)> = Vec::new();
 
-### 6.10 Context Bundles
+        for &target_id in &ids {
+            if source_id == target_id {
+                continue;
+            }
+            let similarity = cosine_similarity(source_vec, &vectors[target_id]);
+            if similarity >= threshold {
+                neighbors.push((*target_id, similarity));
+            }
+        }
 
-$\mathrm{Bundle}(\chi, Q) = \{(\sigma, N^\pm(\sigma) \cap R_\mathrm{rank}(\chi, Q)) : \sigma \in \Sigma_0\}$: each bundle pairs a lexical seed with its graph-expanded neighbors, presented in deterministic provenance order so agents can interpret *why* supporting thoughts surfaced.
+        // Keep only the top-K most similar neighbors
+        neighbors.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        neighbors.truncate(max_neighbors);
 
-### 6.11 Vector Sidecars
+        overlay.insert(*source_id, neighbors.into_iter()
+            .map(|(id, score)| ImplicitNeighbor { id, score })
+            .collect());
+    }
 
-Vector state lives in rebuildable per-chain sidecars, partitioned by $(\chi, \mathrm{id}, h, \mathrm{model\_id}, \dim, \mathrm{version})$. Model or version changes invalidate old sidecars rather than silently mixing incompatible embeddings. Managed sidecars remain synchronized on append; the daemon defaults to local ONNX inference via `fastembed-minilm`. At chain open the sidecar is deserialized once into an in-memory $\mathsf{VectorIndex}$; all subsequent ranked-search calls read from this structure without touching disk.
+    overlay
+}
+```
 
-### 6.12 Implicit Edge Overlay
+The full build is O(N²) (all pairwise cosines), done once at chain open for N ≤ 50,000.
+On each new append, an O(N) incremental update computes cosines between the new thought's
+vector and all existing entries, adds forward and back edges, and re-sorts/truncates
+affected neighbor lists.
 
-In practice, most agents append thoughts without authoring explicit $\mathbf{E}$ relations. For such chains the $A(\chi)$ adjacency graph is sparse or empty, and graph expansion contributes nothing. The $\mathsf{ImplicitEdgeOverlay}$ closes this gap by deriving $\mathsf{RelatedTo}$ edges automatically from the vector sidecar.
+The overlay is persisted to `<chain>.auto_edges.bin` via bincode with atomic rename. If
+the threshold or K parameters change, the stored file is discarded and a full rebuild is
+triggered.
 
-**Definition 13 (Implicit Edge Overlay).** Given a vector sidecar $\mathcal{S} = \{(u_k, \vec{v}_k)\}_{k=0}^{n-1}$ with $\vec{v}_k \in \mathbb{R}^d$ normalized, threshold $\theta \in [0, 1]$, and budget $K \in \mathbb{N}$, the overlay is
-$$
-\mathcal{O} = \Bigl\{ (u_i, u_j, \cos(\vec{v}_i, \vec{v}_j)) : i \neq j,\; \cos(\vec{v}_i, \vec{v}_j) \ge \theta \Bigr\}
-$$
-restricted so that each source node $u_i$ retains at most $K$ neighbors sorted by descending cosine score. The overlay is represented as $\mathsf{HashMap}\langle\mathsf{UUID}, \mathsf{Vec}\langle\mathsf{ImplicitNeighbor}\rangle\rangle$ and persisted to `<chain>.auto_edges.bin` via bincode with atomic rename.
+### 6.8 HNSW Approximate Vector Backend
 
-**Build complexity.** The full build is $O(N^2 d)$ (all pairwise cosines) and is performed once at chain open for $N \le 50{,}000$. Chains above this threshold defer to incremental-only mode. On each append, the $O(Nd)$ incremental update computes cosines between the new thought's vector and all existing entries, adds forward edges from the new node and back-edges from its above-threshold neighbors, and re-sorts and truncates each affected neighbor list to $K$.
+For vector sidecars above a configurable size threshold (default 50,000 vectors),
+MentisDB switches from exact linear-scan cosine to an HNSW (Hierarchical Navigable Small
+World) graph for approximate nearest-neighbor search:
 
-**Invalidation.** If the loaded overlay's $(\theta, K)$ parameters differ from the current configuration (set via environment variables `MENTISDB_AUTO_EDGE_THRESHOLD` and `MENTISDB_AUTO_EDGE_K`, or the builder API), the stored file is discarded and a full rebuild is triggered. Defaults: $\theta = 0.85$, $K = 5$.
+```rust
+// Simplified: backend selection
+fn select_backend(vector_count: usize, threshold: usize) -> VectorBackendKind {
+    if vector_count >= threshold {
+        VectorBackendKind::Hnsw
+    } else {
+        VectorBackendKind::Exact
+    }
+}
+```
 
-**Integration with BFS.** $\mathrm{Expand}$ (Definition 9) checks the overlay after exhausting each node's explicit adjacency list. Implicit neighbors are synthesized as $\mathsf{RelatedTo}$ graph edges and participate in the same seen-set, depth budget, and visit budget as explicit relations.
+Both backends implement the same `VectorSearchBackend` trait, so the surrounding
+retrieval pipeline is unchanged. The HNSW graph is persisted to disk and reloaded on
+startup when the stored thought count matches the live chain. For large sidecars, the
+graph can be built in a background thread while the daemon continues serving queries
+with the exact backend as a placeholder.
 
-### 6.13 HNSW Approximate Vector Backend
+At 10k vectors, HNSW delivers a 10.9× query speedup with 91.4% recall. At 50k vectors,
+it achieves 100% recall at 4.23ms per query.
 
-For managed vector sidecars above a configurable size threshold, MentisDB uses a
-Hierarchical Navigable Small World (HNSW) graph to approximate nearest-neighbor
-search instead of the exact cosine scan. The exact backend remains the default
-for small corpora and the fallback if the HNSW graph is unavailable or
-mismatched.
+### 6.9 Reciprocal Rank Fusion
 
-Let $T \in \mathbb{N}$ be the HNSW activation threshold (`MENTISDB_HNSW_THRESHOLD`,
-default $50{,}000$). Given a sidecar $\mathcal{S}$ with $|\mathcal{S}|$ vectors,
-the active backend is
-$$
-\mathsf{Backend}(\mathcal{S}) =
-\begin{cases}
-\mathsf{Exact} & \text{if } |\mathcal{S}| < T \text{ or HNSW is disabled}, \\
-\mathsf{Hnsw} & \text{otherwise}.
-\end{cases}
-$$
-Both backends implement the same $\mathsf{VectorSearchBackend}$ trait and return
-candidates in the same order-preserving cosine-score units, so the surrounding
-hybrid retrieval pipeline is unchanged. The HNSW graph is persisted to disk and
-reloaded on startup when the stored thought count matches the live chain; stale
-graphs are atomically rebuilt. For large sidecars the graph can be constructed
-in a background thread while the daemon continues to serve queries with the
-exact backend.
+When reranking is enabled, the top K candidates (default 50) are re-ranked using
+Reciprocal Rank Fusion — a simple, parameter-light method that combines multiple ranked
+lists:
 
-### 6.14 Decomposed Scores
+```rust
+// Simplified: Reciprocal Rank Fusion
+fn rrf_score(
+    candidate: &Thought,
+    ranked_lists: &[Vec<Uuid>], // multiple ranked lists of thought IDs
+    k: u64,                     // damping constant (default 60)
+) -> f64 {
+    let mut total = 0.0;
 
-Each ranked hit exposes a score vector
-$$
-\mathbf{s}(d) = (S_\ell, s_v, S_\mathrm{graph}, b_\mathrm{rel}, S_\mathrm{seed}, S_\mathrm{imp}, f_\mathrm{conf}, S_\mathrm{rec}, S_\mathrm{coh}, S_\mathrm{tot})
-$$
-together with $\mathrm{matched\_terms}$ and $\mathrm{match\_sources}$, preserving auditability.
+    for list in ranked_lists {
+        // Find the 1-indexed position of this candidate in the list
+        if let Some(pos) = list.iter().position(|id| *id == candidate.thought_id) {
+            let rank = (pos + 1) as u64; // 1-indexed
+            total += 1.0 / (k + rank) as f64;
+        }
+        // If absent from a list, contributes 0 (no penalty beyond missing the signal)
+    }
+
+    total
+}
+```
+
+MentisDB produces three single-signal rankings — lexical-only, vector-only, and
+graph-only — and fuses them via RRF. The RRF score replaces the additive blend. Other
+signals (importance, cohesion, confidence, recency) are then added as small
+tie-breaking adjustments.
+
+RRF is pure arithmetic: no LLM, no external service, no network round trip.
+
+### 6.10 Importance Weighting
+
+User-originated thoughts (importance ~0.8) should outrank verbose assistant responses
+(importance ~0.2) in close BM25 races. The importance boost is differential, not a flat
+multiplier:
+
+```rust
+// Simplified: importance boost
+fn importance_boost(base_score: f64, importance: f64) -> f64 {
+    // importance is 0.0–1.0; 0.5 is neutral
+    base_score * (importance - 0.5) * 0.3
+}
+```
+
+The differential structure prevents flat multipliers from overwhelming the lexical signal.
+
+### 6.11 Decomposed Scores
+
+Each ranked hit exposes its full score breakdown for auditability:
+
+```rust
+struct RankedSearchHit {
+    thought_id: Uuid,
+    // Individual signal scores
+    lexical_score: f64,
+    vector_score: f64,
+    graph_score: f64,
+    relation_boost: f64,
+    seed_score: f64,
+    importance_boost: f64,
+    confidence: f64,
+    recency_score: f64,
+    cohesion_score: f64,
+    // The final fused total
+    total_score: f64,
+    // Which query terms matched and in which fields
+    matched_terms: Vec<String>,
+    match_sources: Vec<String>,
+}
+```
+
+This lets you debug *why* a thought ranked where it did — essential for tuning.
+
+### 6.12 Context Bundles
+
+Context bundles group retrieval results by their seed thought, pairing each lexical seed
+with its graph-expanded neighbors. This gives agents context in deterministic provenance
+order, so they can interpret *why* supporting thoughts surfaced:
+
+```rust
+// Simplified: context bundle structure
+struct ContextBundle {
+    seed: RankedSearchHit,              // the lexical seed
+    neighbors: Vec<RankedSearchHit>,    // graph-expanded related thoughts
+}
+```
+
+### 6.13 Vector Sidecars
+
+Vector state lives in rebuildable per-chain sidecars, partitioned by chain key, model ID,
+dimension, and version. Model or version changes invalidate old sidecars rather than
+silently mixing incompatible embeddings. Managed sidecars stay synchronized on append;
+the daemon defaults to local ONNX inference via `fastembed-minilm`.
+
+At chain open, the sidecar is deserialized once into an in-memory index. All subsequent
+ranked-search calls read from memory without touching disk.
+
+### 6.14 Memory Scopes
+
+Thoughts can be scoped to `User`, `Session`, or `Agent` level. A query with a scope
+filter returns only thoughts at that scope; absence of a scope filter returns all. Scopes
+are stored as tag markers (`scope:user`, `scope:session`, `scope:agent`).
 
 ---
 
@@ -405,26 +838,59 @@ together with $\mathrm{matched\_terms}$ and $\mathrm{match\_sources}$, preservin
 
 ### 7.1 Jaccard-Supersedes Algorithm
 
-Let $\mathcal{N}(t) \subseteq \Sigma^\star$ denote the normalized token set of thought $t$ (Porter-stemmed, lemma-expanded). Given threshold $\theta \in [0, 1]$ and scan window $w \in \mathbb{N}$, on append of a new thought $t_n$ with token set $\mathcal{N}(t_n) \neq \emptyset$, MentisDB computes
+When a new thought is appended, MentisDB checks the last N thoughts (default 64) for
+near-duplicates using Jaccard similarity over normalized token sets:
 
-$$
-t^\ast = \arg\max_{t \in \{t_{n-w}, \ldots, t_{n-1}\}} J\bigl(\mathcal{N}(t_n), \mathcal{N}(t)\bigr),
-\qquad
-J(A, B) = \frac{|A \cap B|}{|A \cup B|}.
-$$
+```rust
+// Simplified: dedup check on append
+fn check_dedup(
+    new_thought: &Thought,
+    recent_thoughts: &[&Thought], // last N thoughts
+    threshold: f64,                // default 0.85
+) -> Option<Uuid> {
+    let new_tokens = normalize_tokens(&new_thought.content); // stemmed + lemma-expanded
+    if new_tokens.is_empty() {
+        return None;
+    }
 
-If $J(\mathcal{N}(t_n), \mathcal{N}(t^\ast)) \ge \theta$, it auto-emits a relation $e = (\mathsf{Supersedes}, t^\ast.\mathrm{id}, \bot, \tau_\mathrm{now}, \bot)$ on $t_n$, and updates $\mathcal{I}(\chi)$ to include $t^\ast.\mathrm{id}$ for $O(1)$ skipping in subsequent retrieval.
+    let mut best_match = None;
+    let mut best_similarity = 0.0;
 
-**Complexity.** Token normalization is $O(|c|)$ per record. Jaccard over the window is $O(w \cdot \overline{|\mathcal{N}|})$. With default $w = 64$ and typical tokens per thought $\le 200$, dedup cost is bounded by a constant factor of append cost.
+    for prior in recent_thoughts {
+        let prior_tokens = normalize_tokens(&prior.content);
+        let similarity = jaccard(&new_tokens, &prior_tokens);
+
+        if similarity > best_similarity {
+            best_similarity = similarity;
+            best_match = Some(prior.thought_id);
+        }
+    }
+
+    // If the best match exceeds the threshold, mark it as superseded
+    if best_similarity >= threshold {
+        best_match
+    } else {
+        None
+    }
+}
+
+fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
+    let intersection = a.intersection(b).count() as f64;
+    let union = a.union(b).count() as f64;
+    if union == 0.0 { 0.0 } else { intersection / union }
+}
+```
+
+If a duplicate is found, a `Supersedes` relation edge is auto-emitted, and the
+superseded thought's ID is added to the invalidation set for O(1) skipping during
+retrieval. The original thought is retained for audit — no content is deleted.
 
 ### 7.2 Configuration
 
+```bash
+MENTISDB_DEDUP_THRESHOLD=0.85    # Jaccard threshold (0.0–1.0)
+MENTISDB_DEDUP_SCAN_WINDOW=64    # how many recent thoughts to scan
 ```
-MENTISDB_DEDUP_THRESHOLD = θ   ∈ [0,1]
-MENTISDB_DEDUP_SCAN_WINDOW = w ∈ ℕ (default 64)
-```
-
-Library API: `MentisDb::with_dedup_threshold`, `with_dedup_scan_window`. The superseded thought is retained for audit; no content is deleted. Ranked search deprioritizes it via $\mathcal{I}(\chi)$.
 
 ---
 
@@ -432,24 +898,55 @@ Library API: `MentisDb::with_dedup_threshold`, `with_dedup_scan_window`. The sup
 
 ### 8.1 CLI
 
-The daemon `mentisdb` exposes three subcommands that RPC over REST to a running daemon at `http://127.0.0.1:9472`: `add`, `search`, `agents`. They use synchronous HTTP (`ureq`) to avoid pulling in an async runtime for the client path.
+The `mentisdb` binary exposes subcommands that RPC over REST to a running daemon:
+
+```bash
+mentisdb add --content "Decision: use Rust for the API" --type Decision
+mentisdb search "what database did we choose"
+mentisdb agents --list
+```
+
+Client commands use synchronous HTTP (`ureq`) to avoid pulling in an async runtime.
 
 ### 8.2 MCP Server
 
-`mentisdb` exposes a streamable HTTP MCP endpoint at `POST /` (port 9471) with 35 tools covering bootstrap, append, search, read, export/import, agent registry, chain management, and a skill registry. Legacy REST endpoints `POST /tools/list` and `POST /tools/execute` remain available for compatibility.
+MentisDB exposes a streamable HTTP MCP endpoint with 35+ tools covering bootstrap, append,
+search, read, export/import, agent registry, chain management, and a skill registry:
+
+```
+POST /  (port 9471)
+Content-Type: application/json
+
+# Tools include:
+#   mentisdb_bootstrap, mentisdb_append, mentisdb_search,
+#   mentisdb_ranked_search, mentisdb_context_bundles,
+#   mentisdb_traverse_thoughts, mentisdb_branch_from,
+#   mentisdb_merge_chains, mentisdb_upload_skill, ...
+```
 
 ### 8.3 Skill Registry
 
-The skill registry is a git-like immutable version store for agent instruction bundles. An upload to an existing $\mathtt{skill\_id}$ creates a new immutable version: the first is stored as full content, subsequent versions as unified diff patches. Version reconstruction replays patches from $v_0$ forward. Content hashes are computed over reconstructed content, decoupling integrity from storage representation. Agents with registered Ed25519 keys must cryptographically sign uploads; signature verification is server-side before acceptance.
+The skill registry is a git-like immutable version store for agent instruction bundles.
+An upload to an existing skill ID creates a new immutable version: the first is stored as
+full content, subsequent versions as unified diff patches. Version reconstruction replays
+patches from v0 forward.
+
+Agents with registered Ed25519 keys must cryptographically sign uploads; signature
+verification is server-side before acceptance.
 
 ### 8.4 Bootstrap Protocol
 
-Modern MCP clients bootstrap from the handshake:
+Modern MCP clients bootstrap from a handshake:
 
-1. $\mathtt{initialize.instructions}$ directs the agent to read $\mathtt{mentisdb://skill/core}$.
-2. $\mathtt{resources/read}$ returns the embedded operating skill.
-3. $\mathtt{mentisdb\_bootstrap}$ opens or creates the chain; if empty, writes a genesis checkpoint.
-4. $\mathtt{mentisdb\_recent\_context}$ loads prior state.
+1. `initialize.instructions` directs the agent to read `mentisdb://skill/core`
+2. `resources/read` returns the embedded operating skill
+3. `mentisdb_bootstrap` opens or creates the chain; if empty, writes a genesis checkpoint
+4. `mentisdb_recent_context` loads prior state for resumption
+
+### 8.5 REST API
+
+A versioned REST API (`/v1/...`) mirrors the MCP tools for non-MCP clients, with bearer
+token authorization supporting chain-scoped tokens.
 
 ---
 
@@ -457,42 +954,41 @@ Modern MCP clients bootstrap from the handshake:
 
 ### 9.1 Benchmarks
 
-We evaluate MentisDB on two standard long-term memory benchmarks.
+MentisDB is evaluated on two standard long-term memory benchmarks:
 
 | Benchmark | Metric | v0.8.1 | v0.8.5 | v0.8.9 |
 |---|---|---|---|---|
-| LoCoMo-2P | $R@10$ | **88.7%** | — | — |
-| LoCoMo-2P single-hop | $R@10$ | 90.7% | — | — |
-| LoCoMo-10P (1977 queries) | $R@10$ | 74.2% | **74.6%** | **71.9%** |
-| LoCoMo-10P single-hop | $R@10$ | — | 79.0% | 75.8% |
-| LoCoMo-10P multi-hop | $R@10$ | — | 58.4% | 57.4% |
-| LoCoMo-10P | $R@20$ | — | — | 79.1% |
-| LongMemEval (fresh chain) | $R@5$ | 67.6% | — | **66.8%** |
-| LongMemEval (fresh chain) | $R@10$ | 73.2% | — | **72.2%** |
-| LongMemEval (fresh chain) | $R@20$ | — | — | 78.0% |
+| LoCoMo-2P | R@10 | **88.7%** | — | — |
+| LoCoMo-2P single-hop | R@10 | 90.7% | — | — |
+| LoCoMo-10P (1977 queries) | R@10 | 74.2% | **74.6%** | **71.9%** |
+| LoCoMo-10P single-hop | R@10 | — | 79.0% | 75.8% |
+| LoCoMo-10P multi-hop | R@10 | — | 58.4% | 57.4% |
+| LoCoMo-10P | R@20 | — | — | 79.1% |
+| LongMemEval (fresh chain) | R@5 | 67.6% | — | **66.8%** |
+| LongMemEval (fresh chain) | R@10 | 73.2% | — | **72.2%** |
+| LongMemEval (fresh chain) | R@20 | — | — | 78.0% |
 
-All v0.8.9 numbers were reproduced deterministically across independent full-scale benchmark runs on 2026-04-14 and 2026-04-17 against fresh chains with the default retrieval configuration (`fastembed-minilm` vector sidecar, graph expansion enabled, RRF reranking disabled).
-
-The v0.8.5 LoCoMo-10P improvement derives from three changes:
-
-1. Session cohesion tuning: radius $8 \to 12$, boost $0.8 \to 1.2$.
-2. Doubled edge weights $b_\mathrm{rel}$ across all $\mathsf{ThoughtRelationKind}$ variants.
-3. FastEmbed MiniLM sentence embeddings replacing text-only hashing when the `local-embeddings` feature is compiled.
+All v0.8.9 numbers were reproduced deterministically across independent full-scale
+benchmark runs on 2026-04-14 and 2026-04-17 against fresh chains with the default
+retrieval configuration (`fastembed-minilm` vector sidecar, graph expansion enabled, RRF
+reranking disabled).
 
 ### 9.2 Scoring Evolution
 
-| Version | Change | LongMemEval $R@5$ | LoCoMo-10P $R@10$ |
+| Version | Change | LongMemEval R@5 | LoCoMo-10P R@10 |
 |---|---|---|---|
 | 0.8.0 baseline | — | 57.2% | — |
 | 0.8.0 + Porter stemming | token normalization | 61.6% | — |
 | 0.8.0 + tiered fusion + importance | vector/lexical balance | 65.0% | — |
 | 0.8.1 + cohesion + smooth fusion + DF cutoff | retrieval quality | 67.6% | 74.2% |
-| 0.8.5 + cohesion tuning + $b_\mathrm{rel}\times 2$ + fastembed | session/graph boost | — | 74.6% |
+| 0.8.5 + cohesion tuning + doubled edge weights + fastembed | session/graph boost | — | 74.6% |
 | 0.8.9 + irregular lemmas + webhooks | lemma expansion + events | 66.8% | 71.9% |
-| 0.9.8 + ImplicitEdgeOverlay + in-memory VectorIndex | graph density + latency | 66.8% | — |
+| 0.9.8 + implicit edge overlay + in-memory vector index | graph density + latency | 66.8% | — |
 | 0.9.9 + thesaurus auto-by-default + full embeddings | automatic synonym expansion | 66.8% | **72.6%** |
 
-The 0.9.9 release makes the static thesaurus apply automatically by default to all ranked search paths. With real fastembed-minilm vectors this delivers the target LoCoMo-10P $R@10 = 72.6\%$. LongMemEval remains at 66.8% $R@5$ (lexical gaps still dominate many misses).
+The 0.9.9 release makes the static thesaurus apply automatically by default to all ranked
+search paths. With real `fastembed-minilm` vectors this delivers the target LoCoMo-10P
+R@10 = 72.6%. LongMemEval remains at 66.8% R@5 (lexical gaps still dominate many misses).
 
 ### 9.3 Near-Miss Analysis (LoCoMo-10P, v0.8.5)
 
@@ -500,27 +996,51 @@ Of 503 misses (gold answer absent from top-10):
 
 | Bucket | Count | Fraction | Interpretation |
 |---|---|---|---|
-| $R@20$ hit | 130 | 25.8% | close ranking error |
-| $R@50$ hit | 285 | 56.7% | moderate signal gap |
-| $R > 50$ | 218 | 43.3% | lexical gap (query terms absent from evidence) |
+| R@20 hit | 130 | 25.8% | close ranking error |
+| R@50 hit | 285 | 56.7% | moderate signal gap |
+| R > 50 | 218 | 43.3% | lexical gap (query terms absent from evidence) |
 
-The 43.3% figure represents a hard ceiling for BM25-only retrieval on this benchmark. Closing it requires larger embedding models, LLM-driven query expansion, or external knowledge retrieval. The 25.8% ranking-error bucket is the target for graph-density improvements; the implicit edge overlay is designed to address it by surfacing thoughts that are semantically adjacent to lexical seeds but not directly related by explicit authored edges.
+The 43.3% figure represents a hard ceiling for BM25-only retrieval on this benchmark.
+Closing it requires larger embedding models, LLM-driven query expansion, or external
+knowledge retrieval. The 25.8% ranking-error bucket is the target for graph-density
+improvements; the implicit edge overlay is designed to address it.
 
 ### 9.4 Near-Miss Analysis (LongMemEval, v0.9.8)
 
-Running v0.9.8 against the LongMemEval 500-question evaluation set (10,866-thought chain, `fastembed-minilm`, default settings, $\theta = 0.85$) produces R@5 = 66.8%, R@10 ≈ 72.0%, R@20 ≈ 77.8% — statistically identical to v0.8.9. Of 166 misses:
+Running v0.9.8 against the LongMemEval 500-question evaluation set (10,866-thought chain,
+`fastembed-minilm`, default settings, threshold 0.85) produces R@5 = 66.8%, R@10 ≈ 72.0%,
+R@20 ≈ 77.8%. Of 166 misses:
 
 | Bucket | Count | Fraction | Interpretation |
 |---|---|---|---|
-| $R@10$ hit | 27 | 16.3% | close ranking error |
-| $R@20$ hit | 57 | 34.3% | moderate signal gap |
-| not in $R@20$ | 109 | 65.7% | lexical gap |
+| R@10 hit | 27 | 16.3% | close ranking error |
+| R@20 hit | 57 | 34.3% | moderate signal gap |
+| not in R@20 | 109 | 65.7% | lexical gap |
 
-By question type, the weakest categories are `single-session-preference` (13.3% R@5) and `multi-session` (64.7% R@5). The dominant miss signal is lexical (avg top-1 lexical score 21.3 vs graph 0.006 at $\theta = 0.85$; graph increases to 0.021 at $\theta = 0.70$ but R@5 declines 0.2% due to noise from spurious neighbor promotions). LME's near-miss structure is qualitatively different from LoCoMo's: 65.7% of misses are not recoverable at R@20 regardless of graph topology, because the evidence thoughts share no vocabulary with the query. Graph expansion is the correct tool for LoCoMo multi-hop; query expansion or a larger encoder is the correct tool for LME's lexical gap.
+The dominant miss signal is lexical: 65.7% of misses are not recoverable at R@20
+regardless of graph topology, because the evidence thoughts share no vocabulary with the
+query. Graph expansion is the correct tool for LoCoMo multi-hop; query expansion or a
+larger encoder is the correct tool for LongMemEval's lexical gap.
 
-### 9.5 Micro-Benchmarks
+### 9.5 HNSW Performance
 
-Criterion micro-benchmarks span five domains: append throughput (`thought_chain`), baseline search (`search_baseline`), ranked retrieval (`search_ranked`), skill registry lifecycle (`skill_registry`), and HTTP concurrency at $\{100, 10^3, 10^4\}$ concurrent Tokio tasks with $p_{50}/p_{95}/p_{99}$ reporting (`http_concurrency`). A `DashMap`-based concurrent chain lookup delivers 750–930 read req/s at $10^4$ concurrent tasks, versus the previous $\mathsf{RwLock}\langle\mathsf{HashMap}\rangle$ bottleneck.
+| Corpus | Backend | Query Latency (100 queries) | Recall@10 | Speedup |
+|---|---|---|---|---|
+| 10k × 128d | Exact (linear scan) | 95.1 ms | 100.0% | — |
+| 10k × 128d | **HNSW** | **8.75 ms** | 91.4% | **10.9×** |
+| 50k × 128d | **HNSW** | **4.23 ms/query** | **100.0%** | — |
+
+The 50k result: 100% recall at 4.23ms per query. Build time was 232s (one-time,
+background). HNSW graph persistence means the graph is serialized to disk and reloaded
+on daemon startup — no rebuild needed after restart.
+
+### 9.6 Micro-Benchmarks
+
+Criterion micro-benchmarks span five domains: append throughput (`thought_chain`),
+baseline search (`search_baseline`), ranked retrieval (`search_ranked`), skill registry
+lifecycle (`skill_registry`), and HTTP concurrency at {100, 1k, 10k} concurrent Tokio
+tasks with p50/p95/p99 reporting (`http_concurrency`). A `DashMap`-based concurrent chain
+lookup delivers 750–930 read req/s at 10k concurrent tasks.
 
 ---
 
@@ -535,38 +1055,68 @@ Criterion micro-benchmarks span five domains: append throughput (`thought_chain`
 | Hybrid retrieval | BM25 + vector + graph | vector + keyword | semantic + keyword + graph | — |
 | Approximate NN (HNSW) | **Yes (default)** | — | — | — |
 | Implicit graph inference | **cosine-inferred edges** | — | LLM-extracted | — |
-| Temporal facts | $[\mathtt{v}_\ast, \mathtt{v}^\ast]$ (0.8.2+) | update-only | $[\mathtt{v}_\ast, \mathtt{v}^\ast]$ | — |
-| Deduplication | **Jaccard + $\mathsf{Supersedes}$** | LLM-based | merge | — |
+| Temporal facts | valid_at / invalid_at | update-only | valid_at / invalid_at | — |
+| Deduplication | **Jaccard + Supersedes** | LLM-based | merge | — |
 | Agent registry | Yes | — | — | Yes |
 | MCP server | **Built-in** | — | Yes | — |
 
-MentisDB is, to our knowledge, the only system combining (i) embedded storage, (ii) zero LLM dependency in the core path, (iii) cryptographic chain integrity, (iv) hybrid BM25 + vector + graph retrieval with cosine-inferred implicit edges, and (v) a built-in MCP server — all in a single static binary. Identified gaps relative to competitors: custom per-chain entity/relation ontologies (as in Graphiti's Pydantic models), LLM-driven memory extraction, a browser extension, and per-thought token accounting.
+MentisDB is, to our knowledge, the only system combining (i) embedded storage, (ii) zero
+LLM dependency in the core path, (iii) cryptographic chain integrity, (iv) hybrid BM25 +
+vector + graph retrieval with cosine-inferred implicit edges, and (v) a built-in MCP
+server — all in a single static binary.
 
 ---
 
-## 11. Discussion, Limitations, and Future Work
+## 11. Limitations and Future Work
 
 ### 11.1 Limitations
 
-- **Ceiling of sparse retrieval.** The near-miss analyses quantify irreducible lexical gaps on both benchmarks: 43.3% on LoCoMo-10P and 65.7% on LongMemEval for BM25-only retrieval. Dense embeddings and implicit graph edges mitigate ranking errors but cannot recover evidence thoughts that share no vocabulary with the query.
-- **Implicit edge quality depends on encoder.** The $\mathsf{ImplicitEdgeOverlay}$ is only as good as the underlying embedding model. With `fastembed-minilm` (384-dim) and the default threshold $\theta = 0.85$, LME produces a sparse overlay (~5 K edges for 10 K thoughts) because MiniLM cosine similarities between topically diverse conversations rarely exceed 0.85. Lowering $\theta$ increases edge density but introduces noise at the graph-score level.
-- **Local-only integrity model.** The hash chain provides tamper evidence, not Byzantine fault tolerance or distributed consensus; cross-chain consistency is not enforced cryptographically.
-- **Schema churn discipline.** Because bincode tags enum variants by ordinal, schema evolution is append-only at the enum level — reordering or renaming variants would silently corrupt persisted data.
+- **Ceiling of sparse retrieval.** The near-miss analyses quantify irreducible lexical
+  gaps: 43.3% on LoCoMo-10P and 65.7% on LongMemEval. Dense embeddings and implicit graph
+  edges mitigate ranking errors but cannot recover evidence thoughts that share no
+  vocabulary with the query.
+
+- **Implicit edge quality depends on the encoder.** With `fastembed-minilm` (384-dim) and
+  threshold 0.85, LongMemEval produces a sparse overlay (~5k edges for 10k thoughts)
+  because MiniLM cosine similarities between topically diverse conversations rarely exceed
+  0.85. Lowering the threshold increases density but introduces noise.
+
+- **Local-only integrity.** The hash chain provides tamper evidence, not Byzantine fault
+  tolerance or distributed consensus. Cross-chain consistency is not enforced
+  cryptographically.
+
+- **Schema churn discipline.** Because bincode tags enum variants by ordinal, schema
+  evolution is append-only at the enum level — reordering or renaming variants would
+  silently corrupt persisted data.
 
 ### 11.2 Future Work
 
-- **LoCoMo multi-hop validation of ImplicitEdgeOverlay.** The 21-point single-hop / multi-hop gap on LoCoMo-10P (79.0% vs 57.4% R@10 at v0.8.9) is the primary target for graph-density improvements. A full re-run against v0.9.8 with the overlay active is needed to quantify the gain.
-- **Threshold sweep.** A sweep across $\theta \in \{0.75, 0.80, 0.85, 0.90\}$ and $K \in \{3, 5, 10\}$ on LoCoMo multi-hop would identify the optimal operating point for the overlay.
-- **Thesaurus auto-expansion tuning** (0.9.9 delivered automatic thesaurus by default with strong LoCoMo gains; further weight tuning and short-evidence handling remain).
-- **Per-chain entity / relation ontologies** enabling typed domain-specific facts beyond the fixed $\mathsf{ThoughtRelationKind}$.
-- **Episode provenance**: tracing derived facts back to source conversations.
-- **Cross-chain federated retrieval** with result reconciliation across distributed ledgers.
+- **LoCoMo multi-hop validation of implicit edge overlay.** The 21-point single-hop /
+  multi-hop gap (79.0% vs 57.4% R@10) is the primary target for graph-density
+  improvements.
+- **Threshold sweep** across cosine thresholds {0.75, 0.80, 0.85, 0.90} and K {3, 5, 10}
+  on LoCoMo multi-hop.
+- **Per-chain entity/relation ontologies** enabling typed domain-specific facts beyond the
+  fixed relation kinds.
+- **Cross-chain federated retrieval** with result reconciliation across distributed
+  ledgers.
 - **Optional LLM-extracted memories** as a layered, auditable transform.
-- **Self-improving skill registry**: agents committing updated skill versions as they learn, with signed provenance.
+- **Self-improving skill registry**: agents committing updated skill versions as they
+  learn, with signed provenance.
 
 ### 11.3 Conclusion
 
-MentisDB formalizes agent memory as an append-only, hash-chained ledger of semantically typed thoughts, and couples that ledger with a composable retrieval pipeline — BM25 with per-field DF gating, smooth vector-lexical fusion, bounded typed-edge graph expansion augmented by cosine-inferred implicit edges, RRF, session cohesion, and Jaccard-based deduplication — in a single embedded Rust substrate. The $\mathsf{ImplicitEdgeOverlay}$ extends graph-based retrieval to chains where agents author few explicit relations, deriving a dense implicit graph from vector cosine proximity at $O(N)$ incremental cost per append. Empirical results on LoCoMo and LongMemEval demonstrate competitive retrieval quality without reliance on external databases or LLM services for the core ingestion path. The system is released as open source and exposes MCP, REST, and HTTPS surfaces for interoperation with contemporary agentic harnesses.
+MentisDB formalizes agent memory as an append-only, hash-chained ledger of semantically
+typed thoughts, and couples that ledger with a composable retrieval pipeline — BM25 with
+per-field DF gating, smooth vector-lexical fusion, bounded typed-edge graph expansion
+augmented by cosine-inferred implicit edges, RRF, session cohesion, and Jaccard-based
+deduplication — in a single embedded Rust crate. The implicit edge overlay extends
+graph-based retrieval to chains where agents author few explicit relations, deriving a
+dense implicit graph from vector cosine proximity at O(N) incremental cost per append.
+Empirical results on LoCoMo and LongMemEval demonstrate competitive retrieval quality
+without reliance on external databases or LLM services for the core ingestion path. The
+system is released as open source and exposes MCP, REST, and HTTPS surfaces for
+interoperation with contemporary agentic harnesses.
 
 ---
 
