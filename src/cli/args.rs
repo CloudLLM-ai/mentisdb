@@ -291,10 +291,15 @@ Usage:
   mentisdb bearertoken remove <alias> [--dir <path>]
   mentisdb cert [<ip-address-or-domain>] [--force] [--out-dir <path>] [--env-file <path>] [--no-env-update]
 
-Daemon modes (start HTTP servers by default):
-  --mode stdio     Start MCP server over stdio (for Claude Desktop subprocess)
-  --mode http      HTTP servers only (same as default)
-  --mode both      Run both stdio MCP and HTTP servers
+Client transport (--mode):
+  --mode stdio     MCP over stdin/stdout for subprocess clients (Claude Desktop,
+                   etc.). Usually proxies to the HTTP daemon for one shared
+                   chain cache; see Flags above for the full stdio/http/both
+                   descriptions.
+  --mode http      HTTP MCP + REST (+ optional HTTPS) and the operator TUI.
+                   Same as plain mentisdb; not HTTP-only — the default already
+                   starts these services. Use with --headless to drop the TUI.
+  --mode both      Stdio MCP and the HTTP/TUI operator stack in one process.
   --stdio-mcp      Alias for --mode stdio
 
 Supported agents (setup/wizard):

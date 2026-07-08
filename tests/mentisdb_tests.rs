@@ -117,6 +117,43 @@ fn mentisdb_help_lists_native_setup_and_wizard_subcommands() {
 }
 
 #[test]
+fn mentisdb_help_documents_mode_flag() {
+    let help = mentisdb_impl::daemon_help_text();
+    assert!(
+        help.contains("--mode <mode>"),
+        "missing --mode <mode> from daemon help"
+    );
+    for mode in ["stdio", "http", "both"] {
+        assert!(
+            help.contains(mode),
+            "missing --mode {mode} description from daemon help"
+        );
+    }
+    assert!(
+        help.contains("--stdio-mcp"),
+        "missing --stdio-mcp alias from daemon help"
+    );
+    assert!(
+        help.contains("client transport"),
+        "mode help should describe transport purpose, not only which servers start"
+    );
+    assert!(
+        !help.contains("HTTP servers only (same as default)"),
+        "mode help should not claim http mode is HTTP-only"
+    );
+
+    let cli_help = mentisdb::cli::help_text();
+    assert!(
+        cli_help.contains("Client transport (--mode):"),
+        "CLI help should document --mode as client transport"
+    );
+    assert!(
+        !cli_help.contains("start HTTP servers by default"),
+        "CLI help should not imply modes only differ by whether HTTP starts"
+    );
+}
+
+#[test]
 fn mentisdb_help_documents_the_headless_flag() {
     // Regression test: `--headless` has been a real flag since 2ae780f
     // (April 30) but was never advertised in `--help` because it was

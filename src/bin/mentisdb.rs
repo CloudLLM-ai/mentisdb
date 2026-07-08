@@ -2161,6 +2161,32 @@ Usage:
   mentisdb cert [<ip-address-or-domain>] [--force] [--out-dir <path>] [--env-file <path>] [--no-env-update]
 
 Flags:
+  --mode <mode>
+    Choose how MCP clients connect to this process. Valid values: stdio, http,
+    both. This is about the client transport, not whether HTTP is available:
+    plain `mentisdb` already starts HTTP MCP, REST, optional HTTPS, and the
+    operator TUI.
+
+    stdio
+      For apps that spawn mentisdb as a subprocess and speak MCP over
+      stdin/stdout (Claude Desktop and similar). Usually proxies JSON-RPC to
+      the shared HTTP daemon so every client sees the same live chain cache;
+      auto-launches `mentisdb --mode http --headless` when needed.
+
+    http
+      Select the HTTP-based daemon path explicitly: MCP and REST on the
+      configured ports, plus the operator TUI when stdin/stdout are
+      interactive. Same as running plain `mentisdb`. Add `--headless` to
+      expose only the network services without the TUI.
+
+    both
+      Serve stdio MCP clients and the HTTP/TUI operator stack from one
+      process — for sessions that need subprocess MCP and dashboard access
+      together.
+
+  --stdio-mcp
+    Alias for `--mode stdio`.
+
   --headless
     Start the HTTP/MCP/REST servers without the interactive terminal UI.
     Use this when running mentisdb as a background daemon, inside Docker
