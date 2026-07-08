@@ -1532,6 +1532,22 @@ async fn dashboard_html_includes_chain_search_scaffolding() {
     assert!(html.contains("/dashboard/api/chains/${encodeURIComponent(chainKey)}/vectors/${encodeURIComponent(key)}/rebuild"));
     assert!(html.contains("Context Bundles"));
     assert!(html.contains("updateExplorerOrderUi"));
+    assert!(html.contains(
+        "<thead><tr><th>#</th><th>Type</th><th>Role</th><th>Agent</th><th>Content</th><th>Date</th><th></th></tr></thead>"
+    ));
+
+    assert!(html.contains(
+        r#"${typeBadge(t.thought_type)}${entityTypeBadge(t.entity_type)}</td>
+                    <td>${t.role ? `<span class="badge badge-gray">${esc(t.role)}</span>` : '<span style="color:#484f58">—</span>'}</td>
+                    <td style="font-size:0.82rem">
+                      ${t.agent_id"#
+    ));
+    assert!(html.contains(
+        r#"${esc(contentPreview)}</div>
+                      ${metaLine}
+                    </td>
+                    <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.timestamp||t.created_at))}</td>"#
+    ));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -2638,10 +2638,7 @@
                 return `
                   <tr class="clickable" data-idx="${i}">
                     <td>${rankOrIndex}</td>
-                  <td>${typeBadge(t.thought_type)}${entityTypeBadge(t.entity_type)}</td>
-                  <td style="max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9d1d9">
-                    ${esc((t.content||'').slice(0,100))}${(t.content||'').length>100?'…':''}
-                  </td>
+                    <td>${typeBadge(t.thought_type)}${entityTypeBadge(t.entity_type)}</td>
                     <td>${t.role ? `<span class="badge badge-gray">${esc(t.role)}</span>` : '<span style="color:#484f58">—</span>'}</td>
                     <td style="font-size:0.82rem">
                       ${t.agent_id
