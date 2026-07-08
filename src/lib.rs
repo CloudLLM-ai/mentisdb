@@ -323,7 +323,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{
@@ -9245,12 +9245,18 @@ pub fn refresh_registered_chain_counts<P: AsRef<Path>>(chain_dir: P) -> io::Resu
     let now = Utc::now();
     let mut changed = false;
     for entry in registry.chains.values_mut() {
-        let storage = entry
-            .storage_adapter
-            .for_chain_key(chain_dir, &entry.chain_key);
-        if let Ok(chain) = MentisDb::open_with_storage(storage) {
-            let live_thoughts = chain.thoughts().len() as u64;
-            let live_agents = chain.agent_registry().agents.len();
+        let path = chain_dir.join(chain_storage_filename(
+            &entry.chain_key,
+            entry.storage_adapter,
+        ));
+        let live_thoughts = match entry.storage_adapter {
+            StorageAdapterKind::Binary => count_binary_chain_thoughts(&path).ok(),
+            StorageAdapterKind::Jsonl => count_jsonl_chain_thoughts(&path).ok(),
+        };
+        let live_agents = load_agent_registry(chain_dir, &entry.chain_key, entry.storage_adapter)
+            .ok()
+            .map(|registry| registry.agents.len());
+        if let (Some(live_thoughts), Some(live_agents)) = (live_thoughts, live_agents) {
             if entry.thought_count != live_thoughts || entry.agent_count != live_agents {
                 entry.thought_count = live_thoughts;
                 entry.agent_count = live_agents;
@@ -9270,12 +9276,11 @@ pub fn refresh_registered_chain_counts<P: AsRef<Path>>(chain_dir: P) -> io::Resu
 /// Used by [`migrate_chain_hash_algorithm`] to detect chains that need rehashing without
 /// performing a full integrity check.
 fn chain_file_uses_legacy_hashes(path: &Path) -> bool {
-    let thoughts = match load_binary_thoughts(path) {
-        Ok(t) if !t.is_empty() => t,
+    let first = match peek_first_binary_thought(path) {
+        Ok(Some(thought)) => thought,
         _ => return false,
     };
-    let first = &thoughts[0];
-    first.hash == compute_thought_hash_legacy(first) && first.hash != compute_thought_hash(first)
+    first.hash == compute_thought_hash_legacy(&first) && first.hash != compute_thought_hash(&first)
 }
 
 /// Rehash all registered chains that still use the legacy JSON-based hash algorithm.
@@ -9644,7 +9649,7 @@ fn chain_needs_reconciliation(
     if !expected_path.exists() {
         return true;
     }
-    if open_current_chain_at(&expected_path, target_storage_adapter).is_err() {
+    if !chain_storage_file_is_healthy(&expected_path, target_storage_adapter) {
         return true;
     }
 
@@ -10360,173 +10365,8 @@ fn load_binary_thoughts(file_path: &Path) -> io::Result<Vec<Thought>> {
 /// `ThoughtRelation`).
 fn load_binary_thoughts_per_thought(reader: &mut impl Read) -> io::Result<Vec<Thought>> {
     let mut thoughts = Vec::new();
-    loop {
-        let mut length_bytes = [0_u8; 8];
-        match reader.read_exact(&mut length_bytes) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(e) => return Err(e),
-        }
-        let length_u64 = u64::from_le_bytes(length_bytes);
-        if length_u64 > MAX_THOUGHT_PAYLOAD_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "binary thought payload length {length_u64} exceeds maximum {MAX_THOUGHT_PAYLOAD_BYTES}"
-                ),
-            ));
-        }
-        let mut payload = vec![0_u8; length_u64 as usize];
-        reader.read_exact(&mut payload)?;
-
-        // Decode the schema_version varint from the start of the payload.
-        let (schema_version, _): (u32, usize) =
-            bincode::decode_from_slice(&payload, bincode::config::standard()).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Failed to decode schema version from thought: {e}"),
-                )
-            })?;
-
-        let thought = match schema_version {
-            v if v >= MENTISDB_CURRENT_VERSION => {
-                // Try the current Thought struct first (includes entity_type).
-                // If the thought was written before entity_type was added, bincode
-                // will return UnexpectedEnd because the trailing Option<String>
-                // bytes are missing. Fall back to the legacy V3 layout.
-                // This also handles chains written by a build that temporarily
-                // used a higher schema version (e.g. v4) with the same layout.
-                match bincode::serde::decode_from_slice::<Thought, _>(
-                    &payload,
-                    bincode::config::standard(),
-                ) {
-                    Ok((mut t, _)) => {
-                        t.schema_version = MENTISDB_CURRENT_VERSION;
-                        t
-                    }
-                    Err(_) => {
-                        let (legacy, _): (LegacyThoughtV2, usize) =
-                            bincode::serde::decode_from_slice(
-                                &payload,
-                                bincode::config::standard(),
-                            )
-                            .map_err(|e| {
-                                io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    format!("Failed to deserialize thought: {e}"),
-                                )
-                            })?;
-                        Thought {
-                            schema_version: MENTISDB_CURRENT_VERSION,
-                            id: legacy.id,
-                            index: legacy.index,
-                            timestamp: legacy.timestamp,
-                            session_id: legacy.session_id,
-                            agent_id: legacy.agent_id,
-                            signing_key_id: legacy.signing_key_id,
-                            thought_signature: legacy.thought_signature,
-                            thought_type: legacy.thought_type,
-                            role: legacy.role,
-                            content: legacy.content,
-                            confidence: legacy.confidence,
-                            importance: legacy.importance,
-                            tags: legacy.tags,
-                            concepts: legacy.concepts,
-                            refs: legacy.refs,
-                            relations: legacy.relations,
-                            entity_type: None,
-                            source_episode: None,
-                            prev_hash: legacy.prev_hash,
-                            hash: legacy.hash,
-                        }
-                    }
-                }
-            }
-            0 | 1 => {
-                let (legacy, _): (LegacyThoughtV0, usize) =
-                    bincode::serde::decode_from_slice(&payload, bincode::config::standard())
-                        .map_err(|e| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!("Failed to deserialize schema-v0/v1 thought: {e}"),
-                            )
-                        })?;
-                Thought {
-                    schema_version: MENTISDB_CURRENT_VERSION,
-                    id: legacy.id,
-                    index: legacy.index,
-                    timestamp: legacy.timestamp,
-                    session_id: legacy.session_id,
-                    agent_id: legacy.agent_id,
-                    signing_key_id: legacy.signing_key_id,
-                    thought_signature: legacy.thought_signature,
-                    thought_type: legacy.thought_type,
-                    role: legacy.role,
-                    content: legacy.content,
-                    confidence: legacy.confidence,
-                    importance: legacy.importance,
-                    tags: legacy.tags,
-                    concepts: legacy.concepts,
-                    refs: legacy.refs,
-                    relations: legacy
-                        .relations
-                        .into_iter()
-                        .map(ThoughtRelation::from)
-                        .collect(),
-                    entity_type: None,
-                    source_episode: None,
-                    prev_hash: String::new(),
-                    hash: String::new(),
-                }
-            }
-            2 => {
-                let (legacy, _): (LegacyThoughtV1, usize) =
-                    bincode::serde::decode_from_slice(&payload, bincode::config::standard())
-                        .map_err(|e| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!("Failed to deserialize schema-v2 thought: {e}"),
-                            )
-                        })?;
-                Thought {
-                    schema_version: MENTISDB_CURRENT_VERSION,
-                    id: legacy.id,
-                    index: legacy.index,
-                    timestamp: legacy.timestamp,
-                    session_id: legacy.session_id,
-                    agent_id: legacy.agent_id,
-                    signing_key_id: legacy.signing_key_id,
-                    thought_signature: legacy.thought_signature,
-                    thought_type: legacy.thought_type,
-                    role: legacy.role,
-                    content: legacy.content,
-                    confidence: legacy.confidence,
-                    importance: legacy.importance,
-                    tags: legacy.tags,
-                    concepts: legacy.concepts,
-                    refs: legacy.refs,
-                    relations: legacy
-                        .relations
-                        .into_iter()
-                        .map(ThoughtRelation::from)
-                        .collect(),
-                    entity_type: None,
-                    source_episode: None,
-                    prev_hash: String::new(),
-                    hash: String::new(),
-                }
-            }
-            v => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "Unknown schema version {v}; this version of mentisdb supports up to schema {MENTISDB_CURRENT_VERSION}. \
-                         Please upgrade mentisdb to open this chain."
-                    ),
-                ));
-            }
-        };
-        thoughts.push(thought);
+    while let Some(payload) = read_next_binary_payload(reader)? {
+        thoughts.push(deserialize_binary_thought_payload(&payload)?);
     }
 
     // Rebuild hash chain and agent registry for migrated thoughts.
@@ -10553,6 +10393,231 @@ fn rebuild_hash_chain(thoughts: &mut [Thought]) {
         thought.hash = hash;
         prev_hash = thought.hash.clone();
     }
+}
+
+fn read_next_binary_payload(reader: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
+    let mut length_bytes = [0_u8; 8];
+    match reader.read_exact(&mut length_bytes) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    let length_u64 = u64::from_le_bytes(length_bytes);
+    if length_u64 > MAX_THOUGHT_PAYLOAD_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "binary thought payload length {length_u64} exceeds maximum {MAX_THOUGHT_PAYLOAD_BYTES}"
+            ),
+        ));
+    }
+    let mut payload = vec![0_u8; length_u64 as usize];
+    reader.read_exact(&mut payload)?;
+    Ok(Some(payload))
+}
+
+/// Count length-prefixed binary thoughts without deserializing payloads.
+fn count_binary_chain_thoughts(file_path: &Path) -> io::Result<u64> {
+    if !file_path.exists() {
+        return Ok(0);
+    }
+    let mut file = File::open(file_path)?;
+    let mut count = 0_u64;
+    loop {
+        let mut length_bytes = [0_u8; 8];
+        match file.read_exact(&mut length_bytes) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(error),
+        }
+        let length_u64 = u64::from_le_bytes(length_bytes);
+        if length_u64 > MAX_THOUGHT_PAYLOAD_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "binary thought payload length {length_u64} exceeds maximum {MAX_THOUGHT_PAYLOAD_BYTES}"
+                ),
+            ));
+        }
+        file.seek(SeekFrom::Current(length_u64 as i64))?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+fn count_jsonl_chain_thoughts(file_path: &Path) -> io::Result<u64> {
+    if !file_path.exists() {
+        return Ok(0);
+    }
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    Ok(reader
+        .lines()
+        .filter(|line| line.as_ref().map(|value| !value.trim().is_empty()).unwrap_or(false))
+        .count() as u64)
+}
+
+fn chain_storage_file_is_healthy(path: &Path, storage_kind: StorageAdapterKind) -> bool {
+    match storage_kind {
+        StorageAdapterKind::Binary => match count_binary_chain_thoughts(path) {
+            Ok(0) => true,
+            Ok(_) => peek_first_binary_thought(path)
+                .ok()
+                .flatten()
+                .is_some(),
+            Err(_) => false,
+        },
+        StorageAdapterKind::Jsonl => path.exists() && count_jsonl_chain_thoughts(path).is_ok(),
+    }
+}
+
+fn deserialize_binary_thought_payload(payload: &[u8]) -> io::Result<Thought> {
+    let (schema_version, _): (u32, usize) =
+        bincode::decode_from_slice(payload, bincode::config::standard()).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to decode schema version from thought: {error}"),
+            )
+        })?;
+
+    match schema_version {
+        v if v >= MENTISDB_CURRENT_VERSION => {
+            match bincode::serde::decode_from_slice::<Thought, _>(
+                payload,
+                bincode::config::standard(),
+            ) {
+                Ok((mut thought, _)) => {
+                    thought.schema_version = MENTISDB_CURRENT_VERSION;
+                    Ok(thought)
+                }
+                Err(_) => {
+                    let (legacy, _): (LegacyThoughtV2, usize) =
+                        bincode::serde::decode_from_slice(payload, bincode::config::standard())
+                            .map_err(|error| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!("Failed to deserialize thought: {error}"),
+                                )
+                            })?;
+                    Ok(Thought {
+                        schema_version: MENTISDB_CURRENT_VERSION,
+                        id: legacy.id,
+                        index: legacy.index,
+                        timestamp: legacy.timestamp,
+                        session_id: legacy.session_id,
+                        agent_id: legacy.agent_id,
+                        signing_key_id: legacy.signing_key_id,
+                        thought_signature: legacy.thought_signature,
+                        thought_type: legacy.thought_type,
+                        role: legacy.role,
+                        content: legacy.content,
+                        confidence: legacy.confidence,
+                        importance: legacy.importance,
+                        tags: legacy.tags,
+                        concepts: legacy.concepts,
+                        refs: legacy.refs,
+                        relations: legacy.relations,
+                        entity_type: None,
+                        source_episode: None,
+                        prev_hash: legacy.prev_hash,
+                        hash: legacy.hash,
+                    })
+                }
+            }
+        }
+        0 | 1 => {
+            let (legacy, _): (LegacyThoughtV0, usize) =
+                bincode::serde::decode_from_slice(payload, bincode::config::standard())
+                    .map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("Failed to deserialize schema-v0/v1 thought: {error}"),
+                        )
+                    })?;
+            Ok(Thought {
+                schema_version: MENTISDB_CURRENT_VERSION,
+                id: legacy.id,
+                index: legacy.index,
+                timestamp: legacy.timestamp,
+                session_id: legacy.session_id,
+                agent_id: legacy.agent_id,
+                signing_key_id: legacy.signing_key_id,
+                thought_signature: legacy.thought_signature,
+                thought_type: legacy.thought_type,
+                role: legacy.role,
+                content: legacy.content,
+                confidence: legacy.confidence,
+                importance: legacy.importance,
+                tags: legacy.tags,
+                concepts: legacy.concepts,
+                refs: legacy.refs,
+                relations: legacy
+                    .relations
+                    .into_iter()
+                    .map(ThoughtRelation::from)
+                    .collect(),
+                entity_type: None,
+                source_episode: None,
+                prev_hash: String::new(),
+                hash: String::new(),
+            })
+        }
+        2 => {
+            let (legacy, _): (LegacyThoughtV1, usize) =
+                bincode::serde::decode_from_slice(payload, bincode::config::standard())
+                    .map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("Failed to deserialize schema-v2 thought: {error}"),
+                        )
+                    })?;
+            Ok(Thought {
+                schema_version: MENTISDB_CURRENT_VERSION,
+                id: legacy.id,
+                index: legacy.index,
+                timestamp: legacy.timestamp,
+                session_id: legacy.session_id,
+                agent_id: legacy.agent_id,
+                signing_key_id: legacy.signing_key_id,
+                thought_signature: legacy.thought_signature,
+                thought_type: legacy.thought_type,
+                role: legacy.role,
+                content: legacy.content,
+                confidence: legacy.confidence,
+                importance: legacy.importance,
+                tags: legacy.tags,
+                concepts: legacy.concepts,
+                refs: legacy.refs,
+                relations: legacy
+                    .relations
+                    .into_iter()
+                    .map(ThoughtRelation::from)
+                    .collect(),
+                entity_type: None,
+                source_episode: None,
+                prev_hash: String::new(),
+                hash: String::new(),
+            })
+        }
+        version => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Unknown schema version {version}; this version of mentisdb supports up to schema {MENTISDB_CURRENT_VERSION}. \
+                 Please upgrade mentisdb to open this chain."
+            ),
+        )),
+    }
+}
+
+fn peek_first_binary_thought(file_path: &Path) -> io::Result<Option<Thought>> {
+    if !file_path.exists() {
+        return Ok(None);
+    }
+    let mut file = File::open(file_path)?;
+    if let Some(payload) = read_next_binary_payload(&mut file)? {
+        return deserialize_binary_thought_payload(&payload).map(Some);
+    }
+    Ok(None)
 }
 
 /// Peek at the `schema_version` field of the first thought in a binary chain

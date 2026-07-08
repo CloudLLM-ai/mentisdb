@@ -616,3 +616,38 @@ fn update_prompt_invalid_then_enter_returns_false() {
     let output = String::from_utf8(writer).unwrap();
     assert!(output.contains("Please type Y or N."));
 }
+
+#[test]
+#[ignore = "manual local startup migration benchmark"]
+fn benchmark_local_startup_migrations() {
+    use mentisdb::{
+        migrate_chain_hash_algorithm, migrate_registered_chains_with_adapter,
+        refresh_registered_chain_counts, StorageAdapterKind,
+    };
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    let chain_dir = PathBuf::from(std::env::var("HOME").unwrap()).join(".cloudllm/mentisdb");
+
+    let start = Instant::now();
+    let _ = migrate_registered_chains_with_adapter(
+        &chain_dir,
+        StorageAdapterKind::default(),
+        |_| {},
+    )
+    .unwrap();
+    let migrate_ms = start.elapsed().as_millis();
+
+    let start = Instant::now();
+    let _ = migrate_chain_hash_algorithm(&chain_dir, |_| {}).unwrap();
+    let hash_ms = start.elapsed().as_millis();
+
+    let start = Instant::now();
+    refresh_registered_chain_counts(&chain_dir).unwrap();
+    let refresh_ms = start.elapsed().as_millis();
+
+    eprintln!(
+        "migration phase timings (ms): migrate_registered={migrate_ms} hash_check={hash_ms} refresh_counts={refresh_ms} total={}",
+        migrate_ms + hash_ms + refresh_ms
+    );
+}
