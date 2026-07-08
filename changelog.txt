@@ -1,3 +1,16 @@
+0.10.5.50 UNRELEASED
+  - fix(dashboard): chain explorer table columns were misaligned — a stray
+    content cell under Role shifted Role, Agent, Content, and Date one column
+    to the right; row template now matches the header order.
+  - perf(startup): migration-phase checks no longer fully open every registered
+    chain on each boot. Registry count refresh uses payload skipping and agent
+    sidecar reads; hash migration peeks at the first thought only; reconciliation
+    uses lightweight file health probes instead of deserializing entire chains.
+  - docs(cli): `mentisdb --help` now documents `--mode stdio|http|both` as client
+    transport choices (how MCP clients connect) rather than implying HTTP only
+    starts in http mode; plain `mentisdb` already exposes HTTP MCP, REST, and
+    the operator TUI.
+
 0.10.4.49 JUN/20/2026
   - fix(dashboard): session cookie `Secure` attribute is now conditional on
     `X-Forwarded-Proto` — browsers were silently dropping the cookie when the
