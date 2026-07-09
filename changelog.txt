@@ -1,4 +1,17 @@
 0.10.5.50 UNRELEASED
+  - fix(auth): single-chain bearer tokens are full read+write within scope.
+    When MCP/REST clients omit `chain_key`, a single-chain token is bound to
+    that chain for both authorization and execution (append, import, search,
+    etc.). Previously writes often failed with a generic "Bearer token
+    required" error because auth fell back to the server default chain while
+    reads that passed an explicit `chain_key` succeeded. There is still no
+    read-only token mode in the CLI or dashboard.
+  - feat(auth/dashboard/cli): permanent bearer-token delete. Revoke still keeps
+    an audit row; operators can now remove revoked tokens from the registry so
+    the dashboard list stays clean. Dashboard: Revoke (active) then Delete
+    (revoked). CLI: `bearertoken revoke` vs `bearertoken remove`/`delete`/`rm`.
+    API: `POST .../bearer-tokens/{alias}/revoke` and
+    `DELETE .../bearer-tokens/{alias}` (permanent).
   - fix(dashboard): chain explorer table columns were misaligned — a stray
     content cell under Role shifted Role, Agent, Content, and Date one column
     to the right; row template now matches the header order.
