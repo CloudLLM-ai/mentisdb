@@ -667,12 +667,9 @@ fn benchmark_local_startup_migrations() {
     let chain_dir = PathBuf::from(std::env::var("HOME").unwrap()).join(".cloudllm/mentisdb");
 
     let start = Instant::now();
-    let _ = migrate_registered_chains_with_adapter(
-        &chain_dir,
-        StorageAdapterKind::default(),
-        |_| {},
-    )
-    .unwrap();
+    let _ =
+        migrate_registered_chains_with_adapter(&chain_dir, StorageAdapterKind::default(), |_| {})
+            .unwrap();
     let migrate_ms = start.elapsed().as_millis();
 
     let start = Instant::now();

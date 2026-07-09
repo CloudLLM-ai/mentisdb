@@ -10453,7 +10453,11 @@ fn count_jsonl_chain_thoughts(file_path: &Path) -> io::Result<u64> {
     let reader = BufReader::new(file);
     Ok(reader
         .lines()
-        .filter(|line| line.as_ref().map(|value| !value.trim().is_empty()).unwrap_or(false))
+        .filter(|line| {
+            line.as_ref()
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+        })
         .count() as u64)
 }
 
@@ -10461,10 +10465,7 @@ fn chain_storage_file_is_healthy(path: &Path, storage_kind: StorageAdapterKind) 
     match storage_kind {
         StorageAdapterKind::Binary => match count_binary_chain_thoughts(path) {
             Ok(0) => true,
-            Ok(_) => peek_first_binary_thought(path)
-                .ok()
-                .flatten()
-                .is_some(),
+            Ok(_) => peek_first_binary_thought(path).ok().flatten().is_some(),
             Err(_) => false,
         },
         StorageAdapterKind::Jsonl => path.exists() && count_jsonl_chain_thoughts(path).is_ok(),

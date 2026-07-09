@@ -57,22 +57,14 @@ fn refresh_registered_chain_counts_uses_fast_metadata_scan() {
 fn startup_migration_pass_is_noop_for_current_binary_chains() {
     let dir = unique_chain_dir();
     let mut chain =
-        MentisDb::open_with_key_and_storage_kind(&dir, "beta", StorageAdapterKind::Binary)
-            .unwrap();
+        MentisDb::open_with_key_and_storage_kind(&dir, "beta", StorageAdapterKind::Binary).unwrap();
     chain
-        .append_thought(
-            "agent-a",
-            ThoughtInput::new(ThoughtType::Summary, "seed"),
-        )
+        .append_thought("agent-a", ThoughtInput::new(ThoughtType::Summary, "seed"))
         .unwrap();
     drop(chain);
 
-    let reports = migrate_registered_chains_with_adapter(
-        &dir,
-        StorageAdapterKind::Binary,
-        |_| {},
-    )
-    .unwrap();
+    let reports =
+        migrate_registered_chains_with_adapter(&dir, StorageAdapterKind::Binary, |_| {}).unwrap();
     assert!(reports.is_empty());
 
     let rehashed = migrate_chain_hash_algorithm(&dir, |_| {}).unwrap();
