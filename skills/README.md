@@ -22,6 +22,19 @@ phrase, load the full skill before proceeding.
 
 ### Process & engineering
 
+- **`rust-engineer.md`** — MentisDB Rust coding standards (KISS, warning-free
+  clippy, tests isolated under `tests/`, rustdoc-as-manual, enums over strings,
+  regression tests for every bug, `changelog.txt` under the top version sorted
+  by impact). Points at concurrency and Criterion companions. Triggers: "rust
+  engineer", "implement rust", "fix rust bug", "clippy", "public API", "write
+  tests", "review rust".
+- **`rust-concurrency-patterns.md`** — shared state, DashMap vs
+  `RwLock<HashMap>`, per-entity locks, write batching, WAL, async lock scope.
+  Triggers: "concurrent access", "lock contention", "DashMap", "write throughput",
+  "async shared state", "high concurrency".
+- **`rust-criterion-benchmarking.md`** — Criterion bench structure, throughput
+  groups, baselines, `tee` capture, gotchas. Triggers: "benchmark",
+  "cargo bench", "criterion", "throughput", "latency", "performance measurement".
 - **`engineering-pipeline.md`** — release engineering pipeline (Phases 1-5).
   Triggers: "release pipeline", "ship mentisdb", "version bump", "release checklist".
 - **`hotfix-release.md`** — fast-path release pipeline for hotfixes. Skips
