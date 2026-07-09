@@ -2770,6 +2770,160 @@ async fn standard_mcp_router_enforces_chain_scoped_bearer_tokens() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Single-chain tokens are full read+write within their scope. Omitting
+/// `chain_key` must still authorize append against the token's only chain
+/// (not the server default, which may differ).
+#[tokio::test]
+async fn single_chain_bearer_token_can_append_without_explicit_chain_key() {
+    let dir = unique_chain_dir();
+    // Server default deliberately differs from the token's chain.
+    let config =
+        MentisDbServiceConfig::new(dir.clone(), "server-default", StorageAdapterKind::Binary)
+            .with_bearer_token_access(true);
+    let store = config.bearer_token_store.clone();
+    let scoped = store
+        .create(
+            "writer",
+            mentisdb::auth::BearerTokenScope::chain("allowed").unwrap(),
+        )
+        .unwrap();
+    let (router, _broadcaster) =
+        standard_mcp_router(config, std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    let client_addr = std::net::SocketAddr::from(([127, 0, 0, 1], 49012));
+
+    let append_without_chain_key = |token: &str| {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("content-type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "mentisdb_append",
+                        "arguments": {
+                            "agent_id": "writer",
+                            "thought_type": "Insight",
+                            "content": "single-chain write without chain_key"
+                        }
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(client_addr));
+        request
+    };
+
+    let append_with_chain_key = |token: &str, chain_key: &str| {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("content-type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "mentisdb_append",
+                        "arguments": {
+                            "chain_key": chain_key,
+                            "agent_id": "writer",
+                            "thought_type": "Insight",
+                            "content": "single-chain write with chain_key"
+                        }
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(client_addr));
+        request
+    };
+
+    let omitted = router
+        .clone()
+        .oneshot(append_without_chain_key(&scoped.token))
+        .await
+        .unwrap();
+    assert_eq!(
+        omitted.status(),
+        StatusCode::OK,
+        "single-chain token must authorize append when chain_key is omitted"
+    );
+    let omitted_body = read_json_body(omitted.into_body()).await;
+    assert!(
+        omitted_body.get("error").is_none(),
+        "unexpected error body: {omitted_body}"
+    );
+
+    let explicit = router
+        .clone()
+        .oneshot(append_with_chain_key(&scoped.token, "allowed"))
+        .await
+        .unwrap();
+    assert_eq!(explicit.status(), StatusCode::OK);
+
+    let denied = router
+        .clone()
+        .oneshot(append_with_chain_key(&scoped.token, "private"))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Legacy `/tools/execute` import path must also bind single-chain tokens.
+#[tokio::test]
+async fn legacy_mcp_single_chain_token_can_import_without_chain_key() {
+    let dir = unique_chain_dir();
+    let config =
+        MentisDbServiceConfig::new(dir.clone(), "server-default", StorageAdapterKind::Binary)
+            .with_bearer_token_access(true);
+    let store = config.bearer_token_store.clone();
+    let scoped = store
+        .create(
+            "importer",
+            mentisdb::auth::BearerTokenScope::chain("allowed").unwrap(),
+        )
+        .unwrap();
+    let router = mcp_router(config);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tools/execute")
+                .header("content-type", "application/json")
+                .header("Authorization", format!("Bearer {}", scoped.token))
+                .body(Body::from(
+                    json!({
+                        "tool": "mentisdb_import_memory_markdown",
+                        "parameters": {
+                            "markdown": "- [Summary] single-chain import without chain_key"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "single-chain token must authorize import_memory_markdown without chain_key"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn legacy_mcp_router_enforces_chain_scoped_bearer_tokens() {
     let dir = unique_chain_dir();

@@ -59,7 +59,7 @@
 //! - `POST /v1/extract-memories`
 //! - `POST /v1/admin/flush`
 
-use crate::auth::{bearer_token_access_from_env, BearerTokenStore};
+use crate::auth::{bearer_token_access_from_env, BearerTokenScope, BearerTokenStore};
 use crate::search::thesaurus;
 use crate::webhooks::{WebhookManager, WebhookRegistration};
 use crate::{
@@ -74,11 +74,11 @@ use crate::{
 };
 use async_trait::async_trait;
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{header::CONTENT_TYPE, HeaderMap, StatusCode};
+use axum::http::{header::CONTENT_TYPE, HeaderMap, Request, StatusCode};
 use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
-use axum::{Json, Router};
+use axum::{body::Body, Json, Router};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use mcp::http::axum_router as shared_mcp_router;
@@ -1707,7 +1707,11 @@ pub fn mcp_router(config: MentisDbServiceConfig) -> Router {
         .route("/health", get(health_handler))
         .route("/tools/list", post(mcp_list_tools_handler))
         .route("/tools/execute", post(mcp_execute_handler))
-        .with_state(service)
+        .with_state(service.clone())
+        .layer(middleware::from_fn_with_state(
+            service,
+            inject_single_chain_bearer_scope_middleware,
+        ))
 }
 
 /// Build the standard streamable-HTTP MCP router without binding a socket.
@@ -2040,7 +2044,15 @@ impl BearerTokenAuthorizer for MentisDbBearerAuthorizer {
         if !self.access_enabled.load(Ordering::Relaxed) {
             return true;
         }
-        match bearer_auth_target(context, &self.default_chain_key) {
+        // Tokens are full-access (read + write) within their scope. There is no
+        // separate read-only capability in the CLI or dashboard.
+        let mut context = context.clone();
+        if let Some(scope) = self.store.active_scope(token) {
+            if let Some(payload) = context.payload.as_mut() {
+                inject_single_chain_scope_into_payload(payload, &scope);
+            }
+        }
+        match bearer_auth_target(&context, &self.default_chain_key) {
             BearerAuthTarget::AnyActiveToken => self.store.authorize(token),
             BearerAuthTarget::Chains(chain_keys) => {
                 self.store.authorize_for_chains(token, &chain_keys)
@@ -2098,16 +2110,162 @@ fn tool_call_auth_target(payload: &Value, default_chain_key: &str) -> Option<Bea
         });
     }
 
-    let mut chain_keys = extract_explicit_chain_keys(parameters);
+    // Prefer top-level chain fields for the primary target so nested relation
+    // `chain_key` values do not replace the write target. Nested keys are still
+    // unioned in so cross-chain relations require access to every chain touched.
+    let mut chain_keys = extract_top_level_chain_keys(parameters);
+    if chain_keys.is_empty() {
+        chain_keys = extract_explicit_chain_keys(parameters);
+    } else {
+        for nested in extract_explicit_chain_keys(parameters) {
+            chain_keys.insert(nested);
+        }
+    }
     if chain_keys.is_empty() && default_chain_mcp_tool(tool_name) {
         chain_keys.insert(default_chain_key.to_string());
     }
 
     if chain_keys.is_empty() {
-        Some(BearerAuthTarget::GlobalOnly)
+        // Unknown tools with no chain context: any active token may call them.
+        // Tokens remain full-capability (read+write) within their scope; there
+        // is no read-only mode. Global-only tools are handled above.
+        Some(BearerAuthTarget::AnyActiveToken)
     } else {
         Some(BearerAuthTarget::Chains(chain_keys.into_iter().collect()))
     }
+}
+
+/// Return top-level chain-key fields only (no recursive walk).
+fn extract_top_level_chain_keys(parameters: &Value) -> BTreeSet<String> {
+    let mut chain_keys = BTreeSet::new();
+    let Some(map) = parameters.as_object() else {
+        return chain_keys;
+    };
+    for (key, value) in map {
+        if chain_key_field_name(key) {
+            add_chain_key_value(&mut chain_keys, value);
+        }
+    }
+    chain_keys
+}
+
+/// When a single-chain bearer token omits `chain_key`, bind the request to that
+/// chain so read and write tools authorize and execute against the token scope.
+///
+/// Global and multi-chain tokens are left unchanged: multi-chain callers must
+/// name a chain (or fall back to the server default when the tool allows it).
+fn inject_single_chain_scope_into_payload(payload: &mut Value, scope: &BearerTokenScope) {
+    let BearerTokenScope::Chains(chain_keys) = scope else {
+        return;
+    };
+    if chain_keys.len() != 1 {
+        return;
+    }
+    let chain_key = chain_keys[0].clone();
+
+    // Streamable MCP: { "name": "...", "arguments": { ... } }
+    // Legacy MCP:     { "tool": "...", "parameters": { ... } }
+    if payload.get("arguments").is_some() {
+        if let Some(args) = payload.get_mut("arguments") {
+            inject_chain_key_object(args, &chain_key);
+        }
+        return;
+    }
+    if payload.get("parameters").is_some() {
+        if let Some(args) = payload.get_mut("parameters") {
+            inject_chain_key_object(args, &chain_key);
+        }
+        return;
+    }
+
+    // Bare REST-style body: { "chain_key"?: "...", ... }
+    if payload.get("jsonrpc").is_none() {
+        inject_chain_key_object(payload, &chain_key);
+    }
+}
+
+fn inject_chain_key_object(parameters: &mut Value, chain_key: &str) {
+    let Some(map) = parameters.as_object_mut() else {
+        return;
+    };
+    if object_has_explicit_chain_field(map) {
+        return;
+    }
+    map.insert(
+        "chain_key".to_string(),
+        Value::String(chain_key.to_string()),
+    );
+}
+
+fn object_has_explicit_chain_field(map: &serde_json::Map<String, Value>) -> bool {
+    for key in [
+        "chain_key",
+        "source_chain_key",
+        "target_chain_key",
+        "branch_chain_key",
+        "chain_key_filter",
+        "chain_keys",
+    ] {
+        match map.get(key) {
+            Some(Value::String(value)) if !value.trim().is_empty() => return true,
+            Some(Value::Array(values)) if !values.is_empty() => return true,
+            Some(Value::Null) | Some(Value::String(_)) | None => {}
+            Some(_) => return true,
+        }
+    }
+    false
+}
+
+/// Middleware that rewrites MCP/REST JSON bodies so a single-chain bearer token
+/// supplies `chain_key` when the client omitted it.
+///
+/// Auth inspects the same payload shape; injecting here keeps authorization and
+/// execution on the same chain for write tools such as `mentisdb_append`.
+async fn inject_single_chain_bearer_scope_middleware(
+    State(service): State<Arc<MentisDbService>>,
+    request: Request<Body>,
+    next: middleware::Next,
+) -> axum::response::Response {
+    if !service.config.bearer_token_access.load(Ordering::Relaxed) {
+        return next.run(request).await;
+    }
+
+    let (parts, body) = request.into_parts();
+    let Some(token) = parts
+        .headers
+        .get("Authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    else {
+        let request = Request::from_parts(parts, body);
+        return next.run(request).await;
+    };
+
+    let Some(scope) = service.config.bearer_token_store.active_scope(token) else {
+        let request = Request::from_parts(parts, body);
+        return next.run(request).await;
+    };
+
+    let body_bytes = axum::body::to_bytes(body, 1024 * 1024)
+        .await
+        .unwrap_or_default();
+    let body_bytes = match serde_json::from_slice::<Value>(&body_bytes) {
+        Ok(mut payload) => {
+            // JSON-RPC streamable body: params holds tool arguments.
+            if let Some(params) = payload.get_mut("params") {
+                inject_single_chain_scope_into_payload(params, &scope);
+            } else {
+                inject_single_chain_scope_into_payload(&mut payload, &scope);
+            }
+            serde_json::to_vec(&payload).unwrap_or_else(|_| body_bytes.to_vec())
+        }
+        Err(_) => body_bytes.to_vec(),
+    };
+
+    let request = Request::from_parts(parts, Body::from(body_bytes));
+    next.run(request).await
 }
 
 fn extract_explicit_chain_keys(parameters: &Value) -> BTreeSet<String> {
@@ -2225,23 +2383,30 @@ fn standard_and_legacy_mcp_router(
     event_handler: Option<Arc<dyn mcp::McpEventHandler>>,
 ) -> Router {
     let bearer_authorizer = Arc::new(MentisDbBearerAuthorizer::new(&service.config));
-    standard_mcp_only_router(
-        service.clone(),
-        addr,
-        sse_broadcaster,
-        event_handler.clone(),
-        bearer_authorizer.clone(),
-    )
-    .merge(shared_mcp_router(
+    // standard_mcp_only_router already applies single-chain injection. Merge
+    // legacy routes under the same middleware so /tools/execute is covered too.
+    let legacy = shared_mcp_router(
         &HttpServerConfig {
             addr,
             bearer_token: None,
-            bearer_authorizer: Some(bearer_authorizer),
+            bearer_authorizer: Some(bearer_authorizer.clone()),
             ip_filter: IpFilter::new(),
-            event_handler,
+            event_handler: event_handler.clone(),
         },
-        Arc::new(MentisDbMcpProtocol::new(service)),
-    ))
+        Arc::new(MentisDbMcpProtocol::new(service.clone())),
+    )
+    .layer(middleware::from_fn_with_state(
+        service.clone(),
+        inject_single_chain_bearer_scope_middleware,
+    ));
+    standard_mcp_only_router(
+        service,
+        addr,
+        sse_broadcaster,
+        event_handler,
+        bearer_authorizer,
+    )
+    .merge(legacy)
 }
 
 fn standard_mcp_only_router(
@@ -2266,8 +2431,12 @@ fn standard_mcp_only_router(
                 .with_server_title("MentisDB")
                 .with_instructions(MENTISDB_MCP_BOOTSTRAP_INSTRUCTIONS)
                 .with_skip_origin_validation(skip_origin),
-            Arc::new(MentisDbMcpProtocol::new(service)),
+            Arc::new(MentisDbMcpProtocol::new(service.clone())),
             sse_broadcaster,
+        ))
+        .layer(middleware::from_fn_with_state(
+            service,
+            inject_single_chain_bearer_scope_middleware,
         ))
 }
 
@@ -6116,8 +6285,28 @@ async fn mcp_list_tools_handler(
 async fn mcp_execute_handler(
     State(service): State<Arc<MentisDbService>>,
     headers: HeaderMap,
-    Json(request): Json<McpExecuteRequest>,
+    Json(mut request): Json<McpExecuteRequest>,
 ) -> (StatusCode, Json<Value>) {
+    // Middleware injects into the raw body when present. Re-apply from the
+    // Authorization header so in-process oneshot tests still bind single-chain
+    // tokens to their chain when `chain_key` is omitted.
+    if let Some(token) = headers
+        .get("Authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+    {
+        if let Some(scope) = service.config.bearer_token_store.active_scope(token) {
+            let mut payload = json!({
+                "tool": request.tool.clone(),
+                "parameters": request.parameters.clone(),
+            });
+            inject_single_chain_scope_into_payload(&mut payload, &scope);
+            if let Some(parameters) = payload.get("parameters").cloned() {
+                request.parameters = parameters;
+            }
+        }
+    }
+
     let payload = json!({
         "tool": request.tool.clone(),
         "parameters": request.parameters.clone()
@@ -6224,7 +6413,26 @@ pub(crate) async fn rest_bearer_auth_middleware(
     let body_bytes = axum::body::to_bytes(body, 1024 * 1024)
         .await
         .unwrap_or_default();
-    let payload: Option<Value> = serde_json::from_slice(&body_bytes).ok();
+    let mut payload: Option<Value> = serde_json::from_slice(&body_bytes).ok();
+
+    // Single-chain tokens omit chain_key on many write clients; bind the body
+    // to the token's only chain so auth and handlers agree.
+    if let Some(token) = parts
+        .headers
+        .get("Authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+    {
+        if let Some(scope) = service.config.bearer_token_store.active_scope(token) {
+            if let Some(ref mut json) = payload {
+                inject_single_chain_scope_into_payload(json, &scope);
+            }
+        }
+    }
+    let body_bytes = match &payload {
+        Some(json) => serde_json::to_vec(json).unwrap_or_else(|_| body_bytes.to_vec()),
+        None => body_bytes.to_vec(),
+    };
 
     // Extract chain keys from the JSON body (if any) and from the URI path.
     let mut chain_keys: BTreeSet<String> = BTreeSet::new();
