@@ -234,10 +234,15 @@ fn run_bearer_token(
             }
             Ok(())
         }
-        BearerTokenCommand::Remove { alias, dir } => {
+        BearerTokenCommand::Revoke { alias, dir } => {
             let store = BearerTokenStore::new(resolve_mentisdb_dir(dir));
             let record = store.revoke(alias).map_err(|error| error.to_string())?;
             writeln!(out, "revoked bearer token: {}", record.alias).map_err(|e| e.to_string())
+        }
+        BearerTokenCommand::Remove { alias, dir } => {
+            let store = BearerTokenStore::new(resolve_mentisdb_dir(dir));
+            let record = store.delete(alias).map_err(|error| error.to_string())?;
+            writeln!(out, "deleted bearer token: {}", record.alias).map_err(|e| e.to_string())
         }
     }
 }

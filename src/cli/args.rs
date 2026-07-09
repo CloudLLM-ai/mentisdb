@@ -115,7 +115,14 @@ pub enum BearerTokenCommand {
         /// MentisDB storage directory.
         dir: Option<String>,
     },
-    /// Revoke a bearer token by alias.
+    /// Soft-revoke a bearer token by alias (record kept for audit).
+    Revoke {
+        /// Human-friendly token alias.
+        alias: String,
+        /// MentisDB storage directory.
+        dir: Option<String>,
+    },
+    /// Permanently delete a bearer token by alias.
     Remove {
         /// Human-friendly token alias.
         alias: String,
@@ -288,6 +295,7 @@ Usage:
   mentisdb bearertoken create --global <alias> [--dir <path>]
   mentisdb bearertoken create --chain <chain_key> [--chain <chain_key> ...] <alias> [--dir <path>]
   mentisdb bearertoken list [--global | --chain <chain_key> [--chain <chain_key> ...]] [--dir <path>]
+  mentisdb bearertoken revoke <alias> [--dir <path>]
   mentisdb bearertoken remove <alias> [--dir <path>]
   mentisdb cert [<ip-address-or-domain>] [--force] [--out-dir <path>] [--env-file <path>] [--no-env-update]
 
@@ -457,6 +465,7 @@ Commands:
       mentisdb bearertoken create --global codex-admin
       mentisdb bearertoken create --chain mentisdb --chain gubatron codex-laptop
       mentisdb bearertoken list
+      mentisdb bearertoken revoke codex-laptop
       mentisdb bearertoken remove codex-laptop
 
     Options:
@@ -487,11 +496,12 @@ Usage:
   mentisdb bearertoken create --chain <chain_key> [--chain <chain_key> ...] <alias>
   mentisdb bearertoken create <alias> --chain <chain_key> [--chain <chain_key> ...]
   mentisdb bearertoken list [--global | --chain <chain_key> [--chain <chain_key> ...]] [--dir <path>]
+  mentisdb bearertoken revoke <alias> [--dir <path>]
   mentisdb bearertoken remove <alias> [--dir <path>]
 
 Create scopes:
-  --global             Token can access all chains.
-  --chain <chain_key>  Token can access this chain. Repeat for multiple chains.
+  --global             Token can access all chains (full read+write).
+  --chain <chain_key>  Token can access this chain (full read+write). Repeat for multiple chains.
 
 Examples:
   mentisdb bearertoken create --global codex-admin
@@ -499,7 +509,12 @@ Examples:
   mentisdb bearertoken create alice --chain gubatron --chain mentisdb
   mentisdb bearertoken list
   mentisdb bearertoken list --chain gubatron
+  mentisdb bearertoken revoke alice
   mentisdb bearertoken remove alice
+
+Notes:
+  - Tokens are full-capability within scope (read and write). There is no read-only mode.
+  - `revoke` keeps an audit row in the registry; `remove`/`delete`/`rm` permanently deletes it.
 
 Options:
   --dir <path>         Path to MENTISDB_DIR (default: platform default)
@@ -705,7 +720,7 @@ fn parse_bearer_token(parts: Vec<String>) -> Result<CliCommand, String> {
     }
 
     let Some(action) = parts.get(1).map(String::as_str) else {
-        return Err("bearertoken requires an action: create, list, or remove".to_string());
+        return Err("bearertoken requires an action: create, list, revoke, or remove".to_string());
     };
     let mut dir = None;
     let mut global_scope = false;
@@ -770,7 +785,14 @@ fn parse_bearer_token(parts: Vec<String>) -> Result<CliCommand, String> {
                 dir,
             }
         }
-        "remove" | "rm" | "revoke" => {
+        "revoke" => {
+            if global_scope || !chain_keys.is_empty() {
+                return Err("bearertoken revoke does not accept scope options".to_string());
+            }
+            let alias = exactly_one_arg("bearertoken revoke", positional)?;
+            BearerTokenCommand::Revoke { alias, dir }
+        }
+        "remove" | "rm" | "delete" => {
             if global_scope || !chain_keys.is_empty() {
                 return Err("bearertoken remove does not accept scope options".to_string());
             }

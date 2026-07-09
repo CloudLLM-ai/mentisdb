@@ -204,7 +204,11 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
             "/bearer-tokens",
             get(api_bearer_tokens).post(api_create_bearer_token),
         )
-        .route("/bearer-tokens/{alias}", delete(api_revoke_bearer_token));
+        .route(
+            "/bearer-tokens/{alias}/revoke",
+            post(api_revoke_bearer_token),
+        )
+        .route("/bearer-tokens/{alias}", delete(api_delete_bearer_token));
 
     // ── Protected surface (PIN-gated when pin is set) ─────────────────────
     let protected = Router::new()
@@ -2747,16 +2751,30 @@ async fn api_create_bearer_token(
     }))
 }
 
-/// `DELETE /dashboard/api/bearer-tokens/{alias}`
+/// `POST /dashboard/api/bearer-tokens/{alias}/revoke`
 ///
 /// Revokes a bearer token by alias. The record stays in the registry for audit
-/// visibility, but it can no longer authorize MCP requests.
+/// visibility, but it can no longer authorize MCP requests. Use
+/// [`api_delete_bearer_token`] to remove the row from the list entirely.
 async fn api_revoke_bearer_token(
     State(state): State<DashboardState>,
     Path(alias): Path<String>,
 ) -> Result<Json<DashboardBearerToken>, (StatusCode, Json<Value>)> {
     let store = BearerTokenStore::new(&state.mentisdb_dir);
     let record = store.revoke(&alias).map_err(map_bearer_token_error)?;
+    Ok(Json(DashboardBearerToken::from(record)))
+}
+
+/// `DELETE /dashboard/api/bearer-tokens/{alias}`
+///
+/// Permanently deletes a bearer token record (active or revoked) from the
+/// registry so it no longer appears in the dashboard list.
+async fn api_delete_bearer_token(
+    State(state): State<DashboardState>,
+    Path(alias): Path<String>,
+) -> Result<Json<DashboardBearerToken>, (StatusCode, Json<Value>)> {
+    let store = BearerTokenStore::new(&state.mentisdb_dir);
+    let record = store.delete(&alias).map_err(map_bearer_token_error)?;
     Ok(Json(DashboardBearerToken::from(record)))
 }
 

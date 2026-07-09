@@ -1804,8 +1804,10 @@
               <td>${esc(fmtDate(token.created_at))}</td>
               <td>${esc(fmtDate(token.last_used_at))}</td>
               <td>${esc(fmtDate(token.revoked_at))}</td>
-              <td style="text-align:right">
-                <button class="btn btn-sm ${active ? 'btn-danger' : ''}" data-bt-revoke="${esc(token.alias)}" ${active ? '' : 'disabled'} title="Revoke this token">Revoke</button>
+              <td style="text-align:right;white-space:nowrap">
+                ${active
+                  ? `<button class="btn btn-sm btn-danger" data-bt-revoke="${esc(token.alias)}" title="Revoke this token (keeps an audit row)">Revoke</button>`
+                  : `<button class="btn btn-sm btn-danger" data-bt-delete="${esc(token.alias)}" title="Permanently delete this revoked token from the list">Delete</button>`}
               </td>
             </tr>`;
           }).join('')}
@@ -1814,6 +1816,9 @@
     `;
     tableEl.querySelectorAll('[data-bt-revoke]').forEach(btn => {
       btn.addEventListener('click', () => revokeBearerToken(btn.getAttribute('data-bt-revoke')));
+    });
+    tableEl.querySelectorAll('[data-bt-delete]').forEach(btn => {
+      btn.addEventListener('click', () => deleteBearerToken(btn.getAttribute('data-bt-delete')));
     });
   }
 
@@ -1898,14 +1903,32 @@
     const msgEl = document.getElementById('bt-msg');
     msgEl.textContent = `Revoking ${alias}...`;
     msgEl.className = 'settings-msg';
-    api(`/dashboard/api/bearer-tokens/${encodeURIComponent(alias)}`, { method: 'DELETE' })
+    api(`/dashboard/api/bearer-tokens/${encodeURIComponent(alias)}/revoke`, { method: 'POST' })
       .then(() => {
-        msgEl.textContent = `Revoked ${alias}.`;
+        msgEl.textContent = `Revoked ${alias}. Use Delete to remove it from the list.`;
         msgEl.className = 'settings-msg ok';
         loadBearerTokens();
       })
       .catch(err => {
         msgEl.textContent = err.message || 'Revoke failed.';
+        msgEl.className = 'settings-msg err';
+      });
+  }
+
+  function deleteBearerToken(alias) {
+    if (!alias) return;
+    if (!confirm(`Permanently delete bearer token "${alias}"? This cannot be undone.`)) return;
+    const msgEl = document.getElementById('bt-msg');
+    msgEl.textContent = `Deleting ${alias}...`;
+    msgEl.className = 'settings-msg';
+    api(`/dashboard/api/bearer-tokens/${encodeURIComponent(alias)}`, { method: 'DELETE' })
+      .then(() => {
+        msgEl.textContent = `Deleted ${alias}.`;
+        msgEl.className = 'settings-msg ok';
+        loadBearerTokens();
+      })
+      .catch(err => {
+        msgEl.textContent = err.message || 'Delete failed.';
         msgEl.className = 'settings-msg err';
       });
   }

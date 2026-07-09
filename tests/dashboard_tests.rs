@@ -239,6 +239,9 @@ async fn dashboard_serves_skill_edit_controls() {
     assert!(html.contains("function copyBearerTokenSecret(token)"));
     assert!(html.contains("function copyBearerTokenSecretFallback(token, onCopied)"));
     assert!(html.contains("data-bt-revoke"));
+    assert!(html.contains("data-bt-delete"));
+    assert!(html.contains("function deleteBearerToken(alias)"));
+    assert!(html.contains("/revoke"));
     assert!(!html.contains(r#"<a href="$2" target="_blank" rel="noopener">$1</a>"#));
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -327,8 +330,8 @@ async fn dashboard_bearer_token_api_creates_lists_and_revokes_tokens() {
         .clone()
         .oneshot(
             Request::builder()
-                .method("DELETE")
-                .uri("/dashboard/api/bearer-tokens/codex-laptop")
+                .method("POST")
+                .uri("/dashboard/api/bearer-tokens/codex-laptop/revoke")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -340,6 +343,54 @@ async fn dashboard_bearer_token_api_creates_lists_and_revokes_tokens() {
         .unwrap();
     let revoked: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(revoked["status"], "revoked");
+
+    let list_revoked = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/bearer-tokens")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list_revoked.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(list_revoked.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let tokens: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(tokens.as_array().unwrap().len(), 1);
+    assert_eq!(tokens[0]["status"], "revoked");
+
+    let delete = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/dashboard/api/bearer-tokens/codex-laptop")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), axum::http::StatusCode::OK);
+
+    let list_empty = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/bearer-tokens")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list_empty.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(list_empty.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let tokens: Value = serde_json::from_slice(&body).unwrap();
+    assert!(tokens.as_array().unwrap().is_empty());
 
     let invalid = router
         .clone()

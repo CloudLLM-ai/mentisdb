@@ -107,6 +107,15 @@ fn parse_bearertoken_commands_accept_alias_and_dir() {
     let parsed = parse_args(["mentisdb", "bearertoken", "revoke", "codex-laptop"]).unwrap();
     assert_eq!(
         parsed,
+        CliCommand::BearerToken(BearerTokenCommand::Revoke {
+            alias: "codex-laptop".to_string(),
+            dir: None,
+        })
+    );
+
+    let parsed = parse_args(["mentisdb", "bearertoken", "remove", "codex-laptop"]).unwrap();
+    assert_eq!(
+        parsed,
         CliCommand::BearerToken(BearerTokenCommand::Remove {
             alias: "codex-laptop".to_string(),
             dir: None,
@@ -171,10 +180,22 @@ fn bearertoken_cli_create_list_and_remove_roundtrip() {
         &mut errors,
     );
     assert_eq!(remove, ExitCode::SUCCESS);
+    assert!(String::from_utf8(output.clone())
+        .unwrap()
+        .contains("deleted bearer token"));
+    assert!(errors.is_empty());
+
+    output.clear();
+    let list_after = run_with_io(
+        ["mentisdb", "bearertoken", "list", "--dir", &dir_arg],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+    assert_eq!(list_after, ExitCode::SUCCESS);
     assert!(String::from_utf8(output)
         .unwrap()
-        .contains("revoked bearer token"));
-    assert!(errors.is_empty());
+        .contains("No bearer tokens."));
 }
 
 #[test]
