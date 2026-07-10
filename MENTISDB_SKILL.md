@@ -70,8 +70,8 @@ Don't write when the answer is "I already know this." Common cases where the rig
 Real work invalidates prior memory. Search first to surface candidates:
 
 - A new `Correction` or `AssumptionInvalidated` only makes sense if there is an existing thought to correct. Search for the original lesson / decision / assumption and link the new thought to it with a typed edge (`Corrects`, `Invalidates`, `Supersedes`).
-- If a `LessonLearned` from months ago no longer holds (the framework changed, the bug was in our code not theirs, the workaround is now standard), prefer `AssumptionInvalidated` over a parallel new `LessonLearned` — future agents reading the old lesson will follow the edge to the correction.
-- If your new memory *narrows* an existing broad one (e.g. "X is fast" → "X is fast for read-heavy workloads but slow for batch writes"), use `Supersedes` with a short note about the narrower scope. Future search hits the narrower one and ranks it higher.
+- If a `LessonLearned` from months ago no longer holds (the framework changed, the bug was in our code not theirs, the workaround is now standard), prefer `AssumptionInvalidated` over a parallel new `LessonLearned` and link with `Invalidates` / `Corrects` — **default search hides the superseded target** so future agents see the current truth (use `include_invalidated=true` only for audit).
+- If your new memory *narrows* an existing broad one (e.g. "X is fast" → "X is fast for read-heavy workloads but slow for batch writes"), use `Supersedes` with a short note about the narrower scope. Default ranked search then excludes the broader/outdated thought and surfaces the narrower one.
 
 ### Decision 3: Which existing memories should I link to?
 

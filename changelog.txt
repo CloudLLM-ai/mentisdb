@@ -1,4 +1,11 @@
 0.10.5.50 UNRELEASED
+  - fix(search): default retrieval now excludes superseded, corrected, and
+    invalidated thoughts via the live `invalidated_thought_ids` set (query,
+    ranked search, context bundles, recent context, memory markdown export).
+    Previously the set was only applied under `as_of` point-in-time queries,
+    so normal search kept returning stale memories on large chains. Opt in to
+    audit mode with `include_invalidated=true` (crate, REST, MCP). Point-in-time
+    `as_of` still shows thoughts that were valid at that timestamp.
   - fix(auth): single-chain bearer tokens are full read+write within scope.
     When MCP/REST clients omit `chain_key`, a single-chain token is bound to
     that chain for both authorization and execution (append, import, search,

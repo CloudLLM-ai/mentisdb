@@ -243,6 +243,10 @@ fn build_invalidation_set(chain: &[Thought]) -> HashSet<Uuid> {
 ```
 
 During retrieval, checking "is this thought superseded?" is an O(1) HashSet lookup.
+Default search, ranked search, context bundles, and related read paths exclude
+those IDs unless the caller sets `include_invalidated=true`. Point-in-time
+queries (`as_of`) apply the same set with temporal edge validity so a thought
+that was still current at that timestamp remains visible.
 
 ### 2.5 Agent Registry
 

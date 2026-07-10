@@ -805,7 +805,7 @@ Starting in 0.8.2, ranked search adds temporal, scoped, and dedup-aware features
 - **Temporal `as_of` point-in-time filtering** — `RankedSearchQuery::with_as_of(rfc3339)` restricts graph expansion to only relation edges whose `valid_at`/`invalid_at` window covers the given timestamp. Edges without temporal bounds are always included. This enables queries like "what did the agent know at the start of the sprint?"
 - **Memory scope filtering via `scope` tag** — thoughts carry a `scope` field (`user`, `session`, or `agent`) stored as `scope:<value>` tags. `RankedSearchQuery::with_scope(MemoryScope::Session)` narrows results to session-scoped memories only. Omitting scope returns thoughts from all scopes.
 - **Auto-dedup with `Supersedes` relations** — when `MENTISDB_DEDUP_THRESHOLD` is set, appending a thought whose content is sufficiently similar (Jaccard ≥ threshold) to a recent thought automatically creates a `Supersedes` relation instead of storing a duplicate. The superseded thought's id is recorded for fast exclusion.
-- **`invalidated_thought_ids` for O(1) superseded detection** — each thought tracks which earlier thoughts it supersedes. Ranked search uses this set to skip superseded thoughts in constant time without walking the full relation graph.
+- **`invalidated_thought_ids` for O(1) superseded exclusion** — thoughts targeted by `Supersedes`, `Corrects`, or `Invalidates` are excluded from default `query`, ranked search, context bundles, recent context, and related retrieval. Pass `include_invalidated=true` (or `ThoughtQuery::with_include_invalidated(true)`) for audit. Point-in-time `as_of` still surfaces thoughts that were valid at that timestamp.
 
 ### Search Scoring (0.8.7)
 
