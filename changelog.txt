@@ -6,6 +6,10 @@
     so normal search kept returning stale memories on large chains. Opt in to
     audit mode with `include_invalidated=true` (crate, REST, MCP). Point-in-time
     `as_of` still shows thoughts that were valid at that timestamp.
+  - docs: document invalidation filtering and recommended
+    `MENTISDB_DEDUP_THRESHOLD=0.85` for long-lived chains in README,
+    `mentisdb --help`, `mentisdb search --help`, and docs.mentisdb.com
+    (user, agent, and developer guides).
   - fix(auth): single-chain bearer tokens are full read+write within scope.
     When MCP/REST clients omit `chain_key`, a single-chain token is bound to
     that chain for both authorization and execution (append, import, search,

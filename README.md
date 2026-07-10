@@ -407,11 +407,38 @@ Once startup completes, it prints:
   `yes`, or `on` to enable.
 - `MENTISDB_DEDUP_THRESHOLD`
   Jaccard similarity threshold for automatic deduplication on append (0.0–1.0). When
-  unset, auto-dedup is disabled. When set, a new thought whose content is sufficiently
-  similar to a recent thought receives a `Supersedes` relation instead of being stored
-  as a duplicate.
+  unset, auto-dedup is **disabled** (library and daemon default). When set, a new
+  thought whose content is sufficiently similar to a recent thought gets an automatic
+  `Supersedes` edge to that prior thought (the prior stays on disk for audit).
+  **Recommended for multi-agent and long-lived chains:** `0.85`. Without this (or
+  without agents writing `Supersedes` / `Corrects` / `Invalidates`), the invalidation
+  set stays empty and search cannot hide near-duplicate noise.
 - `MENTISDB_DEDUP_SCAN_WINDOW`
-  Number of recent thoughts to scan for dedup comparison. Default: `64`.
+  Number of recent thoughts to scan for dedup comparison. Default: `64`. Only used
+  when `MENTISDB_DEDUP_THRESHOLD` is set. Raise on chatty chains (e.g. `128`).
+
+#### Invalidation and “current” memory
+
+MentisDB never deletes corrected or superseded thoughts. Instead it maintains an
+in-memory `invalidated_thought_ids` set for any thought that is the **target** of a
+later `Supersedes`, `Corrects`, or `Invalidates` relation.
+
+**Default retrieval** (`query`, ranked search, context bundles, recent context, memory
+markdown export, REST/MCP search) **excludes** those IDs so agents see current memory.
+Pass `include_invalidated=true` (crate: `ThoughtQuery::with_include_invalidated(true)` /
+`RankedSearchQuery::with_include_invalidated(true)`) for audit archaeology.
+
+Point-in-time `as_of` still returns thoughts that were valid at that timestamp, even
+if they were superseded later.
+
+How the set gets filled:
+
+1. **Agents** write typed edges (`Supersedes` / `Corrects` / `Invalidates`) — the
+   MentisDB skill’s search-before-write habit.
+2. **Auto-dedup** when `MENTISDB_DEDUP_THRESHOLD` is set (see above).
+
+Search filtering alone does not invent edges; pair default exclusion with dedup and/or
+good agent discipline on long-running brains.
 
 MentisDB loads environment variables from a `.env` file in the current working directory
 at startup. Existing shell environment variables take precedence over `.env` values. The
@@ -432,6 +459,17 @@ MENTISDB_REST_PORT=9472 \
 MENTISDB_DASHBOARD_PIN=change-me \
 MENTISDB_AUTO_FLUSH=true \
 cargo run --bin mentisdb
+```
+
+Example — multi-agent / long-lived chain (recommended: enable near-duplicate superseding):
+
+```bash
+MENTISDB_DIR=/var/lib/mentisdb \
+MENTISDB_AUTO_FLUSH=true \
+MENTISDB_DEDUP_THRESHOLD=0.85 \
+MENTISDB_DEDUP_SCAN_WINDOW=64 \
+MENTISDB_BIND_HOST=0.0.0.0 \
+mentisdb
 ```
 
 Example — high-throughput write mode (multi-agent hub):
@@ -804,8 +842,8 @@ Starting in 0.8.2, ranked search adds temporal, scoped, and dedup-aware features
 
 - **Temporal `as_of` point-in-time filtering** — `RankedSearchQuery::with_as_of(rfc3339)` restricts graph expansion to only relation edges whose `valid_at`/`invalid_at` window covers the given timestamp. Edges without temporal bounds are always included. This enables queries like "what did the agent know at the start of the sprint?"
 - **Memory scope filtering via `scope` tag** — thoughts carry a `scope` field (`user`, `session`, or `agent`) stored as `scope:<value>` tags. `RankedSearchQuery::with_scope(MemoryScope::Session)` narrows results to session-scoped memories only. Omitting scope returns thoughts from all scopes.
-- **Auto-dedup with `Supersedes` relations** — when `MENTISDB_DEDUP_THRESHOLD` is set, appending a thought whose content is sufficiently similar (Jaccard ≥ threshold) to a recent thought automatically creates a `Supersedes` relation instead of storing a duplicate. The superseded thought's id is recorded for fast exclusion.
-- **`invalidated_thought_ids` for O(1) superseded exclusion** — thoughts targeted by `Supersedes`, `Corrects`, or `Invalidates` are excluded from default `query`, ranked search, context bundles, recent context, and related retrieval. Pass `include_invalidated=true` (or `ThoughtQuery::with_include_invalidated(true)`) for audit. Point-in-time `as_of` still surfaces thoughts that were valid at that timestamp.
+- **Auto-dedup with `Supersedes` relations** — when `MENTISDB_DEDUP_THRESHOLD` is set (recommended `0.85` for long-lived agent chains; **off** by default), appending a thought whose content is sufficiently similar (Jaccard ≥ threshold) to a recent thought automatically emits a `Supersedes` relation to that prior thought. The prior thought remains on disk for audit; its id enters the invalidation set for default search exclusion.
+- **`invalidated_thought_ids` for O(1) superseded exclusion** — thoughts targeted by `Supersedes`, `Corrects`, or `Invalidates` are excluded from default `query`, ranked search, context bundles, recent context, and related retrieval. Pass `include_invalidated=true` (or `ThoughtQuery::with_include_invalidated(true)`) for audit. Point-in-time `as_of` still surfaces thoughts that were valid at that timestamp. The set only fills when those edges exist (agent-written and/or auto-dedup).
 
 ### Search Scoring (0.8.7)
 

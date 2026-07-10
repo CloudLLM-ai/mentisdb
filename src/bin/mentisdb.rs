@@ -24,6 +24,8 @@
 //! - `MENTISDB_UPDATE_REPO` (default `CloudLLM-ai/mentisdb`)
 //! - `MENTISDB_STARTUP_SOUND` (default `true`; set `0`/`false`/`no`/`off` to silence)
 //! - `MENTISDB_THOUGHT_SOUNDS` (default `false`; set `1`/`true`/`yes`/`on` to enable per-thought and per-read sounds)
+//! - `MENTISDB_DEDUP_THRESHOLD` (optional; unset = auto-dedup off; recommended `0.85` for long-lived chains)
+//! - `MENTISDB_DEDUP_SCAN_WINDOW` (default `64`; only used when dedup threshold is set)
 //! - `RUST_LOG`
 
 #![cfg_attr(test, allow(dead_code))]
@@ -2296,6 +2298,17 @@ Important environment variables:
   MENTISDB_BEARER_TOKEN_ACCESS
     Require bearer tokens for MCP HTTP/HTTPS access. Default: false
 
+  MENTISDB_DEDUP_THRESHOLD
+    Jaccard similarity (0.0–1.0) for auto-Supersedes on near-duplicate appends.
+    Default: unset (disabled). Recommended for multi-agent / long-lived chains: 0.85.
+    When set, near-duplicates get a Supersedes edge so default search hides the older
+    thought (include_invalidated=true keeps audit history). Without this or agent-written
+    Supersedes/Corrects/Invalidates edges, the invalidation set stays empty.
+
+  MENTISDB_DEDUP_SCAN_WINDOW
+    How many recent thoughts to scan for auto-dedup. Default: 64. Only used when
+    MENTISDB_DEDUP_THRESHOLD is set.
+
   MENTISDB_TLS_CERT
   MENTISDB_TLS_KEY
     TLS certificate and private-key paths
@@ -2308,9 +2321,16 @@ Important environment variables:
   MENTISDB_THOUGHT_SOUNDS
     Startup, per-thought, and per-read audio controls
 
+Search notes:
+  Default ranked/search/context retrieval excludes thoughts that were superseded,
+  corrected, or invalidated by a later relation. Pass include_invalidated=true on
+  MCP/REST search tools for full audit history. Point-in-time as_of still shows
+  what was valid at that timestamp.
+
 Examples:
   MENTISDB_DIR=~/.cloudllm/mentisdb mentisdb
   MENTISDB_MCP_PORT=9471 MENTISDB_REST_PORT=9472 mentisdb
+  MENTISDB_DEDUP_THRESHOLD=0.85 mentisdb
 "
 }
 

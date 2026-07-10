@@ -614,6 +614,13 @@ Options:
   --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
   --help           Show this help text
 
+Notes:
+  Default search hides thoughts that later memory superseded, corrected, or
+  invalidated (Supersedes / Corrects / Invalidates). That only works when those
+  edges exist — agents should write them, and/or set MENTISDB_DEDUP_THRESHOLD
+  (e.g. 0.85) so near-duplicates auto-Supersede. For full audit history use the
+  REST/MCP include_invalidated=true flag (not exposed on this thin CLI wrapper).
+
 Examples:
   mentisdb search \"cache invalidation\"
   mentisdb search \"performance\" --limit 5 --scope session
