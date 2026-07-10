@@ -265,7 +265,8 @@
 //! MentisDB is designed for durability:
 //!
 //! - Every append produces a cryptographic hash chained to the previous thought.
-//! - The `invalidated_thought_ids` set provides O(1) skipping of superseded content.
+//! - The `invalidated_thought_ids` set provides O(1) exclusion of superseded content
+//!   from default search, ranked search, context bundles, and related retrieval.
 //! - The skill registry is itself versioned and immutable.
 //! - Full chain backups (`.mentis` files) are self-contained and verifiable.
 //!
@@ -1995,9 +1996,22 @@ pub enum ThoughtRelationKind {
     /// Use when the source thought replaces a prior belief, plan, or fact
     /// without the prior being a clear *error* (use [`ThoughtRelationKind::Corrects`] or
     /// [`ThoughtRelationKind::Invalidates`] for errors).  The target thought is retained for
-    /// audit; retrieval tooling should treat superseded thoughts as
-    /// lower-priority.
+    /// audit. Default retrieval excludes the superseded target unless the caller
+    /// opts into [`ThoughtQuery::with_include_invalidated`].
     Supersedes,
+}
+
+/// Return `true` when `kind` marks its relation target as superseded for retrieval.
+///
+/// Used when building the invalidation set and when filtering search candidates.
+#[inline]
+pub const fn is_invalidating_relation_kind(kind: ThoughtRelationKind) -> bool {
+    matches!(
+        kind,
+        ThoughtRelationKind::Supersedes
+            | ThoughtRelationKind::Corrects
+            | ThoughtRelationKind::Invalidates
+    )
 }
 
 /// Configuration for the LLM-extracted memories pipeline.
@@ -2727,6 +2741,22 @@ pub struct ThoughtQuery {
     pub entity_type: Option<String>,
     /// Match thoughts with a specific source episode.
     pub source_episode: Option<String>,
+    /// When `true`, include thoughts that have been superseded, corrected, or
+    /// invalidated by a later thought.
+    ///
+    /// Defaults to `false`: normal search, ranked search, context bundles, and
+    /// other retrieval paths hide those thoughts so agents see current memory
+    /// rather than audit history. Set this for archaeology, debugging, or
+    /// point-in-time analysis that needs the full chain.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mentisdb::ThoughtQuery;
+    /// let audit = ThoughtQuery::new().with_include_invalidated(true);
+    /// assert!(audit.include_invalidated);
+    /// ```
+    pub include_invalidated: bool,
 }
 
 impl ThoughtQuery {
@@ -2907,6 +2937,15 @@ impl ThoughtQuery {
     /// Limit matches to thoughts with the specified source episode.
     pub fn with_source_episode(mut self, source_episode: impl Into<String>) -> Self {
         self.source_episode = Some(source_episode.into());
+        self
+    }
+
+    /// Include or exclude superseded / corrected / invalidated thoughts.
+    ///
+    /// Default retrieval excludes them (`false`). Pass `true` only when you
+    /// need the full audit trail.
+    pub fn with_include_invalidated(mut self, include_invalidated: bool) -> Self {
+        self.include_invalidated = include_invalidated;
         self
     }
 
@@ -3146,8 +3185,15 @@ pub struct RankedSearchQuery {
     /// with `valid_at` after `as_of` or `invalid_at` before `as_of` are
     /// treated as non-existent. Thoughts that are targets of Supersedes,
     /// Corrects, or Invalidates relations from thoughts appended at or before
-    /// `as_of` are also excluded.
+    /// `as_of` are also excluded (unless [`Self::include_invalidated`] is set).
     pub as_of: Option<DateTime<Utc>>,
+    /// When `true`, keep superseded / corrected / invalidated thoughts in
+    /// ranked results.
+    ///
+    /// Defaults to `false`. Also set when `filter.include_invalidated` is true.
+    /// Point-in-time (`as_of`) queries still exclude thoughts that were already
+    /// invalidated at that timestamp unless this flag is set.
+    pub include_invalidated: bool,
     /// Optional memory scope filter.
     ///
     /// When set, only thoughts tagged with the matching `scope:{variant}` tag
@@ -3266,6 +3312,23 @@ impl RankedSearchQuery {
         self
     }
 
+    /// Include superseded / corrected / invalidated thoughts in ranked results.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mentisdb::RankedSearchQuery;
+    /// let query = RankedSearchQuery::new()
+    ///     .with_text("old lesson")
+    ///     .with_include_invalidated(true);
+    /// assert!(query.include_invalidated);
+    /// ```
+    pub fn with_include_invalidated(mut self, include_invalidated: bool) -> Self {
+        self.include_invalidated = include_invalidated;
+        self.filter.include_invalidated = include_invalidated;
+        self
+    }
+
     /// Filter results to a specific memory scope.
     ///
     /// This adds a `scope:{variant}` tag to the underlying filter's
@@ -3320,6 +3383,7 @@ impl Default for RankedSearchQuery {
             graph: None,
             limit: 10,
             as_of: None,
+            include_invalidated: false,
             scope: None,
             enable_reranking: false,
             rerank_k: 50,
@@ -4270,9 +4334,10 @@ pub struct MentisDb {
     pending_chain_registration_sync: bool,
     pending_chain_registration_updates: usize,
     /// Set of thought IDs that have been superseded, corrected, or invalidated
-    /// by a later thought in the chain. Built once at chain open time from all
-    /// `Supersedes`, `Corrects`, and `Invalidates` relations. Used at query
-    /// time to filter out stale relations from superseded thoughts.
+    /// by a later thought in the chain. Built at chain open and updated on
+    /// append from `Supersedes`, `Corrects`, and `Invalidates` relations.
+    /// Default retrieval excludes these IDs in O(1); pass
+    /// [`ThoughtQuery::with_include_invalidated`] to keep them.
     invalidated_thought_ids: HashSet<Uuid>,
     /// Optional deduplication threshold for automatic `Supersedes` relations.
     ///
@@ -4430,16 +4495,11 @@ impl MentisDb {
         };
 
         // Build the invalidated-thoughts index: any thought that is the target
-        // of a Supersedes, Corrects, or Invalidates relation is considered
-        // superseded and its outgoing relations are filtered at query time.
-        let invalidating_kinds = [
-            ThoughtRelationKind::Supersedes,
-            ThoughtRelationKind::Corrects,
-            ThoughtRelationKind::Invalidates,
-        ];
+        // of a Supersedes, Corrects, or Invalidates relation is excluded from
+        // default retrieval (see MentisDb::query / query_ranked).
         for thought in &chain.thoughts {
             for relation in &thought.relations {
-                if invalidating_kinds.contains(&relation.kind) {
+                if is_invalidating_relation_kind(relation.kind) {
                     chain.invalidated_thought_ids.insert(relation.target_id);
                 }
             }
@@ -4942,13 +5002,8 @@ impl MentisDb {
 
         // Update the invalidated-thoughts index if this thought contains
         // Supersedes, Corrects, or Invalidates relations.
-        let invalidating_kinds = [
-            ThoughtRelationKind::Supersedes,
-            ThoughtRelationKind::Corrects,
-            ThoughtRelationKind::Invalidates,
-        ];
         for relation in &thought.relations {
-            if invalidating_kinds.contains(&relation.kind) {
+            if is_invalidating_relation_kind(relation.kind) {
                 self.invalidated_thought_ids.insert(relation.target_id);
             }
         }
@@ -5692,6 +5747,9 @@ impl MentisDb {
 
         let mut results: Vec<&Thought> = candidate_thoughts
             .filter(|thought| {
+                if !query.include_invalidated && self.is_invalidated(thought.id) {
+                    return false;
+                }
                 let thought_matches = if indexed_filters_applied {
                     query.matches_post_index_filters(thought)
                 } else {
@@ -5746,45 +5804,11 @@ impl MentisDb {
     /// }
     /// ```
     pub fn query_ranked(&self, request: &RankedSearchQuery) -> RankedSearchResult<'_> {
-        let candidates = self.query(&request.filter);
-
-        // Apply as_of temporal filter: exclude thoughts appended after the
-        // requested timestamp and thoughts whose outgoing relations were
-        // superseded by that time.
-        let candidates: Vec<&Thought> = if let Some(as_of) = request.as_of {
-            candidates
-                .into_iter()
-                .filter(|thought| {
-                    // Exclude thoughts appended after the as_of timestamp.
-                    if thought.timestamp > as_of {
-                        return false;
-                    }
-                    // Exclude thoughts that have been superseded, corrected, or
-                    // invalidated by another thought appended at or before as_of.
-                    if self.invalidated_thought_ids.contains(&thought.id) {
-                        // Check if the invalidating thought was appended at or before as_of.
-                        let is_invalidated = self.thoughts.iter().any(|t| {
-                            t.timestamp <= as_of
-                                && t.relations.iter().any(|r| {
-                                    r.target_id == thought.id
-                                        && matches!(
-                                            r.kind,
-                                            ThoughtRelationKind::Supersedes
-                                                | ThoughtRelationKind::Corrects
-                                                | ThoughtRelationKind::Invalidates
-                                        )
-                                })
-                        });
-                        if is_invalidated {
-                            return false;
-                        }
-                    }
-                    true
-                })
-                .collect()
-        } else {
-            candidates
-        };
+        let candidates = self.retrieval_candidates(
+            &request.filter,
+            request.as_of,
+            request.include_invalidated || request.filter.include_invalidated,
+        );
         let ranked_text = request
             .text
             .as_deref()
@@ -5986,7 +6010,11 @@ impl MentisDb {
         &self,
         request: &RankedSearchQuery,
     ) -> crate::search::ContextBundleResult {
-        let candidates = self.query(&request.filter);
+        let candidates = self.retrieval_candidates(
+            &request.filter,
+            request.as_of,
+            request.include_invalidated || request.filter.include_invalidated,
+        );
         let ranked_text = request
             .text
             .as_deref()
@@ -8250,8 +8278,91 @@ impl MentisDb {
 
     /// Return the set of thought IDs that have been superseded, corrected,
     /// or invalidated by a later thought in the chain.
+    ///
+    /// Default search excludes these IDs. Use
+    /// [`ThoughtQuery::with_include_invalidated`] to include them.
     pub fn invalidated_thought_ids(&self) -> &HashSet<Uuid> {
         &self.invalidated_thought_ids
+    }
+
+    /// Return `true` when `thought_id` is currently superseded, corrected, or
+    /// invalidated by at least one later thought in the live chain.
+    ///
+    /// This is an O(1) set lookup. For point-in-time semantics see
+    /// [`MentisDb::is_invalidated_as_of`].
+    #[inline]
+    pub fn is_invalidated(&self, thought_id: Uuid) -> bool {
+        self.invalidated_thought_ids.contains(&thought_id)
+    }
+
+    /// Return `true` when `thought_id` was invalidated by a relation that was
+    /// already in force at `as_of`.
+    ///
+    /// A thought that is only invalidated *after* `as_of` remains visible for
+    /// that point-in-time query. Thoughts never present in the live
+    /// invalidation set are never considered invalidated.
+    pub fn is_invalidated_as_of(&self, thought_id: Uuid, as_of: DateTime<Utc>) -> bool {
+        if !self.is_invalidated(thought_id) {
+            return false;
+        }
+        self.thoughts.iter().any(|thought| {
+            if thought.timestamp > as_of {
+                return false;
+            }
+            thought.relations.iter().any(|relation| {
+                if relation.target_id != thought_id
+                    || !is_invalidating_relation_kind(relation.kind)
+                {
+                    return false;
+                }
+                // Honor optional edge validity window when present.
+                if relation.valid_at.is_some_and(|valid_at| valid_at > as_of) {
+                    return false;
+                }
+                if relation.invalid_at.is_some_and(|invalid_at| invalid_at <= as_of) {
+                    return false;
+                }
+                true
+            })
+        })
+    }
+
+    /// Select retrieval candidates with shared invalidation and optional
+    /// point-in-time rules used by ranked search and context bundles.
+    ///
+    /// * Live queries (`as_of == None`) exclude currently invalidated thoughts
+    ///   unless `include_invalidated` is true (via this flag or the filter).
+    /// * Point-in-time queries temporarily allow currently invalidated thoughts
+    ///   into the candidate set, then drop those already invalidated at `as_of`
+    ///   (unless `include_invalidated` is true).
+    fn retrieval_candidates<'a>(
+        &'a self,
+        filter: &ThoughtQuery,
+        as_of: Option<DateTime<Utc>>,
+        include_invalidated: bool,
+    ) -> Vec<&'a Thought> {
+        let mut filter = filter.clone();
+        if include_invalidated || as_of.is_some() {
+            // as_of needs access to thoughts that are live-invalidated but were
+            // still current at the historical timestamp.
+            filter.include_invalidated = true;
+        }
+        let candidates = self.query(&filter);
+        let Some(as_of) = as_of else {
+            return candidates;
+        };
+        candidates
+            .into_iter()
+            .filter(|thought| {
+                if thought.timestamp > as_of {
+                    return false;
+                }
+                if include_invalidated {
+                    return true;
+                }
+                !self.is_invalidated_as_of(thought.id, as_of)
+            })
+            .collect()
     }
 
     /// Return the current head hash of the chain, if any.
