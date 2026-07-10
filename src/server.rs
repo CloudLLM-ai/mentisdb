@@ -3038,6 +3038,7 @@ impl MentisDbService {
             until: None,
             limit: None,
             entity_type: None,
+            include_invalidated: None,
         })?;
         let offset = request.offset.unwrap_or(0);
         let page_size = request.limit.unwrap_or(50);
@@ -3121,6 +3122,8 @@ impl MentisDbService {
                 let k = request.rerank_k.unwrap_or(50).max(1);
                 ranked_query = ranked_query.with_reranking(k);
             }
+            ranked_query =
+                apply_include_invalidated(ranked_query, request.include_invalidated);
 
             let ranked = chain.query_ranked(&ranked_query);
             total_candidates += ranked.total_candidates;
@@ -3251,6 +3254,7 @@ impl MentisDbService {
             enable_reranking: request.enable_reranking,
             rerank_k: request.rerank_k,
             entity_type: request.entity_type.clone(),
+            include_invalidated: request.include_invalidated,
         };
         let filter = build_ranked_filter_query(&ranked_req, primary_chain_key.clone())?;
         let mut ranked_query = RankedSearchQuery::new()
@@ -3280,6 +3284,7 @@ impl MentisDbService {
         if query_enable_reranking {
             ranked_query = ranked_query.with_reranking(query_rerank_k.max(1));
         }
+        ranked_query = apply_include_invalidated(ranked_query, request.include_invalidated);
 
         // Collect all chain arcs
         let mut chain_arcs: Vec<(String, Arc<RwLock<MentisDb>>)> = Vec::new();
@@ -3555,6 +3560,7 @@ impl MentisDbService {
             let k = request.rerank_k.unwrap_or(50).max(1);
             ranked_query = ranked_query.with_reranking(k);
         }
+        ranked_query = apply_include_invalidated(ranked_query, request.include_invalidated);
 
         let mut total_query = ranked_query.clone();
         total_query.limit = chain.thoughts().len().max(1);
@@ -3996,19 +4002,29 @@ impl MentisDbService {
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
         let last_n = request.last_n.unwrap_or(12);
+        let include_invalidated = request.include_invalidated.unwrap_or(false);
         let thoughts: Vec<&crate::Thought> = if let Some(ref agent_id) = request.agent_id {
             let mut filtered: Vec<&crate::Thought> = chain
                 .thoughts()
                 .iter()
                 .rev()
                 .filter(|t| t.agent_id == *agent_id)
+                .filter(|t| include_invalidated || !chain.is_invalidated(t.id))
                 .take(last_n)
                 .collect();
             filtered.reverse();
             filtered
         } else {
-            let start = chain.thoughts().len().saturating_sub(last_n);
-            chain.thoughts()[start..].iter().collect()
+            chain
+                .thoughts()
+                .iter()
+                .rev()
+                .filter(|t| include_invalidated || !chain.is_invalidated(t.id))
+                .take(last_n)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect()
         };
         self.log_interaction(InteractionLogEntry {
             access: "read",
@@ -4031,11 +4047,8 @@ impl MentisDbService {
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
         let query = build_markdown_query(&request)?;
-        let matched = if query_is_empty(&query) {
-            chain.thoughts().iter().collect::<Vec<_>>()
-        } else {
-            chain.query(&query)
-        };
+        // Always go through query() so invalidated thoughts are excluded by default.
+        let matched = chain.query(&query);
         self.log_interaction(InteractionLogEntry {
             access: "read",
             operation: "memory_markdown",
@@ -5078,6 +5091,9 @@ struct SearchRequest {
     until: Option<DateTime<Utc>>,
     limit: Option<usize>,
     entity_type: Option<String>,
+    /// When true, include superseded/corrected/invalidated thoughts.
+    #[serde(default)]
+    include_invalidated: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -5132,6 +5148,9 @@ struct RankedSearchRequest {
     enable_reranking: Option<bool>,
     rerank_k: Option<usize>,
     entity_type: Option<String>,
+    /// When true, include superseded/corrected/invalidated thoughts.
+    #[serde(default)]
+    include_invalidated: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -5303,6 +5322,9 @@ struct FederatedSearchRequest {
     rerank_k: Option<usize>,
     /// Optional entity type label filter.
     entity_type: Option<String>,
+    /// When true, include superseded/corrected/invalidated thoughts.
+    #[serde(default)]
+    include_invalidated: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -5755,6 +5777,9 @@ struct RecentContextRequest {
     chain_key: Option<String>,
     last_n: Option<usize>,
     agent_id: Option<String>,
+    /// When true, include superseded/corrected/invalidated thoughts.
+    #[serde(default)]
+    include_invalidated: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -7198,7 +7223,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
             .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Optional maximum number of results."))
-            .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by.")),
+            .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by."))
+            .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include thoughts superseded/corrected/invalidated by later memory. Default false.")),
         ToolMetadata::new(
             "mentisdb_lexical_search",
             "Run a lexical-ranked search over thread text and return scored results with offset/limit paging.",
@@ -7229,7 +7255,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("min_confidence", ToolParameterType::Number).with_description("Optional minimum confidence threshold."))
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
-        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by.")),
+        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by."))
+        .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include thoughts superseded/corrected/invalidated by later memory. Default false — normal ranked search hides stale memories.")),
         ToolMetadata::new(
             "mentisdb_federated_search",
             "Run federated ranked retrieval over multiple chains simultaneously and return a single merged, ranked result list. Useful for multi-agent hubs or cross-organizational memory aggregation.",
@@ -7254,7 +7281,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("scope", ToolParameterType::String).with_description("Optional memory scope: user, session, or agent."))
         .with_parameter(ToolParameter::new("enable_reranking", ToolParameterType::Boolean).with_description("Enable RRF reranking."))
         .with_parameter(ToolParameter::new("rerank_k", ToolParameterType::Integer).with_description("RRF candidates window size."))
-        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by.")),
+        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by."))
+        .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include thoughts superseded/corrected/invalidated by later memory. Default false.")),
         ToolMetadata::new(
             "mentisdb_context_bundles",
             "Return deterministic seed-anchored grouped context bundles over query_context_bundles. Use this when you want supporting context grouped beneath the best lexical seed thoughts.",
@@ -7275,7 +7303,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("min_confidence", ToolParameterType::Number).with_description("Optional minimum confidence threshold."))
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
-        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by.")),
+        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by."))
+        .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include superseded/corrected/invalidated thoughts as seeds or support. Default false.")),
         ToolMetadata::new(
             "mentisdb_summary_candidates",
             "Return deterministic append-only summary source candidates. This only selects source windows; it does not generate or append summary thoughts.",
@@ -7374,7 +7403,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         )
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
         .with_parameter(ToolParameter::new("last_n", ToolParameterType::Integer).with_description("How many recent thoughts to include."))
-        .with_parameter(ToolParameter::new("agent_id", ToolParameterType::String).with_description("Optional agent id filter to scope context to one agent.")),
+        .with_parameter(ToolParameter::new("agent_id", ToolParameterType::String).with_description("Optional agent id filter to scope context to one agent."))
+        .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include superseded/corrected/invalidated thoughts in recent context. Default false.")),
         ToolMetadata::new(
             "mentisdb_memory_markdown",
             "Export a MEMORY.md style Markdown summary from MentisDb.",
@@ -7924,8 +7954,21 @@ fn apply_optional_query_fields<T: HasOptionalQueryFields>(
 }
 
 fn build_query(request: &SearchRequest) -> Result<ThoughtQuery, Box<dyn Error + Send + Sync>> {
-    let query = ThoughtQuery::new();
-    apply_optional_query_fields(query, request)
+    let mut query = apply_optional_query_fields(ThoughtQuery::new(), request)?;
+    if request.include_invalidated.unwrap_or(false) {
+        query = query.with_include_invalidated(true);
+    }
+    Ok(query)
+}
+
+fn apply_include_invalidated(
+    mut ranked_query: RankedSearchQuery,
+    include_invalidated: Option<bool>,
+) -> RankedSearchQuery {
+    if include_invalidated.unwrap_or(false) {
+        ranked_query = ranked_query.with_include_invalidated(true);
+    }
+    ranked_query
 }
 
 /// Applies the built-in static thesaurus for automatic query-time synonym expansion.
@@ -7962,6 +8005,7 @@ fn build_ranked_filter_query(
         until: request.until,
         limit: None,
         entity_type: request.entity_type.clone(),
+        include_invalidated: request.include_invalidated,
     })
 }
 
