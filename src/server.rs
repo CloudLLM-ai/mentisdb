@@ -3122,8 +3122,7 @@ impl MentisDbService {
                 let k = request.rerank_k.unwrap_or(50).max(1);
                 ranked_query = ranked_query.with_reranking(k);
             }
-            ranked_query =
-                apply_include_invalidated(ranked_query, request.include_invalidated);
+            ranked_query = apply_include_invalidated(ranked_query, request.include_invalidated);
 
             let ranked = chain.query_ranked(&ranked_query);
             total_candidates += ranked.total_candidates;

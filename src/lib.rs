@@ -8310,8 +8310,7 @@ impl MentisDb {
                 return false;
             }
             thought.relations.iter().any(|relation| {
-                if relation.target_id != thought_id
-                    || !is_invalidating_relation_kind(relation.kind)
+                if relation.target_id != thought_id || !is_invalidating_relation_kind(relation.kind)
                 {
                     return false;
                 }
@@ -8319,7 +8318,10 @@ impl MentisDb {
                 if relation.valid_at.is_some_and(|valid_at| valid_at > as_of) {
                     return false;
                 }
-                if relation.invalid_at.is_some_and(|invalid_at| invalid_at <= as_of) {
+                if relation
+                    .invalid_at
+                    .is_some_and(|invalid_at| invalid_at <= as_of)
+                {
                     return false;
                 }
                 true

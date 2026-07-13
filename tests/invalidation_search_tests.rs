@@ -6,8 +6,8 @@
 
 use chrono::Utc;
 use mentisdb::{
-    MentisDb, RankedSearchGraph, RankedSearchQuery, StorageAdapterKind, ThoughtInput,
-    ThoughtQuery, ThoughtRelation, ThoughtRelationKind, ThoughtType,
+    MentisDb, RankedSearchGraph, RankedSearchQuery, StorageAdapterKind, ThoughtInput, ThoughtQuery,
+    ThoughtRelation, ThoughtRelationKind, ThoughtType,
 };
 use std::path::PathBuf;
 use tempfile::tempdir;
@@ -136,15 +136,13 @@ fn corrects_and_invalidates_exclude_targets_from_ranked_search() {
     assert!(chain.is_invalidated(wrong.id));
     assert!(chain.is_invalidated(assumption.id));
 
-    let rate = chain.query_ranked(&RankedSearchQuery::new().with_text("rate limit").with_limit(5));
-    assert!(rate
-        .hits
-        .iter()
-        .all(|h| h.thought.id != wrong.id));
-    assert!(rate
-        .hits
-        .iter()
-        .any(|h| h.thought.content.contains("1000")));
+    let rate = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text("rate limit")
+            .with_limit(5),
+    );
+    assert!(rate.hits.iter().all(|h| h.thought.id != wrong.id));
+    assert!(rate.hits.iter().any(|h| h.thought.content.contains("1000")));
 
     let bug = chain.query_ranked(
         &RankedSearchQuery::new()
@@ -197,11 +195,7 @@ fn as_of_keeps_thoughts_valid_at_that_time() {
         "historical query should still see the pre-supersede decision"
     );
 
-    let live = chain.query_ranked(
-        &RankedSearchQuery::new()
-            .with_text("Deploy")
-            .with_limit(10),
-    );
+    let live = chain.query_ranked(&RankedSearchQuery::new().with_text("Deploy").with_limit(10));
     assert!(live.hits.iter().all(|h| h.thought.id != original.id));
 }
 
