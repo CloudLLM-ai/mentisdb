@@ -1,6 +1,15 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 -> 0.10.4.49)
+## Shipped (0.8.2 -> 0.10.5.50)
+
+### 0.10.5.50 - Search Invalidation Filtering, Bearer Token Write Fix, Token Delete
+- **Default search excludes invalidated thoughts** — thoughts targeted by later `Supersedes`, `Corrects`, or `Invalidates` relations are hidden from `query`, ranked search, context bundles, recent context, and related REST/MCP surfaces. Opt in with `include_invalidated=true` for audit; `as_of` still returns what was valid at that timestamp.
+- **Bearer single-chain write fix** — chain-scoped tokens authorize and execute append/import when `chain_key` is omitted by binding the request to the token's only chain (read+write within scope).
+- **Permanent bearer-token delete** — dashboard Delete for revoked tokens; CLI `revoke` vs `remove`/`delete`; `POST .../revoke` and `DELETE` permanent.
+- **Rust engineer project skills** — house style, concurrency, and Criterion companions under `skills/`.
+- **Docs** — invalidation/dedup guidance in README, CLI help, docs.mentisdb.com; Claude second-brain blog post verified against current CLI.
+- **Prior items in this cycle** — dashboard chain explorer column alignment; startup migration without full chain loads; `--mode` transport docs.
+- Phase 2 gates green (fmt, clippy -D warnings, full test suite). Criterion `search_ranked` smoke + release build; full LoCoMo/LongMemEval not re-run (exclusion filter, not score fusion change).
 
 ### 0.10.4.49 - Dashboard Login Fix, Session Lifetime Fix, HNSW Unconditional
 - **Dashboard login fix** — the session cookie's `Secure` attribute is now conditional on `X-Forwarded-Proto`, fixing login behind TLS-terminating reverse proxies that talk plain HTTP to the daemon.

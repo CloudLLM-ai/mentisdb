@@ -1,4 +1,4 @@
-0.10.5.50 UNRELEASED
+0.10.5.50 JUL/13/2026
   - fix(search): default retrieval now excludes superseded, corrected, and
     invalidated thoughts via the live `invalidated_thought_ids` set (query,
     ranked search, context bundles, recent context, memory markdown export).

@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.10.5.50 — Search Invalidation, Bearer Write Fix, Token Delete</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article .meta { color: #888; font-size: 0.85rem; margin-bottom: 1rem; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    .callout { background: #eef2ff; border-left: 3px solid #4361ee; border-radius: 0 4px 4px 0; padding: 1rem; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="index.html">MentisDB Blog</a></h1>
+    <p>Durable memory for AI agents</p>
+  </header>
+
+  <article>
+    <h2>MentisDB 0.10.5.50 &mdash; Search Invalidation, Bearer Write Fix, Token Delete</h2>
+    <div class="meta">July 13, 2026</div>
+
+    <p>
+      This release makes large memory chains feel more current: default search hides
+      thoughts that later memory superseded, corrected, or invalidated. It also fixes
+      chain-scoped bearer tokens so they can write (not just read), and lets operators
+      permanently delete revoked tokens from the dashboard and CLI.
+    </p>
+
+    <div class="callout">
+      <strong>Upgrade:</strong>
+      <code>cargo install mentisdb --locked --force</code>
+      (or let the daemon self-updater install the tag). Restart the daemon after install.
+      Recommended for long-lived multi-agent chains:
+      <code>MENTISDB_DEDUP_THRESHOLD=0.85</code>.
+    </div>
+
+    <h3>Search: default invalidation filtering</h3>
+    <p>
+      MentisDB already maintained an <code>invalidated_thought_ids</code> set for thoughts
+      targeted by later <code>Supersedes</code>, <code>Corrects</code>, or
+      <code>Invalidates</code> relations — but that set was only applied when
+      <code>as_of</code> point-in-time queries ran. Normal ranked search kept returning
+      stale duplicates next to their replacements.
+    </p>
+    <p>
+      As of 0.10.5.50, default retrieval excludes those IDs across
+      <code>query</code>, ranked search, context bundles, recent context, and related
+      REST/MCP surfaces. Pass <code>include_invalidated=true</code> for audit archaeology.
+      Point-in-time <code>as_of</code> still returns thoughts that were valid at that
+      timestamp.
+    </p>
+    <p>
+      The set only fills when edges exist: agent-written relations (search-first skill)
+      and/or auto-dedup via <code>MENTISDB_DEDUP_THRESHOLD</code> (still off when unset;
+      recommended production value <code>0.85</code>).
+    </p>
+
+    <h3>Auth: chain-scoped bearer tokens write correctly</h3>
+    <p>
+      Single-chain bearer tokens could read when clients passed <code>chain_key</code>, but
+      writes that omitted <code>chain_key</code> were authorized against the server default
+      chain and failed with a generic “Bearer token required” message. MentisDB now binds
+      single-chain tokens to their only chain for both authorization and execution.
+      Tokens remain full read+write within scope; there is no separate read-only mode.
+    </p>
+
+    <h3>Bearer token delete</h3>
+    <p>
+      Revoke still keeps an audit row. Operators can now permanently remove tokens:
+    </p>
+    <ul>
+      <li>Dashboard: <strong>Delete</strong> on revoked rows</li>
+      <li>CLI: <code>mentisdb bearertoken revoke</code> vs <code>remove</code> / <code>delete</code> / <code>rm</code></li>
+      <li>API: <code>POST /dashboard/api/bearer-tokens/{alias}/revoke</code> and
+          <code>DELETE /dashboard/api/bearer-tokens/{alias}</code></li>
+    </ul>
+
+    <h3>Also in this cycle</h3>
+    <ul>
+      <li>Dashboard chain explorer column alignment fix</li>
+      <li>Faster startup migrations (no full chain open for registry health checks)</li>
+      <li>CLI <code>--mode</code> transport documentation</li>
+      <li>Project skills: rust-engineer, concurrency, Criterion</li>
+      <li>Docs: README, CLI help, docs.mentisdb.com invalidation/dedup sections</li>
+      <li>Blog: <a href="how-to-build-ai-second-brain-with-claude-and-mentisdb.html">Claude + MentisDB second-brain guide</a></li>
+    </ul>
+
+    <h3>Verification</h3>
+    <ul>
+      <li><code>make clippy</code> (warnings as errors)</li>
+      <li><code>cargo test --all-features</code></li>
+      <li>Release build <code>mentisdb</code></li>
+      <li>Criterion <code>search_ranked</code> smoke (sample-size 10)</li>
+      <li>Full LoCoMo / LongMemEval not re-run: change is exclusion of invalidated
+          candidates, not BM25/vector fusion weights</li>
+    </ul>
+
+    <h3>Links</h3>
+    <ul>
+      <li><a href="https://github.com/CloudLLM-ai/mentisdb/releases/tag/0.10.5.50">GitHub release 0.10.5.50</a></li>
+      <li><a href="https://crates.io/crates/mentisdb">crates.io/mentisdb</a></li>
+      <li><a href="https://docs.mentisdb.com">docs.mentisdb.com</a> — Invalidation &amp; Dedup</li>
+    </ul>
+  </article>
+</body>
+</html>
