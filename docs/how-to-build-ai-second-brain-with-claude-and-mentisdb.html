@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>How to Build an AI Second Brain With Claude and MentisDB</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.85rem; margin-bottom: 1rem; line-height: 1.25; }
+    h2 { font-size: 1.35rem; margin-top: 2.25rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.1rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #1a1a2e; color: #e0e0e0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; color: inherit; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.35rem; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
+    th { background: #f5f5f5; font-weight: 600; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 1.5rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    .callout { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .callout p:last-child { margin-bottom: 0; }
+    .warn { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .warn p:last-child { margin-bottom: 0; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom:0.75rem;font-size:0.85rem;"><a href="https://mentisdb.com">mentisdb.com</a> · <a href="https://docs.mentisdb.com">docs</a> · <a href="https://github.com/CloudLLM-ai/mentisdb">github</a></nav>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">July 13, 2026 · Verified against MentisDB 0.10.4+ / unreleased 0.10.5 search behavior</div>
+
+<h1>How to Build an AI Second Brain With Claude and MentisDB</h1>
+
+<p>
+  Your best ideas are scattered across notes apps, browser tabs, and old chat threads you will never reopen.
+  A second brain is one place that holds what you care about, with an agent that can search it, link it, and grow it.
+  MentisDB is the durable store. Claude (or Claude Code) is the reader and writer on top.
+</p>
+
+<div class="callout">
+  <p>
+    This guide is a corrected, product-accurate rewrite of the informal “second brain” walkthrough.
+    Install steps, CLI names, Claude Desktop vs Claude Code wiring, branching, and search/invalidation
+    behavior match the current daemon and docs.
+  </p>
+</div>
+
+<h2 id="what-you-build">What you are building</h2>
+
+<p><strong>MentisDB</strong> is an append-only, hash-chained semantic memory engine. It stores
+<em>typed thoughts</em> (Decision, LessonLearned, Constraint, Correction, Summary, …) with
+optional typed relations (CausedBy, Corrects, Supersedes, DerivedFrom, …). Retrieval is hybrid
+ranked search (lexical + optional vectors + graph), not “re-read every file.”</p>
+
+<p><strong>Claude</strong> talks to MentisDB over <strong>MCP</strong> (Model Context Protocol).
+It searches the chain, appends structured memories, and resumes from checkpoints via
+<code>mentisdb_recent_context</code>.</p>
+
+<p>Unlike a folder of editable notes, the chain is <strong>append-only</strong>: nothing is silently
+overwritten or deleted. Corrections and supersedes are new thoughts with edges back to the old ones.
+Default search hides those superseded targets so the agent sees <em>current</em> memory (see
+<a href="#keep-memory-clean">Keep memory clean</a>).</p>
+
+<h2 id="step-1">Step 1 — Install MentisDB</h2>
+
+<p>Install Rust, then MentisDB:</p>
+
+<pre><code>curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+cargo install mentisdb</code></pre>
+
+<p>
+  As of 0.10.4, <code>local-embeddings</code> is a <strong>default feature</strong>
+  (built-in ONNX MiniLM vectors, no API key). Plain <code>cargo install mentisdb</code> is enough.
+  On a headless server without audio, you can use
+  <code>cargo install mentisdb --no-default-features --features server</code>.
+</p>
+
+<p>Start the daemon (HTTP MCP, REST, optional HTTPS, operator TUI):</p>
+
+<pre><code>mentisdb</code></pre>
+
+<p>Defaults you will care about:</p>
+<ul>
+  <li>MCP HTTP: <code>http://127.0.0.1:9471</code></li>
+  <li>REST: <code>http://127.0.0.1:9472</code></li>
+  <li>Storage: <code>~/.cloudllm/mentisdb</code> (override with <code>MENTISDB_DIR</code>)</li>
+  <li>Default chain key when a request omits one: <code>borganism-brain</code> (override with <code>MENTISDB_DEFAULT_CHAIN_KEY</code>)</li>
+</ul>
+
+<p>Wire installed AI tools in one shot:</p>
+
+<pre><code>mentisdb wizard
+# or target one client:
+mentisdb setup claude-desktop
+mentisdb setup claude-code
+mentisdb setup all --dry-run</code></pre>
+
+<div class="warn">
+  <p>
+    There is no <code>mentisdb setup claude</code> shorthand. Use
+    <code>claude-desktop</code> or <code>claude-code</code> (also: codex, opencode, qwen, gemini, copilot, vscode-copilot).
+  </p>
+</div>
+
+<h2 id="step-2">Step 2 — Connect Claude</h2>
+
+<p>Pick the path that matches your product surface.</p>
+
+<h3>Claude Desktop (recommended: stdio)</h3>
+
+<p>
+  Desktop works best with MentisDB as a <strong>stdio</strong> MCP subprocess.
+  Prefer the setup command (writes the config for you):
+</p>
+
+<pre><code>mentisdb setup claude-desktop</code></pre>
+
+<p>That configures Claude Desktop to spawn:</p>
+
+<pre><code>{
+  "mcpServers": {
+    "mentisdb": {
+      "command": "mentisdb",
+      "args": ["--mode", "stdio"]
+    }
+  }
+}</code></pre>
+
+<p>
+  On macOS the config file is typically
+  <code>~/Library/Application Support/Claude/claude_desktop_config.json</code>.
+  Stdio mode auto-detects a running daemon on port 9471, or launches one in the background.
+  Restart Claude Desktop after setup.
+</p>
+
+<h3>Claude Code (HTTP MCP)</h3>
+
+<p>With the daemon running, add the HTTP MCP server:</p>
+
+<pre><code>claude mcp add --transport http mentisdb http://127.0.0.1:9471</code></pre>
+
+<p>Or let MentisDB write the Claude Code config:</p>
+
+<pre><code>mentisdb setup claude-code</code></pre>
+
+<p>Smoke test in the agent: <em>“Search my MentisDB memory for goals or decisions.”</em>
+Empty results on a fresh chain are fine — the connection is what you are checking.</p>
+
+<div class="callout">
+  <p>
+    <strong>Paid plans:</strong> Claude Code / MCP tool use may require a paid Anthropic plan.
+    Confirm against current Claude product docs; free-tier limits change over time.
+  </p>
+</div>
+
+<h2 id="step-3">Step 3 — Bootstrap the chain and load yourself</h2>
+
+<p>
+  MentisDB expects agents to <strong>bootstrap</strong> (list chains → bootstrap → skill → list agents → recent context),
+  then reuse an existing agent identity instead of inventing a new one every session.
+</p>
+
+<p>Have Claude interview you and store structured memories. Example prompt:</p>
+
+<blockquote>
+  You are setting up my second brain in MentisDB. Follow MentisDB bootstrap: list_chains,
+  bootstrap the chain I choose (or the project chain), load the MentisDB skill, list_agents
+  and reuse an existing agent_id. Interview me one question at a time about: who I am,
+  yearly goals, how you should talk to me, strengths/weaknesses, current projects.
+  After each answer, search the chain first, then append the right thought type
+  (Decision for goals, Constraint for interaction rules, Summary with role Checkpoint for the profile).
+  Link new thoughts with DerivedFrom / References where useful. End with a Summary + Checkpoint
+  I can reload via mentisdb_recent_context.
+</blockquote>
+
+<p>
+  Typed memories beat a single giant markdown profile file: they are searchable, linkable, and filterable
+  without reloading everything every turn.
+</p>
+
+<h2 id="step-4">Step 4 — Projects without “vault switching”</h2>
+
+<p>
+  Scope work with <strong>tags</strong>, <strong>entity_type</strong>, and/or a dedicated <strong>chain_key</strong>
+  — not by reopening folders as separate vaults.
+</p>
+
+<pre><code># Example agent instructions (via MCP tools, not a fake CLI):
+# mentisdb_upsert_entity_type(entity_type: "youtube-channel")
+# mentisdb_append(..., entity_type: "youtube-channel", tags: ["youtube-channel"], thought_type: "Decision")
+# mentisdb_ranked_search(text: "...", tags_any: ["youtube-channel"], thought_types: ["Decision","Constraint"])</code></pre>
+
+<p>
+  Optional isolation: fork a <strong>branch chain</strong> with the MCP tool
+  <code>mentisdb_branch_from</code> (or REST <code>POST /v1/chains/branch</code>).
+  There is <strong>no</strong> <code>mentisdb chains branch</code> CLI subcommand.
+  Branch searches can include ancestor-chain results; merge back with
+  <code>mentisdb_merge_chains</code> when ready.
+</p>
+
+<h2 id="step-5">Step 5 — Skills in the registry</h2>
+
+<p>
+  MentisDB has a <strong>versioned skill registry</strong> (immutable versions, deprecate/revoke).
+  Upload with <code>mentisdb_upload_skill</code> using a <strong>registered</strong>
+  <code>agent_id</code> on that chain. Prefer searching and reading skills after bootstrap
+  before trusting unknown content.
+</p>
+
+<h2 id="step-6">Step 6 — Live data (optional)</h2>
+
+<p>
+  You can attach other MCP servers (calendar, email, …) next to MentisDB.
+  Example calendar wiring is product-specific; one common pattern with Claude Code is
+  adding a third-party MCP and then asking Claude to extract commitments into MentisDB
+  as typed thoughts. Keys and OAuth stay in the MCP client config — never paste secrets into the chain.
+</p>
+
+<p>
+  Append-only still applies: a bad extraction is fixed with a Correction / Supersedes edge,
+  not by editing history.
+</p>
+
+<h2 id="step-7">Step 7 — Checkpoints and daily hygiene</h2>
+
+<p>
+  Before context compaction or handoff, always write a <strong>Summary</strong> with role
+  <strong>Checkpoint</strong>. At session start, load <code>mentisdb_recent_context</code>
+  and run a ranked search for the current task.
+</p>
+
+<p>
+  If your host app supports scheduled prompts, a useful daily job is:
+  search last 24h → Summary Checkpoint → list unresolved Question thoughts.
+  MentisDB itself does not schedule jobs; scheduling is a Claude/host feature.
+</p>
+
+<h2 id="keep-memory-clean">Keep memory clean (search + invalidation)</h2>
+
+<p>
+  Default search (ranked search, context bundles, recent context, …) <strong>excludes</strong>
+  thoughts that later memory marked with <code>Supersedes</code>, <code>Corrects</code>, or
+  <code>Invalidates</code>. Pass <code>include_invalidated: true</code> only for audit.
+</p>
+
+<p>That only works when edges exist:</p>
+<ol>
+  <li><strong>Search-first writing</strong> — agents link corrections with typed relations.</li>
+  <li><strong>Auto-dedup (recommended for long-lived brains)</strong> — enable near-duplicate Supersedes:</li>
+</ol>
+
+<pre><code># Recommended for multi-agent / long-lived local daemons
+export MENTISDB_DEDUP_THRESHOLD=0.85
+export MENTISDB_DEDUP_SCAN_WINDOW=64
+mentisdb</code></pre>
+
+<p>
+  Dedup is <strong>off</strong> when the threshold env var is unset. Without edges or dedup,
+  large chains accumulate noise and “forgetting” returns even though search is hybrid.
+</p>
+
+<h2 id="compare">Why this beats a notes-folder second brain</h2>
+
+<table>
+  <thead>
+    <tr><th></th><th>Notes app + plugin</th><th>MentisDB</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Built for</td><td>Humans editing files</td><td>Agents storing typed memory</td></tr>
+    <tr><td>Connection</td><td>Plugins / keys / app must stay open</td><td>Native MCP (stdio or HTTP daemon)</td></tr>
+    <tr><td>Storage</td><td>Editable files</td><td>Append-only, hash-chained</td></tr>
+    <tr><td>Structure</td><td>Untyped links</td><td>Thought types + relation kinds</td></tr>
+    <tr><td>Retrieval</td><td>Re-read / keyword</td><td>Hybrid ranked search + thesaurus</td></tr>
+    <tr><td>Stale memory</td><td>Manual cleanup</td><td>Invalidation set + optional auto-dedup</td></tr>
+    <tr><td>Isolation</td><td>Copy folders</td><td>Tags, entity_type, branch chains</td></tr>
+    <tr><td>Skills</td><td>Loose markdown</td><td>Versioned registry</td></tr>
+  </tbody>
+</table>
+
+<h2 id="checklist">Quick checklist</h2>
+
+<ol>
+  <li><code>cargo install mentisdb</code> → <code>mentisdb</code></li>
+  <li><code>mentisdb setup claude-desktop</code> and/or <code>claude-code</code> / wizard</li>
+  <li>Bootstrap chain + skill + agent identity</li>
+  <li>Interview → typed appends + Checkpoint Summary</li>
+  <li>Projects via tags / entity_type (branch only when you need isolation)</li>
+  <li>Consider <code>MENTISDB_DEDUP_THRESHOLD=0.85</code> for long-running use</li>
+  <li>Search before write; Corrects/Supersedes when truth changes</li>
+</ol>
+
+<p>
+  Deeper material:
+  <a href="https://docs.mentisdb.com">docs.mentisdb.com</a>
+  (Invalidation &amp; Dedup, Claude Desktop cookbook),
+  <a href="agent-memory-cookbook.html">Agent Memory Cookbook</a>,
+  and the embedded MentisDB skill after MCP connect.
+</p>
+
+<footer>
+  MentisDB · Durable semantic memory for AI agents ·
+  <a href="index.html">Blog</a>
+</footer>
+</body>
+</html>
