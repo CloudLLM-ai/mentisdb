@@ -235,6 +235,22 @@ When a fix, feature, test, or other shippable change is complete:
   sorting the top section by impact
 - Writing changelog lines that only restate the commit subject without saying
   what broke or what the user gains
+- Treating HTTP probe reachability as `call().is_ok()` — non-2xx is `Err` in
+  ureq, so a 401/403 from a link-local or auth-gated endpoint reads as
+  "absent" when it actually proves "present" (EC2 IMDSv2 incident, 2026-07-26:
+  cloud detection silently false on EC2 for months)
+- Evolving a wire protocol by changing existing fields instead of adding
+  `#[serde(default)]` optional ones with an explicit old-version degradation
+  story
+- Duplicating a non-trivial external-integration routine (browser launch /
+  challenge-settle / retry choreography) into a second crate instead of
+  exposing one public function — two copies always drift
+- Timing-based ordering assertions in async tests (use a recording listener /
+  deterministic event capture) and any test that mutates process-global state
+  without serializing against the other tests in its binary
+- Hardcoding secrets in start/ops scripts instead of sourcing them from the
+  single props/env file of truth — hardcoded copies always drift, and the
+  drift surfaces as an auth outage at the least convenient restart
 
 ## Version history
 
@@ -245,3 +261,9 @@ When a fix, feature, test, or other shippable change is complete:
 - **2026-07-09** — Changelog discipline: always update top version in
   `changelog.txt` when work lands; sort that section by impact (most important
   first).
+- **2026-07-26** — Anti-patterns from the residential render relay session
+  (diariobitcoin #196–#208): probe reachability vs 2xx (IMDSv2 401),
+  `#[serde(default)]` wire evolution with an explicit degradation story,
+  single public API over cross-crate duplication, deterministic event-order
+  test assertions, serialized process-global test state, binary-matrix
+  reinstall on shared-lib changes, no hardcoded secrets in ops scripts.
