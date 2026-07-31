@@ -2453,12 +2453,52 @@ async fn live_mcp_server_supports_standard_initialize_and_tools_list() {
     )
     .unwrap();
     let resources = resources_json["result"]["resources"].as_array().unwrap();
-    assert!(resources
+    let skill = resources
         .iter()
-        .any(|resource| resource["uri"] == "mentisdb://skill/core"));
-    assert!(resources
-        .iter()
-        .any(|resource| resource["metadata"]["recommended_first"] == json!(true)));
+        .find(|resource| resource["uri"] == "mentisdb://skill/core")
+        .expect("mentisdb://skill/core listed");
+    // MCP Resource / BaseMetadata: required name + camelCase mimeType; meta in _meta.
+    assert_eq!(skill["name"], "core");
+    assert_eq!(skill["mimeType"], "text/markdown");
+    assert_eq!(skill["_meta"]["recommended_first"], json!(true));
+    assert!(skill.get("mime_type").is_none());
+    assert!(skill.get("metadata").is_none());
+
+    let mut templates_list_request = Request::builder()
+        .method("POST")
+        .uri("/")
+        .header("content-type", "application/json")
+        .header("MCP-Protocol-Version", "2025-06-18")
+        .body(Body::from(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 35,
+                "method": "resources/templates/list",
+                "params": {}
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    templates_list_request
+        .extensions_mut()
+        .insert(ConnectInfo(client_addr));
+    let templates_list = router
+        .clone()
+        .oneshot(templates_list_request)
+        .await
+        .unwrap();
+    assert_eq!(templates_list.status(), StatusCode::OK);
+    let templates_json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(templates_list.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(templates_json.get("error").is_none());
+    assert_eq!(
+        templates_json["result"]["resourceTemplates"],
+        json!([])
+    );
 
     let mut resource_read_request = Request::builder()
         .method("POST")

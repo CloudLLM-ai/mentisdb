@@ -1,3 +1,14 @@
+0.10.5.51 (unreleased)
+  - fix(mcp): emit MCP-valid `resources/list` for `mentisdb://skill/core`
+    - Pass explicit resource `name = "core"` (required by MCP `BaseMetadata`)
+    - Depends on `cloudllm_mcp` 0.3.6 so wire JSON uses `mimeType` / `_meta`
+      instead of snake_case `mime_type` / `metadata` (fixes FastMCP /
+      AggregateProvider `ListResourcesResult` validation failures)
+    - `resources/templates/list` returns HTTP 200 with empty
+      `resourceTemplates` (stdio path + streamable HTTP via cloudllm_mcp)
+    - Server tests assert `name`, `mimeType`, `_meta.recommended_first`, and
+      empty templates list
+
 0.10.5.50 JUL/13/2026
   - fix(search): default retrieval now excludes superseded, corrected, and
     invalidated thoughts via the live `invalidated_thought_ids` set (query,

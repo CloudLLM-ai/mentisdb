@@ -2622,6 +2622,7 @@ impl ToolProtocol for MentisDbMcpProtocol {
             MENTISDB_SKILL_RESOURCE_URI,
             "Read this first: the embedded MentisDB operating skill and chain-selection guidance.",
         )
+        .with_name("core")
         .with_mime_type("text/markdown")
         .with_metadata("recommended_first", json!(true))
         .with_metadata("priority", json!(1))])

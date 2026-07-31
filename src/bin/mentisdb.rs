@@ -1265,6 +1265,9 @@ async fn handle_stdio_jsonrpc(line: &str, protocol: &MentisDbMcpProtocol) -> Opt
                 Err(e) => Err(e.to_string()),
             }
         }
+        // FastMCP probes templates after resources/list; return empty OK rather
+        // than method-not-found so mounted clients do not treat this as failure.
+        "resources/templates/list" => Ok(serde_json::json!({ "resourceTemplates": [] })),
         _ => Err(format!("Method not found: {method}")),
     };
 
