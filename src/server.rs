@@ -53,6 +53,7 @@
 //! - `POST /v1/skills/versions`
 //! - `POST /v1/skills/deprecate`
 //! - `POST /v1/skills/revoke`
+//! - `POST /v1/skills/delete`
 //! - `GET /v1/webhooks`
 //! - `POST /v1/webhooks`
 //! - `DELETE /v1/webhooks/{id}`
@@ -1591,6 +1592,7 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         .route("/v1/skills/versions", post(rest_skill_versions_handler))
         .route("/v1/skills/deprecate", post(rest_deprecate_skill_handler))
         .route("/v1/skills/revoke", post(rest_revoke_skill_handler))
+        .route("/v1/skills/delete", post(rest_delete_skill_handler))
         .route("/v1/bootstrap", post(rest_bootstrap_handler))
         .route("/v1/thoughts", post(rest_append_handler))
         .route(
@@ -1821,7 +1823,7 @@ pub fn standard_mcp_router(
 /// - `POST /v1/vectors/rebuild`
 /// - `POST /v1/chains/branch` · `POST /v1/chains/merge`
 /// - `POST /v1/skills/upload` · `POST /v1/skills/search` · `POST /v1/skills/read`
-/// - `POST /v1/skills/versions` · `POST /v1/skills/deprecate` · `POST /v1/skills/revoke`
+/// - `POST /v1/skills/versions` · `POST /v1/skills/deprecate` · `POST /v1/skills/revoke` · `POST /v1/skills/delete`
 /// - `GET /v1/webhooks` · `POST /v1/webhooks` · `DELETE /v1/webhooks/{id}`
 /// - `POST /v1/extract-memories`
 ///
@@ -1871,6 +1873,7 @@ pub fn rest_router(config: MentisDbServiceConfig) -> Router {
         .route("/v1/skills/versions", post(rest_skill_versions_handler))
         .route("/v1/skills/deprecate", post(rest_deprecate_skill_handler))
         .route("/v1/skills/revoke", post(rest_revoke_skill_handler))
+        .route("/v1/skills/delete", post(rest_delete_skill_handler))
         .route("/v1/bootstrap", post(rest_bootstrap_handler))
         .route("/v1/thoughts", post(rest_append_handler))
         .route(
@@ -2371,6 +2374,7 @@ fn default_chain_mcp_tool(tool_name: &str) -> bool {
             | "mentisdb_skill_versions"
             | "mentisdb_deprecate_skill"
             | "mentisdb_revoke_skill"
+            | "mentisdb_delete_skill"
             | "mentisdb_head"
             | "mentisdb_extract_memories"
     )
@@ -2569,6 +2573,9 @@ impl ToolProtocol for MentisDbMcpProtocol {
             "mentisdb_revoke_skill" => {
                 parse_and_call(parameters, |request| self.service.revoke_skill(request)).await
             }
+            "mentisdb_delete_skill" => {
+                parse_and_call(parameters, |request| self.service.delete_skill(request)).await
+            }
             "mentisdb_head" => {
                 parse_and_call(parameters, |request| self.service.head(request)).await
             }
@@ -2684,6 +2691,26 @@ impl MentisDbService {
     /// chain keys do not block each other.  The `or_try_insert_with` call is
     /// atomic at the shard level, so at most one caller opens a given chain
     /// even under high concurrency.
+    async fn append_thought_released(
+        chain: &Arc<RwLock<MentisDb>>,
+        agent_id: &str,
+        input: ThoughtInput,
+    ) -> Result<Thought, Box<dyn Error + Send + Sync>> {
+        let thought = {
+            let mut guard = chain.write().await;
+            guard.defer_next_derived_flush();
+            match guard.append_thought(agent_id, input) {
+                Ok(thought) => thought.clone(),
+                Err(error) => {
+                    guard.cancel_deferred_derived_flush();
+                    return Err(error.into());
+                }
+            }
+        };
+        chain.read().await.flush_pending_derived()?;
+        Ok(thought)
+    }
+
     async fn get_chain(
         &self,
         chain_key: Option<&str>,
@@ -2766,54 +2793,60 @@ impl MentisDbService {
             .map(parse_storage_adapter_kind)
             .transpose()?;
         let chain = self.get_chain(Some(&chain_key), storage_adapter).await?;
-        let mut chain = chain.write().await;
-        let bootstrapped = if chain.thoughts().is_empty() {
-            let (agent_id, agent_name, agent_owner) = self.resolve_agent_identity(
-                Some(&chain_key),
-                request.agent_id.as_deref(),
-                request.agent_name.as_deref(),
-                request.agent_owner.as_deref(),
-                "system",
-                "MentisDB",
-            );
-            let input = ThoughtInput::new(ThoughtType::Summary, request.content)
-                .with_agent_name(agent_name)
-                .with_role(ThoughtRole::Checkpoint)
-                .with_importance(request.importance.unwrap_or(1.0))
-                .with_tags(request.tags.unwrap_or_default())
-                .with_concepts(request.concepts.unwrap_or_default());
-            let input = if let Some(agent_owner) = agent_owner {
-                input.with_agent_owner(agent_owner)
+        let bootstrapped = {
+            let is_empty = chain.read().await.thoughts().is_empty();
+            if is_empty {
+                let (agent_id, agent_name, agent_owner) = self.resolve_agent_identity(
+                    Some(&chain_key),
+                    request.agent_id.as_deref(),
+                    request.agent_name.as_deref(),
+                    request.agent_owner.as_deref(),
+                    "system",
+                    "MentisDB",
+                );
+                let input = ThoughtInput::new(ThoughtType::Summary, request.content)
+                    .with_agent_name(agent_name)
+                    .with_role(ThoughtRole::Checkpoint)
+                    .with_importance(request.importance.unwrap_or(1.0))
+                    .with_tags(request.tags.unwrap_or_default())
+                    .with_concepts(request.concepts.unwrap_or_default());
+                let input = if let Some(agent_owner) = agent_owner {
+                    input.with_agent_owner(agent_owner)
+                } else {
+                    input
+                };
+                let thought = Self::append_thought_released(&chain, &agent_id, input).await?;
+                let guard = chain.read().await;
+                self.log_interaction(InteractionLogEntry {
+                    access: "write",
+                    operation: "bootstrap",
+                    chain_key: chain_key.clone(),
+                    metadata: InteractionMetadata::from_chain_thought(&guard, &thought),
+                    result_count: Some(1),
+                    note: Some("bootstrapped=true".to_string()),
+                });
+                true
             } else {
-                input
-            };
-            let thought = chain.append_thought(&agent_id, input)?.clone();
-            self.log_interaction(InteractionLogEntry {
-                access: "write",
-                operation: "bootstrap",
-                chain_key: chain_key.clone(),
-                metadata: InteractionMetadata::from_chain_thought(&chain, &thought),
-                result_count: Some(1),
-                note: Some("bootstrapped=true".to_string()),
-            });
-            true
-        } else {
-            self.log_interaction(InteractionLogEntry {
-                access: "write",
-                operation: "bootstrap",
-                chain_key: chain_key.clone(),
-                metadata: InteractionMetadata::default(),
-                result_count: Some(chain.thoughts().len()),
-                note: Some("bootstrapped=false".to_string()),
-            });
-            false
+                let guard = chain.read().await;
+                self.log_interaction(InteractionLogEntry {
+                    access: "write",
+                    operation: "bootstrap",
+                    chain_key: chain_key.clone(),
+                    metadata: InteractionMetadata::default(),
+                    result_count: Some(guard.thoughts().len()),
+                    note: Some("bootstrapped=false".to_string()),
+                });
+                false
+            }
         };
 
-        let thought_count = chain.thoughts().len();
-        let head_hash = chain.head_hash().map(ToOwned::to_owned);
-        // Drop the chain write-lock before acquiring the skills read-lock to
-        // avoid holding two unrelated locks simultaneously (future deadlock risk).
-        drop(chain);
+        let (thought_count, head_hash) = {
+            let guard = chain.read().await;
+            (
+                guard.thoughts().len(),
+                guard.head_hash().map(ToOwned::to_owned),
+            )
+        };
 
         self.ensure_skill_registry_fresh().await?;
 
@@ -2840,7 +2873,6 @@ impl MentisDbService {
     ) -> Result<AppendThoughtResponse, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
-        let mut chain = chain.write().await;
 
         let thought_type = parse_thought_type(&request.thought_type)?;
         let role = request
@@ -2907,12 +2939,13 @@ impl MentisDbService {
             input = input.with_entity_type(entity_type);
         }
 
-        let thought = chain.append_thought(&agent_id, input)?.clone();
+        let thought = Self::append_thought_released(&chain, &agent_id, input).await?;
+        let guard = chain.read().await;
         self.log_interaction(InteractionLogEntry {
             access: "write",
             operation: "append",
             chain_key,
-            metadata: InteractionMetadata::from_chain_thought(&chain, &thought),
+            metadata: InteractionMetadata::from_chain_thought(&guard, &thought),
             result_count: Some(1),
             note: None,
         });
@@ -2922,8 +2955,8 @@ impl MentisDbService {
             tokio::task::spawn_blocking(move || cb(tt));
         }
         Ok(AppendThoughtResponse {
-            thought: thought_to_json(&chain, &thought),
-            head_hash: chain.head_hash().map(ToOwned::to_owned),
+            thought: thought_to_json(&guard, &thought),
+            head_hash: guard.head_hash().map(ToOwned::to_owned),
         })
     }
 
@@ -2933,7 +2966,6 @@ impl MentisDbService {
     ) -> Result<AppendThoughtResponse, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
-        let mut chain = chain.write().await;
 
         let thought_type = request
             .thought_type
@@ -2971,12 +3003,13 @@ impl MentisDbService {
             input = input.with_confidence(confidence);
         }
 
-        let thought = chain.append_thought(&agent_id, input)?.clone();
+        let thought = Self::append_thought_released(&chain, &agent_id, input).await?;
+        let guard = chain.read().await;
         self.log_interaction(InteractionLogEntry {
             access: "write",
             operation: "append_retrospective",
             chain_key,
-            metadata: InteractionMetadata::from_chain_thought(&chain, &thought),
+            metadata: InteractionMetadata::from_chain_thought(&guard, &thought),
             result_count: Some(1),
             note: None,
         });
@@ -2986,8 +3019,8 @@ impl MentisDbService {
             tokio::task::spawn_blocking(move || cb(tt));
         }
         Ok(AppendThoughtResponse {
-            thought: thought_to_json(&chain, &thought),
-            head_hash: chain.head_hash().map(ToOwned::to_owned),
+            thought: thought_to_json(&guard, &thought),
+            head_hash: guard.head_hash().map(ToOwned::to_owned),
         })
     }
 
@@ -4481,6 +4514,28 @@ impl MentisDbService {
         self.log_interaction(InteractionLogEntry {
             access: "write",
             operation: "revoke_skill",
+            chain_key,
+            metadata: InteractionMetadata::default(),
+            result_count: Some(1),
+            note: Some(format!("skill_id={}", request.skill_id)),
+        });
+        Ok(SkillSummaryResponse { skill })
+    }
+
+    async fn delete_skill(
+        &self,
+        request: SkillLifecycleRequest,
+    ) -> Result<SkillSummaryResponse, Box<dyn Error + Send + Sync>> {
+        let chain_key = request
+            .chain_key
+            .clone()
+            .unwrap_or_else(|| "<skills>".to_string());
+        self.ensure_skill_registry_fresh().await?;
+        let mut registry = self.skills.write().await;
+        let skill = registry.delete_skill(&request.skill_id)?;
+        self.log_interaction(InteractionLogEntry {
+            access: "write",
+            operation: "delete_skill",
             chain_key,
             metadata: InteractionMetadata::default(),
             result_count: Some(1),
@@ -6493,6 +6548,7 @@ pub(crate) async fn rest_bearer_auth_middleware(
             | "/v1/skills/versions"
             | "/v1/skills/deprecate"
             | "/v1/skills/revoke"
+            | "/v1/skills/delete"
             | "/v1/admin/flush"
             | "/v1/webhooks"
             | "/mentisdb_skill_md"
@@ -6972,6 +7028,13 @@ async fn rest_revoke_skill_handler(
     Json(request): Json<SkillLifecycleRequest>,
 ) -> Result<Json<SkillSummaryResponse>, (StatusCode, Json<Value>)> {
     service_call(service.revoke_skill(request).await)
+}
+
+async fn rest_delete_skill_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<SkillLifecycleRequest>,
+) -> Result<Json<SkillSummaryResponse>, (StatusCode, Json<Value>)> {
+    service_call(service.delete_skill(request).await)
 }
 
 async fn rest_list_webhooks_handler(
@@ -7544,6 +7607,12 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key for registry-scoped logging context. Defaults to the server default chain."))
         .with_parameter(ToolParameter::new("skill_id", ToolParameterType::String).with_description("Stable skill id to revoke.").required())
         .with_parameter(ToolParameter::new("reason", ToolParameterType::String).with_description("Optional revocation reason.")),
+        ToolMetadata::new(
+            "mentisdb_delete_skill",
+            "Permanently remove one stored skill and all of its versions from the registry. This cannot be undone. Revoke instead when you need an audit record. After delete, the same skill_id can be uploaded again as a new skill.",
+        )
+        .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key for registry-scoped logging context. Defaults to the server default chain."))
+        .with_parameter(ToolParameter::new("skill_id", ToolParameterType::String).with_description("Stable skill id to permanently delete.").required()),
         ToolMetadata::new(
             "mentisdb_head",
             "Return head metadata for a MentisDb including chain length, latest thought at the tip, and head hash.",
@@ -8629,6 +8698,7 @@ fn canonical_tool_name(tool_name: &str) -> &str {
         "thoughtchain_skill_versions" => "mentisdb_skill_versions",
         "thoughtchain_deprecate_skill" => "mentisdb_deprecate_skill",
         "thoughtchain_revoke_skill" => "mentisdb_revoke_skill",
+        "thoughtchain_delete_skill" => "mentisdb_delete_skill",
         "thoughtchain_head" => "mentisdb_head",
         _ => tool_name,
     }

@@ -398,6 +398,95 @@ Second version
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
+#[test]
+fn delete_skill_removes_entry_and_frees_skill_id() {
+    let path = unique_registry_path();
+    let mut registry = SkillRegistry::open_at_path(&path).unwrap();
+    registry
+        .upload_skill(
+            SkillUpload::new(
+                "astro",
+                SkillFormat::Markdown,
+                &skill_markdown("Keep", "stays", "keep body"),
+            )
+            .with_skill_id("keep"),
+        )
+        .unwrap();
+    registry
+        .upload_skill(
+            SkillUpload::new(
+                "astro",
+                SkillFormat::Markdown,
+                &skill_markdown("Junk", "remove me", "junk body"),
+            )
+            .with_skill_id("junk"),
+        )
+        .unwrap();
+    registry
+        .revoke_skill("junk", Some("operator cleanup"))
+        .unwrap();
+
+    let counts_before = registry.counts();
+    assert_eq!(counts_before.total, 2);
+    assert_eq!(counts_before.active, 1);
+    assert_eq!(counts_before.revoked, 1);
+
+    let deleted = registry.delete_skill("junk").unwrap();
+    assert_eq!(deleted.skill_id, "junk");
+    assert_eq!(deleted.status, SkillStatus::Revoked);
+    assert!(registry.list_skills().iter().all(|s| s.skill_id != "junk"));
+    assert!(registry.skill_summary("junk").is_err());
+    assert!(registry
+        .read_skill("junk", None, SkillFormat::Markdown)
+        .is_err());
+    assert_eq!(
+        registry
+            .search_skills(&SkillQuery {
+                skill_ids: Some(vec!["junk".to_string()]),
+                ..SkillQuery::default()
+            })
+            .len(),
+        0
+    );
+
+    let counts_after = registry.counts();
+    assert_eq!(counts_after.total, 1);
+    assert_eq!(counts_after.active, 1);
+    assert_eq!(counts_after.revoked, 0);
+
+    let missing = registry.delete_skill("junk").unwrap_err();
+    assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+
+    let reuploaded = registry
+        .upload_skill(
+            SkillUpload::new(
+                "astro",
+                SkillFormat::Markdown,
+                &skill_markdown("Junk", "fresh after delete", "new body"),
+            )
+            .with_skill_id("junk"),
+        )
+        .unwrap();
+    assert_eq!(reuploaded.status, SkillStatus::Active);
+    assert_eq!(reuploaded.version_count, 1);
+
+    drop(registry);
+    let reloaded = SkillRegistry::open_at_path(&path).unwrap();
+    assert_eq!(reloaded.counts().total, 2);
+    assert_eq!(reloaded.counts().active, 2);
+    assert_eq!(
+        reloaded.skill_summary("junk").unwrap().status,
+        SkillStatus::Active
+    );
+    assert!(reloaded
+        .read_skill("junk", None, SkillFormat::Markdown)
+        .unwrap()
+        .content
+        .contains("new body"));
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
 // ---------------------------------------------------------------------------
 // Helper: a small reusable markdown skill template
 // ---------------------------------------------------------------------------

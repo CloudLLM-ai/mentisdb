@@ -3,19 +3,33 @@
 //! Vector sidecars are derived artifacts keyed by one chain and one embedding
 //! space. They never replace the append-only chain itself, and they can always
 //! be rebuilt from the canonical thought log.
+//!
+//! # Persistence
+//!
+//! The durable snapshot is still a JSON file (`VectorSidecar`). Incremental
+//! appends write one integrity-chained record to a sibling WAL
+//! (`<snapshot>.json.wal`, magic `MDBVWAL1`). [`VectorSidecar::load_from_path`]
+//! verifies the snapshot digest, then replays the WAL. After
+//! [`VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD`] records (32),
+//! [`VectorSidecar::compact_to_path`] rewrites the JSON snapshot and deletes
+//! the WAL. Binaries that only understand the JSON snapshot see a stale
+//! sidecar when a WAL is pending and rebuild from the chain.
 
 use crate::search::EmbeddingMetadata;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter};
-use std::path::Path;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// Current schema version for persisted vector sidecars.
 pub const VECTOR_SIDECAR_SCHEMA_VERSION: u32 = 1;
+/// Compact the JSON snapshot after this many incremental WAL records.
+pub const VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD: usize = 32;
+const WAL_MAGIC: &[u8; 8] = b"MDBVWAL1";
 
 /// One persisted vector row for a committed thought.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -164,22 +178,86 @@ impl VectorSidecar {
     }
 
     /// Load, validate, and integrity-check a sidecar from disk.
+    ///
+    /// If a sibling `.wal` file exists, incremental records are replayed and
+    /// verified against the snapshot digest before being applied.
     pub fn load_from_path(path: &Path) -> io::Result<Self> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
-        let sidecar: Self = serde_json::from_reader(reader).map_err(|error| {
+        let mut sidecar: Self = serde_json::from_reader(reader).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Failed to deserialize vector sidecar: {error}"),
             )
         })?;
         sidecar.verify_integrity()?;
+        replay_sidecar_wal(&mut sidecar, &sidecar_wal_path(path))?;
         Ok(sidecar)
     }
 
-    /// Persist a validated sidecar to disk.
+    /// Append one embedding to this in-memory sidecar and return the WAL record.
+    ///
+    /// Integrity is chained as `SHA-256(prev_digest || entry bytes)` so a later
+    /// compact can rewrite the JSON snapshot without hashing the whole corpus
+    /// on every append.
+    pub fn extend_with_entry(
+        &mut self,
+        entry: VectorSidecarEntry,
+        thought_count: usize,
+        head_hash: Option<String>,
+    ) -> io::Result<VectorSidecarWalRecord> {
+        if entry.vector.len() != self.metadata.dimension {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "WAL vector dimension {} does not match sidecar {}",
+                    entry.vector.len(),
+                    self.metadata.dimension
+                ),
+            ));
+        }
+        let prev_digest_hex = self.integrity.digest_hex.clone();
+        let digest_hex = incremental_sidecar_digest(
+            &prev_digest_hex,
+            &entry,
+            thought_count,
+            head_hash.as_deref(),
+        );
+        let record = VectorSidecarWalRecord {
+            thought_id: entry.thought_id,
+            thought_index: entry.thought_index,
+            thought_hash: entry.thought_hash.clone(),
+            vector: entry.vector.clone(),
+            thought_count,
+            head_hash: head_hash.clone(),
+            prev_digest_hex,
+            digest_hex: digest_hex.clone(),
+        };
+        self.entries.push(entry);
+        self.thought_count = thought_count;
+        self.head_hash = head_hash;
+        self.generated_at = Utc::now();
+        self.integrity = VectorSidecarIntegrity::sha256(self.entries.len(), digest_hex);
+        Ok(record)
+    }
+
+    /// Rewrite the JSON snapshot and delete the WAL so a full verify matches.
+    pub fn compact_to_path(&self, path: &Path) -> io::Result<()> {
+        let mut snapshot = self.clone();
+        snapshot.integrity = snapshot.compute_integrity()?;
+        snapshot.save_to_path(path)?;
+        let wal = sidecar_wal_path(path);
+        if wal.exists() {
+            fs::remove_file(wal)?;
+        }
+        Ok(())
+    }
+
+    /// Persist a sidecar to disk.
+    ///
+    /// Integrity is checked on load. Skipping a second serialize+hash here
+    /// keeps append-time writes from paying O(n) hashing twice.
     pub fn save_to_path(&self, path: &Path) -> io::Result<()> {
-        self.verify_integrity()?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -369,6 +447,166 @@ impl VectorSidecar {
             format!("{:x}", hasher.finalize()),
         ))
     }
+}
+
+/// One incremental sidecar append record.
+///
+/// Chained to the previous digest so a truncated or reordered WAL fails
+/// verification on load.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VectorSidecarWalRecord {
+    /// Thought UUID for this embedding.
+    pub thought_id: Uuid,
+    /// Append-order index of the thought.
+    pub thought_index: u64,
+    /// Thought content hash.
+    pub thought_hash: String,
+    /// Embedding vector.
+    pub vector: Vec<f32>,
+    /// Chain thought count after this append.
+    pub thought_count: usize,
+    /// Chain head hash after this append.
+    pub head_hash: Option<String>,
+    /// Sidecar digest before this record.
+    pub prev_digest_hex: String,
+    /// Sidecar digest after this record.
+    pub digest_hex: String,
+}
+
+/// WAL path beside a JSON sidecar snapshot (`foo.json` → `foo.json.wal`).
+///
+/// The WAL is not a second source of truth: it is only applied after the
+/// snapshot digest verifies. A truncated or reordered file fails replay.
+pub fn sidecar_wal_path(snapshot_path: &Path) -> PathBuf {
+    let mut os = snapshot_path.as_os_str().to_os_string();
+    os.push(".wal");
+    PathBuf::from(os)
+}
+
+/// Append one verified WAL record to `wal_path`.
+///
+/// Writes magic `MDBVWAL1` on a new file, then `u32` little-endian payload
+/// length plus a bincode `VectorSidecarWalRecord`. Callers must have already
+/// chained `prev_digest_hex` / `digest_hex` via
+/// [`VectorSidecar::extend_with_entry`].
+pub fn append_sidecar_wal_record(
+    wal_path: &Path,
+    record: &VectorSidecarWalRecord,
+) -> io::Result<()> {
+    if let Some(parent) = wal_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(wal_path)?;
+    if file.metadata()?.len() == 0 {
+        file.write_all(WAL_MAGIC)?;
+    }
+    let payload =
+        bincode::serde::encode_to_vec(record, bincode::config::standard()).map_err(|error| {
+            io::Error::other(format!("Failed to encode sidecar WAL record: {error}"))
+        })?;
+    file.write_all(&(payload.len() as u32).to_le_bytes())?;
+    file.write_all(&payload)?;
+    file.flush()?;
+    Ok(())
+}
+
+fn incremental_sidecar_digest(
+    prev_digest_hex: &str,
+    entry: &VectorSidecarEntry,
+    thought_count: usize,
+    head_hash: Option<&str>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(prev_digest_hex.as_bytes());
+    hasher.update(entry.thought_id.as_bytes());
+    hasher.update(entry.thought_index.to_le_bytes());
+    hasher.update(entry.thought_hash.as_bytes());
+    hasher.update(thought_count.to_le_bytes());
+    if let Some(head) = head_hash {
+        hasher.update(head.as_bytes());
+    }
+    for value in &entry.vector {
+        hasher.update(value.to_le_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn replay_sidecar_wal(sidecar: &mut VectorSidecar, wal_path: &Path) -> io::Result<()> {
+    if !wal_path.exists() {
+        return Ok(());
+    }
+    let mut file = File::open(wal_path)?;
+    let mut magic = [0_u8; 8];
+    match file.read_exact(&mut magic) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    if &magic != WAL_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "vector sidecar WAL has an unknown magic header",
+        ));
+    }
+    loop {
+        let mut len_bytes = [0_u8; 4];
+        match file.read_exact(&mut len_bytes) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(error),
+        }
+        let len = u32::from_le_bytes(len_bytes) as usize;
+        if len == 0 || len > 16 * 1024 * 1024 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("vector sidecar WAL record length {len} is invalid"),
+            ));
+        }
+        let mut payload = vec![0_u8; len];
+        file.read_exact(&mut payload)?;
+        let (record, _): (VectorSidecarWalRecord, _) =
+            bincode::serde::decode_from_slice(&payload, bincode::config::standard()).map_err(
+                |error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Failed to decode sidecar WAL record: {error}"),
+                    )
+                },
+            )?;
+        if record.prev_digest_hex != sidecar.integrity.digest_hex {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "vector sidecar WAL digest chain mismatch",
+            ));
+        }
+        let entry = VectorSidecarEntry::new(
+            record.thought_id,
+            record.thought_index,
+            record.thought_hash,
+            record.vector,
+        );
+        let expected = incremental_sidecar_digest(
+            &record.prev_digest_hex,
+            &entry,
+            record.thought_count,
+            record.head_hash.as_deref(),
+        );
+        if expected != record.digest_hex {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "vector sidecar WAL record digest mismatch",
+            ));
+        }
+        sidecar.entries.push(entry);
+        sidecar.thought_count = record.thought_count;
+        sidecar.head_hash = record.head_hash;
+        sidecar.integrity =
+            VectorSidecarIntegrity::sha256(sidecar.entries.len(), record.digest_hex);
+    }
+    Ok(())
 }
 
 fn sidecar_temp_path(path: &Path) -> std::path::PathBuf {

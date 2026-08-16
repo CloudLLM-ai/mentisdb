@@ -139,8 +139,12 @@ impl FromStr for SkillFormat {
 /// advance the lifecycle to [`SkillStatus::Deprecated`] or
 /// [`SkillStatus::Revoked`] via [`SkillRegistry::deprecate_skill`] and
 /// [`SkillRegistry::revoke_skill`].  **Neither transition deletes any version
-/// history** — the registry is append-only and all prior versions remain
-/// accessible.
+/// history** — all prior versions remain accessible for audit.
+///
+/// Use [`SkillRegistry::delete_skill`] when the operator wants the skill
+/// removed from the registry entirely. That is the explicit exception to
+/// append-only storage: list, search, and read no longer find the id, and
+/// the same `skill_id` can be uploaded again as a fresh `Active` skill.
 ///
 /// | Status       | Searchable | Safe to use | Indicates                              |
 /// |--------------|-----------|-------------|----------------------------------------|
@@ -402,6 +406,13 @@ pub struct SkillVersion {
     pub source_format: SkillFormat,
     /// SHA-256 hex digest of the full reconstructed raw content for this version.
     pub content_hash: String,
+    /// Structured skill schema version for this upload.
+    ///
+    /// `0` means unknown (legacy V2 records written before this field existed)
+    /// and forces reconstruct-on-index. New uploads store the parsed document
+    /// schema version so index rebuilds do not replay every delta.
+    #[serde(default)]
+    pub schema_version: u32,
     /// Stored content — either the full raw text or a delta patch.
     pub content: SkillVersionContent,
     /// The `key_id` of the agent key used to sign this upload, if any.
@@ -481,6 +492,43 @@ pub struct SkillSummary {
     pub latest_uploaded_by_agent_owner: Option<String>,
     /// Original format of the latest uploaded version.
     pub latest_source_format: SkillFormat,
+}
+
+/// Counts of stored skills grouped by [`SkillStatus`].
+///
+/// Returned by [`SkillRegistry::counts`]. `total` is the number of skill ids
+/// currently in the registry, including deprecated and revoked entries.
+/// Permanently deleted skills are not counted.
+///
+/// # Examples
+///
+/// ```no_run
+/// use mentisdb::{SkillFormat, SkillRegistry, SkillUpload};
+///
+/// let dir = std::env::temp_dir().join("mentisdb_skill_counts_example");
+/// std::fs::create_dir_all(&dir).unwrap();
+/// let mut registry = SkillRegistry::open(&dir).unwrap();
+/// registry
+///     .upload_skill(
+///         SkillUpload::new("agent-1", SkillFormat::Markdown, "# Alpha\n\nOne.")
+///             .with_skill_id("alpha"),
+///     )
+///     .unwrap();
+/// let counts = registry.counts();
+/// assert_eq!(counts.total, 1);
+/// assert_eq!(counts.active, 1);
+/// assert_eq!(counts.revoked, 0);
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillRegistryCounts {
+    /// Number of stored skills, including deprecated and revoked entries.
+    pub total: usize,
+    /// Skills currently marked [`SkillStatus::Active`].
+    pub active: usize,
+    /// Skills currently marked [`SkillStatus::Deprecated`].
+    pub deprecated: usize,
+    /// Skills currently marked [`SkillStatus::Revoked`].
+    pub revoked: usize,
 }
 
 /// Lightweight summary of one immutable skill version.
@@ -778,6 +826,16 @@ struct PersistedSkillRegistry {
     skills: BTreeMap<String, SkillEntry>,
 }
 
+/// Serialize-only view of [`PersistedSkillRegistry`] that borrows the live map.
+///
+/// Field names and types match the persisted shape so the on-disk encoding is
+/// identical, without cloning every skill and version just to write the file.
+#[derive(Serialize)]
+struct PersistedSkillRegistryRef<'a> {
+    version: u32,
+    skills: &'a BTreeMap<String, SkillEntry>,
+}
+
 // ---------------------------------------------------------------------------
 // V1 legacy shapes — used only for migration deserialization
 // ---------------------------------------------------------------------------
@@ -883,8 +941,9 @@ impl SkillIndexes {
                 agent_owners.insert(agent_owner);
             }
             formats.insert(version.source_format);
-            // Reconstruct document to get schema_version for indexing.
-            if let Ok(raw) = reconstruct_raw_content(entry, idx) {
+            if version.schema_version != 0 {
+                schema_versions.insert(version.schema_version);
+            } else if let Ok(raw) = reconstruct_raw_content(entry, idx) {
                 if let Ok(doc) = import_skill(&raw, version.source_format) {
                     schema_versions.insert(doc.schema_version);
                 }
@@ -942,14 +1001,16 @@ impl SkillIndexes {
 // SkillRegistry
 // ---------------------------------------------------------------------------
 
-/// Durable, append-only skill registry backed by a versioned binary storage file.
+/// Durable skill registry backed by a versioned binary storage file.
 ///
 /// ## Design: immutable versioned history
 ///
 /// Every call to [`upload_skill`](SkillRegistry::upload_skill) creates a new
 /// **immutable version** for the target skill id.  Versions are never
-/// overwritten or deleted — the registry is append-only.  This gives you a
-/// complete audit trail of how every skill has evolved over time.
+/// overwritten in place.  This gives you a complete audit trail of how every
+/// skill has evolved over time.  [`delete_skill`](SkillRegistry::delete_skill)
+/// is the explicit exception: it removes one skill and all of its versions
+/// from the registry file.
 ///
 /// To save storage space the first version of each skill is stored in full
 /// ([`SkillVersionContent::Full`]); every subsequent version stores only a
@@ -963,7 +1024,9 @@ impl SkillIndexes {
 /// [`SkillStatus::Deprecated`] (superseded, but still safe to use) or
 /// [`SkillStatus::Revoked`] (must not be used) without losing any version
 /// history.  Uploading a new version automatically restores `Active` status
-/// unless the skill is currently `Revoked`.
+/// unless the skill is currently `Revoked`.  Operators who want the skill
+/// gone — not just marked unsafe — call
+/// [`delete_skill`](SkillRegistry::delete_skill).
 ///
 /// ## Persistence
 ///
@@ -1311,6 +1374,7 @@ impl SkillRegistry {
             uploaded_by_agent_owner: normalize_optional(uploaded_by_agent_owner),
             source_format: format,
             content_hash,
+            schema_version: document.schema_version,
             content: version_content,
             signing_key_id,
             skill_signature,
@@ -1852,6 +1916,85 @@ impl SkillRegistry {
         Ok(summary)
     }
 
+    /// Permanently delete one skill and every stored version.
+    ///
+    /// This is the explicit exception to the registry's append-only lifecycle.
+    /// [`revoke_skill`](SkillRegistry::revoke_skill) keeps the entry for audit;
+    /// `delete_skill` removes it from memory and from `mentisdb-skills.bin`.
+    /// After a successful delete, list/search/read no longer find the id and
+    /// the same `skill_id` can be uploaded again as a fresh
+    /// [`SkillStatus::Active`] skill.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` if the skill does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mentisdb::{SkillFormat, SkillRegistry, SkillStatus, SkillUpload};
+    ///
+    /// let dir = std::env::temp_dir().join("mentisdb_delete_skill_example");
+    /// std::fs::create_dir_all(&dir).unwrap();
+    /// let mut registry = SkillRegistry::open(&dir).unwrap();
+    ///
+    /// registry
+    ///     .upload_skill(
+    ///         SkillUpload::new("agent-1", SkillFormat::Markdown, "# Junk\n\nRemove me.")
+    ///             .with_skill_id("junk"),
+    ///     )
+    ///     .unwrap();
+    ///
+    /// let deleted = registry.delete_skill("junk").unwrap();
+    /// assert_eq!(deleted.skill_id, "junk");
+    /// assert!(registry.list_skills().is_empty());
+    /// assert!(registry.read_skill("junk", None, SkillFormat::Markdown).is_err());
+    ///
+    /// // The same id can be reused after a hard delete.
+    /// let again = registry
+    ///     .upload_skill(
+    ///         SkillUpload::new("agent-1", SkillFormat::Markdown, "# Junk\n\nFresh.")
+    ///             .with_skill_id("junk"),
+    ///     )
+    ///     .unwrap();
+    /// assert_eq!(again.status, SkillStatus::Active);
+    /// ```
+    pub fn delete_skill(&mut self, skill_id: &str) -> io::Result<SkillSummary> {
+        let entry = self.skills.get(skill_id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("No skill \'{skill_id}\' found"),
+            )
+        })?;
+        let summary = match self.latest_summaries.get(skill_id) {
+            Some(existing) => existing.clone(),
+            None => summarize_entry(entry)?,
+        };
+        self.skills.remove(skill_id);
+        self.indexes.remove_skill(skill_id);
+        self.latest_summaries.remove(skill_id);
+        self.persist()?;
+        Ok(summary)
+    }
+
+    /// Count stored skills by lifecycle status.
+    ///
+    /// Deleted skills are absent from the registry and are not included.
+    pub fn counts(&self) -> SkillRegistryCounts {
+        let mut counts = SkillRegistryCounts {
+            total: self.latest_summaries.len(),
+            ..SkillRegistryCounts::default()
+        };
+        for summary in self.latest_summaries.values() {
+            match summary.status {
+                SkillStatus::Active => counts.active += 1,
+                SkillStatus::Deprecated => counts.deprecated += 1,
+                SkillStatus::Revoked => counts.revoked += 1,
+            }
+        }
+        counts
+    }
+
     fn indexed_candidate_ids(&self, query: &SkillQuery) -> Option<Vec<String>> {
         let mut filters = Vec::new();
 
@@ -1934,9 +2077,9 @@ impl SkillRegistry {
             fs::create_dir_all(parent)?;
         }
         let payload = bincode::serde::encode_to_vec(
-            PersistedSkillRegistry {
+            PersistedSkillRegistryRef {
                 version: self.version,
-                skills: self.skills.clone(),
+                skills: &self.skills,
             },
             bincode::config::standard(),
         )
@@ -2038,6 +2181,7 @@ pub fn migrate_skill_registry<P: AsRef<Path>>(
                 uploaded_by_agent_owner: ver_v1.uploaded_by_agent_owner.clone(),
                 source_format: ver_v1.source_format,
                 content_hash,
+                schema_version: ver_v1.document.schema_version,
                 content: SkillVersionContent::Full { raw },
                 signing_key_id: None,
                 skill_signature: None,

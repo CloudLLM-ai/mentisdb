@@ -65,11 +65,14 @@ fn hnsw_ef_construction() -> usize {
 
 /// Read `MENTISDB_HNSW_EF_SEARCH` or fall back to the default.
 fn hnsw_ef_search() -> usize {
-    std::env::var("MENTISDB_HNSW_EF_SEARCH")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|&value| value > 0)
-        .unwrap_or(HNSW_EF_SEARCH)
+    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("MENTISDB_HNSW_EF_SEARCH")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|&value| value > 0)
+            .unwrap_or(HNSW_EF_SEARCH)
+    })
 }
 
 /// Whether background HNSW graph construction is enabled.

@@ -414,6 +414,9 @@ async fn mcp_router_lists_mentisdb_tools() {
         .any(|tool| tool["name"] == "mentisdb_revoke_skill"));
     assert!(tools
         .iter()
+        .any(|tool| tool["name"] == "mentisdb_delete_skill"));
+    assert!(tools
+        .iter()
         .any(|tool| tool["name"] == "mentisdb_lexical_search"));
     assert!(tools
         .iter()
@@ -463,6 +466,7 @@ async fn mcp_router_lists_mentisdb_tools() {
         "mentisdb_skill_versions",
         "mentisdb_deprecate_skill",
         "mentisdb_revoke_skill",
+        "mentisdb_delete_skill",
     ];
     for tool_name in lifecycle_tools {
         let tool = tools.iter().find(|tool| tool["name"] == tool_name).unwrap();
@@ -1740,6 +1744,7 @@ Use `skill_manifest` before building a search form.
     assert_eq!(deprecate_json["skill"]["status"], "deprecated");
 
     let revoke = router
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -1765,6 +1770,55 @@ Use `skill_manifest` before building a search form.
     )
     .unwrap();
     assert_eq!(revoke_json["skill"]["status"], "revoked");
+
+    let delete = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/skills/delete")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": "skills-chain",
+                        "skill_id": "rest-registry-skill"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), StatusCode::OK);
+    let delete_json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(delete.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(delete_json["skill"]["skill_id"], "rest-registry-skill");
+
+    let list_after = router
+        .oneshot(
+            Request::builder()
+                .uri("/v1/skills")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list_after.status(), StatusCode::OK);
+    let list_after_json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(list_after.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(list_after_json["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|skill| skill["skill_id"] != "rest-registry-skill"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

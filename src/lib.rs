@@ -339,7 +339,7 @@ use crate::search::vector::VectorSearchBackend;
 
 pub use skills::{
     export_skill, import_skill, migrate_skill_registry, SkillDocument, SkillEntry, SkillFormat,
-    SkillQuery, SkillReadOutput, SkillRegistry, SkillRegistryManifest,
+    SkillQuery, SkillReadOutput, SkillRegistry, SkillRegistryCounts, SkillRegistryManifest,
     SkillRegistryMigrationReport, SkillSection, SkillStatus, SkillSummary, SkillUpload,
     SkillVersion, SkillVersionContent, SkillVersionSummary, MENTISDB_SKILL_CURRENT_SCHEMA_VERSION,
     MENTISDB_SKILL_REGISTRY_CURRENT_VERSION, MENTISDB_SKILL_REGISTRY_V1,
@@ -3935,6 +3935,10 @@ struct ManagedSidecarEntry {
     // deterministic Exact backend or an approximate HNSW backend depending on
     // corpus size.
     cached_index: Option<crate::search::VectorBackend>,
+    /// Live sidecar document used to avoid reload+reparse on every append.
+    cached_sidecar: Option<crate::search::VectorSidecar>,
+    /// WAL records written since the last JSON snapshot compact.
+    wal_uncompacted: usize,
     /// A background HNSW build that was started because the corpus is large
     /// enough to benefit from approximate search. While the build runs the
     /// cached index is an Exact placeholder so queries stay available.
@@ -3951,9 +3955,23 @@ impl ManagedSidecarEntry {
             provider: Box::new(RegisteredEmbeddingProvider { provider }),
             auto_sync,
             cached_index: build_result.backend,
+            cached_sidecar: None,
+            wal_uncompacted: 0,
             pending_hnsw_build: build_result.pending,
         }
     }
+
+    fn with_sidecar(mut self, sidecar: crate::search::VectorSidecar) -> Self {
+        self.cached_sidecar = Some(sidecar);
+        self
+    }
+}
+
+#[derive(Default)]
+struct PendingDerivedWrite {
+    sidecar_wals: Vec<(PathBuf, crate::search::VectorSidecarWalRecord)>,
+    sidecar_compacts: Vec<(PathBuf, crate::search::VectorSidecar)>,
+    overlay: Option<(PathBuf, crate::search::ImplicitEdgeOverlay)>,
 }
 
 struct PendingVectorBackendBuild {
@@ -4352,6 +4370,13 @@ pub struct MentisDb {
     dedup_scan_window: usize,
     /// In-memory overlay of vector-inferred semantic edges.
     implicit_edge_overlay: Option<crate::search::ImplicitEdgeOverlay>,
+    /// Cached explicit-relation adjacency, keyed by `thoughts.len()`.
+    /// Rebuilt on first graph-enabled query after the chain grows.
+    adjacency_index: std::sync::Mutex<Option<(usize, crate::search::ThoughtAdjacencyIndex)>>,
+    /// Derived-artifact writes queued during append (sidecar WAL, overlay).
+    pending_derived: std::sync::Mutex<PendingDerivedWrite>,
+    /// When true, [`Self::append_thought`] skips [`Self::flush_pending_derived`].
+    defer_derived_flush: bool,
     /// Cosine similarity threshold for auto-inferred edges.
     auto_edge_threshold: f32,
     /// Max neighbors per thought for auto-inferred edges.
@@ -4482,6 +4507,9 @@ impl MentisDb {
             dedup_threshold: None,
             dedup_scan_window: 64,
             implicit_edge_overlay: None,
+            adjacency_index: std::sync::Mutex::new(None),
+            pending_derived: std::sync::Mutex::new(PendingDerivedWrite::default()),
+            defer_derived_flush: false,
             auto_edge_threshold: std::env::var("MENTISDB_AUTO_EDGE_THRESHOLD")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -4998,11 +5026,14 @@ impl MentisDb {
         self.query_indexes.observe(self.thoughts.len(), &thought);
         self.lexical_index
             .observe(self.thoughts.len(), &thought, &self.agent_registry);
-        self.thoughts.push(thought.clone());
+        self.thoughts.push(thought);
+        if let Ok(mut cache) = self.adjacency_index.lock() {
+            *cache = None;
+        }
 
         // Update the invalidated-thoughts index if this thought contains
         // Supersedes, Corrects, or Invalidates relations.
-        for relation in &thought.relations {
+        for relation in &self.thoughts.last().unwrap().relations {
             if is_invalidating_relation_kind(relation.kind) {
                 self.invalidated_thought_ids.insert(relation.target_id);
             }
@@ -5030,7 +5061,49 @@ impl MentisDb {
             });
         }
 
+        let defer_derived = self.defer_derived_flush;
+        self.defer_derived_flush = false;
+        if !defer_derived {
+            self.flush_pending_derived()?;
+        }
+
         Ok(self.thoughts.last().unwrap())
+    }
+
+    /// Persist sidecar WAL / overlay writes queued by the last append(s).
+    ///
+    /// Safe to call with only a shared lock: it does not mutate thought state.
+    pub fn flush_pending_derived(&self) -> io::Result<()> {
+        let pending = {
+            let mut guard = self
+                .pending_derived
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            std::mem::take(&mut *guard)
+        };
+        for (path, record) in pending.sidecar_wals {
+            crate::search::append_sidecar_wal_record(&path, &record)?;
+        }
+        for (path, sidecar) in pending.sidecar_compacts {
+            sidecar.compact_to_path(&path)?;
+        }
+        if let Some((path, overlay)) = pending.overlay {
+            overlay.save_to_path(&path)?;
+        }
+        Ok(())
+    }
+
+    /// Queue derived sidecar/overlay I/O for [`Self::flush_pending_derived`].
+    ///
+    /// The next [`Self::append_thought`] will not write those files itself so
+    /// a server can drop the exclusive chain lock first.
+    pub fn defer_next_derived_flush(&mut self) {
+        self.defer_derived_flush = true;
+    }
+
+    /// Clear a pending [`Self::defer_next_derived_flush`] after a failed append.
+    pub fn cancel_deferred_derived_flush(&mut self) {
+        self.defer_derived_flush = false;
     }
 
     /// Verify the entire hash chain and sequence invariants.
@@ -5900,43 +5973,44 @@ impl MentisDb {
         // relation, seed support).
         if request.enable_reranking && !hits.is_empty() {
             let rerank_k = request.rerank_k.min(hits.len());
-            let mut by_lexical = hits.clone();
-            by_lexical.sort_by(|a, b| {
-                b.score
+            let mut order: Vec<usize> = (0..hits.len()).collect();
+            order.sort_by(|&a, &b| {
+                hits[b]
+                    .score
                     .lexical
-                    .total_cmp(&a.score.lexical)
-                    .then_with(|| a.thought.index.cmp(&b.thought.index))
+                    .total_cmp(&hits[a].score.lexical)
+                    .then_with(|| hits[a].thought.index.cmp(&hits[b].thought.index))
             });
-            let mut by_vector = hits.clone();
-            by_vector.sort_by(|a, b| {
-                b.score
+            let lexical_ids: Vec<u64> = order
+                .iter()
+                .take(rerank_k)
+                .map(|&i| hits[i].thought.index)
+                .collect();
+            order.sort_by(|&a, &b| {
+                hits[b]
+                    .score
                     .vector
-                    .total_cmp(&a.score.vector)
-                    .then_with(|| a.thought.index.cmp(&b.thought.index))
+                    .total_cmp(&hits[a].score.vector)
+                    .then_with(|| hits[a].thought.index.cmp(&hits[b].thought.index))
             });
-            let mut by_graph = hits.clone();
-            by_graph.sort_by(|a, b| {
-                let a_graph = a.score.graph + a.score.relation + a.score.seed_support;
-                let b_graph = b.score.graph + b.score.relation + b.score.seed_support;
+            let vector_ids: Vec<u64> = order
+                .iter()
+                .take(rerank_k)
+                .map(|&i| hits[i].thought.index)
+                .collect();
+            order.sort_by(|&a, &b| {
+                let a_graph =
+                    hits[a].score.graph + hits[a].score.relation + hits[a].score.seed_support;
+                let b_graph =
+                    hits[b].score.graph + hits[b].score.relation + hits[b].score.seed_support;
                 b_graph
                     .total_cmp(&a_graph)
-                    .then_with(|| a.thought.index.cmp(&b.thought.index))
+                    .then_with(|| hits[a].thought.index.cmp(&hits[b].thought.index))
             });
-
-            let lexical_ids: Vec<u64> = by_lexical
+            let graph_ids: Vec<u64> = order
                 .iter()
                 .take(rerank_k)
-                .map(|h| h.thought.index)
-                .collect();
-            let vector_ids: Vec<u64> = by_vector
-                .iter()
-                .take(rerank_k)
-                .map(|h| h.thought.index)
-                .collect();
-            let graph_ids: Vec<u64> = by_graph
-                .iter()
-                .take(rerank_k)
-                .map(|h| h.thought.index)
+                .map(|&i| hits[i].thought.index)
                 .collect();
 
             let merged = crate::search::ranked::rrf_merge_three(
@@ -6575,7 +6649,7 @@ impl MentisDb {
         };
         self.managed_vector_sidecars.insert(
             provider.metadata().clone(),
-            ManagedSidecarEntry::new(provider, true, build_result),
+            ManagedSidecarEntry::new(provider, true, build_result).with_sidecar(sidecar.clone()),
         );
         self.load_or_rebuild_implicit_edge_overlay();
         Ok(sidecar)
@@ -6664,19 +6738,20 @@ impl MentisDb {
         provider: P,
     ) {
         let graph_path = self.vector_hnsw_graph_path(provider.metadata()).ok();
-        let build_result = self
-            .load_vector_sidecar(provider.metadata())
-            .ok()
-            .flatten()
+        let loaded = self.load_vector_sidecar(provider.metadata()).ok().flatten();
+        let build_result = loaded
+            .as_ref()
             .map(|sidecar| {
                 let documents = sidecar_entries_to_documents(&sidecar.entries);
                 build_vector_backend_async(provider.metadata(), documents, graph_path.as_deref())
             })
             .unwrap_or_else(|| VectorBackendBuildResult::ready(None));
-        self.managed_vector_sidecars.insert(
-            provider.metadata().clone(),
-            ManagedSidecarEntry::new(provider, false, build_result),
-        );
+        let mut entry = ManagedSidecarEntry::new(provider, false, build_result);
+        if let Some(sidecar) = loaded {
+            entry = entry.with_sidecar(sidecar);
+        }
+        self.managed_vector_sidecars
+            .insert(entry.provider.metadata().clone(), entry);
         self.load_or_rebuild_implicit_edge_overlay();
     }
 
@@ -6868,7 +6943,8 @@ impl MentisDb {
                 if enabled {
                     self.managed_vector_sidecars.insert(
                         metadata,
-                        ManagedSidecarEntry::new(provider, true, build_result),
+                        ManagedSidecarEntry::new(provider, true, build_result)
+                            .with_sidecar(sidecar),
                     );
                 } else {
                     self.unmanage_vector_sidecar(&metadata);
@@ -6889,7 +6965,8 @@ impl MentisDb {
                 if enabled {
                     self.managed_vector_sidecars.insert(
                         metadata,
-                        ManagedSidecarEntry::new(provider, true, build_result),
+                        ManagedSidecarEntry::new(provider, true, build_result)
+                            .with_sidecar(sidecar),
                     );
                 } else {
                     self.unmanage_vector_sidecar(&metadata);
@@ -7021,14 +7098,13 @@ impl MentisDb {
     }
 
     fn sync_implicit_edge_overlay_for_append(&mut self, thought: &Thought) {
-        let Some(ref mut overlay) = self.implicit_edge_overlay else {
+        if self.implicit_edge_overlay.is_none() {
             return;
-        };
+        }
         let Some(persistence) = &self.persistence else {
             return;
         };
 
-        // Find a provider whose cached_index has the new thought's vector.
         let metadata = self
             .managed_vector_sidecars
             .iter()
@@ -7040,35 +7116,39 @@ impl MentisDb {
                     .is_some()
             })
             .map(|(metadata, _)| metadata.clone());
-
         let Some(metadata) = metadata else {
             return;
         };
 
-        let sidecar_path = chain_vector_sidecar_path(
+        let sidecar = self
+            .managed_vector_sidecars
+            .get(&metadata)
+            .and_then(|entry| entry.cached_sidecar.clone());
+        let Some(sidecar) = sidecar else {
+            return;
+        };
+        let new_vector = self
+            .managed_vector_sidecars
+            .get(&metadata)
+            .and_then(|entry| entry.cached_index.as_ref())
+            .and_then(|idx| idx.get_vector(&thought.id.to_string()));
+        let overlay_path = chain_auto_edges_path(
             &persistence.chain_dir,
             &persistence.chain_key,
             persistence.storage_kind,
-            &metadata,
         );
-        let Ok(sidecar) = crate::search::VectorSidecar::load_from_path(&sidecar_path) else {
-            return;
-        };
-
-        let new_vector = self
-            .managed_vector_sidecars
-            .values()
-            .find_map(|entry| entry.cached_index.as_ref())
-            .and_then(|idx| idx.get_vector(&thought.id.to_string()));
 
         if let Some(vec) = new_vector {
-            overlay.add_thought(thought.id, &vec, &sidecar);
-            let overlay_path = chain_auto_edges_path(
-                &persistence.chain_dir,
-                &persistence.chain_key,
-                persistence.storage_kind,
-            );
-            let _ = overlay.save_to_path(&overlay_path);
+            let snapshot = {
+                let overlay = self.implicit_edge_overlay.as_mut().unwrap();
+                overlay.add_thought(thought.id, &vec, &sidecar);
+                overlay.clone()
+            };
+            let mut pending = self
+                .pending_derived
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            pending.overlay = Some((overlay_path, snapshot));
         }
     }
 
@@ -7077,10 +7157,11 @@ impl MentisDb {
             return;
         };
 
-        let Some((metadata, _)) = self
+        let Some(metadata) = self
             .managed_vector_sidecars
             .iter()
             .find(|(_, entry)| entry.cached_index.is_some())
+            .map(|(metadata, _)| metadata.clone())
         else {
             if !self.managed_vector_sidecars.is_empty() {
                 eprintln!(
@@ -7096,7 +7177,7 @@ impl MentisDb {
             &persistence.chain_dir,
             &persistence.chain_key,
             persistence.storage_kind,
-            metadata,
+            &metadata,
         );
         let Ok(loaded_sidecar) = crate::search::VectorSidecar::load_from_path(&sidecar_path) else {
             eprintln!(
@@ -7134,11 +7215,24 @@ impl MentisDb {
                     }
                     Some(empty)
                 } else {
-                    let overlay = crate::search::ImplicitEdgeOverlay::build_from_sidecar(
-                        &loaded_sidecar,
-                        self.auto_edge_k,
-                        self.auto_edge_threshold,
-                    );
+                    let overlay = if let Some(backend) = self
+                        .managed_vector_sidecars
+                        .get(&metadata)
+                        .and_then(|entry| entry.cached_index.as_ref())
+                    {
+                        crate::search::ImplicitEdgeOverlay::build_from_backend(
+                            &loaded_sidecar,
+                            backend,
+                            self.auto_edge_k,
+                            self.auto_edge_threshold,
+                        )
+                    } else {
+                        crate::search::ImplicitEdgeOverlay::build_from_sidecar(
+                            &loaded_sidecar,
+                            self.auto_edge_k,
+                            self.auto_edge_threshold,
+                        )
+                    };
                     if let Err(e) = overlay.save_to_path(&overlay_path) {
                         eprintln!(
                             "[mentisdb] load_or_rebuild_implicit_edge_overlay: failed to save overlay: {e}"
@@ -7155,8 +7249,42 @@ impl MentisDb {
     /// This is normally called automatically when managed vector sidecars are
     /// applied, but long-running services can call it to repair a missing
     /// `.auto_edges.bin` sidecar for an already-open chain.
+    ///
+    /// When the overlay is already in memory and the sidecar file still exists,
+    /// this is a no-op so uncontended request paths do not reload the vector
+    /// sidecar. A missing file still triggers a rebuild (cached-chain repair).
     pub fn ensure_implicit_edge_overlay(&mut self) {
+        if self.implicit_edge_overlay.is_some() {
+            if let Some(persistence) = &self.persistence {
+                let path = chain_auto_edges_path(
+                    &persistence.chain_dir,
+                    &persistence.chain_key,
+                    persistence.storage_kind,
+                );
+                if path.exists() {
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
         self.load_or_rebuild_implicit_edge_overlay();
+    }
+
+    fn cached_adjacency_index(&self) -> crate::search::ThoughtAdjacencyIndex {
+        let len = self.thoughts.len();
+        if let Ok(cache) = self.adjacency_index.lock() {
+            if let Some((cached_len, index)) = cache.as_ref() {
+                if *cached_len == len {
+                    return index.clone();
+                }
+            }
+        }
+        let built = crate::search::ThoughtAdjacencyIndex::from_thoughts(&self.thoughts);
+        if let Ok(mut cache) = self.adjacency_index.lock() {
+            *cache = Some((len, built.clone()));
+        }
+        built
     }
 
     fn sync_managed_vector_sidecars_for_append(&mut self, thought: &Thought) -> io::Result<()> {
@@ -7164,6 +7292,9 @@ impl MentisDb {
         let Some(persistence) = &self.persistence else {
             return Ok(());
         };
+        let persist_dir = persistence.chain_dir.clone();
+        let persist_key = persistence.chain_key.clone();
+        let persist_kind = persistence.storage_kind;
         if self.managed_vector_sidecars.is_empty() {
             return Ok(());
         }
@@ -7184,17 +7315,19 @@ impl MentisDb {
                     continue;
                 }
             }
-            let path = chain_vector_sidecar_path(
-                &persistence.chain_dir,
-                &persistence.chain_key,
-                persistence.storage_kind,
-                &metadata,
-            );
-            let sidecar = match crate::search::VectorSidecar::load_from_path(&path) {
-                Ok(sidecar)
+            let path =
+                chain_vector_sidecar_path(&persist_dir, &persist_key, persist_kind, &metadata);
+            let cached_sidecar = self
+                .managed_vector_sidecars
+                .get(&metadata)
+                .and_then(|entry| entry.cached_sidecar.clone());
+            let loaded =
+                cached_sidecar.or_else(|| crate::search::VectorSidecar::load_from_path(&path).ok());
+            let sidecar = match loaded {
+                Some(sidecar)
                     if matches!(
                         sidecar.freshness(
-                            &persistence.chain_key,
+                            &persist_key,
                             previous_thought_count,
                             previous_head_hash,
                             &metadata,
@@ -7208,7 +7341,7 @@ impl MentisDb {
                         .unwrap()
                         .provider
                         .as_ref();
-                    let new_sidecar =
+                    let (new_sidecar, wal_record) =
                         self.extend_fresh_vector_sidecar(provider, sidecar, thought)?;
                     {
                         let entry = self.managed_vector_sidecars.get_mut(&metadata).unwrap();
@@ -7227,9 +7360,10 @@ impl MentisDb {
                             }
                         }
                     }
+                    self.queue_sidecar_wal(&path, wal_record, &new_sidecar, &metadata);
                     new_sidecar
                 }
-                Ok(_) | Err(_) => {
+                Some(_) | None => {
                     let provider = self
                         .managed_vector_sidecars
                         .get(&metadata)
@@ -7253,20 +7387,70 @@ impl MentisDb {
                         entry.cached_index = build_result.backend;
                         entry.pending_hnsw_build = build_result.pending;
                     }
+                    if let Some(entry) = self.managed_vector_sidecars.get_mut(&metadata) {
+                        entry.wal_uncompacted = 0;
+                    }
+                    self.queue_sidecar_compact(&path, &new_sidecar);
                     new_sidecar
                 }
             };
-            sidecar.save_to_path(&path)?;
+            if let Some(entry) = self.managed_vector_sidecars.get_mut(&metadata) {
+                entry.cached_sidecar = Some(sidecar);
+            }
         }
         Ok(())
+    }
+
+    fn queue_sidecar_compact(&self, snapshot_path: &Path, sidecar: &crate::search::VectorSidecar) {
+        let mut pending = self
+            .pending_derived
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        pending
+            .sidecar_compacts
+            .push((snapshot_path.to_path_buf(), sidecar.clone()));
+    }
+
+    fn queue_sidecar_wal(
+        &mut self,
+        snapshot_path: &Path,
+        record: crate::search::VectorSidecarWalRecord,
+        sidecar: &crate::search::VectorSidecar,
+        metadata: &crate::search::EmbeddingMetadata,
+    ) {
+        let wal_path = crate::search::sidecar_wal_path(snapshot_path);
+        let next = self
+            .managed_vector_sidecars
+            .get(metadata)
+            .map(|entry| entry.wal_uncompacted.saturating_add(1))
+            .unwrap_or(1);
+        let compact = next >= crate::search::VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD;
+        {
+            let mut pending = self
+                .pending_derived
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            pending.sidecar_wals.push((wal_path, record));
+            if compact {
+                pending
+                    .sidecar_compacts
+                    .push((snapshot_path.to_path_buf(), sidecar.clone()));
+            }
+        }
+        if let Some(entry) = self.managed_vector_sidecars.get_mut(metadata) {
+            entry.wal_uncompacted = if compact { 0 } else { next };
+        }
     }
 
     fn extend_fresh_vector_sidecar(
         &self,
         provider: &dyn ManagedEmbeddingProvider,
-        sidecar: crate::search::VectorSidecar,
+        mut sidecar: crate::search::VectorSidecar,
         thought: &Thought,
-    ) -> io::Result<crate::search::VectorSidecar> {
+    ) -> io::Result<(
+        crate::search::VectorSidecar,
+        crate::search::VectorSidecarWalRecord,
+    )> {
         let mut documents = provider.embed_documents(&[crate::search::EmbeddingInput::new(
             thought.id.to_string(),
             self.thought_embedding_text(thought),
@@ -7275,21 +7459,17 @@ impl MentisDb {
             .pop()
             .map(|document| document.vector)
             .ok_or_else(|| io::Error::other("managed embedding provider returned no vectors"))?;
-        let mut entries = sidecar.entries;
-        entries.push(crate::search::VectorSidecarEntry::new(
-            thought.id,
-            thought.index,
-            thought.hash.clone(),
-            vector,
-        ));
-        crate::search::VectorSidecar::build(
-            sidecar.chain_key,
-            sidecar.metadata,
+        let record = sidecar.extend_with_entry(
+            crate::search::VectorSidecarEntry::new(
+                thought.id,
+                thought.index,
+                thought.hash.clone(),
+                vector,
+            ),
             self.thoughts.len(),
             self.head_hash().map(ToOwned::to_owned),
-            Utc::now(),
-            entries,
-        )
+        )?;
+        Ok((sidecar, record))
     }
 
     fn rebuild_managed_vector_sidecar(
@@ -7606,10 +7786,10 @@ impl MentisDb {
             .iter()
             .map(|thought| (thought.id.to_string(), thought.index as usize))
             .collect();
+        let filter = crate::search::VectorFilter::from_ids(candidate_positions.keys().cloned());
         let mut scores = HashMap::new();
 
         for entry in self.managed_vector_sidecars.values() {
-            let metadata = entry.provider.metadata().clone();
             let Some(ref cached) = entry.cached_index else {
                 continue;
             };
@@ -7625,25 +7805,9 @@ impl MentisDb {
                 continue;
             };
 
-            let candidate_ids: Vec<String> = candidate_positions.keys().cloned().collect();
-            let mut documents: Vec<crate::search::VectorDocument> = Vec::new();
-            for id in candidate_ids {
-                if let Some(vector) = cached.get_vector(&id) {
-                    documents.push(crate::search::VectorDocument::new(id, vector));
-                }
-            }
-            if documents.is_empty() {
-                continue;
-            }
-
-            let limit = documents.len().clamp(1, MAX_VECTOR_HITS);
-            let index = match crate::search::VectorIndex::from_documents(metadata, documents) {
-                Ok(index) => index,
-                Err(_) => continue,
-            };
-            let hits = match index
-                .search(&crate::search::VectorQuery::new(query_vector).with_limit(limit))
-            {
+            let limit = candidate_positions.len().clamp(1, MAX_VECTOR_HITS);
+            let query = crate::search::VectorQuery::new(query_vector).with_limit(limit);
+            let hits = match cached.search_filtered(&query, &filter) {
                 Ok(hits) => hits,
                 Err(_) => continue,
             };
@@ -7741,7 +7905,7 @@ impl MentisDb {
         }
 
         const MAX_GRAPH_SEEDS: usize = 20;
-        let adjacency = crate::search::ThoughtAdjacencyIndex::from_thoughts(&self.thoughts);
+        let adjacency = self.cached_adjacency_index();
         let candidate_positions: HashSet<usize> = candidates
             .iter()
             .map(|thought| thought.index as usize)
@@ -8393,11 +8557,21 @@ impl MentisDb {
         self.storage.storage_location()
     }
 
-    /// Flush any buffered writes in the underlying storage adapter to disk.
+    /// Count thoughts in the on-disk chain file without loading payloads.
     ///
-    /// This ensures all acknowledged thoughts are durable before the backup
-    /// reads the files.
+    /// Used by the dashboard cache to detect an external writer that flushed
+    /// more thoughts than this live handle has in memory. Returns `None` when
+    /// the storage location is not a readable binary chain file.
+    pub fn persisted_thought_count(&self) -> Option<u64> {
+        count_binary_chain_thoughts(Path::new(&self.storage.storage_location())).ok()
+    }
+
+    /// Flush buffered thought storage and any queued sidecar/overlay writes.
+    ///
+    /// This ensures acknowledged thoughts and their derived vector artifacts
+    /// are durable before backup or shutdown.
     pub fn flush(&self) -> io::Result<()> {
+        self.flush_pending_derived()?;
         self.storage.flush()
     }
 

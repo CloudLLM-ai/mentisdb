@@ -2733,6 +2733,12 @@ pub(crate) fn build_endpoint_catalog(
         writeln!(out, "      Mark one skill as deprecated.").unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/skills/revoke").unwrap();
         writeln!(out, "      Mark one skill as revoked.").unwrap();
+        writeln!(out, "    POST {scheme}://{addr}/v1/skills/delete").unwrap();
+        writeln!(
+            out,
+            "      Permanently delete one skill and all of its versions."
+        )
+        .unwrap();
         writeln!(out, "    POST {scheme}://{addr}/v1/bootstrap").unwrap();
         writeln!(
             out,

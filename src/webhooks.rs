@@ -351,12 +351,17 @@ fn spawn_delivery_worker() -> mpsc::Sender<DeliveryJob> {
     tx
 }
 
+fn webhook_http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 async fn deliver_with_retries(url: String, payload: WebhookPayload, webhook_id: Uuid) {
-    let client = reqwest::Client::new();
+    let client = webhook_http_client();
     let mut backoff_ms = WEBHOOK_INITIAL_BACKOFF_MS;
 
     for attempt in 0..WEBHOOK_MAX_RETRIES {
-        match deliver_once(&client, &url, &payload).await {
+        match deliver_once(client, &url, &payload).await {
             Ok(()) => {
                 log::info!(
                     target: "mentisdb::webhooks",

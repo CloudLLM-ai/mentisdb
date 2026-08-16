@@ -72,15 +72,15 @@ fn thesaurus_map() -> &'static HashMap<String, Vec<String>> {
 /// Lookup synonyms for a single term from the built-in thesaurus.
 ///
 /// Returns `None` if the term has no thesaurus entry.
-pub fn lookup(term: &str) -> Option<Vec<String>> {
-    thesaurus_map().get(term).cloned()
+pub fn lookup(term: &str) -> Option<&'static [String]> {
+    thesaurus_map().get(term).map(Vec::as_slice)
 }
 
 /// Lemmatize a token using irregular + regular verb rules, then look it up
 /// in the thesaurus.
 ///
 /// This bridges verb form gaps (e.g. "went" → "go" → synonyms).
-pub fn lookup_lemmatized(token: &str) -> Option<Vec<String>> {
+pub fn lookup_lemmatized(token: &str) -> Option<&'static [String]> {
     // Try the raw token first.
     if let Some(syms) = lookup(token) {
         return Some(syms);
@@ -120,7 +120,7 @@ pub fn expand_text(text: &str) -> HashMap<String, Vec<String>> {
     {
         let term = raw.to_ascii_lowercase();
         if let Some(syms) = lookup_lemmatized(&term) {
-            result.entry(term).or_insert_with(|| syms);
+            result.entry(term).or_insert_with(|| syms.to_vec());
         }
     }
 

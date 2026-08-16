@@ -1090,6 +1090,12 @@ impl LexicalIndex {
     }
 }
 
+fn english_stemmer() -> &'static rust_stemmers::Stemmer {
+    use rust_stemmers::{Algorithm, Stemmer};
+    static STEMMER: std::sync::OnceLock<Stemmer> = std::sync::OnceLock::new();
+    STEMMER.get_or_init(|| Stemmer::create(Algorithm::English))
+}
+
 /// Normalize free-form text into versioned lexical tokens.
 ///
 /// Tokenization splits on non-alphanumeric boundaries, lowercases, and then
@@ -1103,9 +1109,7 @@ impl LexicalIndex {
 /// Set `expand_lemmas` to false during index building to avoid duplicate
 /// postings for terms whose lemma also appears explicitly in the text.
 pub fn normalize_lexical_tokens(text: &str, expand_lemmas: bool) -> Vec<String> {
-    use rust_stemmers::{Algorithm, Stemmer};
-
-    let stemmer = Stemmer::create(Algorithm::English);
+    let stemmer = english_stemmer();
     let mut tokens = Vec::new();
     let mut current = String::new();
 

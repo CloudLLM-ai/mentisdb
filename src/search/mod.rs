@@ -87,8 +87,9 @@ pub use graph::{
 pub use implicit_edges::{ImplicitEdgeOverlay, ImplicitNeighbor};
 pub use provenance::{GraphExpansionHop, GraphExpansionPath, GraphExpansionPathError};
 pub use sidecar::{
-    VectorSidecar, VectorSidecarEntry, VectorSidecarFreshness, VectorSidecarIntegrity,
-    VECTOR_SIDECAR_SCHEMA_VERSION,
+    append_sidecar_wal_record, sidecar_wal_path, VectorSidecar, VectorSidecarEntry,
+    VectorSidecarFreshness, VectorSidecarIntegrity, VectorSidecarWalRecord,
+    VECTOR_SIDECAR_SCHEMA_VERSION, VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD,
 };
 pub use summary_index::{
     build_summary_candidates, SummaryBuildConfig, SummaryCandidate, SummaryCoverage, SummaryGroup,

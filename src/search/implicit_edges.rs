@@ -1,9 +1,13 @@
-use crate::search::vector::cosine_similarity;
+use crate::search::hnsw_backend::HnswBackend;
+use crate::search::vector::{cosine_similarity, VectorDocument, VectorQuery, VectorSearchBackend};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 use uuid::Uuid;
+
+/// Pairwise all-pairs is used only for tiny corpora so unit tests stay exact.
+const PAIRWISE_BUILD_LIMIT: usize = 128;
 
 /// Derived semantic neighborhood for one thought.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -41,12 +45,48 @@ impl ImplicitEdgeOverlay {
 
     /// Build from scratch by comparing all N² pairs in the sidecar.
     ///
-    /// O(N²) — only called at chain open or after threshold change.
+    /// Tiny corpora (`N <= 128`) stay pairwise so existing unit tests remain
+    /// exact. Larger corpora build a temporary HNSW index and take per-vector
+    /// top-k, which is ~N log N instead of N².
     pub fn build_from_sidecar(
         sidecar: &crate::search::VectorSidecar,
         k: usize,
         threshold: f32,
     ) -> Self {
+        if sidecar.entries.len() <= PAIRWISE_BUILD_LIMIT {
+            return Self::build_pairwise(sidecar, k, threshold);
+        }
+        match Self::build_with_hnsw(sidecar, k, threshold) {
+            Ok(overlay) => overlay,
+            Err(_) => Self::build_pairwise(sidecar, k, threshold),
+        }
+    }
+
+    /// Build using an already-warm vector backend (Exact or HNSW).
+    pub fn build_from_backend(
+        sidecar: &crate::search::VectorSidecar,
+        backend: &dyn VectorSearchBackend,
+        k: usize,
+        threshold: f32,
+    ) -> Self {
+        if sidecar.entries.len() <= PAIRWISE_BUILD_LIMIT {
+            return Self::build_pairwise(sidecar, k, threshold);
+        }
+        Self::build_with_search(sidecar, k, threshold, |vector, limit| {
+            backend
+                .search(&VectorQuery::new(vector.to_vec()).with_limit(limit))
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|hit| {
+                    Uuid::parse_str(&hit.document_id)
+                        .ok()
+                        .map(|id| (id, hit.score))
+                })
+                .collect()
+        })
+    }
+
+    fn build_pairwise(sidecar: &crate::search::VectorSidecar, k: usize, threshold: f32) -> Self {
         let mut overlay = Self::new(threshold, k);
         let entries = &sidecar.entries;
         for (i, entry_a) in entries.iter().enumerate() {
@@ -70,6 +110,49 @@ impl ImplicitEdgeOverlay {
             neighbors.truncate(k);
             if !neighbors.is_empty() {
                 overlay.edges.insert(entry_a.thought_id, neighbors);
+            }
+        }
+        overlay
+    }
+
+    fn build_with_hnsw(
+        sidecar: &crate::search::VectorSidecar,
+        k: usize,
+        threshold: f32,
+    ) -> Result<Self, crate::search::VectorIndexError> {
+        let documents: Vec<VectorDocument> = sidecar
+            .entries
+            .iter()
+            .map(|entry| VectorDocument::new(entry.thought_id.to_string(), entry.vector.clone()))
+            .collect();
+        let backend = HnswBackend::from_documents(sidecar.metadata.clone(), documents)?;
+        Ok(Self::build_from_backend(sidecar, &backend, k, threshold))
+    }
+
+    fn build_with_search<F>(
+        sidecar: &crate::search::VectorSidecar,
+        k: usize,
+        threshold: f32,
+        mut search: F,
+    ) -> Self
+    where
+        F: FnMut(&[f32], usize) -> Vec<(Uuid, f32)>,
+    {
+        let mut overlay = Self::new(threshold, k);
+        let limit = k.saturating_add(1).max(1);
+        for entry in &sidecar.entries {
+            let mut neighbors: Vec<ImplicitNeighbor> = search(&entry.vector, limit)
+                .into_iter()
+                .filter(|(id, score)| *id != entry.thought_id && *score >= threshold)
+                .map(|(thought_id, cosine_score)| ImplicitNeighbor {
+                    thought_id,
+                    cosine_score,
+                })
+                .collect();
+            neighbors.sort_by(|a, b| b.cosine_score.total_cmp(&a.cosine_score));
+            neighbors.truncate(k);
+            if !neighbors.is_empty() {
+                overlay.edges.insert(entry.thought_id, neighbors);
             }
         }
         overlay

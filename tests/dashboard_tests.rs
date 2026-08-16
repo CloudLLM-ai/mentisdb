@@ -182,6 +182,13 @@ async fn dashboard_serves_skill_edit_controls() {
     assert!(html.contains("id=\"sd-edit-btn\""));
     assert!(html.contains("Edit Skill"));
     assert!(html.contains("data-skill-edit data-skill-id=\"${esc(s.skill_id)}\""));
+    assert!(html.contains("data-skill-delete data-skill-id=\"${esc(s.skill_id)}\""));
+    assert!(html.contains("function skillRegistryCounts(skills)"));
+    assert!(html.contains("id=\"sl-summary\""));
+    assert!(html.contains("Total Skills"));
+    assert!(html.contains("function deleteStoredSkill(skillId)"));
+    assert!(html.contains("id=\"sd-delete-btn\""));
+    assert!(html.contains("Delete Permanently"));
     assert!(html.contains("el.querySelectorAll('[data-skill-edit]').forEach(btn =>"));
     assert!(html.contains("if (skillId) window._openEditSkill(skillId);"));
     assert!(!html.contains("onclick=\"window._openEditSkill("));
@@ -569,6 +576,131 @@ Second dashboard body.
         .await
         .unwrap();
     assert_eq!(missing_version.status(), axum::http::StatusCode::NOT_FOUND);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn dashboard_skill_api_revokes_and_permanently_deletes_skill() {
+    let dir = unique_chain_dir();
+    let router = dashboard_router_for_dir(&dir);
+    let skill_id = "dashboard-delete-skill";
+    let content = r#"---
+schema_version: 1
+name: Dashboard Delete Skill
+description: Skill used to test permanent delete
+---
+
+# Dashboard Delete Skill
+
+Delete me.
+"#;
+
+    let upload = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/dashboard/api/skills")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "agent_id": "rust-backend-engineer",
+                        "skill_id": skill_id,
+                        "content": content,
+                        "format": "markdown"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(upload.status(), axum::http::StatusCode::OK);
+
+    let revoke = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/dashboard/api/skills/{skill_id}/revoke"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"reason":"operator cleanup"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revoke.status(), axum::http::StatusCode::OK);
+    let revoke_body = axum::body::to_bytes(revoke.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let revoke_json: Value = serde_json::from_slice(&revoke_body).unwrap();
+    assert_eq!(revoke_json["status"], "revoked");
+
+    let listed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/skills")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), axum::http::StatusCode::OK);
+    let listed_body = axum::body::to_bytes(listed.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let listed_json: Value = serde_json::from_slice(&listed_body).unwrap();
+    assert_eq!(listed_json.as_array().unwrap().len(), 1);
+    assert_eq!(listed_json[0]["status"], "revoked");
+
+    let delete = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/dashboard/api/skills/{skill_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), axum::http::StatusCode::OK);
+    let delete_body = axum::body::to_bytes(delete.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let delete_json: Value = serde_json::from_slice(&delete_body).unwrap();
+    assert_eq!(delete_json["skill_id"], skill_id);
+
+    let listed_after = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/skills")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed_after.status(), axum::http::StatusCode::OK);
+    let listed_after_body = axum::body::to_bytes(listed_after.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let listed_after_json: Value = serde_json::from_slice(&listed_after_body).unwrap();
+    assert!(listed_after_json.as_array().unwrap().is_empty());
+
+    let missing = router
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/dashboard/api/skills/{skill_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1552,6 +1684,85 @@ async fn chain_search_agent_options_include_live_authors_only() {
         .iter()
         .any(|agent| agent["agent_id"] == "bot" && agent["thought_count"] == 1));
     assert!(!agents.iter().any(|agent| agent["agent_id"] == "ghost"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn dashboard_reuses_cached_chain_without_reopen() {
+    let dir = unique_chain_dir();
+    let mut seed =
+        MentisDb::open_with_key_and_storage_kind(&dir, "source", StorageAdapterKind::Binary)
+            .unwrap();
+    seed.append_thought(
+        "astro",
+        ThoughtInput::new(ThoughtType::Summary, "seed thought"),
+    )
+    .unwrap();
+    drop(seed);
+
+    let live = MentisDb::open_with_key_and_storage_kind(&dir, "source", StorageAdapterKind::Binary)
+        .unwrap();
+    let live = Arc::new(RwLock::new(live));
+    let state = dashboard_impl::DashboardState {
+        chains: Arc::new(DashMap::new()),
+        skills: Arc::new(RwLock::new(SkillRegistry::open(&dir).unwrap())),
+        mentisdb_dir: dir.clone(),
+        default_chain_key: "source".to_string(),
+        dashboard_pin: None,
+        sessions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        default_storage_adapter: StorageAdapterKind::Binary,
+        auto_flush: Arc::new(AtomicBool::new(true)),
+        bearer_token_access: Arc::new(AtomicBool::new(false)),
+    };
+    state.chains.insert("source".to_string(), live.clone());
+    let router = dashboard_impl::dashboard_router(state.clone());
+
+    let first = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/chains/source")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status(), axum::http::StatusCode::OK);
+
+    {
+        let mut chain = live.write().await;
+        chain
+            .append_thought(
+                "astro",
+                ThoughtInput::new(ThoughtType::Insight, "live append after cache hit"),
+            )
+            .unwrap();
+    }
+
+    let second = router
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/chains/source")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(second.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["thought_count"], 2);
+    let cached = state
+        .chains
+        .get("source")
+        .expect("chain should stay cached");
+    assert!(
+        Arc::ptr_eq(cached.value(), &live),
+        "auto_flush cache hit must reuse the live handle, not reopen from disk"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -700,24 +700,13 @@ impl VectorIndex {
     pub fn search(&self, query: &VectorQuery) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
         validate_vector(&query.vector, self.metadata.dimension, None, "query")?;
 
-        let mut hits: Vec<VectorSearchHit> = self
-            .documents
-            .iter()
-            .map(|(document_id, vector)| VectorSearchHit {
-                document_id: document_id.clone(),
-                score: cosine_similarity(&query.vector, vector).unwrap_or(0.0),
-            })
-            .collect();
-        hits.sort_by(|left, right| {
-            right
-                .score
-                .total_cmp(&left.score)
-                .then_with(|| left.document_id.cmp(&right.document_id))
-        });
-        if hits.len() > query.limit {
-            hits.truncate(query.limit);
-        }
-        Ok(hits)
+        Ok(collect_top_vector_hits(
+            self.documents
+                .iter()
+                .map(|(id, vector)| (id.as_str(), vector.as_slice())),
+            &query.vector,
+            query.limit,
+        ))
     }
 
     /// Rank indexed vectors by cosine similarity, restricted by a
@@ -737,25 +726,14 @@ impl VectorIndex {
             return self.search(query);
         }
 
-        let mut hits: Vec<VectorSearchHit> = self
-            .documents
-            .iter()
-            .filter(|(document_id, _)| filter.allows(document_id))
-            .map(|(document_id, vector)| VectorSearchHit {
-                document_id: document_id.clone(),
-                score: cosine_similarity(&query.vector, vector).unwrap_or(0.0),
-            })
-            .collect();
-        hits.sort_by(|left, right| {
-            right
-                .score
-                .total_cmp(&left.score)
-                .then_with(|| left.document_id.cmp(&right.document_id))
-        });
-        if hits.len() > query.limit {
-            hits.truncate(query.limit);
-        }
-        Ok(hits)
+        Ok(collect_top_vector_hits(
+            self.documents
+                .iter()
+                .filter(|(document_id, _)| filter.allows(document_id))
+                .map(|(id, vector)| (id.as_str(), vector.as_slice())),
+            &query.vector,
+            query.limit,
+        ))
     }
 }
 
@@ -860,6 +838,36 @@ impl fmt::Display for VectorIndexError {
 }
 
 impl Error for VectorIndexError {}
+
+fn collect_top_vector_hits<'a>(
+    documents: impl Iterator<Item = (&'a str, &'a [f32])>,
+    query: &[f32],
+    limit: usize,
+) -> Vec<VectorSearchHit> {
+    let mut hits: Vec<VectorSearchHit> = documents
+        .map(|(document_id, vector)| VectorSearchHit {
+            document_id: document_id.to_string(),
+            score: cosine_similarity(query, vector).unwrap_or(0.0),
+        })
+        .collect();
+    let limit = limit.max(1);
+    if hits.len() > limit {
+        hits.select_nth_unstable_by(limit, |left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.document_id.cmp(&right.document_id))
+        });
+        hits.truncate(limit);
+    }
+    hits.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| left.document_id.cmp(&right.document_id))
+    });
+    hits
+}
 
 /// Compute cosine similarity for two vectors in the same space.
 ///

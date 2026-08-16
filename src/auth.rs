@@ -336,6 +336,12 @@ impl From<serde_json::Error> for BearerTokenError {
     }
 }
 
+#[derive(Debug, Clone)]
+struct CachedBearerRecords {
+    mtime: Option<std::time::SystemTime>,
+    records: Vec<BearerTokenRecord>,
+}
+
 /// Durable bearer-token registry backed by a JSON file.
 ///
 /// The store is a small file-backed registry designed for MCP server
@@ -370,6 +376,8 @@ pub struct BearerTokenStore {
     /// between `create`, `revoke`, and `authorize_matching` calls.
     /// The lock is per-store instance; clones share the same lock.
     lock: Arc<std::sync::Mutex<()>>,
+    /// Last-read registry snapshot, shared across clones.
+    cache: Arc<std::sync::Mutex<Option<CachedBearerRecords>>>,
 }
 
 impl BearerTokenStore {
@@ -382,6 +390,7 @@ impl BearerTokenStore {
         Self {
             path: mentisdb_dir.as_ref().join(BEARER_TOKEN_REGISTRY_FILENAME),
             lock: Arc::new(std::sync::Mutex::new(())),
+            cache: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -625,12 +634,37 @@ impl BearerTokenStore {
         true
     }
 
-    fn load_records(&self) -> Result<Vec<BearerTokenRecord>, BearerTokenError> {
-        match fs::read_to_string(&self.path) {
-            Ok(content) => serde_json::from_str(&content).map_err(BearerTokenError::from),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(error) => Err(BearerTokenError::Io(error)),
+    fn file_mtime(&self) -> Option<std::time::SystemTime> {
+        fs::metadata(&self.path)
+            .and_then(|meta| meta.modified())
+            .ok()
+    }
+
+    fn store_cache(&self, records: Vec<BearerTokenRecord>) {
+        if let Ok(mut cache) = self.cache.lock() {
+            *cache = Some(CachedBearerRecords {
+                mtime: self.file_mtime(),
+                records,
+            });
         }
+    }
+
+    fn load_records(&self) -> Result<Vec<BearerTokenRecord>, BearerTokenError> {
+        let mtime = self.file_mtime();
+        if let Ok(cache) = self.cache.lock() {
+            if let Some(cached) = cache.as_ref() {
+                if cached.mtime == mtime {
+                    return Ok(cached.records.clone());
+                }
+            }
+        }
+        let records = match fs::read_to_string(&self.path) {
+            Ok(content) => serde_json::from_str(&content).map_err(BearerTokenError::from)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(BearerTokenError::Io(error)),
+        };
+        self.store_cache(records.clone());
+        Ok(records)
     }
 
     fn save_records(&self, records: &[BearerTokenRecord]) -> Result<(), BearerTokenError> {
@@ -641,6 +675,7 @@ impl BearerTokenStore {
         let content = serde_json::to_string_pretty(records)?;
         fs::write(&temp_path, content)?;
         fs::rename(temp_path, &self.path)?;
+        self.store_cache(records.to_vec());
         Ok(())
     }
 }

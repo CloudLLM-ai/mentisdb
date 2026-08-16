@@ -189,7 +189,10 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
         .route("/chains/branch", post(api_branch_chain))
         // Skill listing, reading, and uploading
         .route("/skills", get(api_skills).post(api_upload_skill))
-        .route("/skills/{skill_id}", get(api_get_skill))
+        .route(
+            "/skills/{skill_id}",
+            get(api_get_skill).delete(api_delete_skill),
+        )
         .route("/skills/{skill_id}/versions", get(api_skill_versions))
         .route("/skills/{skill_id}/diff", get(api_skill_diff))
         .route("/skills/{skill_id}/revoke", post(api_revoke_skill))
@@ -533,8 +536,20 @@ async fn get_or_open_chain(
     });
 
     // Try the live cache first (clone the Arc to avoid holding the DashMap shard lock across an await).
+    // Reopen only when the on-disk file has more thoughts than this handle
+    // (another process flushed). Matching counts reuse the live Arc so a
+    // normal request does not re-deserialize the chain.
     if let Some(arc) = state.chains.get(chain_key).map(|r| r.value().clone()) {
-        if state.auto_flush.load(Ordering::Relaxed) {
+        if evict_deleted_cached_chain(state, chain_key, &arc).await? {
+            return Err(not_found(format!("chain '{chain_key}' not found")));
+        }
+        let disk_ahead = arc.try_read().ok().is_some_and(|chain| {
+            let mem = chain.thoughts().len() as u64;
+            chain
+                .persisted_thought_count()
+                .is_some_and(|disk| disk > mem)
+        });
+        if disk_ahead {
             if let Some(storage) = registered_storage {
                 if let Ok(mut refreshed) = MentisDb::open_with_storage(storage) {
                     if refreshed
@@ -550,9 +565,6 @@ async fn get_or_open_chain(
                     }
                 }
             }
-        }
-        if evict_deleted_cached_chain(state, chain_key, &arc).await? {
-            return Err(not_found(format!("chain '{chain_key}' not found")));
         }
         if let Ok(mut chain) = arc.try_write() {
             chain.ensure_implicit_edge_overlay();
@@ -2085,6 +2097,20 @@ async fn api_deprecate_skill(
     let summary = skills
         .deprecate_skill(&skill_id, body.reason.as_deref())
         .map_err(internal_error)?;
+    Ok(Json(serde_json::to_value(summary).map_err(internal_error)?))
+}
+
+/// `DELETE /dashboard/api/skills/:skill_id`
+///
+/// Permanently removes the skill and all of its versions from the registry.
+/// Use revoke when an audit row should remain.
+async fn api_delete_skill(
+    State(state): State<DashboardState>,
+    Path(skill_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    refresh_skill_registry(&state).await?;
+    let mut skills = state.skills.write().await;
+    let summary = skills.delete_skill(&skill_id).map_err(skill_read_error)?;
     Ok(Json(serde_json::to_value(summary).map_err(internal_error)?))
 }
 
