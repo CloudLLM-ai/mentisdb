@@ -461,6 +461,12 @@ r = requests.post(f"{base}/v1/skills/revoke", json={
 })
 print(r.json())
 
+# Permanently delete skill
+r = requests.post(f"{base}/v1/skills/delete", json={
+    "skill_id": "my-skill"
+})
+print(r.json())
+
 # ==================== MEMORY MARKDOWN ====================
 
 # Export chain as MEMORY.md
@@ -539,6 +545,7 @@ interactive docs at <code>http://127.0.0.1:9472/docs</code> (if running with
   <tr><td><code>POST</code></td><td><code>/v1/skills/versions</code></td><td>List versions for one skill</td></tr>
   <tr><td><code>POST</code></td><td><code>/v1/skills/deprecate</code></td><td>Mark a skill as deprecated</td></tr>
   <tr><td><code>POST</code></td><td><code>/v1/skills/revoke</code></td><td>Mark a skill as revoked</td></tr>
+  <tr><td><code>POST</code></td><td><code>/v1/skills/delete</code></td><td>Permanently delete a skill and all versions</td></tr>
   <tr><td><code>POST</code></td><td><code>/v1/memory-markdown</code></td><td>Export chain as MEMORY.md</td></tr>
   <tr><td><code>POST</code></td><td><code>/v1/import-markdown</code></td><td>Import MEMORY.md into chain</td></tr>
   <tr><td><code>POST</code></td><td><code>/v1/recent-context</code></td><td>Get recent context for prompts</td></tr>
@@ -756,6 +763,7 @@ mentisdb
   <tr><td><code>mentisdb_skill_versions</code></td><td>List immutable uploaded versions for one skill.</td></tr>
   <tr><td><code>mentisdb_deprecate_skill</code></td><td>Mark a skill as deprecated.</td></tr>
   <tr><td><code>mentisdb_revoke_skill</code></td><td>Mark a skill as revoked.</td></tr>
+  <tr><td><code>mentisdb_delete_skill</code></td><td>Permanently delete a skill and all of its versions.</td></tr>
   <tr><td><code>mentisdb_head</code></td><td>Return head metadata, latest thought, and integrity state.</td></tr>
   <tr><td><code>mentisdb_register_webhook</code></td><td>Register a webhook to receive HTTP POST notifications.</td></tr>
   <tr><td><code>mentisdb_list_webhooks</code></td><td>List all registered webhooks.</td></tr>

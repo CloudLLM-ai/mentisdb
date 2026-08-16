@@ -1,3 +1,50 @@
+0.10.6.51 AUG/15/2026
+  - feat(skills/dashboard): permanent skill delete. Revoke still keeps an
+    audit row; `SkillRegistry::delete_skill` removes the skill and all
+    versions so the same `skill_id` can be reused. Dashboard: Revoke
+    (active/deprecated) then Delete / Delete Permanently (revoked list row
+    and skill detail, with type-to-confirm). REST `POST /v1/skills/delete`,
+    MCP `mentisdb_delete_skill`, dashboard `DELETE /dashboard/api/skills/{id}`.
+    Skills list now shows total / active / revoked / deprecated counts.
+  - perf(search): vector sidecar appends write one integrity-chained WAL
+    record instead of rewriting the full JSON snapshot. Load replays
+    `*.json.wal`; the snapshot is compacted every 32 records. Older binaries
+    that only read JSON see a stale sidecar and rebuild.
+  - perf(server): MCP/REST append releases the chain write lock before sidecar
+    WAL and overlay I/O, so ranked search can proceed during derived persist.
+    Crate `append_thought` still flushes derived files before returning.
+  - perf(search): implicit-edge first build uses a temporary HNSW top-k search
+    when N > 128 instead of pairwise N². Tiny corpora stay pairwise so
+    existing overlay unit tests remain exact.
+  - perf(dashboard): `get_or_open_chain` reopens a cached chain only when the
+    on-disk thought count is ahead of the live handle (external writer).
+    Matching counts reuse the Arc so normal requests do not re-deserialize.
+  - perf(search): `query_ranked` scores the cached Exact/HNSW backend with
+    `search_filtered` instead of cloning candidate vectors and rebuilding a
+    throwaway `VectorIndex` per request.
+  - perf(search): append-time vector sidecar sync keeps the live sidecar in
+    memory and `save_to_path` no longer recomputes the integrity hash (checked
+    on load). Graph-enabled ranked search caches `ThoughtAdjacencyIndex` by
+    thought count.
+  - perf(search): exact cosine search uses `select_nth_unstable_by` for top-k
+    instead of sorting the whole corpus.
+  - perf(search): Porter stemmer is process-wide `OnceLock`; thesaurus lookup
+    returns `&[String]` instead of cloning synonym lists; HNSW `ef_search`
+    is read from the environment once.
+  - perf(auth): bearer-token registry loads are cached until `bearer-tokens.json`
+    mtime changes, so middleware + authorize no longer re-read the file twice
+    per request.
+  - perf(skills): persist encodes the live skill map by reference instead of
+    cloning every entry and version before bincode. Upload, revoke, deprecate,
+    and delete no longer double peak memory on the write path.
+  - perf(skills): `SkillVersion` stores `schema_version` so index rebuilds skip
+    reconstruct+reparse for current records.
+  - perf(webhooks): delivery reuses one process-wide `reqwest::Client`.
+  - docs: skill delete + sidecar WAL documented in README lifecycle table,
+    rustdoc, MENTISDB_SKILL.md, cookbook 2.3/3.2, docs.mentisdb.com
+    user/developer/agent guides, integrations HTML, WHITEPAPER, and the
+    0.10.6.51 blog / release notes.
+
 0.10.5.50 JUL/13/2026
   - fix(search): default retrieval now excludes superseded, corrected, and
     invalidated thoughts via the live `invalidated_thought_ids` set (query,

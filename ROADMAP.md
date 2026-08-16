@@ -1,6 +1,15 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 -> 0.10.5.50)
+## Shipped (0.8.2 -> 0.10.6.51)
+
+### 0.10.6.51 - Permanent Skill Delete, Skills Summary, Retrieval Persist/Lock Wins
+- **Permanent skill delete** — `SkillRegistry::delete_skill` removes a skill and every version so the same `skill_id` can be re-uploaded as Active. Revoke still keeps an audit row. REST `POST /v1/skills/delete`, MCP `mentisdb_delete_skill`, dashboard `DELETE /dashboard/api/skills/{id}`.
+- **Dashboard Skills UX** — summary bar (total / active / revoked / deprecated); Revoke on active/deprecated; Delete / Delete Permanently on revoked list rows and skill detail (type-to-confirm).
+- **Vector sidecar WAL** — append writes one integrity-chained `*.json.wal` record (`MDBVWAL1`) instead of rewriting the full JSON snapshot; load replays the WAL; compact every 32 records. Older JSON-only binaries see a stale sidecar and rebuild.
+- **Server append lock split** — MCP/REST drop the chain write lock before sidecar WAL and overlay I/O so ranked search can proceed during derived persist. Crate `append_thought` still flushes before return.
+- **Implicit-edge first build** — pairwise for N ≤ 128 (exact unit tests); temporary HNSW top-k above that.
+- **Hot-path caches** — dashboard reopens a cached chain only when on-disk thought count is ahead; `query_ranked` uses `search_filtered` on the live Exact/HNSW backend; exact cosine uses `select_nth` top-k; adjacency index cached by thought count; stemmer/thesaurus/`ef_search`/webhook client/`bearer-tokens.json` mtime caches; skill persist-by-ref + stored `schema_version`.
+- **Docs** — README lifecycle table, rustdoc WAL contract, docs.mentisdb.com user/developer/agent skill-delete + sidecar WAL, cookbook 2.3/3.2, blog + release notes.
 
 ### 0.10.5.50 - Search Invalidation Filtering, Bearer Token Write Fix, Token Delete
 - **Default search excludes invalidated thoughts** — thoughts targeted by later `Supersedes`, `Corrects`, or `Invalidates` relations are hidden from `query`, ranked search, context bundles, recent context, and related REST/MCP surfaces. Opt in with `include_invalidated=true` for audit; `as_of` still returns what was valid at that timestamp.

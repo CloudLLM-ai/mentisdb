@@ -63,7 +63,7 @@
 \title{\textbf{MentisDB}\\[0.3em]
 \large Durable Semantic Memory for Software Agents}
 \author{Angel Leon\\[0.3em]
-\small Version 0.10.5.50 \quad \textemdash \quad July 13, 2026}
+\small Version 0.10.6.51 \quad \textemdash \quad August 15, 2026}
 \date{}
 
 \begin{document}
@@ -577,7 +577,9 @@ skill registry.
 
 A git-like immutable version store for agent instruction bundles. Uploads to an existing
 skill ID create new immutable versions: the first is full content, subsequent versions are
-unified diff patches. Agents with registered Ed25519 keys must sign uploads.
+unified diff patches. Skills may be deprecated or revoked without losing history.
+Permanent delete removes the skill and all versions so the identifier can be reused.
+Agents with registered Ed25519 keys must sign uploads.
 
 \subsection{Bootstrap Protocol}
 

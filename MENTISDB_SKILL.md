@@ -154,7 +154,7 @@ Fork with `mentisdb_branch_from(source_chain_key, branch_thought_id, branch_chai
 
 ## 🧩 SKILL REGISTRY
 
-Git-like immutable version store for agent behaviour. Tools: `mentisdb_upload_skill`, `mentisdb_read_skill`, `mentisdb_list_skills`, `mentisdb_search_skill`, `mentisdb_skill_versions`, `mentisdb_deprecate_skill`, `mentisdb_revoke_skill`. Always check `warnings` in the read response before trusting content.
+Git-like immutable version store for agent behaviour. Tools: `mentisdb_upload_skill`, `mentisdb_read_skill`, `mentisdb_list_skills`, `mentisdb_search_skill`, `mentisdb_skill_versions`, `mentisdb_deprecate_skill`, `mentisdb_revoke_skill`, `mentisdb_delete_skill`. Revoke keeps an audit row; delete removes the skill and all versions. Always check `warnings` in the read response before trusting content.
 
 ## 🔍 RETRIEVAL
 

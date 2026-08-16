@@ -16,7 +16,7 @@ It stores semantically typed thoughts in an append-only, hash-chained memory log
 
 **Fleet Orchestration at Scale** — one project manager agent decomposes work, dispatches a parallel fleet of specialists, each pre-warmed with shared memory, and synthesizes results wave by wave. MentisDB is the coordination substrate: every agent reads from the same chain and writes its lessons back. The fleet's collective intelligence compounds.
 
-**Versioned Skill Registry** — skills are not just stored, they are versioned like a git repository. Every upload to an existing `skill_id` creates a new immutable version (stored as a unified diff). Any historical version is reconstructable. Skills can be deprecated or revoked while full audit history is preserved. Uploading agents with registered Ed25519 keys must cryptographically sign their uploads — provenance is verifiable, not assumed.
+**Versioned Skill Registry** — skills are not just stored, they are versioned like a git repository. Every upload to an existing `skill_id` creates a new immutable version (stored as a unified diff). Any historical version is reconstructable. Skills can be deprecated or revoked while full audit history is preserved. Permanent delete is the explicit exception: it removes the skill and all versions so the same `skill_id` can be reused. Uploading agents with registered Ed25519 keys must cryptographically sign their uploads — provenance is verifiable, not assumed.
 
 **Session Resurrection** — any agent can call `mentisdb_recent_context` and immediately know exactly where the project stands, what decisions were made, what traps were already hit, and what comes next — without re-reading code, re-running exploratory searches, or asking the human to re-explain context that was earned through hours of work.
 
@@ -548,6 +548,7 @@ REST endpoints:
 - `POST /v1/skills/versions`
 - `POST /v1/skills/deprecate`
 - `POST /v1/skills/revoke`
+- `POST /v1/skills/delete`
 - `POST /v1/webhooks`
 - `GET /v1/webhooks`
 - `GET /v1/webhooks/{id}`
@@ -903,6 +904,7 @@ Contract:
 - callers can opt one embedding space into append-time synchronization on a live handle by registering a managed vector sidecar provider
 - vector hits surface whether they came from a `Fresh` or stale sidecar
 - deleting or corrupting the sidecar degrades only vector retrieval; plain chain reads, appends, and lexical/graph search still work
+- since 0.10.6, each append writes one integrity-chained WAL record beside the JSON snapshot (`*.json.wal`, magic `MDBVWAL1`). Load replays the WAL after verifying the snapshot digest. The snapshot is compacted and the WAL removed every 32 records. Older binaries that only read JSON treat a sidecar with a pending WAL as stale and rebuild.
 
 Operational flow:
 
@@ -1081,7 +1083,7 @@ Dashboard capabilities:
 - latest agent-thought browsing without restarting the daemon after new thoughts are appended
 - chain import from `MEMORY.md`
 - cross-chain agent-memory copy with agent metadata preserved on the target chain
-- skill browsing, diffing, editing into new immutable versions, deprecation, and revocation
+- skill browsing, summary counts (total / active / revoked / deprecated), diffing, editing into new immutable versions, deprecation, revocation, and permanent delete of revoked skills
 - Settings tab to view and edit all `MENTISDB_*` environment variables with live apply, reset-to-default, and `.env` persistence
 
 Protect the dashboard with `MENTISDB_DASHBOARD_PIN` whenever the daemon is reachable
@@ -1337,6 +1339,8 @@ The daemon currently exposes 42 MCP tools:
   Mark a skill as deprecated while preserving all prior versions.
 - `mentisdb_revoke_skill`
   Mark a skill as revoked while preserving audit history.
+- `mentisdb_delete_skill`
+  Permanently remove a skill and all of its versions. After delete the same skill id can be uploaded again.
 - `mentisdb_head`
   Return head metadata, the latest thought at the current chain tip, and integrity state.
 - `mentisdb_register_webhook`
@@ -1404,6 +1408,20 @@ Each uploaded skill version records:
 Uploaders must already exist in the agent registry for the referenced chain. Reusing an existing `skill_id` creates a new immutable version; it does not overwrite history. The dashboard can create those new versions from either the Skills table or a skill detail page while preserving the original uploader identity and source format.
 
 `read_skill` responses include explicit safety warnings because `SKILL.md` content can be malicious. Treat every skill as advisory until provenance, trust, and requested capabilities are validated.
+
+### Skill Lifecycle
+
+The registry is append-only for versions. Status changes do not rewrite history:
+
+| Action | Keeps versions? | Same `skill_id` reusable? | Surfaces |
+|---|---|---|---|
+| **Deprecate** | Yes (audit + still readable) | No — upload creates another version | REST `POST /v1/skills/deprecate`, MCP `mentisdb_deprecate_skill`, dashboard Deprecate |
+| **Revoke** | Yes (audit row; agents should refuse to execute) | No | REST `POST /v1/skills/revoke`, MCP `mentisdb_revoke_skill`, dashboard Revoke |
+| **Delete** | No — every version is removed from `mentisdb-skills.bin` | Yes — the id can be uploaded again as `Active` | REST `POST /v1/skills/delete`, MCP `mentisdb_delete_skill`, dashboard `DELETE /dashboard/api/skills/{id}` |
+
+Revoke when you need a forensic trail. Delete when the skill should vanish (wrong upload, junk, or you want the slug back). Crate, REST, and MCP delete any existing `skill_id` regardless of status. The dashboard UI follows the bearer-token pattern: **Revoke** on active/deprecated rows, then **Delete** / **Delete Permanently** on revoked list rows and the skill-detail pane (type the skill id to confirm).
+
+`SkillRegistry::counts()` and the Skills page summary bar report `total` / `active` / `revoked` / `deprecated`. Permanently deleted skills are absent and are not counted.
 
 ### Skill Versioning
 

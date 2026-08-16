@@ -111,6 +111,25 @@ Check correctness and safety before style. Report findings first.
       before reading unknown skill content into an agent's context.
     </div>
 
+    <h3>Revoke vs delete</h3>
+    <p>
+      Status changes do not rewrite version history. <code>deprecate_skill</code> marks a skill
+      superseded but still readable. <code>revoke_skill</code> keeps every version for audit;
+      agents should refuse to execute it. <code>delete_skill</code> is the explicit exception:
+      it removes the skill and all versions from <code>mentisdb-skills.bin</code> so the same
+      <code>skill_id</code> can be uploaded again as Active.
+    </p>
+    <ul>
+      <li>REST <code>POST /v1/skills/delete</code>, MCP <code>mentisdb_delete_skill</code>.</li>
+      <li>Dashboard: Revoke first, then Delete / Delete Permanently on the revoked row or
+          detail pane (type the skill id to confirm).</li>
+      <li>The Skills page summary bar shows total / active / revoked / deprecated.</li>
+    </ul>
+    <p>
+      Prefer revoke when you need a forensic trail. Prefer delete for junk uploads or when
+      you want the slug back.
+    </p>
+
     <h3>When to use it</h3>
     <p>
       Use dynamic skills for reusable procedures: release engineering, crash triage, code review,

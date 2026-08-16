@@ -108,6 +108,15 @@
       lost append-only thoughts cannot.
     </div>
 
+    <h3>Incremental WAL (0.10.6+)</h3>
+    <p>
+      Appends no longer rewrite the full JSON snapshot. MentisDB writes one integrity-chained
+      record to a sibling <code>*.json.wal</code> (magic <code>MDBVWAL1</code>). Load verifies
+      the snapshot digest, then replays the WAL. After 32 records the snapshot is compacted
+      and the WAL is deleted. Older binaries that only read JSON treat a sidecar with a
+      pending WAL as stale and rebuild from the chain.
+    </p>
+
     <nav class="crumbs">
       <a href="cookbook-3-1-embedding-provider-selection.html">&larr; 3.1 Embedding Provider Selection</a> ·
       <a href="cookbook-3-3-retrieval-tuning.html">3.3 Retrieval Tuning &rarr;</a>

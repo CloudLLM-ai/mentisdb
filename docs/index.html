@@ -40,6 +40,18 @@
   </header>
 
   <article>
+    <h2><a href="mentisdb-0.10.6.51.html">MentisDB 0.10.6.51 &mdash; Permanent Skill Delete, Sidecar WAL, Search Persist Wins</a></h2>
+    <div class="meta">August 15, 2026</div>
+    <p>
+      Operators can permanently delete skills from the dashboard, REST, and MCP
+      (revoke still keeps an audit row). Skills page shows total / active /
+      revoked / deprecated. Vector sidecars now append an integrity-chained WAL
+      instead of rewriting the JSON snapshot; MCP/REST release the chain write
+      lock before derived I/O.
+    </p>
+  </article>
+
+  <article>
     <h2><a href="mentisdb-0.10.5.50.html">MentisDB 0.10.5.50 &mdash; Search Invalidation, Bearer Write Fix, Token Delete</a></h2>
     <div class="meta">July 13, 2026</div>
     <p>

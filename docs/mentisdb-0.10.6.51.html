@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.10.6.51 — Permanent Skill Delete, Sidecar WAL, Search Persist Wins</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article .meta { color: #888; font-size: 0.85rem; margin-bottom: 1rem; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    .callout { background: #eef2ff; border-left: 3px solid #4361ee; border-radius: 0 4px 4px 0; padding: 1rem; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="index.html">MentisDB Blog</a></h1>
+    <p>Durable memory for AI agents</p>
+  </header>
+
+  <article>
+    <h2>MentisDB 0.10.6.51 &mdash; Permanent Skill Delete, Sidecar WAL, Search Persist Wins</h2>
+    <div class="meta">August 15, 2026</div>
+
+    <p>
+      This release lets operators remove a skill for good — not just revoke it —
+      from the crate, REST, MCP, and the web dashboard. The Skills page now
+      shows how many skills you have and how many are active, revoked, or
+      deprecated. Under the hood, vector sidecars stop rewriting their full
+      JSON snapshot on every append, and MCP/REST no longer hold the chain
+      write lock across that derived I/O.
+    </p>
+
+    <div class="callout">
+      <strong>Upgrade:</strong>
+      <code>cargo install mentisdb --locked --force</code>
+      (or let the daemon self-updater install the tag). Restart the daemon after install.
+      Existing sidecars keep working: the next append starts a sibling
+      <code>*.json.wal</code>. Older binaries that only read JSON will treat a
+      sidecar with a pending WAL as stale and rebuild it.
+    </div>
+
+    <h3>Skills: revoke vs delete</h3>
+    <p>
+      Revoke still keeps every version for audit. Agents should refuse to
+      execute a revoked skill. Permanent delete is the explicit exception to
+      the registry’s append-only lifecycle: <code>SkillRegistry::delete_skill</code>
+      removes the entry, indexes, and latest summary from
+      <code>mentisdb-skills.bin</code>. After delete, list/search/read miss the
+      id and the same <code>skill_id</code> can be uploaded again as Active.
+    </p>
+    <ul>
+      <li>REST: <code>POST /v1/skills/delete</code> with <code>{ "skill_id": "…" }</code></li>
+      <li>MCP: <code>mentisdb_delete_skill</code></li>
+      <li>Dashboard: <code>DELETE /dashboard/api/skills/{id}</code></li>
+    </ul>
+    <p>
+      Crate, REST, and MCP will delete any existing skill. The dashboard UI
+      matches bearer-token delete: <strong>Revoke</strong> on active or
+      deprecated rows, then <strong>Delete</strong> on the revoked list row
+      or <strong>Delete Permanently…</strong> on the detail pane (type the
+      skill id to confirm).
+    </p>
+    <p>
+      The Skills list now has a summary bar: total, active, revoked, and
+      deprecated. Those counts come from <code>SkillRegistry::counts()</code>
+      — deleted skills are gone and are not counted.
+    </p>
+
+    <h3>Vector sidecar WAL</h3>
+    <p>
+      Managed sidecars used to serialize the entire JSON snapshot on every
+      append. Large chains paid O(n) write I/O for one new embedding.
+      0.10.6 writes one integrity-chained WAL record instead
+      (magic <code>MDBVWAL1</code>, digest
+      <code>SHA-256(prev || entry)</code>). Load verifies the snapshot, then
+      replays <code>*.json.wal</code>. After 32 records the snapshot is
+      compacted and the WAL is deleted.
+    </p>
+    <p>
+      The append-only thought log is still the source of truth. A corrupt WAL
+      fails verification and the sidecar is rebuilt from the chain.
+    </p>
+
+    <h3>Search and dashboard persist</h3>
+    <ul>
+      <li>MCP/REST append releases the chain write lock before sidecar WAL and overlay I/O so ranked search can proceed. Crate <code>append_thought</code> still flushes derived files before returning.</li>
+      <li>Implicit-edge first build stays pairwise for N ≤ 128 (exact tests) and uses a temporary HNSW top-k search above that.</li>
+      <li>Dashboard <code>get_or_open_chain</code> reopens a cached handle only when the on-disk thought count is ahead of the live handle.</li>
+      <li><code>query_ranked</code> scores the cached Exact/HNSW backend with <code>search_filtered</code> instead of cloning vectors into a throwaway index.</li>
+      <li>Exact cosine top-k uses <code>select_nth_unstable_by</code>; adjacency, stemmer, thesaurus slices, HNSW <code>ef_search</code>, webhook <code>Client</code>, and bearer-token registry loads are cached.</li>
+    </ul>
+
+    <h3>Verification</h3>
+    <ul>
+      <li><code>make clippy</code> (warnings as errors)</li>
+      <li><code>cargo test --all-features</code></li>
+      <li><code>cargo package --features local-embeddings</code></li>
+      <li>Criterion <code>search_ranked</code> smoke (sample-size 10)</li>
+      <li>Full LoCoMo / LongMemEval not re-run: BM25/vector fusion weights are unchanged. Overlay construction is approximate only for first builds with N &gt; 128.</li>
+    </ul>
+
+    <h3>Links</h3>
+    <ul>
+      <li><a href="https://github.com/CloudLLM-ai/mentisdb/releases/tag/0.10.6.51">GitHub release 0.10.6.51</a></li>
+      <li><a href="https://crates.io/crates/mentisdb">crates.io/mentisdb</a></li>
+      <li><a href="https://docs.mentisdb.com">docs.mentisdb.com</a> — Skills Registry and vector sidecars</li>
+    </ul>
+  </article>
+</body>
+</html>

@@ -1,8 +1,8 @@
 # MentisDB: Durable Semantic Memory for Software Agents
 
 **Author:** Angel Leon
-**Version:** 0.10.5.50
-**Date:** 2026-07-13
+**Version:** 0.10.6.51
+**Date:** 2026-08-15
 
 ---
 
@@ -933,7 +933,10 @@ Content-Type: application/json
 The skill registry is a git-like immutable version store for agent instruction bundles.
 An upload to an existing skill ID creates a new immutable version: the first is stored as
 full content, subsequent versions as unified diff patches. Version reconstruction replays
-patches from v0 forward.
+patches from v0 forward. Skills may be deprecated or revoked without losing history.
+Permanent delete (`delete_skill`, REST `POST /v1/skills/delete`, MCP
+`mentisdb_delete_skill`) is the explicit exception: it removes the skill and all
+versions so the same identifier can be reused.
 
 Agents with registered Ed25519 keys must cryptographically sign uploads; signature
 verification is server-side before acceptance.
