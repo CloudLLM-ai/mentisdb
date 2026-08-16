@@ -1,6 +1,9 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 -> 0.10.6.51)
+## Shipped (0.8.2 -> 0.10.7.52)
+
+### 0.10.7.52 - Hotfix: Load 0.10.5 skill registries
+- **Skill registry boot crash** — 0.10.6 inserted `SkillVersion.schema_version` in the middle of the bincode record. Existing `mentisdb-skills.bin` files failed to deserialize (`integer N, expected variant index 0 <= i < 2`) and `MentisDbService::new` panicked. 0.10.7 decodes the 0.10.5 V2 layout and rewrites the file on open/migrate.
 
 ### 0.10.6.51 - Permanent Skill Delete, Skills Summary, Retrieval Persist/Lock Wins
 - **Permanent skill delete** — `SkillRegistry::delete_skill` removes a skill and every version so the same `skill_id` can be re-uploaded as Active. Revoke still keeps an audit row. REST `POST /v1/skills/delete`, MCP `mentisdb_delete_skill`, dashboard `DELETE /dashboard/api/skills/{id}`.

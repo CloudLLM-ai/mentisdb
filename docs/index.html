@@ -40,6 +40,17 @@
   </header>
 
   <article>
+    <h2><a href="mentisdb-0.10.7.52.html">MentisDB 0.10.7.52 &mdash; Hotfix: skill registry boot crash</a></h2>
+    <div class="meta">August 16, 2026</div>
+    <p>
+      Upgrade immediately if 0.10.6 panicked on an existing
+      <code>mentisdb-skills.bin</code>. The 0.10.6
+      <code>schema_version</code> field broke bincode decode of 0.10.5
+      registries. 0.10.7 loads those files and rewrites them.
+    </p>
+  </article>
+
+  <article>
     <h2><a href="mentisdb-0.10.6.51.html">MentisDB 0.10.6.51 &mdash; Permanent Skill Delete, Sidecar WAL, Search Persist Wins</a></h2>
     <div class="meta">August 15, 2026</div>
     <p>

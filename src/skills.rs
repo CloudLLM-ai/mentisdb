@@ -870,6 +870,108 @@ struct PersistedSkillRegistryV1 {
     skills: BTreeMap<String, SkillEntryV1>,
 }
 
+/// V2 on-disk `SkillVersion` as written by 0.10.5 and earlier (no `schema_version`).
+///
+/// 0.10.6 inserted [`SkillVersion::schema_version`] immediately before `content`.
+/// Bincode has no `#[serde(default)]` for missing fields, so a 0.10.6 decoder
+/// reads the `Full`/`Delta` payload length as the content-enum discriminant
+/// (`invalid value: integer N, expected variant index 0 <= i < 2`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SkillVersionV2PreSchema {
+    version_id: Uuid,
+    version_number: u32,
+    uploaded_at: DateTime<Utc>,
+    uploaded_by_agent_id: String,
+    uploaded_by_agent_name: Option<String>,
+    uploaded_by_agent_owner: Option<String>,
+    source_format: SkillFormat,
+    content_hash: String,
+    content: SkillVersionContent,
+    signing_key_id: Option<String>,
+    skill_signature: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SkillEntryV2PreSchema {
+    skill_id: String,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    status: SkillStatus,
+    status_reason: Option<String>,
+    versions: Vec<SkillVersionV2PreSchema>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedSkillRegistryV2PreSchema {
+    version: u32,
+    skills: BTreeMap<String, SkillEntryV2PreSchema>,
+}
+
+impl SkillVersionV2PreSchema {
+    fn into_current(self) -> SkillVersion {
+        SkillVersion {
+            version_id: self.version_id,
+            version_number: self.version_number,
+            uploaded_at: self.uploaded_at,
+            uploaded_by_agent_id: self.uploaded_by_agent_id,
+            uploaded_by_agent_name: self.uploaded_by_agent_name,
+            uploaded_by_agent_owner: self.uploaded_by_agent_owner,
+            source_format: self.source_format,
+            content_hash: self.content_hash,
+            schema_version: 0,
+            content: self.content,
+            signing_key_id: self.signing_key_id,
+            skill_signature: self.skill_signature,
+        }
+    }
+}
+
+fn decode_persisted_skill_registry(
+    bytes: &[u8],
+) -> Result<(PersistedSkillRegistry, bool), bincode::error::DecodeError> {
+    match bincode::serde::decode_from_slice::<PersistedSkillRegistry, _>(
+        bytes,
+        bincode::config::standard(),
+    ) {
+        Ok((registry, _)) => Ok((registry, false)),
+        Err(current_error) => {
+            let (legacy, _) = bincode::serde::decode_from_slice::<
+                PersistedSkillRegistryV2PreSchema,
+                _,
+            >(bytes, bincode::config::standard())
+            .map_err(|_| current_error)?;
+            let skills = legacy
+                .skills
+                .into_iter()
+                .map(|(id, entry)| {
+                    (
+                        id,
+                        SkillEntry {
+                            skill_id: entry.skill_id,
+                            created_at: entry.created_at,
+                            updated_at: entry.updated_at,
+                            status: entry.status,
+                            status_reason: entry.status_reason,
+                            versions: entry
+                                .versions
+                                .into_iter()
+                                .map(SkillVersionV2PreSchema::into_current)
+                                .collect(),
+                        },
+                    )
+                })
+                .collect();
+            Ok((
+                PersistedSkillRegistry {
+                    version: legacy.version,
+                    skills,
+                },
+                true,
+            ))
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // In-memory index
 // ---------------------------------------------------------------------------
@@ -1157,29 +1259,26 @@ impl SkillRegistry {
 
         let bytes = fs::read(&path)?;
 
-        // Attempt to decode as current (V2) format first.
-        let persisted: PersistedSkillRegistry =
-            bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
-                .map(|(registry, _)| registry)
-                .map_err(|error| {
-                    // If V2 decode fails, check whether it looks like a V1 registry.
-                    if bincode::serde::decode_from_slice::<PersistedSkillRegistryV1, _>(
-                        &bytes,
-                        bincode::config::standard(),
+        // Current V2 (with SkillVersion.schema_version), then 0.10.5 V2 layout.
+        let (persisted, upgraded_from_pre_schema) = decode_persisted_skill_registry(&bytes)
+            .map_err(|error| {
+                if bincode::serde::decode_from_slice::<PersistedSkillRegistryV1, _>(
+                    &bytes,
+                    bincode::config::standard(),
+                )
+                .is_ok()
+                {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "skill registry is at V1; run migrate_skill_registry() before opening",
                     )
-                    .is_ok()
-                    {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "skill registry is at V1; run migrate_skill_registry() before opening",
-                        )
-                    } else {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("Failed to deserialize skill registry: {error}"),
-                        )
-                    }
-                })?;
+                } else {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Failed to deserialize skill registry: {error}"),
+                    )
+                }
+            })?;
 
         if persisted.version == MENTISDB_SKILL_REGISTRY_V1 {
             return Err(io::Error::new(
@@ -1199,14 +1298,18 @@ impl SkillRegistry {
 
         let last_modified = fs::metadata(&path).and_then(|m| m.modified()).ok();
 
-        Ok(Self {
+        let mut registry = Self {
             version: persisted.version,
             indexes: SkillIndexes::from_entries(&persisted.skills),
             latest_summaries: build_latest_summaries(&persisted.skills)?,
             skills: persisted.skills,
             storage_path: Some(path),
             last_modified,
-        })
+        };
+        if upgraded_from_pre_schema {
+            registry.persist()?;
+        }
+        Ok(registry)
     }
 
     /// Return the binary storage path used by this registry, if any.
@@ -2144,14 +2247,41 @@ pub fn migrate_skill_registry<P: AsRef<Path>>(
     }
     let bytes = fs::read(&path)?;
 
-    // Try current version first — if it loads cleanly, no migration needed.
-    if let Ok((persisted, _)) = bincode::serde::decode_from_slice::<PersistedSkillRegistry, _>(
-        &bytes,
-        bincode::config::standard(),
-    ) {
-        if persisted.version >= MENTISDB_SKILL_REGISTRY_CURRENT_VERSION {
+    // Current V2 (with schema_version) or 0.10.5 V2 (without) — both are
+    // already V2. Rewrite the pre-schema layout so later opens use the
+    // current decoder only.
+    match decode_persisted_skill_registry(&bytes) {
+        Ok((persisted, false)) if persisted.version >= MENTISDB_SKILL_REGISTRY_CURRENT_VERSION => {
             return Ok(None);
         }
+        Ok((persisted, true)) => {
+            let from_version = persisted.version;
+            let skills_migrated = persisted.skills.len();
+            let versions_migrated = persisted
+                .skills
+                .values()
+                .map(|entry| entry.versions.len())
+                .sum();
+            let encoded = bincode::serde::encode_to_vec(
+                &PersistedSkillRegistry {
+                    version: MENTISDB_SKILL_REGISTRY_CURRENT_VERSION,
+                    skills: persisted.skills,
+                },
+                bincode::config::standard(),
+            )
+            .map_err(|e| io::Error::other(format!("encode error: {e}")))?;
+            let temp_path = path.with_extension("tmp");
+            fs::write(&temp_path, encoded)?;
+            fs::rename(&temp_path, &path)?;
+            return Ok(Some(SkillRegistryMigrationReport {
+                path,
+                skills_migrated,
+                versions_migrated,
+                from_version,
+                to_version: MENTISDB_SKILL_REGISTRY_CURRENT_VERSION,
+            }));
+        }
+        Ok(_) | Err(_) => {}
     }
 
     // Fall back to V1 shape.

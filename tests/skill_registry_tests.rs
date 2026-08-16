@@ -1038,3 +1038,119 @@ Content here.
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
+
+/// 0.10.6 inserted `SkillVersion.schema_version` before `content`. Production
+/// 0.10.5 files then failed open with `invalid value: integer N, expected
+/// variant index 0 <= i < 2` (N was the Full payload length).
+#[test]
+fn skill_registry_opens_v2_written_before_schema_version_field() {
+    use bincode::config::standard as bincode_standard;
+    use chrono::Utc;
+    use mentisdb::{SkillStatus, SkillVersionContent};
+    use serde::{Deserialize, Serialize};
+    use sha2::{Digest, Sha256};
+    use std::collections::BTreeMap;
+    use uuid::Uuid;
+
+    #[derive(Serialize, Deserialize)]
+    struct SkillVersionV2PreSchemaMirror {
+        version_id: Uuid,
+        version_number: u32,
+        uploaded_at: chrono::DateTime<Utc>,
+        uploaded_by_agent_id: String,
+        uploaded_by_agent_name: Option<String>,
+        uploaded_by_agent_owner: Option<String>,
+        source_format: SkillFormat,
+        content_hash: String,
+        content: SkillVersionContent,
+        signing_key_id: Option<String>,
+        skill_signature: Option<Vec<u8>>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct SkillEntryV2PreSchemaMirror {
+        skill_id: String,
+        created_at: chrono::DateTime<Utc>,
+        updated_at: chrono::DateTime<Utc>,
+        status: SkillStatus,
+        status_reason: Option<String>,
+        versions: Vec<SkillVersionV2PreSchemaMirror>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct PersistedSkillRegistryV2PreSchemaMirror {
+        version: u32,
+        skills: BTreeMap<String, SkillEntryV2PreSchemaMirror>,
+    }
+
+    let raw = format!(
+        "---\nschema_version: 1\nname: production-skill\ndescription: Pre-0.10.6 layout\n---\n\n# Body\n\n{}",
+        "x".repeat(10633)
+    );
+    let content_hash = format!("{:x}", Sha256::digest(raw.as_bytes()));
+    let now = Utc::now();
+    let version_id = Uuid::new_v4();
+    let encoded = bincode::serde::encode_to_vec(
+        &PersistedSkillRegistryV2PreSchemaMirror {
+            version: MENTISDB_SKILL_REGISTRY_CURRENT_VERSION,
+            skills: BTreeMap::from([(
+                "production-skill".to_string(),
+                SkillEntryV2PreSchemaMirror {
+                    skill_id: "production-skill".to_string(),
+                    created_at: now,
+                    updated_at: now,
+                    status: SkillStatus::Active,
+                    status_reason: None,
+                    versions: vec![SkillVersionV2PreSchemaMirror {
+                        version_id,
+                        version_number: 0,
+                        uploaded_at: now,
+                        uploaded_by_agent_id: "ops".to_string(),
+                        uploaded_by_agent_name: None,
+                        uploaded_by_agent_owner: None,
+                        source_format: SkillFormat::Markdown,
+                        content_hash,
+                        content: SkillVersionContent::Full { raw: raw.clone() },
+                        signing_key_id: None,
+                        skill_signature: None,
+                    }],
+                },
+            )]),
+        },
+        bincode_standard(),
+    )
+    .expect("pre-schema V2 registry must encode");
+
+    let path = unique_registry_path();
+    let chain_dir = path.parent().unwrap().to_path_buf();
+    std::fs::write(&path, &encoded).unwrap();
+
+    let registry = SkillRegistry::open_at_path(&path)
+        .expect("0.10.5 V2 skill registry must open after the schema_version wire-compat decoder");
+    let listed = registry.list_skills();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].skill_id, "production-skill");
+    let output = registry
+        .read_skill("production-skill", None, SkillFormat::Markdown)
+        .unwrap();
+    assert!(output.content.contains(&"x".repeat(10633)));
+
+    let reopened = SkillRegistry::open_at_path(&path).expect("rewritten registry must reopen");
+    assert_eq!(reopened.list_skills().len(), 1);
+    assert!(migrate_skill_registry(&chain_dir)
+        .expect("upgraded current layout must not fail migrate")
+        .is_none());
+
+    let migrate_path = unique_registry_path();
+    let migrate_dir = migrate_path.parent().unwrap().to_path_buf();
+    std::fs::write(&migrate_path, &encoded).unwrap();
+    let report = migrate_skill_registry(&migrate_dir)
+        .expect("pre-schema V2 must not fail migration")
+        .expect("startup migrate should rewrite the pre-schema V2 layout");
+    assert_eq!(report.skills_migrated, 1);
+    assert_eq!(report.versions_migrated, 1);
+    SkillRegistry::open_at_path(&migrate_path).expect("registry must open after startup migrate");
+
+    let _ = std::fs::remove_dir_all(chain_dir);
+    let _ = std::fs::remove_dir_all(migrate_dir);
+}

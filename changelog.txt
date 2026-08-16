@@ -1,3 +1,11 @@
+0.10.7.52 AUG/16/2026
+  - fix(skills): open 0.10.5 `mentisdb-skills.bin` files after 0.10.6 inserted
+    `SkillVersion.schema_version` before `content`. Bincode treated the Full
+    payload length as the content-enum discriminant (`invalid value: integer
+    10633, expected variant index 0 <= i < 2`) and the daemon panicked on
+    boot. Load now decodes the pre-schema V2 layout, rewrites the file, and
+    starts. Existing skill bodies are unchanged.
+
 0.10.6.51 AUG/15/2026
   - feat(skills/dashboard): permanent skill delete. Revoke still keeps an
     audit row; `SkillRegistry::delete_skill` removes the skill and all
