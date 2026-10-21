@@ -779,6 +779,7 @@ fn flush_background_buffer(
     file_path: &Path,
     write_buffer: &mut Vec<u8>,
     dirty_count: &mut usize,
+    sync: bool,
 ) -> io::Result<()> {
     if write_buffer.is_empty() {
         return Ok(());
@@ -789,6 +790,11 @@ fn flush_background_buffer(
     let writer = file.as_mut().unwrap();
     writer.write_all(write_buffer)?;
     writer.flush()?;
+    if sync {
+        // One fsync per group commit: acknowledged durable appends survive
+        // power loss, not just process crashes.
+        writer.get_ref().sync_data()?;
+    }
     write_buffer.clear();
     *dirty_count = 0;
     Ok(())
@@ -915,6 +921,7 @@ impl BackgroundWriter {
                                     &file_path,
                                     &mut write_buffer,
                                     &mut dirty_count,
+                                    true,
                                 );
                                 if let Err(error) = &result {
                                     set_background_error(&error_state, error);
@@ -941,6 +948,7 @@ impl BackgroundWriter {
                                     &file_path,
                                     &mut write_buffer,
                                     &mut dirty_count,
+                                    false,
                                 )
                             } else {
                                 Ok(())
@@ -952,6 +960,7 @@ impl BackgroundWriter {
                                 &file_path,
                                 &mut write_buffer,
                                 &mut dirty_count,
+                                true,
                             );
                             let response = match &result {
                                 Ok(()) => Ok(()),
@@ -969,6 +978,7 @@ impl BackgroundWriter {
                                 &file_path,
                                 &mut write_buffer,
                                 &mut dirty_count,
+                                true,
                             );
                             let response = match &result {
                                 Ok(()) => Ok(()),
@@ -991,6 +1001,7 @@ impl BackgroundWriter {
                     &file_path,
                     &mut write_buffer,
                     &mut dirty_count,
+                    true,
                 ) {
                     set_background_error(&error_state, &error);
                 }
