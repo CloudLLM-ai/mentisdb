@@ -65,7 +65,7 @@ use crate::search::thesaurus;
 use crate::webhooks::{WebhookManager, WebhookRegistration};
 use crate::{
     deregister_chain, load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus,
-    EntityTypeRecord, LlmExtractionConfig, ManagedVectorProviderKind, MemoryScope, MentisDb,
+    EntityTypeRecord, ManagedVectorProviderKind, MemoryScope, MentisDb,
     PublicKeyAlgorithm, RankedSearchBackend, RankedSearchGraph, RankedSearchQuery,
     RankedSearchScore, SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus,
     SkillSummary, SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput,
@@ -4575,6 +4575,19 @@ impl MentisDbService {
         Ok(DeleteWebhookResponse { deleted })
     }
 
+    #[cfg(not(feature = "llm-extraction"))]
+    async fn extract_memories(
+        &self,
+        request: ExtractMemoriesRequest,
+    ) -> Result<ExtractMemoriesResponse, Box<dyn Error + Send + Sync>> {
+        let _ = (&request.text, &request.chain_key, &request.prompt_template);
+        Err(Box::new(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "memory extraction requires a build with the `llm-extraction` feature",
+        )))
+    }
+
+    #[cfg(feature = "llm-extraction")]
     async fn extract_memories(
         &self,
         request: ExtractMemoriesRequest,
@@ -4582,7 +4595,7 @@ impl MentisDbService {
         use crate::llm::extract_memories_from_text;
 
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
-        let config = LlmExtractionConfig::from_env()?;
+        let config = crate::LlmExtractionConfig::from_env()?;
         let _chain = self.get_chain(Some(&chain_key), None).await?;
 
         // Call the LLM extraction

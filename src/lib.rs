@@ -301,16 +301,19 @@
 
 pub mod auth;
 pub mod backup;
+#[cfg(feature = "server")]
 pub mod cli;
 #[cfg(feature = "server")]
 pub(crate) mod dashboard;
 pub mod integrations;
+#[cfg(feature = "llm-extraction")]
 pub mod llm;
 pub mod paths;
 pub mod search;
 #[cfg(feature = "server")]
 pub mod server;
 mod skills;
+#[cfg(feature = "server")]
 pub mod tui;
 #[cfg(feature = "server")]
 /// Webhook notification system for notifying external HTTP endpoints on thought append events.
@@ -9058,6 +9061,7 @@ impl MentisDb {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg(feature = "llm-extraction")]
     pub async fn extract_memories(
         &self,
         text: &str,
