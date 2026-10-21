@@ -65,13 +65,13 @@ use crate::search::thesaurus;
 use crate::webhooks::{WebhookManager, WebhookRegistration};
 use crate::{
     deregister_chain, load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus,
-    EntityTypeRecord, ManagedVectorProviderKind, MemoryScope, MentisDb,
-    PublicKeyAlgorithm, RankedSearchBackend, RankedSearchGraph, RankedSearchQuery,
-    RankedSearchScore, SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus,
-    SkillSummary, SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput,
-    ThoughtQuery, ThoughtRelation, ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow,
-    ThoughtTraversalAnchor, ThoughtTraversalCursor, ThoughtTraversalDirection,
-    ThoughtTraversalRequest, ThoughtType, TimeWindowUnit, TokenUsage, MENTISDB_CURRENT_VERSION,
+    EntityTypeRecord, ManagedVectorProviderKind, MemoryScope, MentisDb, PublicKeyAlgorithm,
+    RankedSearchBackend, RankedSearchGraph, RankedSearchQuery, RankedSearchScore, SkillFormat,
+    SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus, SkillSummary, SkillUpload,
+    SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelation,
+    ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor,
+    ThoughtTraversalCursor, ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType,
+    TimeWindowUnit, TokenUsage, MENTISDB_CURRENT_VERSION,
 };
 use async_trait::async_trait;
 use axum::extract::{Path as AxumPath, Query, State};
