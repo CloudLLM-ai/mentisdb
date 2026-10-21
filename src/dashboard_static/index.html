@@ -888,7 +888,9 @@
   let _chainListCache = [];
 
   window._openBranchChain = function(ck, thoughtId) {
+    closeModal();
     _branchSourceKey = ck;
+    document.getElementById('cl-br-submit').disabled = false;
     document.getElementById('cl-br-src').textContent = ck;
     document.getElementById('cl-br-name').value = ck + '-branch';
     document.getElementById('cl-br-thought-id').value = thoughtId || '';
@@ -902,9 +904,9 @@
         const thoughts = data.thoughts || [];
         if (!thoughts.length) { container.innerHTML = '<div style="color:#8b949e;font-size:0.85rem">No thoughts found</div>'; return; }
         container.innerHTML = thoughts.map(t => {
-          const preview = (t.content || '').slice(0, 80).replace(/</g, '&lt;');
+          const preview = esc((t.content || '').slice(0, 80));
           return `<div class="clickable" style="padding:4px 8px;border-radius:4px;margin-bottom:2px;font-size:0.85rem;cursor:pointer;border:1px solid rgba(88,166,255,0.2)" data-act="fill-branch-thought" data-id="${esc(t.id)}">
-            <span class="mono" style="color:#58a6ff">${t.id}</span>
+            <span class="mono" style="color:#58a6ff">${esc(t.id)}</span>
             <span style="color:#8b949e;margin-left:8px">${preview}</span>
           </div>`;
         }).join('');
@@ -926,6 +928,7 @@
     document.getElementById('cl-mrg-src').textContent = ck;
     document.getElementById('cl-mrg-src2').textContent = ck;
     const sel = document.getElementById('cl-mrg-target');
+    document.getElementById('cl-mrg-submit').disabled = false;
     sel.innerHTML = '';
     const populate = (chains) => {
       (chains || []).forEach(c => {
@@ -936,11 +939,11 @@
         sel.appendChild(opt);
       });
     };
-    if (_chainListCache.length) {
-      populate(_chainListCache);
-    } else {
-      api('/dashboard/api/chains').then(chains => { _chainListCache = chains; populate(chains); }).catch(() => {});
-    }
+    // Always refetch so merged/deleted/created chains are reflected.
+    api('/dashboard/api/chains').then(chains => {
+      _chainListCache = chains || [];
+      if (_mergeSourceKey === ck) { sel.innerHTML = ''; populate(_chainListCache); }
+    }).catch(() => {});
     document.getElementById('cl-merge-modal').classList.remove('hidden');
     document.getElementById('cl-mrg-fb').textContent = '';
     document.getElementById('cl-mrg-fb').className = 'feedback';
@@ -1746,9 +1749,9 @@
     if (!picker) return;
     if (_chainListCache.length) {
       renderBearerTokenChainOptions(_chainListCache);
-      return;
+    } else {
+      picker.innerHTML = '<span style="color:#8b949e;font-size:0.84rem">Loading chains...</span>';
     }
-    picker.innerHTML = '<span style="color:#8b949e;font-size:0.84rem">Loading chains...</span>';
     api('/dashboard/api/chains')
       .then(chains => {
         _chainListCache = chains || [];
