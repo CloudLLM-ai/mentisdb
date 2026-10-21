@@ -3398,13 +3398,14 @@ pub struct RankedSearchQuery {
     /// When `true`, apply Reciprocal Rank Fusion (RRF) reranking to the
     /// top `rerank_k` candidates after the initial scoring pass.
     ///
-    /// RRF produces separate lexical-only and vector-only rankings over
-    /// the candidate set, then merges them via
-    /// `score = 1/(k + rank_lexical) + 1/(k + rank_vector)` (with the
-    /// standard `k = 60` damping constant). Graph, importance, confidence,
-    /// recency, and session cohesion signals are added back as small
-    /// additive adjustments on top of the RRF total so they can still
-    /// break ties without overriding the rank-based fusion.
+    /// RRF produces separate lexical, vector, and graph rankings over the
+    /// candidate set (only candidates with a positive score for a signal
+    /// enter that signal's list), then merges them via
+    /// `score = 1/(k + rank_lexical) + 1/(k + rank_vector) + 1/(k + rank_graph)`
+    /// (standard `k = 60`). The fused score is exposed as `score.rrf` and,
+    /// scaled by [`RRF_SCORE_SCALE`](crate::search::ranked::RRF_SCORE_SCALE),
+    /// added to the candidate's default total as a rank-consensus bonus, so
+    /// reranking refines the default ordering instead of replacing it.
     pub enable_reranking: bool,
     /// Number of top candidates to rerank when [`enable_reranking`](Self::enable_reranking)
     /// is `true`.
@@ -3868,25 +3869,19 @@ struct ScoredCandidate<'a> {
     session_cohesion: f32,
     rrf: f32,
     total: f32,
-    /// True when RRF reranking is active and this candidate is a member of the
-    /// rank-list union (and therefore carries an RRF-scale total).
-    in_rrf_union: bool,
 }
 
 /// Total order over scored candidates: best first.
 ///
-/// RRF-union members always precede non-members because their totals live on
-/// a different (much smaller) scale than raw lexical totals. Remaining ties
-/// fall through the historical key chain and end with a unique descending
-/// thought index, so the order is fully deterministic.
+/// Ties fall through the historical key chain and end with a unique
+/// descending thought index, so the order is fully deterministic.
 fn compare_scored_candidates(
     left: &ScoredCandidate<'_>,
     right: &ScoredCandidate<'_>,
 ) -> std::cmp::Ordering {
     right
-        .in_rrf_union
-        .cmp(&left.in_rrf_union)
-        .then_with(|| right.total.total_cmp(&left.total))
+        .total
+        .total_cmp(&left.total)
         .then_with(|| right.lexical.total_cmp(&left.lexical))
         .then_with(|| right.vector.total_cmp(&left.vector))
         .then_with(|| right.graph.total_cmp(&left.graph))
@@ -3942,14 +3937,17 @@ fn apply_session_cohesion(scored: &mut [ScoredCandidate<'_>]) {
 
 /// RRF reranking: build lexical, vector and graph rank lists over the top
 /// `rerank_k` candidates that actually have a positive score for that signal,
-/// merge them with Reciprocal Rank Fusion, and replace the total of every
-/// union member with the RRF score plus the additive, non-rankable signals
-/// (importance, confidence, recency, session cohesion, graph, relation, seed
-/// support).
+/// merge them with Reciprocal Rank Fusion, and add the fused score, scaled by
+/// [`RRF_SCORE_SCALE`](crate::search::ranked::RRF_SCORE_SCALE), to the default
+/// total of every union member.
 ///
-/// Candidates outside the union keep their raw totals but are ordered after
-/// the union (see [`compare_scored_candidates`]), because raw BM25-scale
-/// totals would otherwise outrank the much smaller RRF-scale totals.
+/// RRF scores live in `0.0..~0.05`, orders of magnitude below BM25-scale
+/// totals, so replacing the total with the raw RRF score makes the ordering
+/// depend on the small additive signals instead of on the fused ranking (and
+/// pushes union members below the unreranked tail). Adding the scaled RRF
+/// consensus bonus to the default total keeps every candidate on one scale:
+/// the default ordering is preserved except where the lexical, vector and
+/// graph rankings agree, and `score.rrf` holds the raw fused score.
 fn apply_rrf_rerank(scored: &mut [ScoredCandidate<'_>], rerank_k: usize) {
     let lexical: Vec<(u64, f32)> = scored
         .iter()
@@ -3965,15 +3963,7 @@ fn apply_rrf_rerank(scored: &mut [ScoredCandidate<'_>], rerank_k: usize) {
         if let Some(&rrf) = rrf_scores.get(&candidate.thought.index) {
             let rrf_f32 = rrf as f32;
             candidate.rrf = rrf_f32;
-            candidate.in_rrf_union = true;
-            candidate.total = rrf_f32
-                + candidate.graph
-                + candidate.relation
-                + candidate.seed_support
-                + candidate.importance
-                + candidate.confidence
-                + candidate.recency
-                + candidate.session_cohesion;
+            candidate.total += crate::search::ranked::RRF_SCORE_SCALE * rrf_f32;
         }
     }
 }
@@ -6638,28 +6628,18 @@ impl MentisDb {
             .into_iter()
             .collect();
 
+            // Per-chain `query_ranked` may already have added its own RRF
+            // bonus; replace it with the cross-chain one instead of stacking.
+            let scale = crate::search::ranked::RRF_SCORE_SCALE;
             for hit in &mut deduplicated {
-                if let Some(&rrf) = rrf_scores.get(&hit.1.id) {
-                    let rrf_f32 = rrf as f32;
-                    hit.2.rrf = rrf_f32;
-                    let additive = hit.2.graph
-                        + hit.2.relation
-                        + hit.2.seed_support
-                        + hit.2.importance
-                        + hit.2.confidence
-                        + hit.2.recency
-                        + hit.2.session_cohesion;
-                    hit.2.total = rrf_f32 + additive;
-                }
+                let fused = rrf_scores.get(&hit.1.id).map(|&r| r as f32).unwrap_or(0.0);
+                hit.2.total += scale * (fused - hit.2.rrf);
+                hit.2.rrf = fused;
             }
 
-            // Re-sort: RRF-union members first (their totals are on a
-            // different scale than raw totals), then by total.
             deduplicated.sort_by(|a, b| {
-                rrf_scores
-                    .contains_key(&b.1.id)
-                    .cmp(&rrf_scores.contains_key(&a.1.id))
-                    .then_with(|| b.2.total.total_cmp(&a.2.total))
+                b.2.total
+                    .total_cmp(&a.2.total)
                     .then_with(|| a.1.index.cmp(&b.1.index))
                     .then_with(|| a.0.cmp(b.0))
             });
@@ -7932,7 +7912,6 @@ impl MentisDb {
             session_cohesion: 0.0,
             rrf: 0.0,
             total,
-            in_rrf_union: false,
         })
     }
 

@@ -15,6 +15,16 @@
 /// in the original RRF paper and works well across diverse collections.
 pub const RRF_K: usize = 60;
 
+/// Multiplier applied to a fused RRF score before it is added to a hit's
+/// default ranked total.
+///
+/// Raw RRF scores are tiny (a rank-1 hit in one list is `1/61`), while the
+/// default total is BM25-scale (typically 3 to 30). Scaling by 50 turns a
+/// rank-1 hit in all three lists into a bonus of about 2.5, which breaks ties
+/// and rewards agreement between signals without overriding a clearly
+/// stronger lexical match.
+pub const RRF_SCORE_SCALE: f32 = 50.0;
+
 /// Merge ranked lists via Reciprocal Rank Fusion.
 ///
 /// Each input is a slice of document identifiers (e.g. thought indices or UUIDs)
