@@ -150,3 +150,41 @@ async fn invalid_chain_keys_are_rejected_with_400() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[tokio::test]
+async fn huge_per_page_is_clamped_not_panicking() {
+    let dir = unique_dir();
+    seed_chain(&dir, "source", 3);
+    let app = router(&dir);
+
+    for uri in [
+        "/dashboard/api/chains/source/thoughts?per_page=18446744073709551615&page=18446744073709551615",
+        "/dashboard/api/chains/source/search?per_page=18446744073709551615&page=18446744073709551615",
+        "/dashboard/api/chains/source/search?text=thought&per_page=18446744073709551615&page=18446744073709551615",
+        "/dashboard/api/chains/source/search/bundles?text=thought&per_page=18446744073709551615&page=18446744073709551615",
+        "/dashboard/api/chains/source/agents/astro/thoughts?per_page=18446744073709551615",
+    ] {
+        let (status, body) = send(
+            &app,
+            Request::builder().uri(uri).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        if let Some(pp) = body.get("per_page") {
+            assert_eq!(pp, 500, "{uri}");
+        }
+    }
+
+    let (status, body) = send(
+        &app,
+        Request::builder()
+            .uri("/dashboard/api/chains/source/thoughts?per_page=0")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["per_page"], 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+

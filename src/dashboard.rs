@@ -522,6 +522,21 @@ async fn evict_deleted_cached_chain(
 
 /// Validate a chain key supplied by a client for creating a chain.
 ///
+/// Maximum accepted `per_page` for dashboard listing endpoints.
+const MAX_PER_PAGE: usize = 500;
+/// Maximum accepted 1-based page number for dashboard listing endpoints.
+const MAX_PAGE: usize = 1_000;
+
+/// Clamp a client-supplied `per_page` into `1..=MAX_PER_PAGE`.
+fn clamp_per_page(per_page: usize) -> usize {
+    per_page.clamp(1, MAX_PER_PAGE)
+}
+
+/// Clamp a client-supplied 1-based page into `1..=MAX_PAGE`.
+fn clamp_page(page: usize) -> usize {
+    page.clamp(1, MAX_PAGE)
+}
+
 /// Only `[A-Za-z0-9_-]` up to 128 bytes is accepted so the key used for the
 /// live cache always equals the sanitized key used for storage and registry.
 fn validate_new_chain_key(key: &str) -> Result<(), (StatusCode, Json<Value>)> {
@@ -686,8 +701,8 @@ fn paginated_thoughts<F>(
 where
     F: FnMut(&Thought) -> bool,
 {
-    let page = page.max(1);
-    let per_page = per_page.max(1);
+    let page = clamp_page(page);
+    let per_page = clamp_per_page(per_page);
     let start = (page.saturating_sub(1)).saturating_mul(per_page);
     let mut total = 0usize;
     let mut slice = Vec::with_capacity(per_page);
@@ -731,8 +746,8 @@ fn paginated_thought_refs(
     per_page: usize,
     reverse: bool,
 ) -> Value {
-    let page = page.max(1);
-    let per_page = per_page.max(1);
+    let page = clamp_page(page);
+    let per_page = clamp_per_page(per_page);
     let total = thoughts.len();
     let pages = total.div_ceil(per_page);
     let start = (page.saturating_sub(1)).saturating_mul(per_page);
@@ -1389,8 +1404,8 @@ async fn api_chain_thoughts(
 
     let type_filter = parse_type_filter(params.types.as_deref());
 
-    let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(50).max(1);
+    let page = clamp_page(params.page.unwrap_or(1));
+    let per_page = clamp_per_page(params.per_page.unwrap_or(50));
     let reverse = params.order.as_deref().unwrap_or("desc") != "asc";
 
     Ok(Json(paginated_thoughts(
@@ -1422,8 +1437,8 @@ async fn api_chain_search(
     let arc = get_or_open_chain(&state, &chain_key).await?;
     let chain = arc.read().await;
 
-    let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(50).max(1);
+    let page = clamp_page(params.page.unwrap_or(1));
+    let per_page = clamp_per_page(params.per_page.unwrap_or(50));
     let reverse = params.order.as_deref().unwrap_or("desc") != "asc";
     let filter = dashboard_search_filter(&params);
 
@@ -1519,8 +1534,8 @@ async fn api_chain_search_bundles(
     };
     let arc = get_or_open_chain(&state, &chain_key).await?;
     let chain = arc.read().await;
-    let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(50).max(1);
+    let page = clamp_page(params.page.unwrap_or(1));
+    let per_page = clamp_per_page(params.per_page.unwrap_or(50));
     let offset = (page.saturating_sub(1)).saturating_mul(per_page);
     let bundle_limit = offset.saturating_add(per_page).max(1);
     let result = chain.query_context_bundles(
@@ -1666,8 +1681,8 @@ async fn api_agent_thoughts(
 
     let type_filter = parse_type_filter(params.types.as_deref());
 
-    let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(50).max(1);
+    let page = clamp_page(params.page.unwrap_or(1));
+    let per_page = clamp_per_page(params.per_page.unwrap_or(50));
     let reverse = params.order.as_deref().unwrap_or("desc") != "asc";
 
     Ok(Json(paginated_thoughts(
