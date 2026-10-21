@@ -2166,47 +2166,48 @@ fn extract_top_level_chain_keys(parameters: &Value) -> BTreeSet<String> {
 ///
 /// Global and multi-chain tokens are left unchanged: multi-chain callers must
 /// name a chain (or fall back to the server default when the tool allows it).
-fn inject_single_chain_scope_into_payload(payload: &mut Value, scope: &BearerTokenScope) {
+fn inject_single_chain_scope_into_payload(payload: &mut Value, scope: &BearerTokenScope) -> bool {
     let BearerTokenScope::Chains(chain_keys) = scope else {
-        return;
+        return false;
     };
     if chain_keys.len() != 1 {
-        return;
+        return false;
     }
     let chain_key = chain_keys[0].clone();
 
     // Streamable MCP: { "name": "...", "arguments": { ... } }
     // Legacy MCP:     { "tool": "...", "parameters": { ... } }
     if payload.get("arguments").is_some() {
-        if let Some(args) = payload.get_mut("arguments") {
-            inject_chain_key_object(args, &chain_key);
-        }
-        return;
+        return payload
+            .get_mut("arguments")
+            .is_some_and(|args| inject_chain_key_object(args, &chain_key));
     }
     if payload.get("parameters").is_some() {
-        if let Some(args) = payload.get_mut("parameters") {
-            inject_chain_key_object(args, &chain_key);
-        }
-        return;
+        return payload
+            .get_mut("parameters")
+            .is_some_and(|args| inject_chain_key_object(args, &chain_key));
     }
 
     // Bare REST-style body: { "chain_key"?: "...", ... }
     if payload.get("jsonrpc").is_none() {
-        inject_chain_key_object(payload, &chain_key);
+        return inject_chain_key_object(payload, &chain_key);
     }
+    false
 }
 
-fn inject_chain_key_object(parameters: &mut Value, chain_key: &str) {
+/// Inserts `chain_key` when the object names no chain; returns whether it changed.
+fn inject_chain_key_object(parameters: &mut Value, chain_key: &str) -> bool {
     let Some(map) = parameters.as_object_mut() else {
-        return;
+        return false;
     };
     if object_has_explicit_chain_field(map) {
-        return;
+        return false;
     }
     map.insert(
         "chain_key".to_string(),
         Value::String(chain_key.to_string()),
     );
+    true
 }
 
 fn object_has_explicit_chain_field(map: &serde_json::Map<String, Value>) -> bool {
@@ -6794,33 +6795,62 @@ pub(crate) async fn rest_bearer_auth_middleware(
 
     let route = request.uri().path().to_string();
     let method = request.method().as_str().to_ascii_lowercase();
-    let authorizer = MentisDbBearerAuthorizer::new(&service.config);
 
     // Buffer the request body so we can extract chain keys for scope-aware
     // authorization, then reconstruct the request for the downstream handler.
     let (parts, body) = request.into_parts();
-    let body_bytes = axum::body::to_bytes(body, 1024 * 1024)
-        .await
-        .unwrap_or_default();
+    let body_bytes = match axum::body::to_bytes(body, MAX_REST_AUTH_BODY_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            // `to_bytes` fails when the limit is exceeded or the stream breaks.
+            // Surface that instead of authorizing against an empty body.
+            let too_large = {
+                // axum surfaces the `http_body_util` limit error only through
+                // its Display text ("length limit exceeded").
+                let mut chain = error.to_string();
+                let mut source = std::error::Error::source(&error);
+                while let Some(inner) = source {
+                    chain.push(' ');
+                    chain.push_str(&inner.to_string());
+                    source = inner.source();
+                }
+                chain.contains("length limit")
+            };
+            let status = if too_large {
+                StatusCode::PAYLOAD_TOO_LARGE
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            let message = if too_large {
+                "request body exceeds the maximum accepted size"
+            } else {
+                "failed to read request body"
+            };
+            return (status, Json(json!({ "error": message }))).into_response();
+        }
+    };
     let mut payload: Option<Value> = serde_json::from_slice(&body_bytes).ok();
 
-    // Single-chain tokens omit chain_key on many write clients; bind the body
-    // to the token's only chain so auth and handlers agree.
-    if let Some(token) = parts
+    // Resolve the token's scope exactly once per request (also records usage).
+    let provided = parts
         .headers
         .get("Authorization")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-    {
-        if let Some(scope) = service.config.bearer_token_store.active_scope(token) {
-            if let Some(ref mut json) = payload {
-                inject_single_chain_scope_into_payload(json, &scope);
-            }
-        }
-    }
-    let body_bytes = match &payload {
-        Some(json) => serde_json::to_vec(json).unwrap_or_else(|_| body_bytes.to_vec()),
-        None => body_bytes.to_vec(),
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let scope = provided.and_then(|token| service.config.bearer_token_store.authenticate(token));
+
+    // Single-chain tokens omit chain_key on many write clients; bind the body
+    // to the token's only chain so auth and handlers agree. The body is only
+    // re-serialized when the injection actually changed it.
+    let modified = match (&scope, payload.as_mut()) {
+        (Some(scope), Some(json)) => inject_single_chain_scope_into_payload(json, scope),
+        _ => false,
+    };
+    let body_bytes = match (&payload, modified) {
+        (Some(json), true) => serde_json::to_vec(json)
+            .map(axum::body::Bytes::from)
+            .unwrap_or(body_bytes),
+        _ => body_bytes,
     };
 
     // Extract chain keys from the JSON body (if any) and from the URI path.
@@ -6840,8 +6870,6 @@ pub(crate) async fn rest_bearer_auth_middleware(
         }
     }
 
-    let reconstructed = axum::http::Request::from_parts(parts, axum::body::Body::from(body_bytes));
-
     // The route/method classification comes from the table shared with MCP.
     let target = match rest_route_auth(&route, &method) {
         OperationAuth::AnyToken => BearerAuthTarget::AnyActiveToken,
@@ -6857,56 +6885,28 @@ pub(crate) async fn rest_bearer_auth_middleware(
         OperationAuth::ChainScoped => BearerAuthTarget::Chains(chain_keys.into_iter().collect()),
     };
 
-    let context = BearerAuthContext {
-        client_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
-        route: route.clone(),
-        action: format!("rest:{method}"),
-        payload: payload.clone(),
-    };
-
-    let authorized = match target {
-        BearerAuthTarget::AnyActiveToken => {
-            // For global routes, still check if a token is needed.
-            let provided = reconstructed
-                .headers()
-                .get("Authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "));
-            match provided {
-                Some(token) => authorizer.store.authorize(token),
-                None => authorizer.allow_missing_bearer_token(&context),
-            }
-        }
-        BearerAuthTarget::Chains(keys) => {
-            let provided = reconstructed
-                .headers()
-                .get("Authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "));
-            match provided {
-                Some(token) => authorizer.store.authorize_for_chains(token, &keys),
-                None => authorizer.allow_missing_bearer_token(&context),
-            }
-        }
-        BearerAuthTarget::GlobalOnly => {
-            let provided = reconstructed
-                .headers()
-                .get("Authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "));
-            match provided {
-                Some(token) => authorizer.store.authorize_global(token),
-                None => authorizer.allow_missing_bearer_token(&context),
-            }
-        }
-    };
-
+    let authorized = scope
+        .as_ref()
+        .is_some_and(|scope| scope_permits_target(scope, &target));
     if !authorized {
         let (status, body) = bearer_token_required_response(&route);
         return (status, body).into_response();
     }
 
+    let reconstructed = axum::http::Request::from_parts(parts, axum::body::Body::from(body_bytes));
     next.run(reconstructed).await
+}
+
+/// Maximum REST request body the auth middleware will buffer (1 MiB).
+const MAX_REST_AUTH_BODY_BYTES: usize = 1024 * 1024;
+
+/// Evaluates an already-authenticated token scope against a request target.
+fn scope_permits_target(scope: &BearerTokenScope, target: &BearerAuthTarget) -> bool {
+    match target {
+        BearerAuthTarget::AnyActiveToken => true,
+        BearerAuthTarget::GlobalOnly => matches!(scope, BearerTokenScope::Global),
+        BearerAuthTarget::Chains(keys) => keys.iter().all(|key| scope.allows_chain(key)),
+    }
 }
 
 /// Parse `application/x-www-form-urlencoded` query pairs from a query string.
