@@ -3,10 +3,11 @@
 //! These measurements track the cost and behavior of the new ranked APIs
 //! separately from the older append-order `ThoughtQuery` path.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use mentisdb::{
     BinaryStorageAdapter, MentisDb, RankedSearchQuery, ThoughtInput, ThoughtQuery, ThoughtType,
 };
+use std::hint::black_box;
 use tempfile::TempDir;
 
 fn temp_chain(label: &str) -> (MentisDb, TempDir) {

@@ -11,10 +11,9 @@
 //! - **`reconstruct_latency`**: read-skill reconstruction at chain depths of
 //!   1, 5, 10, and 20 versions, measuring the cumulative patch-application cost.
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
-};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use mentisdb::{SkillFormat, SkillQuery, SkillRegistry, SkillUpload};
+use std::hint::black_box;
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------

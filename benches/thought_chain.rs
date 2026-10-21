@@ -18,13 +18,12 @@
 //!   querying simultaneously over a shared `Arc<Mutex<MentisDb>>`, exercising the
 //!   state-mutex contention point at N = 2 / 4 / 8.
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
-};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use mentisdb::{
     BinaryStorageAdapter, MentisDb, ThoughtInput, ThoughtQuery, ThoughtTraversalAnchor,
     ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType,
 };
+use std::hint::black_box;
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------

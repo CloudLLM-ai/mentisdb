@@ -29,12 +29,12 @@ subtle = "2.6"
 chrono = { version = "0.4.44", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-diffy = "0.4"
+diffy = "0.5"
 ed25519-dalek = { version = "2", features = ["alloc"] }
 sha2 = "0.10.9"
-crossterm = "0.28"
+crossterm = "0.29"
 ratatui = "0.30.0"
-toml_edit = "0.22.27"
+toml_edit = "0.25"
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
 mcp = { package = "cloudllm_mcp", version = "0.3.5" }
 axum = { version = "0.8.8", optional = true }
@@ -46,7 +46,7 @@ rcgen = { version = "0.14", optional = true }
 time = "0.3.49"
 rustls-pemfile = { version = "2", optional = true }
 x509-parser = { version = "0.18", optional = true }
-rodio = { version = "0.22", optional = true }
+rodio = { version = "0.23", optional = true }
 tokio = { version = "1.50.0", features = ["full"], optional = true }
 fastembed = { version = "5.13.1", optional = true }
 # Needed to install an explicit rustls crypto provider.  The server feature
@@ -73,7 +73,7 @@ space = "0.17"
 # Compressed bitmap set for vector metadata filters (H2). Always built-in:
 # it has no heavy dependencies, keeps the public API uniform across feature
 # combinations, and is usable with both Exact and HNSW backends.
-roaring = "0.10"
+roaring = "0.11"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -86,10 +86,10 @@ reqwest = { version = "0.13.2", features = ["json", "native-tls"], optional = tr
 # WARNING: do not update bincode to 3.0.0, it's not functional
 bincode = { version = "2.0.1", features = ["serde"] }
 chrono = { version = "0.4.44", features = ["serde"] }
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 ed25519-dalek = { version = "2", features = ["alloc"] }
-rand = "0.8"
-rand_distr = "0.4"
+rand = "0.10"
+rand_distr = "0.6"
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.10.9"
 tempfile = "3"

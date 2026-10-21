@@ -12,8 +12,9 @@
 //! retrieval, those new surfaces should be compared against this benchmark
 //! rather than replacing it silently.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use mentisdb::{BinaryStorageAdapter, MentisDb, ThoughtInput, ThoughtQuery, ThoughtType};
+use std::hint::black_box;
 use tempfile::TempDir;
 
 fn temp_chain(label: &str) -> (MentisDb, TempDir) {

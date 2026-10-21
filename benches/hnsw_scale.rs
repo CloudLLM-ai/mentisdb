@@ -23,13 +23,14 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use mentisdb::search::{
     EmbeddingMetadata, VectorDocument, VectorIndex, VectorQuery, VectorSearchBackend,
 };
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use rand_distr::{Distribution, StandardNormal};
+use std::hint::black_box;
 
 const DIM: usize = 128;
 const K: usize = 10;

@@ -16,10 +16,11 @@
 
 use std::collections::HashSet;
 
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use mentisdb::search::{
     EmbeddingMetadata, VectorDocument, VectorIndex, VectorQuery, VectorSearchBackend,
 };
+use std::hint::black_box;
 
 /// Dimension and corpus size for the comparison. 10k vectors is small enough
 /// to run in CI but large enough that the exact scan is noticeably slower
