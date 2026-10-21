@@ -3359,6 +3359,10 @@ impl Default for RankedSearchGraph {
 /// excellent results with very little configuration.
 pub struct RankedSearchQuery {
     /// Deterministic semantic filter applied before ranked ordering.
+    ///
+    /// `ThoughtQuery::limit` on this filter is ignored for ranking: ranked
+    /// retrieval scores every thought that passes the filter and truncates
+    /// with [`RankedSearchQuery::limit`] afterwards.
     pub filter: ThoughtQuery,
     /// Optional lexical text query used for ranked scoring.
     pub text: Option<String>,
@@ -8685,6 +8689,11 @@ impl MentisDb {
         include_invalidated: bool,
     ) -> Vec<&'a Thought> {
         let mut filter = filter.clone();
+        // `ThoughtQuery::limit` means "most recent N matches" for plain
+        // queries. Ranked retrieval must rank the full filtered candidate set
+        // and apply only `RankedSearchQuery::limit` afterwards, otherwise the
+        // best match can be dropped before scoring.
+        filter.limit = None;
         if include_invalidated || as_of.is_some() {
             // as_of needs access to thoughts that are live-invalidated but were
             // still current at the historical timestamp.
