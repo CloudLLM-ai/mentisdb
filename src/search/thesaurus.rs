@@ -98,9 +98,14 @@ pub fn lookup_lemmatized(token: &str) -> Option<&'static [String]> {
 
 /// Expand a query text into a synonym map using the built-in thesaurus.
 ///
-/// Each key is a normalized query term. The value is the list of synonyms
-/// (with duplicates removed). The function tries both the raw token and
-/// its lemmatized form, so past-tense and perfect-tense verbs are handled
+/// Each key is a *normalized* query term: the Porter-stemmed form (plus the
+/// stemmed lemma for irregular verbs) that
+/// [`LexicalQuery`](crate::search::lexical::LexicalQuery) looks up, so an
+/// inflected token such as "debugging" (stem "debug") expands correctly. The
+/// raw lowercase token is inserted as an additional key for callers that read
+/// the map by surface form. The value is the list of synonyms (duplicates
+/// removed). The function tries the raw token, its lemma, and its stem, so
+/// past-tense and perfect-tense verbs and plural nouns are handled
 /// automatically.
 ///
 /// # Example
@@ -109,7 +114,9 @@ pub fn lookup_lemmatized(token: &str) -> Option<&'static [String]> {
 /// assert!(map.contains_key("fast"));
 /// assert!(map["fast"].iter().any(|term| term == "quick"));
 /// assert!(map["search"].iter().any(|term| term == "query"));
+/// // Keyed by both the surface form and the stemmed form "debug".
 /// assert!(map["debugging"].iter().any(|term| term == "diagnose"));
+/// assert!(map["debug"].iter().any(|term| term == "diagnose"));
 /// ```
 pub fn expand_text(text: &str) -> HashMap<String, Vec<String>> {
     let mut result = HashMap::new();
@@ -118,9 +125,15 @@ pub fn expand_text(text: &str) -> HashMap<String, Vec<String>> {
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
     {
-        let term = raw.to_ascii_lowercase();
-        if let Some(syms) = lookup_lemmatized(&term) {
-            result.entry(term).or_insert_with(|| syms.to_vec());
+        let term = raw.to_lowercase();
+        let normalized = crate::search::lexical::normalize_lexical_tokens(&term, true);
+        let synonyms =
+            lookup_lemmatized(&term).or_else(|| normalized.iter().find_map(|stem| lookup(stem)));
+        let Some(syms) = synonyms else {
+            continue;
+        };
+        for key in normalized.into_iter().chain(std::iter::once(term)) {
+            result.entry(key).or_insert_with(|| syms.to_vec());
         }
     }
 

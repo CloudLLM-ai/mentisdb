@@ -237,6 +237,45 @@ pub struct LexicalQuery {
     pub synonyms: std::collections::HashMap<String, Vec<String>>,
     /// Weight applied to synonym matches relative to original term matches.
     pub synonym_weight: f32,
+    /// Normalized (stemmed) synonym terms keyed by normalized query term,
+    /// built once by [`LexicalQuery::with_synonyms`].
+    normalized_synonyms: Option<HashMap<String, Vec<String>>>,
+}
+
+/// Maximum number of normalized synonym terms added per query term.
+///
+/// Caps term explosion for headwords with long synonym lists: every extra
+/// term costs a posting-list scan.
+pub const MAX_SYNONYMS_PER_TERM: usize = 5;
+
+/// Normalize a synonym map so lookups can be keyed by the normalized
+/// (Porter-stemmed, lemma-expanded) query term.
+///
+/// Keys are visited in sorted order so merging several raw keys that share a
+/// normalized form is deterministic. The original key is kept as well, so
+/// maps that were already keyed by stemmed terms keep working. Each entry is
+/// deduplicated and capped at [`MAX_SYNONYMS_PER_TERM`] normalized terms.
+fn normalize_synonym_map(synonyms: &HashMap<String, Vec<String>>) -> HashMap<String, Vec<String>> {
+    let mut keys: Vec<&String> = synonyms.keys().collect();
+    keys.sort();
+    let mut normalized: HashMap<String, Vec<String>> = HashMap::new();
+    for key in keys {
+        let terms: Vec<String> = synonyms[key]
+            .iter()
+            .flat_map(|synonym| unique_normalized_terms(synonym))
+            .collect();
+        let mut targets = unique_normalized_terms(key);
+        targets.push(key.clone());
+        for target in targets {
+            let entry = normalized.entry(target).or_default();
+            for term in &terms {
+                if entry.len() < MAX_SYNONYMS_PER_TERM && !entry.contains(term) {
+                    entry.push(term.clone());
+                }
+            }
+        }
+    }
+    normalized
 }
 
 impl LexicalQuery {
@@ -256,6 +295,7 @@ impl LexicalQuery {
             df_cutoffs: Bm25DfCutoffs::default(),
             synonyms: std::collections::HashMap::new(),
             synonym_weight: 0.7,
+            normalized_synonyms: None,
         }
     }
 
@@ -265,6 +305,7 @@ impl LexicalQuery {
         synonyms: std::collections::HashMap<String, Vec<String>>,
         weight: f32,
     ) -> Self {
+        self.normalized_synonyms = Some(normalize_synonym_map(&synonyms));
         self.synonyms = synonyms;
         self.synonym_weight = weight.max(0.0);
         self
@@ -294,19 +335,36 @@ impl LexicalQuery {
     }
 
     /// Return original terms and their synonyms for searching.
+    ///
+    /// Synonym lookup is keyed by the *normalized* query term, so an inflected
+    /// query such as "debugging" (stem "debug") finds the thesaurus entry for
+    /// "debug". Synonym terms are normalized once in
+    /// [`LexicalQuery::with_synonyms`] and capped at
+    /// [`MAX_SYNONYMS_PER_TERM`] per query term. If `synonyms` was assigned
+    /// directly instead of through `with_synonyms`, it is normalized on the
+    /// fly.
     pub fn expanded_terms(&self) -> Vec<(String, f32)> {
+        let computed;
+        let normalized_synonyms = match &self.normalized_synonyms {
+            Some(map) => map,
+            None if self.synonyms.is_empty() => {
+                computed = HashMap::new();
+                &computed
+            }
+            None => {
+                computed = normalize_synonym_map(&self.synonyms);
+                &computed
+            }
+        };
         let mut result = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for term in self.normalized_terms() {
             if seen.insert(term.clone()) {
                 result.push((term.clone(), 1.0));
-                if let Some(syms) = self.synonyms.get(&term) {
-                    for syn in syms {
-                        let normalized = unique_normalized_terms(syn);
-                        for n in normalized {
-                            if seen.insert(n.clone()) {
-                                result.push((n, self.synonym_weight));
-                            }
+                if let Some(syms) = normalized_synonyms.get(&term) {
+                    for synonym in syms {
+                        if seen.insert(synonym.clone()) {
+                            result.push((synonym.clone(), self.synonym_weight));
                         }
                     }
                 }
