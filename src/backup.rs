@@ -76,6 +76,13 @@ pub const BACKUP_EXTENSION: &str = "mentis";
 /// Name of the manifest file inside a backup archive.
 pub const MANIFEST_FILENAME: &str = "mentisdb.manifest.json";
 
+/// Upper bound on the declared uncompressed size of any single backup entry
+/// accepted by [`restore_backup`] (64 GiB). Guards against decompression bombs.
+pub const MAX_RESTORE_ENTRY_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+/// Upper bound on the declared total uncompressed size accepted by
+/// [`restore_backup`] (256 GiB).
+pub const MAX_RESTORE_TOTAL_BYTES: u64 = 256 * 1024 * 1024 * 1024;
+
 /// SHA-256 hex digest of a backed-up file, computed at backup time and
 /// verified at restore time.
 pub type FileChecksum = String;
@@ -153,12 +160,24 @@ impl BackupManifest {
             };
             let mut hasher = Sha256::new();
             let mut buf = [0u8; 8192];
+            // Never read more than one byte past the declared size: a lying
+            // archive must not be able to inflate unboundedly during verify.
+            let mut limited = (&mut file).take(entry.uncompressed_bytes.saturating_add(1));
+            let mut total = 0u64;
             loop {
-                let n = file.read(&mut buf)?;
+                let n = limited.read(&mut buf)?;
                 if n == 0 {
                     break;
                 }
+                total += n as u64;
                 hasher.update(&buf[..n]);
+            }
+            if total > entry.uncompressed_bytes {
+                mismatches.push(format!(
+                    "size exceeds declared {} bytes for {}",
+                    entry.uncompressed_bytes, entry.relative_path
+                ));
+                continue;
             }
             let computed = format!("{:x}", hasher.finalize());
             if computed != entry.sha256 {
@@ -550,6 +569,11 @@ pub fn restore_backup(
         ));
     }
 
+    for entry in &manifest.files {
+        validate_restore_relative_path(&entry.relative_path)?;
+    }
+    validate_manifest_size_limits(&manifest)?;
+
     // Verify all checksums before writing anything
     manifest.verify_archive(&mut archive).map_err(|e| {
         io::Error::new(
@@ -558,11 +582,7 @@ pub fn restore_backup(
         )
     })?;
 
-    for entry in &manifest.files {
-        validate_restore_relative_path(&entry.relative_path)?;
-    }
-
-    let staging = create_restore_staging_dir()?;
+    let staging = create_restore_staging_dir(&target_dir)?;
     let restore_result = (|| {
         extract_archive_to_staging(&mut archive, &manifest, &staging)?;
         fs::create_dir_all(&target_dir)?;
@@ -579,8 +599,51 @@ pub fn restore_backup(
     restore_result
 }
 
-fn create_restore_staging_dir() -> io::Result<PathBuf> {
-    let path = std::env::temp_dir().join(format!("mentisdb-restore-{}", uuid::Uuid::new_v4()));
+/// Rejects manifests whose declared sizes exceed the restore caps.
+///
+/// # Errors
+///
+/// Returns `InvalidData` when any entry exceeds [`MAX_RESTORE_ENTRY_BYTES`] or
+/// the (overflow-checked) total exceeds [`MAX_RESTORE_TOTAL_BYTES`].
+pub fn validate_manifest_size_limits(manifest: &BackupManifest) -> io::Result<()> {
+    let too_big = |what: String| io::Error::new(io::ErrorKind::InvalidData, what);
+    let mut total: u64 = 0;
+    for entry in &manifest.files {
+        if entry.uncompressed_bytes > MAX_RESTORE_ENTRY_BYTES {
+            return Err(too_big(format!(
+                "backup entry {} declares {} bytes, over the {} byte limit",
+                entry.relative_path, entry.uncompressed_bytes, MAX_RESTORE_ENTRY_BYTES
+            )));
+        }
+        total = total
+            .checked_add(entry.uncompressed_bytes)
+            .ok_or_else(|| too_big("backup total size overflows".to_string()))?;
+    }
+    if total > MAX_RESTORE_TOTAL_BYTES
+        || manifest.total_uncompressed_bytes > MAX_RESTORE_TOTAL_BYTES
+    {
+        return Err(too_big(format!(
+            "backup declares more than {MAX_RESTORE_TOTAL_BYTES} uncompressed bytes"
+        )));
+    }
+    Ok(())
+}
+
+/// Creates the restore staging directory next to the target (same
+/// filesystem, so staged data never lands in a possibly tiny `/tmp`), falling
+/// back to the system temp dir when the parent is not writable.
+fn create_restore_staging_dir(target_dir: &Path) -> io::Result<PathBuf> {
+    let name = format!(".mentisdb-restore-{}", uuid::Uuid::new_v4());
+    if let Some(parent) = target_dir
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        let candidate = parent.join(&name);
+        if fs::create_dir_all(&candidate).is_ok() {
+            return Ok(candidate);
+        }
+    }
+    let path = std::env::temp_dir().join(name);
     fs::create_dir_all(&path)?;
     Ok(path)
 }
@@ -595,9 +658,19 @@ fn extract_archive_to_staging<R: Read + io::Seek>(
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
         }
-        let mut src = archive.by_name(&entry.relative_path)?;
+        let src = archive.by_name(&entry.relative_path)?;
         let mut dest_file = File::create(&dest)?;
-        io::copy(&mut src, &mut dest_file)?;
+        let mut limited = src.take(entry.uncompressed_bytes.saturating_add(1));
+        let written = io::copy(&mut limited, &mut dest_file)?;
+        if written > entry.uncompressed_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "backup entry {} exceeds its declared size",
+                    entry.relative_path
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -711,16 +784,13 @@ fn copy_staged_file(
     relative_path: &str,
     overwrite: bool,
 ) -> io::Result<bool> {
-    let src = staging_dir.join(relative_path);
-    let dest = target_dir.join(relative_path);
-    if dest.exists() && !overwrite {
-        return Ok(false);
-    }
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::copy(src, dest)?;
-    Ok(true)
+    copy_staged_file_as(
+        staging_dir,
+        target_dir,
+        relative_path,
+        relative_path,
+        overwrite,
+    )
 }
 
 fn copy_non_chain_files_into_existing_instance(
@@ -939,14 +1009,49 @@ fn copy_staged_file_as(
 ) -> io::Result<bool> {
     let src = staging_dir.join(source_relative_path);
     let dest = target_dir.join(destination_relative_path);
+    reject_symlinks_in_destination(target_dir, &dest)?;
     if dest.exists() && !overwrite {
         return Ok(false);
     }
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
+        reject_symlinks_in_destination(target_dir, &dest)?;
     }
-    fs::copy(src, dest)?;
+    // Copy beside the destination, then rename into place so a crash or I/O
+    // error never leaves a truncated file at the final path.
+    let tmp = dest.with_file_name(format!(
+        ".{}.restore-tmp",
+        dest.file_name().and_then(|n| n.to_str()).unwrap_or("file")
+    ));
+    if let Err(error) = fs::copy(&src, &tmp).and_then(|_| fs::rename(&tmp, &dest)) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error);
+    }
     Ok(true)
+}
+
+/// Fails if `dest` or any existing ancestor between `target_dir` and `dest` is
+/// a symlink, so a planted link in the target cannot redirect restored data
+/// outside the restore root.
+fn reject_symlinks_in_destination(target_dir: &Path, dest: &Path) -> io::Result<()> {
+    let mut current = dest;
+    loop {
+        if current == target_dir {
+            return Ok(());
+        }
+        if let Ok(meta) = fs::symlink_metadata(current) {
+            if meta.file_type().is_symlink() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("refusing to restore through symlink: {}", current.display()),
+                ));
+            }
+        }
+        match current.parent() {
+            Some(parent) if parent.starts_with(target_dir) => current = parent,
+            _ => return Ok(()),
+        }
+    }
 }
 
 fn normalize_restored_chain_registrations(
