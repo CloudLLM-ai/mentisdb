@@ -520,6 +520,30 @@ async fn evict_deleted_cached_chain(
     Ok(false)
 }
 
+/// Validate a chain key supplied by a client for creating a chain.
+///
+/// Only `[A-Za-z0-9_-]` up to 128 bytes is accepted so the key used for the
+/// live cache always equals the sanitized key used for storage and registry.
+fn validate_new_chain_key(key: &str) -> Result<(), (StatusCode, Json<Value>)> {
+    let ok = !key.is_empty()
+        && key.len() <= MAX_CHAIN_KEY_LEN
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    if ok {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "chain key must match [A-Za-z0-9_-]+ and be at most 128 characters"
+            })),
+        ))
+    }
+}
+
+/// Maximum accepted length of a chain key supplied by dashboard clients.
+const MAX_CHAIN_KEY_LEN: usize = 128;
 /// Look up a chain in the live cache; fall back to opening it from disk.
 ///
 /// The opened chain is inserted into `state.chains` so subsequent requests
@@ -1278,12 +1302,7 @@ async fn api_bootstrap_chain(
     Json(body): Json<BootstrapChainBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let chain_key = body.chain_key.trim().to_string();
-    if chain_key.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "chain_key must not be empty"})),
-        ));
-    }
+    validate_new_chain_key(&chain_key)?;
     let arc = match get_or_open_chain(&state, &chain_key).await {
         Ok(arc) => arc,
         Err((StatusCode::NOT_FOUND, _)) => {
@@ -2269,6 +2288,8 @@ async fn api_import_markdown(
 /// - The agent's display name and owner are propagated via the first appended
 ///   thought so the agent registry on the target chain is populated correctly.
 /// - The agent's description is copied directly into the target chain's agent
+    validate_new_chain_key(&target_chain_key)?;
+
 ///   registry so the Agent detail page continues to show the same metadata
 ///   after a cross-chain copy.
 ///
@@ -2633,12 +2654,7 @@ async fn api_branch_chain(
         }
     };
 
-    if body.branch_chain_key.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "branch_chain_key must not be empty"})),
-        ));
-    }
+    validate_new_chain_key(&body.branch_chain_key)?;
 
     if state.chains.contains_key(&body.branch_chain_key) {
         return Err((
