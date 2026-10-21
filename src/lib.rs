@@ -3849,6 +3849,135 @@ impl<E: std::error::Error + 'static> std::error::Error for VectorSearchError<E> 
     }
 }
 
+/// Lightweight per-candidate scoring record used by [`MentisDb::query_ranked`].
+///
+/// The score-only pass builds one of these per matching thought (a few `f32`s
+/// and a reference). Heavy hit data (matched terms, match sources, graph
+/// paths) is materialized only for the candidates that survive top-k
+/// selection.
+struct ScoredCandidate<'a> {
+    thought: &'a Thought,
+    lexical: f32,
+    vector: f32,
+    graph: f32,
+    relation: f32,
+    seed_support: f32,
+    importance: f32,
+    confidence: f32,
+    recency: f32,
+    session_cohesion: f32,
+    rrf: f32,
+    total: f32,
+    /// True when RRF reranking is active and this candidate is a member of the
+    /// rank-list union (and therefore carries an RRF-scale total).
+    in_rrf_union: bool,
+}
+
+/// Total order over scored candidates: best first.
+///
+/// RRF-union members always precede non-members because their totals live on
+/// a different (much smaller) scale than raw lexical totals. Remaining ties
+/// fall through the historical key chain and end with a unique descending
+/// thought index, so the order is fully deterministic.
+fn compare_scored_candidates(
+    left: &ScoredCandidate<'_>,
+    right: &ScoredCandidate<'_>,
+) -> std::cmp::Ordering {
+    right
+        .in_rrf_union
+        .cmp(&left.in_rrf_union)
+        .then_with(|| right.total.total_cmp(&left.total))
+        .then_with(|| right.lexical.total_cmp(&left.lexical))
+        .then_with(|| right.vector.total_cmp(&left.vector))
+        .then_with(|| right.graph.total_cmp(&left.graph))
+        .then_with(|| right.relation.total_cmp(&left.relation))
+        .then_with(|| right.seed_support.total_cmp(&left.seed_support))
+        .then_with(|| right.thought.importance.total_cmp(&left.thought.importance))
+        .then_with(|| {
+            right
+                .thought
+                .confidence
+                .unwrap_or_default()
+                .total_cmp(&left.thought.confidence.unwrap_or_default())
+        })
+        .then_with(|| right.thought.index.cmp(&left.thought.index))
+}
+
+/// Session cohesion: thoughts near high-scoring lexical hits in the
+/// append-order index are likely part of the same conversation and are
+/// boosted. This helps LoCoMo-style benchmarks where evidence sits in turns
+/// adjacent to the matching turn but shares no lexical terms.
+///
+/// Seeds are sorted once and the nearest seed of each candidate is found with
+/// a binary search, so the cost is `O((hits + seeds) log seeds)` rather than
+/// `O(hits * seeds)`.
+fn apply_session_cohesion(scored: &mut [ScoredCandidate<'_>]) {
+    const SESSION_COHESION_RADIUS: u64 = 12;
+    const SESSION_COHESION_BOOST: f32 = 1.2;
+    const SESSION_COHESION_MIN_SEED_LEXICAL: f32 = 3.0;
+    const SESSION_COHESION_MAX_HIT_LEXICAL: f32 = 5.0;
+
+    let mut seeds: Vec<u64> = scored
+        .iter()
+        .filter(|c| c.lexical >= SESSION_COHESION_MIN_SEED_LEXICAL)
+        .map(|c| c.thought.index)
+        .collect();
+    if seeds.is_empty() {
+        return;
+    }
+    seeds.sort_unstable();
+    for candidate in scored.iter_mut() {
+        if candidate.lexical >= SESSION_COHESION_MAX_HIT_LEXICAL {
+            continue;
+        }
+        let idx = candidate.thought.index;
+        let nearest = crate::search::ranked::nearest_sorted_distance(&seeds, idx);
+        if nearest > 0 && nearest <= SESSION_COHESION_RADIUS {
+            let distance_fraction = 1.0 - (nearest as f32 / SESSION_COHESION_RADIUS as f32);
+            candidate.session_cohesion = SESSION_COHESION_BOOST * distance_fraction;
+            candidate.total += candidate.session_cohesion;
+        }
+    }
+}
+
+/// RRF reranking: build lexical, vector and graph rank lists over the top
+/// `rerank_k` candidates that actually have a positive score for that signal,
+/// merge them with Reciprocal Rank Fusion, and replace the total of every
+/// union member with the RRF score plus the additive, non-rankable signals
+/// (importance, confidence, recency, session cohesion, graph, relation, seed
+/// support).
+///
+/// Candidates outside the union keep their raw totals but are ordered after
+/// the union (see [`compare_scored_candidates`]), because raw BM25-scale
+/// totals would otherwise outrank the much smaller RRF-scale totals.
+fn apply_rrf_rerank(scored: &mut [ScoredCandidate<'_>], rerank_k: usize) {
+    let lexical: Vec<(u64, f32)> = scored
+        .iter()
+        .map(|c| (c.thought.index, c.lexical))
+        .collect();
+    let vector: Vec<(u64, f32)> = scored.iter().map(|c| (c.thought.index, c.vector)).collect();
+    let graph: Vec<(u64, f32)> = scored
+        .iter()
+        .map(|c| (c.thought.index, c.graph + c.relation + c.seed_support))
+        .collect();
+    let rrf_scores = crate::search::ranked::rrf_union_scores(&lexical, &vector, &graph, rerank_k);
+    for candidate in scored.iter_mut() {
+        if let Some(&rrf) = rrf_scores.get(&candidate.thought.index) {
+            let rrf_f32 = rrf as f32;
+            candidate.rrf = rrf_f32;
+            candidate.in_rrf_union = true;
+            candidate.total = rrf_f32
+                + candidate.graph
+                + candidate.relation
+                + candidate.seed_support
+                + candidate.importance
+                + candidate.confidence
+                + candidate.recency
+                + candidate.session_cohesion;
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RankedGraphHit {
     best_hit: crate::search::GraphExpansionHit,
@@ -6083,23 +6212,23 @@ impl MentisDb {
             .as_deref()
             .map(str::trim)
             .filter(|text| !text.is_empty());
-        let lexical_scores = ranked_text
-            .map(|text| {
-                self.rank_candidates_lexically(
-                    &candidates,
-                    text,
-                    &request.synonyms,
-                    request.synonym_weight,
-                )
-            })
-            .unwrap_or_default();
+        let lexical_scan = ranked_text.map(|text| {
+            self.rank_candidates_lexically(
+                &candidates,
+                text,
+                &request.synonyms,
+                request.synonym_weight,
+            )
+        });
         let vector_scores = ranked_text
             .map(|text| self.rank_candidates_semantically(&candidates, text))
             .unwrap_or_default();
-        let graph_scores = ranked_text
-            .and(request.graph.as_ref())
-            .map(|graph| self.expand_ranked_candidates(&candidates, graph, &lexical_scores))
-            .unwrap_or_default();
+        let graph_scores = match (ranked_text, request.graph.as_ref(), lexical_scan.as_ref()) {
+            (Some(_), Some(graph), Some(scan)) => {
+                self.expand_ranked_candidates(&candidates, graph, scan)
+            }
+            _ => HashMap::new(),
+        };
         let backend =
             if ranked_text.is_some() && request.graph.is_some() && !vector_scores.is_empty() {
                 RankedSearchBackend::HybridGraph
@@ -6112,131 +6241,60 @@ impl MentisDb {
             } else {
                 RankedSearchBackend::Heuristic
             };
-        let mut hits: Vec<RankedSearchHit<'_>> = candidates
-            .into_iter()
-            .filter_map(|thought| {
-                self.rank_search_hit(
-                    thought,
-                    ranked_text,
-                    &lexical_scores,
-                    &vector_scores,
-                    &graph_scores,
-                )
-            })
-            .collect();
 
-        // Session cohesion: thoughts near high-scoring lexical hits in the
-        // append-order index are likely part of the same conversation and
-        // should be boosted. This helps LoCoMo-style benchmarks where
-        // evidence sits in turns adjacent to the matching turn but shares
-        // no lexical terms.
-        const SESSION_COHESION_RADIUS: u64 = 12;
-        const SESSION_COHESION_BOOST: f32 = 1.2;
-        const SESSION_COHESION_MIN_SEED_LEXICAL: f32 = 3.0;
-        const SESSION_COHESION_MAX_HIT_LEXICAL: f32 = 5.0;
-        if !hits.is_empty() {
-            let mut seed_indices: Vec<u64> = hits
-                .iter()
-                .filter(|h| h.score.lexical >= SESSION_COHESION_MIN_SEED_LEXICAL)
-                .map(|h| h.thought.index)
-                .collect();
-            seed_indices.sort_unstable();
-            if !seed_indices.is_empty() {
-                for hit in &mut hits {
-                    if hit.score.lexical >= SESSION_COHESION_MAX_HIT_LEXICAL {
-                        continue;
-                    }
-                    let idx = hit.thought.index;
-                    let nearest =
-                        crate::search::ranked::nearest_sorted_distance(&seed_indices, idx);
-                    if nearest > 0 && nearest <= SESSION_COHESION_RADIUS {
-                        let distance_fraction =
-                            1.0 - (nearest as f32 / SESSION_COHESION_RADIUS as f32);
-                        hit.score.session_cohesion = SESSION_COHESION_BOOST * distance_fraction;
-                        hit.score.total += hit.score.session_cohesion;
-                    }
-                }
-            }
-        }
-
-        // RRF reranking: when enabled, produce separate lexical, vector and
-        // graph rankings over the top rerank_k candidates *that have a
-        // positive score for that signal*, merge via Reciprocal Rank Fusion,
-        // and replace the total score of every union member with the RRF
-        // total plus additive adjustments from non-rankable signals
-        // (importance, confidence, recency, session cohesion, graph,
-        // relation, seed support). Candidates outside the union keep their
-        // raw totals (a different scale) and are therefore ordered after the
-        // union below.
-        let rrf_scores: HashMap<u64, f64> = if request.enable_reranking && !hits.is_empty() {
-            let lexical: Vec<(u64, f32)> = hits
-                .iter()
-                .map(|hit| (hit.thought.index, hit.score.lexical))
-                .collect();
-            let vector: Vec<(u64, f32)> = hits
-                .iter()
-                .map(|hit| (hit.thought.index, hit.score.vector))
-                .collect();
-            let graph: Vec<(u64, f32)> = hits
-                .iter()
-                .map(|hit| {
-                    (
-                        hit.thought.index,
-                        hit.score.graph + hit.score.relation + hit.score.seed_support,
+        // Phase 1: score-only pass. No per-hit strings or paths are built here.
+        let mut scored: Vec<ScoredCandidate<'_>> = if ranked_text.is_some() {
+            let mut positions: Vec<usize> = lexical_scan
+                .as_ref()
+                .map(|scan| scan.positions().to_vec())
+                .unwrap_or_default();
+            positions.extend(vector_scores.keys().copied());
+            positions.extend(graph_scores.keys().copied());
+            positions.sort_unstable();
+            positions.dedup();
+            positions
+                .into_iter()
+                .filter_map(|position| {
+                    let thought = self.thoughts.get(position)?;
+                    self.score_candidate(
+                        thought,
+                        true,
+                        lexical_scan.as_ref().and_then(|scan| scan.score(position)),
+                        vector_scores.get(&position).copied().unwrap_or_default(),
+                        graph_scores.get(&position),
                     )
                 })
-                .collect();
-            let rrf_scores = crate::search::ranked::rrf_union_scores(
-                &lexical,
-                &vector,
-                &graph,
-                request.rerank_k,
-            );
-            for hit in &mut hits {
-                if let Some(&rrf) = rrf_scores.get(&hit.thought.index) {
-                    let rrf_f32 = rrf as f32;
-                    hit.score.rrf = rrf_f32;
-                    let additive = hit.score.graph
-                        + hit.score.relation
-                        + hit.score.seed_support
-                        + hit.score.importance
-                        + hit.score.confidence
-                        + hit.score.recency
-                        + hit.score.session_cohesion;
-                    hit.score.total = rrf_f32 + additive;
-                }
-            }
-            rrf_scores
+                .collect()
         } else {
-            HashMap::new()
+            candidates
+                .iter()
+                .filter_map(|thought| self.score_candidate(thought, false, None, 0.0, None))
+                .collect()
         };
 
-        let total_candidates = hits.len();
+        apply_session_cohesion(&mut scored);
 
-        hits.sort_by(|left, right| {
-            rrf_scores
-                .contains_key(&right.thought.index)
-                .cmp(&rrf_scores.contains_key(&left.thought.index))
-                .then_with(|| right.score.total.total_cmp(&left.score.total))
-                .then_with(|| right.score.lexical.total_cmp(&left.score.lexical))
-                .then_with(|| right.score.vector.total_cmp(&left.score.vector))
-                .then_with(|| right.score.graph.total_cmp(&left.score.graph))
-                .then_with(|| right.score.relation.total_cmp(&left.score.relation))
-                .then_with(|| right.score.seed_support.total_cmp(&left.score.seed_support))
-                .then_with(|| right.thought.importance.total_cmp(&left.thought.importance))
-                .then_with(|| {
-                    right
-                        .thought
-                        .confidence
-                        .unwrap_or_default()
-                        .total_cmp(&left.thought.confidence.unwrap_or_default())
-                })
-                .then_with(|| right.thought.index.cmp(&left.thought.index))
-        });
-
-        if hits.len() > request.limit {
-            hits.truncate(request.limit);
+        if request.enable_reranking && !scored.is_empty() {
+            apply_rrf_rerank(&mut scored, request.rerank_k);
         }
+
+        let total_candidates = scored.len();
+        let limit = request.limit;
+        if limit == 0 {
+            scored.clear();
+        } else if scored.len() > limit {
+            scored.select_nth_unstable_by(limit - 1, compare_scored_candidates);
+            scored.truncate(limit);
+        }
+        scored.sort_by(compare_scored_candidates);
+
+        // Phase 2: materialize hit objects for the returned head only.
+        let hits = scored
+            .into_iter()
+            .map(|candidate| {
+                self.materialize_ranked_hit(candidate, lexical_scan.as_ref(), &graph_scores)
+            })
+            .collect();
 
         RankedSearchResult {
             backend,
@@ -7796,42 +7854,24 @@ impl MentisDb {
         })
     }
 
-    fn rank_search_hit<'a>(
-        &'a self,
+    /// Score one candidate without building any heavy hit data.
+    ///
+    /// Returns `None` for text queries when the thought has no lexical,
+    /// vector, or graph signal at all.
+    fn score_candidate<'a>(
+        &self,
         thought: &'a Thought,
-        ranked_text: Option<&str>,
-        lexical_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
-        vector_scores: &HashMap<usize, f32>,
-        graph_hits: &HashMap<usize, RankedGraphHit>,
-    ) -> Option<RankedSearchHit<'a>> {
-        let (
-            lexical,
-            vector,
-            graph,
-            relation,
-            seed_support,
-            graph_distance,
-            graph_seed_paths,
-            graph_relation_kinds,
-            graph_path,
-            matched_terms,
-            match_sources,
-        ) = if ranked_text.is_some() {
-            let lexical_hit = lexical_hits
-                .get(&(thought.index as usize))
-                .filter(|hit| hit.score > 0.0);
-            let graph_hit = graph_hits.get(&(thought.index as usize));
-            let vector = vector_scores
-                .get(&(thought.index as usize))
-                .copied()
-                .unwrap_or_default();
-
-            if lexical_hit.is_none() && graph_hit.is_none() && vector <= 0.0 {
+        has_text: bool,
+        lexical: Option<f32>,
+        vector: f32,
+        graph_hit: Option<&RankedGraphHit>,
+    ) -> Option<ScoredCandidate<'a>> {
+        let (lexical, vector, graph, relation, seed_support) = if has_text {
+            if lexical.is_none() && graph_hit.is_none() && vector <= 0.0 {
                 return None;
             }
-
             (
-                lexical_hit.map(|hit| hit.score).unwrap_or_default(),
+                lexical.unwrap_or_default(),
                 vector,
                 graph_hit
                     .map(|hit| self.graph_proximity_score(hit.best_hit.depth))
@@ -7840,33 +7880,9 @@ impl MentisDb {
                 graph_hit
                     .map(|hit| self.graph_seed_support_score(hit.seed_paths))
                     .unwrap_or_default(),
-                graph_hit.map(|hit| hit.best_hit.depth),
-                graph_hit.map(|hit| hit.seed_paths).unwrap_or(0),
-                graph_hit
-                    .map(|hit| hit.relation_kinds.clone())
-                    .unwrap_or_default(),
-                graph_hit.map(|hit| hit.best_hit.path.clone()),
-                lexical_hit
-                    .map(|hit| hit.matched_terms.clone())
-                    .unwrap_or_default(),
-                lexical_hit
-                    .map(|hit| hit.match_sources.clone())
-                    .unwrap_or_default(),
             )
         } else {
-            (
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                None,
-                0,
-                Vec::new(),
-                None,
-                Vec::new(),
-                Vec::new(),
-            )
+            (0.0, 0.0, 0.0, 0.0, 0.0)
         };
         // Importance acts as a proxy for "user-originated content" vs
         // "verbose assistant response". Applied as a multiplicative boost
@@ -7903,29 +7919,65 @@ impl MentisDb {
             + confidence
             + recency;
 
-        Some(RankedSearchHit {
+        Some(ScoredCandidate {
             thought,
+            lexical,
+            vector,
+            graph,
+            relation,
+            seed_support,
+            importance: importance_boost,
+            confidence,
+            recency,
+            session_cohesion: 0.0,
+            rrf: 0.0,
+            total,
+            in_rrf_union: false,
+        })
+    }
+
+    /// Build the full hit object (matched terms, sources, graph path) for a
+    /// candidate that survived top-k selection.
+    fn materialize_ranked_hit<'a>(
+        &self,
+        candidate: ScoredCandidate<'a>,
+        lexical_scan: Option<&crate::search::lexical::LexicalScan>,
+        graph_hits: &HashMap<usize, RankedGraphHit>,
+    ) -> RankedSearchHit<'a> {
+        let position = candidate.thought.index as usize;
+        let (matched_terms, match_sources) = match lexical_scan {
+            Some(scan) if candidate.lexical > 0.0 => {
+                let hit = self.lexical_index.hit_from_scan(scan, position);
+                (hit.matched_terms, hit.match_sources)
+            }
+            _ => (Vec::new(), Vec::new()),
+        };
+        let graph_hit = graph_hits.get(&position);
+        RankedSearchHit {
+            thought: candidate.thought,
             score: RankedSearchScore {
-                lexical,
-                vector,
-                graph,
-                relation,
-                seed_support,
-                importance: importance_boost,
-                confidence,
-                recency,
-                session_cohesion: 0.0,
-                rrf: 0.0,
+                lexical: candidate.lexical,
+                vector: candidate.vector,
+                graph: candidate.graph,
+                relation: candidate.relation,
+                seed_support: candidate.seed_support,
+                importance: candidate.importance,
+                confidence: candidate.confidence,
+                recency: candidate.recency,
+                session_cohesion: candidate.session_cohesion,
+                rrf: candidate.rrf,
                 llm_score: 0.0,
-                total,
+                total: candidate.total,
             },
-            graph_distance,
-            graph_seed_paths,
-            graph_relation_kinds,
-            graph_path,
+            graph_distance: graph_hit.map(|hit| hit.best_hit.depth),
+            graph_seed_paths: graph_hit.map(|hit| hit.seed_paths).unwrap_or(0),
+            graph_relation_kinds: graph_hit
+                .map(|hit| hit.relation_kinds.clone())
+                .unwrap_or_default(),
+            graph_path: graph_hit.map(|hit| hit.best_hit.path.clone()),
             matched_terms,
             match_sources,
-        })
+        }
     }
 
     fn rank_candidates_lexically(
@@ -7934,28 +7986,22 @@ impl MentisDb {
         text: &str,
         synonyms: &std::collections::HashMap<String, Vec<String>>,
         synonym_weight: f32,
-    ) -> HashMap<usize, crate::search::lexical::LexicalHit> {
+    ) -> crate::search::lexical::LexicalScan {
         use crate::search::lexical::{LexicalCandidates, LexicalQuery};
         let mut query = LexicalQuery::new(text);
         if !synonyms.is_empty() {
             query = query.with_synonyms(synonyms.clone(), synonym_weight);
         }
-        let scan = if candidates.len() == self.thoughts.len() {
-            // Candidates cover the whole chain: no position list needed.
-            self.lexical_index.scan(&query, LexicalCandidates::All)
-        } else {
-            let positions: Vec<usize> = candidates
-                .iter()
-                .map(|thought| thought.index as usize)
-                .collect();
-            // An empty subset matches nothing instead of scanning everything.
-            self.lexical_index
-                .scan(&query, LexicalCandidates::Subset(&positions))
-        };
-        scan.positions()
+        if candidates.len() == self.thoughts.len() {
+            // Candidates cover the whole chain: skip building a position list.
+            return self.lexical_index.scan(&query, LexicalCandidates::All);
+        }
+        let positions: Vec<usize> = candidates
             .iter()
-            .map(|&position| (position, self.lexical_index.hit_from_scan(&scan, position)))
-            .collect()
+            .map(|thought| thought.index as usize)
+            .collect();
+        self.lexical_index
+            .scan(&query, LexicalCandidates::Subset(&positions))
     }
 
     fn rank_candidates_semantically(
@@ -8020,19 +8066,20 @@ impl MentisDb {
 
     fn context_bundle_seeds(
         &self,
-        lexical_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
+        lexical_scan: &crate::search::lexical::LexicalScan,
         limit: usize,
     ) -> Vec<crate::search::ContextBundleSeed> {
-        self.sorted_lexical_seed_hits(lexical_hits)
+        lexical_scan
+            .top_scores(limit.max(1))
             .into_iter()
-            .take(limit.max(1))
-            .filter_map(|hit| {
+            .filter_map(|(position, score)| {
                 self.thoughts
-                    .get(hit.doc_position)
+                    .get(position)
                     .map(crate::search::ThoughtLocator::local)
                     .map(|locator| {
-                        crate::search::ContextBundleSeed::new(locator, hit.score)
-                            .with_matched_terms(hit.matched_terms.iter().cloned())
+                        let hit = self.lexical_index.hit_from_scan(lexical_scan, position);
+                        crate::search::ContextBundleSeed::new(locator, score)
+                            .with_matched_terms(hit.matched_terms)
                     })
             })
             .collect()
@@ -8042,9 +8089,9 @@ impl MentisDb {
         &self,
         candidates: &[&Thought],
         graph: &RankedSearchGraph,
-        lexical_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
+        lexical_scan: &crate::search::lexical::LexicalScan,
     ) -> HashMap<usize, RankedGraphHit> {
-        let raw_hits = self.expand_ranked_candidate_paths(candidates, graph, lexical_hits);
+        let raw_hits = self.expand_ranked_candidate_paths(candidates, graph, lexical_scan);
         let mut aggregates = HashMap::<usize, RankedGraphHit>::new();
 
         for hit in raw_hits {
@@ -8087,9 +8134,9 @@ impl MentisDb {
         &self,
         candidates: &[&Thought],
         graph: &RankedSearchGraph,
-        lexical_hits: &HashMap<usize, crate::search::lexical::LexicalHit>,
+        lexical_scan: &crate::search::lexical::LexicalScan,
     ) -> Vec<crate::search::GraphExpansionHit> {
-        if lexical_hits.is_empty() {
+        if lexical_scan.is_empty() {
             return Vec::new();
         }
 
@@ -8099,15 +8146,10 @@ impl MentisDb {
             .iter()
             .map(|thought| thought.index as usize)
             .collect();
-        let seeds: Vec<crate::search::ThoughtLocator> = self
-            .sorted_lexical_seed_hits(lexical_hits)
+        let seeds: Vec<crate::search::ThoughtLocator> = lexical_scan
+            .top_scores(MAX_GRAPH_SEEDS)
             .into_iter()
-            .take(MAX_GRAPH_SEEDS)
-            .filter_map(|hit| {
-                adjacency
-                    .local_locator_for_index(hit.doc_position as u64)
-                    .cloned()
-            })
+            .filter_map(|(position, _)| adjacency.local_locator_for_index(position as u64).cloned())
             .collect();
         if seeds.is_empty() {
             return Vec::new();
@@ -8146,21 +8188,6 @@ impl MentisDb {
         }
 
         hits
-    }
-
-    fn sorted_lexical_seed_hits<'a>(
-        &self,
-        lexical_hits: &'a HashMap<usize, crate::search::lexical::LexicalHit>,
-    ) -> Vec<&'a crate::search::lexical::LexicalHit> {
-        let mut lexical_seed_hits: Vec<&crate::search::lexical::LexicalHit> =
-            lexical_hits.values().collect();
-        lexical_seed_hits.sort_by(|left, right| {
-            right
-                .score
-                .total_cmp(&left.score)
-                .then_with(|| left.doc_position.cmp(&right.doc_position))
-        });
-        lexical_seed_hits
     }
 
     fn graph_proximity_score(&self, depth: usize) -> f32 {
