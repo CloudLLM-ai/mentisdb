@@ -48,6 +48,8 @@ def _session() -> requests.Session:
 
 DEFAULT_BASE_URL  = "http://127.0.0.1:9472"
 DEFAULT_TOP_K     = 10
+_RERANK = False
+_RERANK_K = 50
 DEFAULT_WORKERS   = 4
 NEAR_MISS_K       = 50
 
@@ -329,7 +331,7 @@ def evaluate(base_url: str, chain_key: str, queries: list[dict],
             evidence_texts = [item_map.get(tid, "") for tid in q["target_ids"]]
             evidence_texts = [e for e in evidence_texts if e]
 
-        raw = ranked_search(base_url, chain_key, question, fetch_k)
+        raw = ranked_search(base_url, chain_key, question, fetch_k, enable_reranking=_RERANK, rerank_k=_RERANK_K)
 
         hit_k  = _hit(evidence_texts, raw, top_k)
         hit_10 = _hit(evidence_texts, raw, 10)
@@ -472,6 +474,9 @@ def main():
                     help="Number of candidates to rerank (default 50)")
     ap.add_argument("--output", help="Write per-type JSON results here")
     args = ap.parse_args()
+    global _RERANK, _RERANK_K
+    _RERANK, _RERANK_K = args.reranking, args.rerank_k
+    print(f"  reranking    : enabled={_RERANK} k={_RERANK_K}")
 
     print(f"\nLoCoMo × mentisdb")
     print(f"  top-k        : {args.top_k}  (also computing R@10, R@20, R@{NEAR_MISS_K})")
