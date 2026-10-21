@@ -37,6 +37,11 @@ jobs:
             target: x86_64-apple-darwin
             binary: mentisdb
             artifact: mentisdb-macos-x86_64
+            # ort-sys (pulled in by fastembed via `local-embeddings`) ships no
+            # prebuilt ONNX Runtime for x86_64-apple-darwin, so the Intel macOS
+            # binary is built without local embeddings (all other default
+            # features are kept). Mention this in release notes.
+            cargo_features: --no-default-features --features server,startup-sound,llm-extraction
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary: mentisdb.exe
@@ -68,13 +73,14 @@ jobs:
             ${{ runner.os }}-${{ matrix.target }}-cargo-build-
 
       - name: Build mentisdb (release)
-        run: cargo build --bin mentisdb --release --target ${{ matrix.target }}
+        run: cargo build --bin mentisdb --release --target ${{ matrix.target }} ${{ matrix.cargo_features }}
 
       - name: Stage target-specific binary
         shell: bash
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.artifact }}"
+          test -s "dist/${{ matrix.artifact }}"
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
