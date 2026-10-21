@@ -59,7 +59,7 @@ arboard = { version = "3", default-features = false }
 dotenvy = "0.15"
 openai-rust2 = { version = "1.7.2", optional = true }
 anyhow = { version = "1", optional = true }
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 walkdir = "2.5"
 # HNSW approximate-nearest-neighbor backend (H1). Pure Rust, no_std-friendly
 # core. Unconditionally compiled in since 0.10.4.49 — the exact f32 linear-scan
