@@ -6157,62 +6157,39 @@ impl MentisDb {
             }
         }
 
-        // RRF reranking: when enabled, produce separate lexical-only and
-        // vector-only rankings over the top rerank_k candidates, merge via
-        // Reciprocal Rank Fusion, and replace the total score with the RRF
+        // RRF reranking: when enabled, produce separate lexical, vector and
+        // graph rankings over the top rerank_k candidates *that have a
+        // positive score for that signal*, merge via Reciprocal Rank Fusion,
+        // and replace the total score of every union member with the RRF
         // total plus additive adjustments from non-rankable signals
         // (importance, confidence, recency, session cohesion, graph,
-        // relation, seed support).
-        if request.enable_reranking && !hits.is_empty() {
-            let rerank_k = request.rerank_k.min(hits.len());
-            let mut order: Vec<usize> = (0..hits.len()).collect();
-            order.sort_by(|&a, &b| {
-                hits[b]
-                    .score
-                    .lexical
-                    .total_cmp(&hits[a].score.lexical)
-                    .then_with(|| hits[a].thought.index.cmp(&hits[b].thought.index))
-            });
-            let lexical_ids: Vec<u64> = order
+        // relation, seed support). Candidates outside the union keep their
+        // raw totals (a different scale) and are therefore ordered after the
+        // union below.
+        let rrf_scores: HashMap<u64, f64> = if request.enable_reranking && !hits.is_empty() {
+            let lexical: Vec<(u64, f32)> = hits
                 .iter()
-                .take(rerank_k)
-                .map(|&i| hits[i].thought.index)
+                .map(|hit| (hit.thought.index, hit.score.lexical))
                 .collect();
-            order.sort_by(|&a, &b| {
-                hits[b]
-                    .score
-                    .vector
-                    .total_cmp(&hits[a].score.vector)
-                    .then_with(|| hits[a].thought.index.cmp(&hits[b].thought.index))
-            });
-            let vector_ids: Vec<u64> = order
+            let vector: Vec<(u64, f32)> = hits
                 .iter()
-                .take(rerank_k)
-                .map(|&i| hits[i].thought.index)
+                .map(|hit| (hit.thought.index, hit.score.vector))
                 .collect();
-            order.sort_by(|&a, &b| {
-                let a_graph =
-                    hits[a].score.graph + hits[a].score.relation + hits[a].score.seed_support;
-                let b_graph =
-                    hits[b].score.graph + hits[b].score.relation + hits[b].score.seed_support;
-                b_graph
-                    .total_cmp(&a_graph)
-                    .then_with(|| hits[a].thought.index.cmp(&hits[b].thought.index))
-            });
-            let graph_ids: Vec<u64> = order
+            let graph: Vec<(u64, f32)> = hits
                 .iter()
-                .take(rerank_k)
-                .map(|&i| hits[i].thought.index)
+                .map(|hit| {
+                    (
+                        hit.thought.index,
+                        hit.score.graph + hit.score.relation + hit.score.seed_support,
+                    )
+                })
                 .collect();
-
-            let merged = crate::search::ranked::rrf_merge_three(
-                &lexical_ids,
-                &vector_ids,
-                &graph_ids,
-                crate::search::ranked::RRF_K,
+            let rrf_scores = crate::search::ranked::rrf_union_scores(
+                &lexical,
+                &vector,
+                &graph,
+                request.rerank_k,
             );
-            let rrf_scores: HashMap<u64, f64> = merged.into_iter().collect();
-
             for hit in &mut hits {
                 if let Some(&rrf) = rrf_scores.get(&hit.thought.index) {
                     let rrf_f32 = rrf as f32;
@@ -6227,15 +6204,18 @@ impl MentisDb {
                     hit.score.total = rrf_f32 + additive;
                 }
             }
-        }
+            rrf_scores
+        } else {
+            HashMap::new()
+        };
 
         let total_candidates = hits.len();
 
         hits.sort_by(|left, right| {
-            right
-                .score
-                .total
-                .total_cmp(&left.score.total)
+            rrf_scores
+                .contains_key(&right.thought.index)
+                .cmp(&rrf_scores.contains_key(&left.thought.index))
+                .then_with(|| right.score.total.total_cmp(&left.score.total))
                 .then_with(|| right.score.lexical.total_cmp(&left.score.lexical))
                 .then_with(|| right.score.vector.total_cmp(&left.score.vector))
                 .then_with(|| right.score.graph.total_cmp(&left.score.graph))
