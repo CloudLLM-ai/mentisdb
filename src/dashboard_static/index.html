@@ -813,6 +813,33 @@
       .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
 
+  // Delegated click dispatcher. All interactive markup uses data-act plus
+  // data-* arguments (HTML-escaped values) instead of inline JS handlers, so
+  // untrusted chain keys / ids can never be interpreted as script.
+  const ACTIONS = {
+    noop() {},
+    nav(el) { window.location.hash = el.dataset.hash || ''; },
+    branch(el) { window._openBranchChain(el.dataset.chain || '', el.dataset.thought || undefined); },
+    'branch-modal'(el) { window._openBranchChain(_modalChainKey || '', el.dataset.thought || ''); },
+    merge(el) { window._openMergeChain(el.dataset.chain || ''); },
+    'delete-chain'(el) { window._openDeleteChain(el.dataset.chain || ''); },
+    'fill-branch-thought'(el) { const i = document.getElementById('cl-br-thought-id'); if (i) i.value = el.dataset.id || ''; },
+    'copy-hash'(el) {
+      navigator.clipboard.writeText(el.dataset.hash || '').then(() => {
+        el.textContent = '✓';
+        setTimeout(() => { el.textContent = '⎘'; }, 1200);
+      });
+    },
+    'ex-group'(el) { exSelectGroup(el.dataset.color, el.dataset.on === '1'); },
+    'ex-remove-type'(el) { exRemoveType(el.dataset.type); },
+  };
+  document.addEventListener('click', ev => {
+    const el = ev.target instanceof Element ? ev.target.closest('[data-act]') : null;
+    if (!el) return;
+    const fn = ACTIONS[el.dataset.act];
+    if (fn) fn(el, ev);
+  });
+
   function safeMarkdownHref(rawHref) {
     const href = String(rawHref || '').trim();
     const normalized = href.replace(/[\u0000-\u001F\u007F\s]+/g, '').toLowerCase();
@@ -876,7 +903,7 @@
         if (!thoughts.length) { container.innerHTML = '<div style="color:#8b949e;font-size:0.85rem">No thoughts found</div>'; return; }
         container.innerHTML = thoughts.map(t => {
           const preview = (t.content || '').slice(0, 80).replace(/</g, '&lt;');
-          return `<div class="clickable" style="padding:4px 8px;border-radius:4px;margin-bottom:2px;font-size:0.85rem;cursor:pointer;border:1px solid rgba(88,166,255,0.2)" onclick="document.getElementById('cl-br-thought-id').value='${t.id}'">
+          return `<div class="clickable" style="padding:4px 8px;border-radius:4px;margin-bottom:2px;font-size:0.85rem;cursor:pointer;border:1px solid rgba(88,166,255,0.2)" data-act="fill-branch-thought" data-id="${esc(t.id)}">
             <span class="mono" style="color:#58a6ff">${t.id}</span>
             <span style="color:#8b949e;margin-left:8px">${preview}</span>
           </div>`;
@@ -1229,7 +1256,7 @@
         <dt>ID</dt>     <dd class="mono" style="font-size:0.8rem;word-break:break-all">${esc(thought.id || thought.thought_id || '—')}</dd>
         <dt>Hash</dt>   <dd class="mono" style="font-size:0.8rem;word-break:break-all;display:flex;align-items:center;gap:8px">
           <span id="modal-hash-val">${esc(thought.hash || thought.thought_hash || '—')}</span>
-          ${(thought.hash||thought.thought_hash) ? `<button onclick="navigator.clipboard.writeText('${esc(thought.hash||thought.thought_hash)}').then(()=>{this.textContent='✓';setTimeout(()=>this.textContent='⎘',1200)})" title="Copy hash" style="background:none;border:1px solid #30363d;border-radius:4px;color:#8b949e;cursor:pointer;font-size:0.75rem;padding:1px 6px;flex-shrink:0">⎘</button>` : ''}
+          ${(thought.hash||thought.thought_hash) ? `<button data-act="copy-hash" data-hash="${esc(thought.hash||thought.thought_hash)}" title="Copy hash" style="background:none;border:1px solid #30363d;border-radius:4px;color:#8b949e;cursor:pointer;font-size:0.75rem;padding:1px 6px;flex-shrink:0">⎘</button>` : ''}
         </dd>
         <dt>Type</dt>   <dd>${typeBadge(thought.thought_type)}${entityTypeBadge(thought.entity_type)}</dd>
         <dt>Role</dt>   <dd>${thought.role ? `<span class="badge badge-gray">${esc(thought.role)}</span>` : '<span style="color:#484f58">—</span>'}</dd>
@@ -1244,7 +1271,7 @@
       <div class="field-label" style="margin-top:16px">Content</div>
       <pre>${esc(thought.content || '')}</pre>
       <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4)" onclick="window._openBranchChain(_modalChainKey || '', '${esc(thought.id || thought.thought_id || '')}')">⑂ Branch from this thought</button>
+        <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4)" data-act="branch-modal" data-thought="${esc(thought.id || thought.thought_id || '')}">⑂ Branch from this thought</button>
       </div>
     `;
 
@@ -2058,18 +2085,18 @@
             <thead><tr><th title="Unique identifier for this memory chain">Chain Key</th><th title="Number of committed thoughts in this chain">Thoughts</th><th title="Number of unique agents that have written to this chain">Agents</th><th title="On-disk size of the main chain file (.tcbin) — stores thoughts, relations, and graph structure">Chain</th><th title="On-disk size of vector embedding sidecars — powers semantic similarity search">Semantic</th><th title="On-disk size of the implicit-edge overlay sidecar (.auto_edges.bin) — cosine-inferred graph used for BFS expansion; shows &mdash; when not yet built">Edges</th><th title="Estimated RAM footprint of the in-memory BM25 text-search index — rebuilt from the chain file when loaded; shows \`—\` when the chain is not in memory" style="color:#f0883e;cursor:help">Lexical (RAM)</th><th></th></tr></thead>
             <tbody>
               ${chains.map(c => `
-                <tr class="clickable" onclick="location.hash='chains/${encodeURIComponent(c.chain_key)}'">
+                <tr class="clickable" data-act="nav" data-hash="chains/${encodeURIComponent(c.chain_key)}">
                   <td><span class="mono" style="color:#58a6ff">${esc(c.chain_key)}</span></td>
                   <td>${esc(String(c.thought_count ?? '—'))}</td>
-                  <td onclick="event.stopPropagation()"><a href="${agentListHash(c.chain_key)}" class="mono" style="color:#58a6ff;text-decoration:none">${esc(String(c.agent_count  ?? '—'))}</a></td>
+                  <td data-act="noop"><a href="${agentListHash(c.chain_key)}" class="mono" style="color:#58a6ff;text-decoration:none">${esc(String(c.agent_count  ?? '—'))}</a></td>
                   <td style="white-space:nowrap;color:#8b949e">${esc(c.storage_size_formatted ?? '—')}</td>
                   <td style="white-space:nowrap;color:#8b949e">${esc((c.vectors_size_formatted && c.vector_config_size_formatted) ? formatBytes((c.vectors_size || 0) + (c.vector_config_size || 0)) : '—')}</td>
                   <td style="white-space:nowrap;color:#8b949e">${esc(c.auto_edges_size > 0 ? c.auto_edges_size_formatted : '—')}</td>
                   <td style="white-space:nowrap;color:#f0883e">${esc(c.lexical_size > 0 ? c.lexical_size_formatted : '—')}</td>
-                  <td onclick="event.stopPropagation()" style="white-space:nowrap">
-                    <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);margin-right:6px" title="Create a new chain that branches from this one — inherits all existing thoughts" onclick="window._openBranchChain('${esc(c.chain_key)}')">Branch…</button>
-                    <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);margin-right:6px" title="Copy all thoughts from this chain into another existing chain" onclick="window._openMergeChain('${esc(c.chain_key)}')">Merge into…</button>
-                    <button class="btn btn-danger btn-sm" title="Permanently delete this chain and all its sidecar files — this cannot be undone" onclick="window._openDeleteChain('${esc(c.chain_key)}')">Delete</button>
+                  <td data-act="noop" style="white-space:nowrap">
+                    <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);margin-right:6px" title="Create a new chain that branches from this one — inherits all existing thoughts" data-act="branch" data-chain="${esc(c.chain_key)}">Branch…</button>
+                    <button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);margin-right:6px" title="Copy all thoughts from this chain into another existing chain" data-act="merge" data-chain="${esc(c.chain_key)}">Merge into…</button>
+                    <button class="btn btn-danger btn-sm" title="Permanently delete this chain and all its sidecar files — this cannot be undone" data-act="delete-chain" data-chain="${esc(c.chain_key)}">Delete</button>
                   </td>
                 </tr>
               `).join('')}
@@ -2319,8 +2346,8 @@
                   <div class="type-group-hdr">
                     <span class="badge badge-${g.color}" style="font-size:0.7rem">${g.label}</span>
                     <div class="tg-actions">
-                      <button onclick="exSelectGroup('${g.color}',true)"  style="color:#58a6ff">All</button>
-                      <button onclick="exSelectGroup('${g.color}',false)" style="color:#8b949e">Clear</button>
+                      <button data-act="ex-group" data-color="${esc(g.color)}" data-on="1"  style="color:#58a6ff">All</button>
+                      <button data-act="ex-group" data-color="${esc(g.color)}" data-on="0" style="color:#8b949e">Clear</button>
                     </div>
                   </div>
                   ${g.types.map(t => `
@@ -2454,7 +2481,7 @@
     if (!el) return;
     el.innerHTML = EX.sel.map(t => {
       const c = TYPE_COLOR[t] || 'gray';
-      return `<span class="badge badge-${c}" style="cursor:pointer" onclick="exRemoveType('${t}')">${esc(t)} ×</span>`;
+      return `<span class="badge badge-${c}" style="cursor:pointer" data-act="ex-remove-type" data-type="${esc(t)}">${esc(t)} ×</span>`;
     }).join('');
   }
 
@@ -2667,7 +2694,7 @@
                     <td>${t.role ? `<span class="badge badge-gray">${esc(t.role)}</span>` : '<span style="color:#484f58">—</span>'}</td>
                     <td style="font-size:0.82rem">
                       ${t.agent_id
-                        ? `<a class="mono" href="#agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(t.agent_id)}" onclick="event.stopPropagation()">${esc(t.agent_id)}</a>`
+                        ? `<a class="mono" href="#agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(t.agent_id)}" data-act="noop">${esc(t.agent_id)}</a>`
                         : '<span style="color:#484f58">—</span>'}
                     </td>
                     <td style="max-width:340px;overflow:hidden;color:#c9d1d9">
@@ -2675,7 +2702,7 @@
                       ${metaLine}
                     </td>
                     <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.timestamp||t.created_at))}</td>
-                    <td style="white-space:nowrap"><button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);padding:2px 6px;font-size:0.75rem" title="Branch from this thought" onclick="event.stopPropagation();window._openBranchChain('${esc(EX.chainKey||'')}', '${esc(t.id||t.thought_id||'')}')">⑂</button></td>
+                    <td style="white-space:nowrap"><button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);padding:2px 6px;font-size:0.75rem" title="Branch from this thought" data-act="branch" data-chain="${esc(EX.chainKey||'')}" data-thought="${esc(t.id||t.thought_id||'')}">⑂</button></td>
                   </tr>
                 `;
               }).join('')}
@@ -3027,7 +3054,7 @@
                     ${esc((t.content||'').slice(0,120))}${(t.content||'').length>120?'…':''}
                   </td>
                   <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.timestamp||t.created_at))}</td>
-                  <td style="white-space:nowrap"><button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);padding:2px 6px;font-size:0.75rem" title="Branch from this thought" onclick="event.stopPropagation();window._openBranchChain('${esc(chainKey||'')}', '${esc(t.id||t.thought_id||'')}'}">⑂</button></td>
+                  <td style="white-space:nowrap"><button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);padding:2px 6px;font-size:0.75rem" title="Branch from this thought" data-act="branch" data-chain="${esc(chainKey||'')}" data-thought="${esc(t.id||t.thought_id||'')}">⑂</button></td>
                 </tr>
               `).join('')}
             </tbody>
@@ -3307,7 +3334,7 @@
                     ${esc((t.content||'').slice(0,120))}${(t.content||'').length>120?'…':''}
                   </td>
                   <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.timestamp||t.created_at))}</td>
-                  <td style="white-space:nowrap"><button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);padding:2px 6px;font-size:0.75rem" title="Branch from this thought" onclick="event.stopPropagation();window._openBranchChain('${esc(chainKey||'')}', '${esc(t.id||t.thought_id||'')}')">⑂</button></td>
+                  <td style="white-space:nowrap"><button class="btn btn-sm" style="color:#58a6ff;border-color:rgba(88,166,255,0.4);padding:2px 6px;font-size:0.75rem" title="Branch from this thought" data-act="branch" data-chain="${esc(chainKey||'')}" data-thought="${esc(t.id||t.thought_id||'')}">⑂</button></td>
                 </tr>
               `).join('')}
             </tbody>
@@ -3440,13 +3467,13 @@
             <thead><tr><th title="Skill name or identifier">Name</th><th title="Current lifecycle status: Active, Deprecated, or Revoked">Status</th><th title="Number of immutable versions stored">Versions</th><th title="Agent that uploaded the latest version">Uploader</th><th title="When the latest version was uploaded">Updated</th><th></th></tr></thead>
             <tbody>
               ${skills.map(s => `
-                <tr class="clickable" onclick="location.hash='skills/${encodeURIComponent(s.skill_id)}'">
+                <tr class="clickable" data-act="nav" data-hash="skills/${encodeURIComponent(s.skill_id)}">
                   <td style="color:#58a6ff;font-weight:600">${esc(s.name || s.skill_id)}</td>
                   <td>${statusBadge(s.status)}</td>
                   <td>${esc(String(s.version_count ?? '—'))}</td>
                   <td class="mono" style="font-size:0.81rem;color:#8b949e">${esc(s.latest_uploaded_by_agent_id || '—')}</td>
                   <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(s.updated_at))}</td>
-                  <td onclick="event.stopPropagation()" style="white-space:nowrap">
+                  <td data-act="noop" style="white-space:nowrap">
                     <button class="btn btn-secondary btn-sm" data-skill-edit data-skill-id="${esc(s.skill_id)}" title="Edit this skill">✏️ Edit</button>
                     ${(s.status||'').toLowerCase() === 'revoked' ? `<button class="btn btn-danger btn-sm" data-skill-delete data-skill-id="${esc(s.skill_id)}" title="Permanently delete this revoked skill from the registry">Delete</button>` : ''}
                   </td>

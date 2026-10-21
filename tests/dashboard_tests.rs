@@ -738,7 +738,7 @@ async fn dashboard_chain_agent_counts_link_to_agent_sections() {
     assert!(html.contains("function agentListHash(chainKey) {"));
     assert!(html.contains("else if (parts[0] === 'agents' && parts[1])             renderAgentList(decodeURIComponent(parts[1]));"));
     assert!(html.contains(
-        r#"<td onclick="event.stopPropagation()"><a href="${agentListHash(c.chain_key)}""#
+        r#"<td data-act="noop"><a href="${agentListHash(c.chain_key)}""#
     ));
     assert!(html.contains(
         r#"<div class="section-label" id="${agentListAnchorId(ck)}"><a href="${agentListHash(ck)}""#
