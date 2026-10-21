@@ -15,17 +15,30 @@
 /// in the original RRF paper and works well across diverse collections.
 pub const RRF_K: usize = 60;
 
-/// Merge two ranked lists via Reciprocal Rank Fusion.
+/// Merge ranked lists via Reciprocal Rank Fusion.
 ///
-/// Each input is a slice of document identifiers (e.g. thought indices or UUID
-/// strings) sorted by decreasing relevance within their respective ranking
-/// (lexical-only or vector-only). Documents that appear in both lists receive
-/// contributions from both; documents in only one list receive a single
-/// contribution.
+/// Each input is a slice of document identifiers (e.g. thought indices or UUIDs)
+/// sorted by decreasing relevance within their respective ranking
+/// (lexical-only or vector-only). Documents that appear in several lists
+/// receive a contribution from each; documents in only one list receive a
+/// single contribution. Empty lists contribute nothing.
 ///
-/// Returns the merged list sorted by decreasing RRF score, along with each
-/// document's raw RRF score.
-pub fn rrf_merge<T: Clone + std::hash::Hash + Eq>(lists: &[&[T]], k: usize) -> Vec<(T, f64)> {
+/// Returns the merged list sorted by decreasing RRF score. Ties are broken by
+/// ascending identifier so the output is deterministic regardless of
+/// `HashMap` iteration order.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::search::ranked::{rrf_merge, RRF_K};
+///
+/// let a = [2usize, 1];
+/// let b = [1usize, 2];
+/// // Perfectly symmetric: the tie is broken by ascending id.
+/// let merged = rrf_merge(&[&a[..], &b[..]], RRF_K);
+/// assert_eq!(merged[0].0, 1);
+/// ```
+pub fn rrf_merge<T: Clone + std::hash::Hash + Eq + Ord>(lists: &[&[T]], k: usize) -> Vec<(T, f64)> {
     let mut scores = std::collections::HashMap::new();
 
     for list in lists {
@@ -40,7 +53,7 @@ pub fn rrf_merge<T: Clone + std::hash::Hash + Eq>(lists: &[&[T]], k: usize) -> V
     }
 
     let mut ranked: Vec<(T, f64)> = scores.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     ranked
 }
 
@@ -49,13 +62,79 @@ pub fn rrf_merge<T: Clone + std::hash::Hash + Eq>(lists: &[&[T]], k: usize) -> V
 /// Convenience wrapper around [`rrf_merge`] for the common case where
 /// graph-expanded hits form a third ranking signal alongside lexical
 /// and vector scores.
-pub fn rrf_merge_three<T: Clone + std::hash::Hash + Eq>(
+pub fn rrf_merge_three<T: Clone + std::hash::Hash + Eq + Ord>(
     lexical: &[T],
     vector: &[T],
     graph: &[T],
     k: usize,
 ) -> Vec<(T, f64)> {
     rrf_merge(&[lexical, vector, graph], k)
+}
+
+/// Return the identifiers of the `k` best candidates that have a strictly
+/// positive score, best first.
+///
+/// Candidates with a non-positive (or NaN) score carry no ranking signal for
+/// the corresponding retriever, so they must not enter an RRF rank list: with
+/// no vector sidecar every vector score is `0.0` and including them would hand
+/// the `k` lowest-index documents a spurious `1/(k+rank)` boost. Ties are
+/// broken by ascending identifier for determinism.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::search::ranked::top_positive_ranking;
+///
+/// let scored = [(1u64, 0.0f32), (2, 3.0), (3, 5.0), (4, 3.0)];
+/// assert_eq!(top_positive_ranking(&scored, 2), vec![3, 2]);
+/// assert!(top_positive_ranking(&[(1u64, 0.0f32)], 5).is_empty());
+/// ```
+pub fn top_positive_ranking<K: Clone + Ord>(scored: &[(K, f32)], k: usize) -> Vec<K> {
+    let mut positive: Vec<&(K, f32)> = scored.iter().filter(|(_, score)| *score > 0.0).collect();
+    let order = |a: &&(K, f32), b: &&(K, f32)| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0));
+    if k == 0 {
+        return Vec::new();
+    }
+    if positive.len() > k {
+        positive.select_nth_unstable_by(k - 1, order);
+        positive.truncate(k);
+    }
+    positive.sort_by(order);
+    positive.into_iter().map(|(id, _)| id.clone()).collect()
+}
+
+/// Compute RRF scores for the union of the top-`k` positive candidates of
+/// the lexical, vector, and graph signals.
+///
+/// Each signal is first reduced with [`top_positive_ranking`], so absent
+/// signals (all-zero scores) contribute no rank list at all. Only identifiers
+/// that appear in at least one list receive an entry; callers must treat
+/// absent identifiers as having no RRF contribution *and* rank them after the
+/// union, since their raw totals live on a different scale.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::search::ranked::rrf_union_scores;
+///
+/// let lexical = [(1u64, 9.0f32), (2, 5.0), (3, 1.0)];
+/// let vector = [(1u64, 0.0f32), (2, 0.0), (3, 0.0)];
+/// let scores = rrf_union_scores(&lexical, &vector, &[], 2);
+/// assert_eq!(scores.len(), 2);
+/// assert!(scores.contains_key(&1) && scores.contains_key(&2));
+/// ```
+pub fn rrf_union_scores<K: Clone + std::hash::Hash + Eq + Ord>(
+    lexical: &[(K, f32)],
+    vector: &[(K, f32)],
+    graph: &[(K, f32)],
+    k: usize,
+) -> std::collections::HashMap<K, f64> {
+    let lexical_ids = top_positive_ranking(lexical, k);
+    let vector_ids = top_positive_ranking(vector, k);
+    let graph_ids = top_positive_ranking(graph, k);
+    rrf_merge_three(&lexical_ids, &vector_ids, &graph_ids, RRF_K)
+        .into_iter()
+        .collect()
 }
 
 #[cfg(test)]
