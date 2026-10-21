@@ -37,7 +37,7 @@
       z-index: 100;
     }
     .nav-brand { font-size: 1.2rem; font-weight: 700; color: #e6edf3; letter-spacing: -0.5px; user-select: none; }
-    .nav-links { display: flex; gap: 4px; }
+    .nav-links { display: flex; flex-wrap: wrap; gap: 4px; }
     .nav-links a {
       color: #8b949e;
       padding: 6px 14px;
@@ -452,6 +452,12 @@
       width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;
     }
     .token-secret-copy:hover { color:#e6edf3;border-color:#58a6ff; }
+    @media (max-width: 600px) {
+      nav { height: auto; min-height: 56px; flex-wrap: wrap; padding: 8px 12px; gap: 4px; }
+      #app { padding: 12px; }
+      .modal, .modal-overlay > div { max-width: calc(100vw - 32px) !important; box-sizing: border-box; }
+      #cl-bootstrap-modal > div { max-width: calc(100vw - 24px) !important; box-sizing: border-box; }
+    }
     @media (max-width: 760px) {
       .token-form { grid-template-columns: 1fr; }
       .token-form input { width:100%;box-sizing:border-box; }
@@ -1357,7 +1363,8 @@
                 } else if (s.kind === 'number') {
                   control = `<input type="number" id="${inputId}" data-idx="${idx}" value="${esc(s.value || s.default_value)}" placeholder="${esc(s.default_value)}" title="Enter a numeric value">`;
                 } else {
-                  control = `<input type="text" id="${inputId}" data-idx="${idx}" value="${esc(s.value)}" placeholder="${esc(s.default_value)}" title="Enter a text value">`;
+                  const ph = s.set && !s.value ? '(set \u2014 type to replace)' : s.default_value;
+                  control = `<input type="text" id="${inputId}" data-idx="${idx}" value="${esc(s.value)}" placeholder="${esc(ph)}" title="Enter a text value">`;
                 }
                 return `
                   <tr>
