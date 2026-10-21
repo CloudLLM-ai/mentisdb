@@ -8017,11 +8017,27 @@ impl MentisDb {
             return HashMap::new();
         }
 
-        let candidate_positions: HashMap<String, usize> = candidates
-            .iter()
-            .map(|thought| (thought.id.to_string(), thought.index as usize))
-            .collect();
-        let filter = crate::search::VectorFilter::from_ids(candidate_positions.keys().cloned());
+        // When the candidates are the whole chain no filter is needed, so skip
+        // building the id set (one String per candidate) entirely. Otherwise
+        // restrict the backend by id and keep a dense position mask as a
+        // second line of defence.
+        let covers_chain = candidates.len() == self.thoughts.len();
+        let (filter, candidate_mask) = if covers_chain {
+            (crate::search::VectorFilter::None, None)
+        } else {
+            let mut mask = vec![false; self.thoughts.len()];
+            for thought in candidates {
+                if let Some(slot) = mask.get_mut(thought.index as usize) {
+                    *slot = true;
+                }
+            }
+            (
+                crate::search::VectorFilter::from_ids(
+                    candidates.iter().map(|thought| thought.id.to_string()),
+                ),
+                Some(mask),
+            )
+        };
         let mut scores = HashMap::new();
 
         for entry in self.managed_vector_sidecars.values() {
@@ -8040,7 +8056,7 @@ impl MentisDb {
                 continue;
             };
 
-            let limit = candidate_positions.len().clamp(1, MAX_VECTOR_HITS);
+            let limit = candidates.len().clamp(1, MAX_VECTOR_HITS);
             let query = crate::search::VectorQuery::new(query_vector).with_limit(limit);
             let hits = match cached.search_filtered(&query, &filter) {
                 Ok(hits) => hits,
@@ -8051,13 +8067,23 @@ impl MentisDb {
                 if hit.score < MIN_VECTOR_COSINE {
                     break;
                 }
-                if let Some(position) = candidate_positions.get(&hit.document_id) {
-                    let weighted_score = hit.score * FRESH_VECTOR_WEIGHT;
-                    scores
-                        .entry(*position)
-                        .and_modify(|existing: &mut f32| *existing = existing.max(weighted_score))
-                        .or_insert(weighted_score);
+                let Some(position) = Uuid::parse_str(&hit.document_id)
+                    .ok()
+                    .and_then(|id| self.id_to_index.get(&id).copied())
+                else {
+                    continue;
+                };
+                if candidate_mask
+                    .as_ref()
+                    .is_some_and(|mask| !mask.get(position).copied().unwrap_or(false))
+                {
+                    continue;
                 }
+                let weighted_score = hit.score * FRESH_VECTOR_WEIGHT;
+                scores
+                    .entry(position)
+                    .and_modify(|existing: &mut f32| *existing = existing.max(weighted_score))
+                    .or_insert(weighted_score);
             }
         }
 
