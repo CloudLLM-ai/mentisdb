@@ -22,10 +22,10 @@ use crate::{
         parse_bearer_token_access, BearerTokenError, BearerTokenRecord, BearerTokenScope,
         BearerTokenStore, MENTISDB_BEARER_TOKEN_ACCESS_ENV,
     },
-    deregister_chain, load_registered_chains, AgentStatus, ManagedVectorProviderKind, MentisDb,
-    PublicKeyAlgorithm, RankedSearchGraph, RankedSearchQuery, SkillFormat, SkillRegistry,
-    SkillUpload, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelationKind,
-    ThoughtRole, ThoughtType,
+    deregister_chain, load_registered_chains, AgentStatus, BinaryStorageAdapter,
+    ManagedVectorProviderKind, MentisDb, PublicKeyAlgorithm, RankedSearchGraph, RankedSearchQuery,
+    SkillFormat, SkillRegistry, SkillUpload, StorageAdapterKind, Thought, ThoughtInput,
+    ThoughtQuery, ThoughtRelationKind, ThoughtRole, ThoughtType,
 };
 
 use axum::{
@@ -553,10 +553,17 @@ async fn get_or_open_chain(
     chain_key: &str,
 ) -> Result<Arc<RwLock<MentisDb>>, (StatusCode, Json<Value>)> {
     let registry = load_registered_chains(&state.mentisdb_dir).map_err(internal_error)?;
+    // Prefer the registry's recorded storage location when that file exists;
+    // otherwise derive the path from the chain key.
     let registered_storage = registry.chains.get(chain_key).map(|entry| {
-        entry
-            .storage_adapter
-            .for_chain_key(&state.mentisdb_dir, chain_key)
+        let located = PathBuf::from(&entry.storage_location);
+        if entry.storage_location.is_empty() || !located.is_file() {
+            entry
+                .storage_adapter
+                .for_chain_key(&state.mentisdb_dir, chain_key)
+        } else {
+            Box::new(BinaryStorageAdapter::new(located))
+        }
     });
 
     // Try the live cache first (clone the Arc to avoid holding the DashMap shard lock across an await).
@@ -2372,24 +2379,28 @@ async fn api_copy_agent_to_chain(
     }
 
     // Open (or create) the target chain.
-    let dst_arc = {
-        // create_new=false: open if it exists, create if it doesn't
-        let chain = MentisDb::open_with_key_and_storage_kind(
-            &state.mentisdb_dir,
-            &target_chain_key,
-            state.default_storage_adapter,
-        )
-        .map_err(|e| internal_error(format!("open target chain '{target_chain_key}': {e}")))?;
-        let mut chain = chain;
-        chain
-            .set_auto_flush(state.auto_flush.load(Ordering::Relaxed))
-            .map_err(internal_error)?;
-        chain
-            .apply_persisted_managed_vector_sidecars()
-            .map_err(internal_error)?;
-        let arc = Arc::new(RwLock::new(chain));
-        state.chains.insert(target_chain_key.clone(), arc.clone());
-        arc
+    // Reuse the live cached chain when present; only create on NotFound so a
+    // live handle is never replaced by a second one.
+    let dst_arc = match get_or_open_chain(&state, &target_chain_key).await {
+        Ok(arc) => arc,
+        Err((StatusCode::NOT_FOUND, _)) => {
+            let mut chain = MentisDb::open_with_key_and_storage_kind(
+                &state.mentisdb_dir,
+                &target_chain_key,
+                state.default_storage_adapter,
+            )
+            .map_err(|e| internal_error(format!("open target chain '{target_chain_key}': {e}")))?;
+            chain
+                .set_auto_flush(state.auto_flush.load(Ordering::Relaxed))
+                .map_err(internal_error)?;
+            chain
+                .apply_persisted_managed_vector_sidecars()
+                .map_err(internal_error)?;
+            let arc = Arc::new(RwLock::new(chain));
+            state.chains.insert(target_chain_key.clone(), arc.clone());
+            arc
+        }
+        Err(err) => return Err(err),
     };
 
     let mut dst_chain = dst_arc.write().await;
