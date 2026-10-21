@@ -6436,8 +6436,6 @@ impl MentisDb {
         limit: usize,
         offset: usize,
     ) -> FederatedSearchResult<'a> {
-        use crate::search::ranked::RRF_K;
-
         // Step 1: Collect results from self and all other chains
         let mut all_hits: Vec<(
             &'a str,
@@ -6549,57 +6547,37 @@ impl MentisDb {
         // Step 3: Sort by total score descending, then by thought.index ascending
         deduplicated.sort_by(|a, b| {
             b.2.total
-                .partial_cmp(&a.2.total)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.2.total)
                 .then_with(|| a.1.index.cmp(&b.1.index))
+                .then_with(|| a.0.cmp(b.0))
         });
 
         // Step 4: RRF reranking if any query enabled it
         let any_reranking =
             self_query.enable_reranking || other_queries.values().any(|q| q.enable_reranking);
 
+        // Scores are keyed by thought UUID: per-chain `thought.index` values
+        // collide across chains and would merge unrelated hits.
         if any_reranking && !deduplicated.is_empty() {
-            let rerank_k = self_query.rerank_k.min(deduplicated.len());
-
-            let mut by_lexical: Vec<_> = deduplicated.iter().collect();
-            by_lexical.sort_by(|a, b| {
-                b.2.lexical
-                    .total_cmp(&a.2.lexical)
-                    .then_with(|| a.1.index.cmp(&b.1.index))
-            });
-
-            let mut by_vector: Vec<_> = deduplicated.iter().collect();
-            by_vector.sort_by(|a, b| {
-                b.2.vector
-                    .total_cmp(&a.2.vector)
-                    .then_with(|| a.1.index.cmp(&b.1.index))
-            });
-
-            let mut by_graph: Vec<_> = deduplicated.iter().collect();
-            by_graph.sort_by(|a, b| {
-                let a_g = a.2.graph + a.2.relation + a.2.seed_support;
-                let b_g = b.2.graph + b.2.relation + b.2.seed_support;
-                b_g.total_cmp(&a_g).then_with(|| a.1.index.cmp(&b.1.index))
-            });
-
-            let lexical_ids: Vec<u64> = by_lexical
+            let lexical: Vec<(Uuid, f32)> =
+                deduplicated.iter().map(|h| (h.1.id, h.2.lexical)).collect();
+            let vector: Vec<(Uuid, f32)> =
+                deduplicated.iter().map(|h| (h.1.id, h.2.vector)).collect();
+            let graph: Vec<(Uuid, f32)> = deduplicated
                 .iter()
-                .take(rerank_k)
-                .map(|h| h.1.index)
+                .map(|h| (h.1.id, h.2.graph + h.2.relation + h.2.seed_support))
                 .collect();
-            let vector_ids: Vec<u64> = by_vector.iter().take(rerank_k).map(|h| h.1.index).collect();
-            let graph_ids: Vec<u64> = by_graph.iter().take(rerank_k).map(|h| h.1.index).collect();
-
-            let merged = crate::search::ranked::rrf_merge_three(
-                &lexical_ids,
-                &vector_ids,
-                &graph_ids,
-                RRF_K,
-            );
-            let rrf_scores: BTreeMap<u64, f64> = merged.into_iter().collect();
+            let rrf_scores: BTreeMap<Uuid, f64> = crate::search::ranked::rrf_union_scores(
+                &lexical,
+                &vector,
+                &graph,
+                self_query.rerank_k,
+            )
+            .into_iter()
+            .collect();
 
             for hit in &mut deduplicated {
-                if let Some(&rrf) = rrf_scores.get(&hit.1.index) {
+                if let Some(&rrf) = rrf_scores.get(&hit.1.id) {
                     let rrf_f32 = rrf as f32;
                     hit.2.rrf = rrf_f32;
                     let additive = hit.2.graph
@@ -6613,12 +6591,15 @@ impl MentisDb {
                 }
             }
 
-            // Re-sort after RRF score update
+            // Re-sort: RRF-union members first (their totals are on a
+            // different scale than raw totals), then by total.
             deduplicated.sort_by(|a, b| {
-                b.2.total
-                    .partial_cmp(&a.2.total)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                rrf_scores
+                    .contains_key(&b.1.id)
+                    .cmp(&rrf_scores.contains_key(&a.1.id))
+                    .then_with(|| b.2.total.total_cmp(&a.2.total))
                     .then_with(|| a.1.index.cmp(&b.1.index))
+                    .then_with(|| a.0.cmp(b.0))
             });
         }
 
