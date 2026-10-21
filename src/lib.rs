@@ -858,20 +858,40 @@ impl BackgroundWriter {
                             dirty_count += 1;
                             if let Some(ack_tx) = ack_tx {
                                 durable_acks.push(ack_tx);
-                                let deadline = Instant::now() + commit_window;
                                 let mut follow_up: Option<PostFlushAction> = None;
+                                // Drain whatever is already queued without
+                                // waiting. Only when more work actually arrived
+                                // is it worth holding the group open for the
+                                // commit window; a lone append flushes at once.
+                                let mut deadline: Option<Instant> = None;
                                 loop {
-                                    let remaining =
-                                        deadline.saturating_duration_since(Instant::now());
-                                    if remaining.is_zero() {
-                                        break;
-                                    }
-                                    match rx.recv_timeout(remaining) {
+                                    let next = match deadline {
+                                        None => rx.try_recv().map_err(|error| match error {
+                                            mpsc::TryRecvError::Empty => {
+                                                mpsc::RecvTimeoutError::Timeout
+                                            }
+                                            mpsc::TryRecvError::Disconnected => {
+                                                mpsc::RecvTimeoutError::Disconnected
+                                            }
+                                        }),
+                                        Some(deadline) => {
+                                            let remaining =
+                                                deadline.saturating_duration_since(Instant::now());
+                                            if remaining.is_zero() {
+                                                break;
+                                            }
+                                            rx.recv_timeout(remaining)
+                                        }
+                                    };
+                                    match next {
                                         Ok(WriteCommand::Append { payload, ack_tx }) => {
                                             write_buffer.extend_from_slice(&payload);
                                             dirty_count += 1;
                                             if let Some(ack_tx) = ack_tx {
                                                 durable_acks.push(ack_tx);
+                                            }
+                                            if deadline.is_none() && !commit_window.is_zero() {
+                                                deadline = Some(Instant::now() + commit_window);
                                             }
                                         }
                                         Ok(WriteCommand::Flush(ack_tx)) => {
