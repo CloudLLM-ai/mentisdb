@@ -10097,18 +10097,47 @@ fn persist_thoughts_to_path(
     storage_kind: StorageAdapterKind,
     thoughts: &[Thought],
 ) -> io::Result<()> {
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-
-    for thought in thoughts {
-        match storage_kind {
-            StorageAdapterKind::Jsonl => persist_jsonl_thought(path, thought)?,
-            StorageAdapterKind::Binary => persist_binary_thought(path, thought)?,
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
         }
     }
-
-    Ok(())
+    // Write the whole chain to a sibling temp file and rename it over the
+    // original, so a crash mid-rewrite leaves either the old or the new chain,
+    // never a truncated one.
+    let mut temp_name = path.as_os_str().to_owned();
+    temp_name.push(".rewrite.tmp");
+    let temp_path = PathBuf::from(temp_name);
+    let write_result = (|| {
+        let mut writer = BufWriter::new(File::create(&temp_path)?);
+        for thought in thoughts {
+            match storage_kind {
+                StorageAdapterKind::Jsonl => {
+                    let json = serde_json::to_string(thought).map_err(|error| {
+                        io::Error::other(format!("Failed to serialize thought: {error}"))
+                    })?;
+                    writeln!(writer, "{json}")?;
+                }
+                StorageAdapterKind::Binary => {
+                    let payload =
+                        bincode::serde::encode_to_vec(thought, bincode::config::standard())
+                            .map_err(|error| {
+                                io::Error::other(format!("Failed to serialize thought: {error}"))
+                            })?;
+                    writer.write_all(&(payload.len() as u64).to_le_bytes())?;
+                    writer.write_all(&payload)?;
+                }
+            }
+        }
+        writer.flush()?;
+        writer.get_ref().sync_all()?;
+        drop(writer);
+        fs::rename(&temp_path, path)
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    write_result
 }
 
 fn archive_chain_file(
