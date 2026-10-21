@@ -137,6 +137,37 @@ pub fn rrf_union_scores<K: Clone + std::hash::Hash + Eq + Ord>(
         .collect()
 }
 
+/// Return the distance from `value` to the closest element of `sorted`, or
+/// `u64::MAX` when `sorted` is empty.
+///
+/// `sorted` must be in ascending order. Uses a binary search, so session
+/// cohesion over `H` hits and `S` seeds costs `O((H + S) log S)` instead of
+/// `O(H * S)`.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::search::ranked::nearest_sorted_distance;
+///
+/// let seeds = [3u64, 10, 40];
+/// assert_eq!(nearest_sorted_distance(&seeds, 10), 0);
+/// assert_eq!(nearest_sorted_distance(&seeds, 7), 3);
+/// assert_eq!(nearest_sorted_distance(&seeds, 100), 60);
+/// assert_eq!(nearest_sorted_distance(&[], 5), u64::MAX);
+/// ```
+pub fn nearest_sorted_distance(sorted: &[u64], value: u64) -> u64 {
+    let split = sorted.partition_point(|&item| item < value);
+    let below = split
+        .checked_sub(1)
+        .map(|i| value - sorted[i])
+        .unwrap_or(u64::MAX);
+    let above = sorted
+        .get(split)
+        .map(|&item| item - value)
+        .unwrap_or(u64::MAX);
+    below.min(above)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

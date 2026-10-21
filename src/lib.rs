@@ -6131,22 +6131,20 @@ impl MentisDb {
         const SESSION_COHESION_MIN_SEED_LEXICAL: f32 = 3.0;
         const SESSION_COHESION_MAX_HIT_LEXICAL: f32 = 5.0;
         if !hits.is_empty() {
-            let seed_indices: Vec<u64> = hits
+            let mut seed_indices: Vec<u64> = hits
                 .iter()
                 .filter(|h| h.score.lexical >= SESSION_COHESION_MIN_SEED_LEXICAL)
                 .map(|h| h.thought.index)
                 .collect();
+            seed_indices.sort_unstable();
             if !seed_indices.is_empty() {
                 for hit in &mut hits {
                     if hit.score.lexical >= SESSION_COHESION_MAX_HIT_LEXICAL {
                         continue;
                     }
                     let idx = hit.thought.index;
-                    let nearest = seed_indices
-                        .iter()
-                        .map(|si| (*si).abs_diff(idx))
-                        .min()
-                        .unwrap_or(u64::MAX);
+                    let nearest =
+                        crate::search::ranked::nearest_sorted_distance(&seed_indices, idx);
                     if nearest > 0 && nearest <= SESSION_COHESION_RADIUS {
                         let distance_fraction =
                             1.0 - (nearest as f32 / SESSION_COHESION_RADIUS as f32);
