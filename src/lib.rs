@@ -9029,6 +9029,9 @@ impl MentisDb {
             return Ok(());
         };
 
+        let _guard = CHAIN_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut registry = load_mentisdb_registry(&metadata.chain_dir)?;
         let now = Utc::now();
         let created_at = registry
@@ -9560,6 +9563,44 @@ fn load_agent_registry(
     })
 }
 
+/// Process-wide guard making the chain-registry read-modify-write in
+/// [`MentisDb::persist_chain_registration`] atomic across threads.
+static CHAIN_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Serialize `value` as JSON to `path` through a unique sibling temp file,
+/// `sync_all`, and an atomic rename, so readers and crashes never observe a
+/// truncated or half-written registry.
+fn write_json_atomic<T: Serialize>(
+    path: &Path,
+    value: &T,
+    pretty: bool,
+    what: &str,
+) -> io::Result<()> {
+    static TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut temp_name = path.as_os_str().to_owned();
+    temp_name.push(format!(".tmp-{}-{sequence}", std::process::id()));
+    let temp_path = PathBuf::from(temp_name);
+    let result = (|| {
+        let mut writer = BufWriter::new(File::create(&temp_path)?);
+        let serialized = if pretty {
+            serde_json::to_writer_pretty(&mut writer, value)
+        } else {
+            serde_json::to_writer(&mut writer, value)
+        };
+        serialized
+            .map_err(|error| io::Error::other(format!("Failed to serialize {what}: {error}")))?;
+        writer.flush()?;
+        writer.get_ref().sync_all()?;
+        drop(writer);
+        fs::rename(&temp_path, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
+}
+
 fn save_agent_registry(
     chain_dir: &Path,
     chain_key: &str,
@@ -9570,10 +9611,7 @@ fn save_agent_registry(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let file = fs::File::create(path)?;
-    let writer = BufWriter::new(file);
-    serde_json::to_writer(writer, registry)
-        .map_err(|error| io::Error::other(format!("Failed to serialize agent registry: {error}")))
+    write_json_atomic(&path, registry, false, "agent registry")
 }
 
 fn chain_entity_type_registry_path(
@@ -9617,11 +9655,7 @@ fn save_entity_type_registry(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let file = fs::File::create(path)?;
-    let writer = BufWriter::new(file);
-    serde_json::to_writer(writer, registry).map_err(|error| {
-        io::Error::other(format!("Failed to serialize entity type registry: {error}"))
-    })
+    write_json_atomic(&path, registry, false, "entity type registry")
 }
 
 fn load_mentisdb_registry(chain_dir: &Path) -> io::Result<MentisDbRegistry> {
@@ -9652,10 +9686,7 @@ fn save_mentisdb_registry(chain_dir: &Path, registry: &MentisDbRegistry) -> io::
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let file = fs::File::create(path)?;
-    serde_json::to_writer_pretty(file, registry).map_err(|error| {
-        io::Error::other(format!("Failed to serialize MentisDB registry: {error}"))
-    })?;
+    write_json_atomic(&path, registry, true, "MentisDB registry")?;
 
     let legacy_path = legacy_thoughtchain_registry_path(chain_dir);
     if legacy_path.exists() {
