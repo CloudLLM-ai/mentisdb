@@ -188,3 +188,54 @@ async fn huge_per_page_is_clamped_not_panicking() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[tokio::test]
+async fn settings_never_leak_dashboard_pin_and_blank_save_keeps_it() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::env::set_var("MENTISDB_DASHBOARD_PIN", "super-secret-pin-4242");
+    let app = router(&dir);
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/settings")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(!text.contains("super-secret-pin-4242"), "PIN leaked");
+    let parsed: Value = serde_json::from_str(&text).unwrap();
+    let pin = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "MENTISDB_DASHBOARD_PIN")
+        .unwrap();
+    assert_eq!(pin["value"], "");
+    assert_eq!(pin["set"], true);
+
+    let (status, _) = send(
+        &app,
+        post("/dashboard/api/settings")
+            .body(Body::from(
+                json!({"settings": {"MENTISDB_DASHBOARD_PIN": ""}}).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        std::env::var("MENTISDB_DASHBOARD_PIN").unwrap(),
+        "super-secret-pin-4242"
+    );
+
+    std::env::remove_var("MENTISDB_DASHBOARD_PIN");
+    let _ = std::fs::remove_dir_all(&dir);
+}
