@@ -2089,6 +2089,20 @@ fn bearer_auth_target(context: &BearerAuthContext, default_chain_key: &str) -> B
     }
 }
 
+/// Webhook registration is global unless it names a `chain_key_filter`, in
+/// which case the token must be allowed on that chain.
+fn webhook_register_target(parameters: &Value) -> BearerAuthTarget {
+    let chain_key_filter = parameters
+        .get("chain_key_filter")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|chain_key| !chain_key.is_empty());
+    match chain_key_filter {
+        Some(chain_key) => BearerAuthTarget::Chains(vec![chain_key.to_string()]),
+        None => BearerAuthTarget::GlobalOnly,
+    }
+}
+
 fn tool_call_auth_target(payload: &Value, default_chain_key: &str) -> Option<BearerAuthTarget> {
     let tool_name = payload
         .get("name")
@@ -2104,16 +2118,8 @@ fn tool_call_auth_target(payload: &Value, default_chain_key: &str) -> Option<Bea
         return Some(BearerAuthTarget::GlobalOnly);
     }
 
-    if tool_name == "mentisdb_register_webhook" {
-        let chain_key_filter = parameters
-            .get("chain_key_filter")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|chain_key| !chain_key.is_empty());
-        return Some(match chain_key_filter {
-            Some(chain_key) => BearerAuthTarget::Chains(vec![chain_key.to_string()]),
-            None => BearerAuthTarget::GlobalOnly,
-        });
+    if mcp_tool_auth(tool_name) == OperationAuth::WebhookRegister {
+        return Some(webhook_register_target(parameters));
     }
 
     // Prefer top-level chain fields for the primary target so nested relation
@@ -2332,15 +2338,201 @@ fn add_nonempty_chain_key(chain_keys: &mut BTreeSet<String>, chain_key: &str) {
 }
 
 fn global_only_mcp_tool(tool_name: &str) -> bool {
-    matches!(
-        tool_name,
-        "mentisdb_list_chains"
-            | "mentisdb_skill_md"
-            | "mentisdb_list_skills"
-            | "mentisdb_skill_manifest"
-            | "mentisdb_list_webhooks"
-            | "mentisdb_delete_webhook"
-    )
+    mcp_tool_requires_global(tool_name)
+}
+
+/// Authorization class of an operation, shared by the REST and MCP front ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationAuth {
+    /// Any active token may call it (no chain data involved).
+    AnyToken,
+    /// Only a global-scope token may call it.
+    GlobalOnly,
+    /// Authorization is derived from the chain keys named in the request.
+    ChainScoped,
+    /// Webhook registration: global unless a `chain_key_filter` inside the
+    /// token's scope is supplied.
+    WebhookRegister,
+}
+
+/// One row of the shared route/tool authorization table.
+#[derive(Debug, Clone, Copy)]
+pub struct OperationAuthRule {
+    /// REST path (exact), or empty when the operation has no REST route.
+    pub rest_route: &'static str,
+    /// REST method this row applies to (lowercase), or empty for any method.
+    pub rest_method: &'static str,
+    /// Canonical MCP tool name, or empty when the operation is REST-only.
+    pub mcp_tool: &'static str,
+    /// Class enforced on the REST route.
+    pub rest: OperationAuth,
+    /// Class enforced on the MCP tool.
+    pub mcp: OperationAuth,
+}
+
+const fn rule(
+    rest_route: &'static str,
+    rest_method: &'static str,
+    mcp_tool: &'static str,
+    rest: OperationAuth,
+    mcp: OperationAuth,
+) -> OperationAuthRule {
+    OperationAuthRule {
+        rest_route,
+        rest_method,
+        mcp_tool,
+        rest,
+        mcp,
+    }
+}
+
+/// The single source of truth for which operations are server-wide.
+///
+/// Anything not listed is chain-scoped: the chain keys in the request decide,
+/// and requests naming no chain require a global token (REST) or fall back to
+/// the default chain (MCP default-chain tools).
+pub const OPERATION_AUTH_TABLE: &[OperationAuthRule] = &[
+    rule(
+        "/health",
+        "",
+        "",
+        OperationAuth::AnyToken,
+        OperationAuth::AnyToken,
+    ),
+    rule(
+        "/mentisdb_skill_md",
+        "",
+        "mentisdb_skill_md",
+        OperationAuth::AnyToken,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/chains",
+        "",
+        "mentisdb_list_chains",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/skills",
+        "",
+        "mentisdb_list_skills",
+        OperationAuth::AnyToken,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/skills/manifest",
+        "",
+        "mentisdb_skill_manifest",
+        OperationAuth::AnyToken,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/skills/search",
+        "",
+        "mentisdb_search_skill",
+        OperationAuth::AnyToken,
+        OperationAuth::ChainScoped,
+    ),
+    rule(
+        "/v1/skills/read",
+        "",
+        "mentisdb_read_skill",
+        OperationAuth::AnyToken,
+        OperationAuth::ChainScoped,
+    ),
+    rule(
+        "/v1/skills/versions",
+        "",
+        "mentisdb_skill_versions",
+        OperationAuth::AnyToken,
+        OperationAuth::ChainScoped,
+    ),
+    // The skill registry is global state: mutations need a global token.
+    rule(
+        "/v1/skills/upload",
+        "",
+        "mentisdb_upload_skill",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/skills/deprecate",
+        "",
+        "mentisdb_deprecate_skill",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/skills/revoke",
+        "",
+        "mentisdb_revoke_skill",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/skills/delete",
+        "",
+        "mentisdb_delete_skill",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/admin/flush",
+        "",
+        "",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/webhooks",
+        "get",
+        "mentisdb_list_webhooks",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/webhooks",
+        "post",
+        "mentisdb_register_webhook",
+        OperationAuth::WebhookRegister,
+        OperationAuth::WebhookRegister,
+    ),
+    rule(
+        "",
+        "",
+        "mentisdb_delete_webhook",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+];
+
+/// Authorization class for a REST request, from the shared table.
+pub fn rest_route_auth(route: &str, method: &str) -> OperationAuth {
+    // `DELETE /v1/webhooks/{id}` addresses global webhook state.
+    if route.starts_with("/v1/webhooks/") {
+        return OperationAuth::GlobalOnly;
+    }
+    OPERATION_AUTH_TABLE
+        .iter()
+        .find(|rule| {
+            rule.rest_route == route && (rule.rest_method.is_empty() || rule.rest_method == method)
+        })
+        .map(|rule| rule.rest)
+        .unwrap_or(OperationAuth::ChainScoped)
+}
+
+/// Authorization class for an MCP tool, from the shared table.
+pub fn mcp_tool_auth(tool_name: &str) -> OperationAuth {
+    OPERATION_AUTH_TABLE
+        .iter()
+        .find(|rule| !rule.mcp_tool.is_empty() && rule.mcp_tool == tool_name)
+        .map(|rule| rule.mcp)
+        .unwrap_or(OperationAuth::ChainScoped)
+}
+
+fn mcp_tool_requires_global(tool_name: &str) -> bool {
+    mcp_tool_auth(tool_name) == OperationAuth::GlobalOnly
 }
 
 fn default_chain_mcp_tool(tool_name: &str) -> bool {
@@ -6650,35 +6842,19 @@ pub(crate) async fn rest_bearer_auth_middleware(
 
     let reconstructed = axum::http::Request::from_parts(parts, axum::body::Body::from(body_bytes));
 
-    // Endpoints that don't target a specific chain (listing, health, skills)
-    // accept any active token. Everything else requires a token scoped to the
-    // chain(s) it touches, or a global token.
-    let is_global_rest_route = matches!(
-        route.as_str(),
-        "/health"
-            | "/v1/chains"
-            | "/v1/agents"
-            | "/v1/skills"
-            | "/v1/skills/manifest"
-            | "/v1/skills/search"
-            | "/v1/skills/upload"
-            | "/v1/skills/read"
-            | "/v1/skills/versions"
-            | "/v1/skills/deprecate"
-            | "/v1/skills/revoke"
-            | "/v1/skills/delete"
-            | "/v1/admin/flush"
-            | "/v1/webhooks"
-            | "/mentisdb_skill_md"
-    ) || route.starts_with("/v1/skills/");
-
-    let target = if is_global_rest_route {
-        BearerAuthTarget::AnyActiveToken
-    } else if chain_keys.is_empty() {
-        // No chain key found — require a global token for safety.
-        BearerAuthTarget::GlobalOnly
-    } else {
-        BearerAuthTarget::Chains(chain_keys.into_iter().collect())
+    // The route/method classification comes from the table shared with MCP.
+    let target = match rest_route_auth(&route, &method) {
+        OperationAuth::AnyToken => BearerAuthTarget::AnyActiveToken,
+        OperationAuth::GlobalOnly => BearerAuthTarget::GlobalOnly,
+        OperationAuth::WebhookRegister => payload
+            .as_ref()
+            .map(webhook_register_target)
+            .unwrap_or(BearerAuthTarget::GlobalOnly),
+        OperationAuth::ChainScoped if chain_keys.is_empty() => {
+            // No chain key found: require a global token for safety.
+            BearerAuthTarget::GlobalOnly
+        }
+        OperationAuth::ChainScoped => BearerAuthTarget::Chains(chain_keys.into_iter().collect()),
     };
 
     let context = BearerAuthContext {
