@@ -4655,7 +4655,7 @@ pub struct MentisDb {
     implicit_edge_overlay: Option<crate::search::ImplicitEdgeOverlay>,
     /// Cached explicit-relation adjacency, keyed by `thoughts.len()`.
     /// Rebuilt on first graph-enabled query after the chain grows.
-    adjacency_index: std::sync::Mutex<Option<(usize, crate::search::ThoughtAdjacencyIndex)>>,
+    adjacency_index: std::sync::Mutex<Option<(usize, Arc<crate::search::ThoughtAdjacencyIndex>)>>,
     /// Derived-artifact writes queued during append (sidecar WAL, overlay).
     pending_derived: std::sync::Mutex<PendingDerivedWrite>,
     /// When true, [`Self::append_thought`] skips [`Self::flush_pending_derived`].
@@ -7570,18 +7570,22 @@ impl MentisDb {
         self.load_or_rebuild_implicit_edge_overlay();
     }
 
-    fn cached_adjacency_index(&self) -> crate::search::ThoughtAdjacencyIndex {
+    /// Return the shared adjacency index for the current chain length, building
+    /// and caching it when stale. Callers get a cheap `Arc` clone, not a copy.
+    fn cached_adjacency_index(&self) -> Arc<crate::search::ThoughtAdjacencyIndex> {
         let len = self.thoughts.len();
         if let Ok(cache) = self.adjacency_index.lock() {
             if let Some((cached_len, index)) = cache.as_ref() {
                 if *cached_len == len {
-                    return index.clone();
+                    return Arc::clone(index);
                 }
             }
         }
-        let built = crate::search::ThoughtAdjacencyIndex::from_thoughts(&self.thoughts);
+        let built = Arc::new(crate::search::ThoughtAdjacencyIndex::from_thoughts(
+            &self.thoughts,
+        ));
         if let Ok(mut cache) = self.adjacency_index.lock() {
-            *cache = Some((len, built.clone()));
+            *cache = Some((len, Arc::clone(&built)));
         }
         built
     }
