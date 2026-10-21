@@ -250,6 +250,28 @@ async fn csrf_guard_blocks_cross_origin_and_allows_same_origin_or_header() {
 }
 
 #[tokio::test]
+async fn csrf_guard_uses_uri_authority_when_host_header_absent() {
+    // HTTP/2 requests carry the authority in the URI, not a Host header.
+    let dir = unique_dir();
+    let app = router(&dir);
+    let body = json!({"chain_key": "h2chain", "content": "x"}).to_string();
+    let mk = |origin: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("https://localhost:19999/dashboard/api/chains")
+            .header("origin", origin)
+            .header("content-type", "application/json")
+            .body(Body::from(body.clone()))
+            .unwrap()
+    };
+    let (status, _) = send(&app, mk("https://localhost:19999")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send(&app, mk("https://evil.example")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn settings_never_leak_dashboard_pin_and_blank_save_keeps_it() {
     let dir = unique_dir();
     std::fs::create_dir_all(&dir).unwrap();

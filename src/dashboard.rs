@@ -264,7 +264,11 @@ async fn csrf_guard_middleware(request: axum::extract::Request, next: Next) -> R
         return next.run(request).await;
     }
     let headers = request.headers();
-    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+    // HTTP/2 carries the authority in the request URI rather than a Host header.
+    let host = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| request.uri().authority().map(|a| a.as_str()));
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
     let referer = headers.get(header::REFERER).and_then(|v| v.to_str().ok());
     let same_host = |url: &str| match (url_authority(url), host) {
