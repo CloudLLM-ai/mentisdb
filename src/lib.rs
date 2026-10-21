@@ -4151,6 +4151,18 @@ trait ManagedEmbeddingProvider: Send + Sync {
     ) -> io::Result<Vec<crate::search::VectorDocument>>;
 }
 
+/// Return the parent chain key named by a genesis thought's `BranchesFrom`
+/// relation, if any.
+fn branch_parent_key(genesis: &Thought) -> Option<String> {
+    genesis.relations.iter().find_map(|relation| {
+        (relation.kind == ThoughtRelationKind::BranchesFrom)
+            .then_some(relation.chain_key.as_deref())
+            .flatten()
+            .filter(|parent_key| !parent_key.is_empty())
+            .map(str::to_owned)
+    })
+}
+
 /// One invalidating relation (`Supersedes`, `Corrects`, `Invalidates`) aimed at
 /// a thought, with the timestamps that decide whether it is in force at a
 /// given point in time.
@@ -5033,34 +5045,24 @@ impl MentisDb {
     /// and merges the results.
     pub fn ancestor_chain_keys(&self) -> Vec<String> {
         let mut ancestors = Vec::new();
-        let mut current_parent = self.thoughts.first().and_then(|genesis| {
-            genesis.relations.iter().find_map(|relation| {
-                (relation.kind == ThoughtRelationKind::BranchesFrom)
-                    .then_some(relation.chain_key.as_deref())
-                    .flatten()
-                    .filter(|parent_key| !parent_key.is_empty())
-                    .map(str::to_owned)
-            })
-        });
+        let mut current_parent = self.thoughts.first().and_then(branch_parent_key);
 
         while let Some(parent_key) = current_parent {
             if ancestors.contains(&parent_key) {
                 break;
             }
             ancestors.push(parent_key.clone());
-            current_parent = Self::open_with_key(self.chain_dir(), &parent_key)
+            // Peek only the parent's genesis record instead of fully opening
+            // (loading, verifying and indexing) every ancestor chain.
+            let parent_path = self.chain_dir().join(chain_storage_filename(
+                &parent_key,
+                StorageAdapterKind::Binary,
+            ));
+            current_parent = peek_first_binary_thought(&parent_path)
                 .ok()
-                .and_then(|parent| {
-                    parent.thoughts.first().and_then(|genesis| {
-                        genesis.relations.iter().find_map(|relation| {
-                            (relation.kind == ThoughtRelationKind::BranchesFrom)
-                                .then_some(relation.chain_key.as_deref())
-                                .flatten()
-                                .filter(|ancestor_key| !ancestor_key.is_empty())
-                                .map(str::to_owned)
-                        })
-                    })
-                });
+                .flatten()
+                .as_ref()
+                .and_then(branch_parent_key);
         }
 
         ancestors
