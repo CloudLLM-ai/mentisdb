@@ -64,14 +64,14 @@ use crate::auth::{bearer_token_access_from_env, BearerTokenScope, BearerTokenSto
 use crate::search::thesaurus;
 use crate::webhooks::{WebhookManager, WebhookRegistration};
 use crate::{
-    deregister_chain, load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus,
-    EntityTypeRecord, ManagedVectorProviderKind, MemoryScope, MentisDb, PublicKeyAlgorithm,
-    RankedSearchBackend, RankedSearchGraph, RankedSearchQuery, RankedSearchScore, SkillFormat,
-    SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus, SkillSummary, SkillUpload,
-    SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelation,
-    ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor,
-    ThoughtTraversalCursor, ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType,
-    TimeWindowUnit, TokenUsage, MENTISDB_CURRENT_VERSION,
+    chain_storage_filename, deregister_chain, load_registered_chains, AgentPublicKey, AgentRecord,
+    AgentStatus, EntityTypeRecord, ManagedVectorProviderKind, MemoryScope, MentisDb,
+    PublicKeyAlgorithm, RankedSearchBackend, RankedSearchGraph, RankedSearchQuery,
+    RankedSearchScore, SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus,
+    SkillSummary, SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput,
+    ThoughtQuery, ThoughtRelation, ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow,
+    ThoughtTraversalAnchor, ThoughtTraversalCursor, ThoughtTraversalDirection,
+    ThoughtTraversalRequest, ThoughtType, TimeWindowUnit, TokenUsage, MENTISDB_CURRENT_VERSION,
 };
 use async_trait::async_trait;
 use axum::extract::{Path as AxumPath, Query, State};
@@ -1948,6 +1948,9 @@ pub struct MentisDbService {
     /// Concurrent chain map: lock-free lookup, per-chain `RwLock` for writes.
     pub(crate) chains: Arc<DashMap<String, Arc<RwLock<MentisDb>>>>,
     pub(crate) skills: Arc<RwLock<SkillRegistry>>,
+    /// Per-key single-flight locks so a chain is replayed from disk by exactly
+    /// one task even when many requests race to open it.
+    open_locks: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     interaction_log: Arc<InteractionLogSink>,
     webhook_manager: WebhookManager,
 }
@@ -2651,38 +2654,52 @@ impl MentisDbService {
     ///
     /// The service opens the skill registry and webhook manager immediately;
     /// chain data is lazily loaded on first access via `get_chain`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when startup resources (interaction log, webhook registry, skill
+    /// registry) cannot be opened. Prefer [`MentisDbService::try_new`] when the
+    /// caller can report the failure.
     pub fn new(config: MentisDbServiceConfig) -> Self {
+        Self::try_new(config).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// Fallible variant of [`MentisDbService::new`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the resource and path that failed to open.
+    pub fn try_new(config: MentisDbServiceConfig) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let interaction_log = Arc::new(
-            InteractionLogSink::open(config.log_file.as_deref()).unwrap_or_else(|error| {
+            InteractionLogSink::open(config.log_file.as_deref()).map_err(|error| {
                 let target = config
                     .log_file
                     .as_ref()
                     .map(|path| path.display().to_string())
                     .unwrap_or_else(|| "<unset>".to_string());
-                panic!("failed to open MentisDB interaction log at {target}: {error}");
-            }),
+                format!("failed to open MentisDB interaction log at {target}: {error}")
+            })?,
         );
-        let webhook_manager =
-            WebhookManager::new(config.chain_dir.clone()).unwrap_or_else(|error| {
-                panic!(
-                    "failed to open MentisDB webhook manager at {}: {error}",
-                    config.chain_dir.display()
-                )
-            });
-        Self {
-            skills: Arc::new(RwLock::new(
-                SkillRegistry::open(&config.chain_dir).unwrap_or_else(|error| {
-                    panic!(
-                        "failed to open MentisDB skill registry at {}: {error}",
-                        config.chain_dir.display()
-                    )
-                }),
-            )),
+        let webhook_manager = WebhookManager::new(config.chain_dir.clone()).map_err(|error| {
+            format!(
+                "failed to open MentisDB webhook manager at {}: {error}",
+                config.chain_dir.display()
+            )
+        })?;
+        let skills = SkillRegistry::open(&config.chain_dir).map_err(|error| {
+            format!(
+                "failed to open MentisDB skill registry at {}: {error}",
+                config.chain_dir.display()
+            )
+        })?;
+        Ok(Self {
+            skills: Arc::new(RwLock::new(skills)),
             interaction_log,
             config,
             chains: Arc::new(DashMap::new()),
+            open_locks: Arc::new(DashMap::new()),
             webhook_manager,
-        }
+        })
     }
 
     /// Return (or lazily open) the chain for `chain_key`.
@@ -2711,47 +2728,130 @@ impl MentisDbService {
         Ok(thought)
     }
 
+    /// Return an already-existing chain, opening it from disk if needed.
+    ///
+    /// Read paths and metadata mutations use this so that an arbitrary
+    /// `chain_key` can never create (and persist) a brand-new chain. Unknown
+    /// keys yield a `NotFound` error, which the REST layer maps to 404. The
+    /// operator-configured default chain is the one exception: it is created on
+    /// demand so a fresh daemon answers reads on its default chain.
     async fn get_chain(
         &self,
         chain_key: Option<&str>,
         storage_adapter: Option<StorageAdapterKind>,
     ) -> Result<Arc<RwLock<MentisDb>>, Box<dyn Error + Send + Sync>> {
-        let chain_key = chain_key
-            .unwrap_or(&self.config.default_chain_key)
-            .to_string();
-
-        // Fast path: chain already open. Opportunistically repair a missing
-        // implicit-edge sidecar if no other request is currently writing.
+        let chain_key = self.resolve_chain_key(chain_key);
+        validate_chain_key_shape(&chain_key)?;
         if let Some(existing) = self.chains.get(&chain_key) {
-            let existing = existing.clone();
-            if let Ok(mut chain) = existing.try_write() {
-                chain.ensure_implicit_edge_overlay();
-            }
-            return Ok(existing);
+            return Ok(Self::repair_if_idle(existing.clone()));
         }
+        if chain_key != self.config.default_chain_key && !self.chain_exists_on_disk(&chain_key) {
+            return Err(not_found_error(format!("chain '{chain_key}' not found")));
+        }
+        self.open_chain_single_flight(chain_key, storage_adapter)
+            .await
+    }
 
-        // Slow path: open the chain from disk and insert it.
-        // `or_try_insert_with` is shard-level atomic, preventing duplicate opens.
+    /// Return the chain for `chain_key`, creating it when it does not exist.
+    ///
+    /// Only append, bootstrap, import, agent/entity-type upserts and merge
+    /// targets call this; everything else uses [`Self::get_chain`].
+    async fn get_or_create_chain(
+        &self,
+        chain_key: Option<&str>,
+        storage_adapter: Option<StorageAdapterKind>,
+    ) -> Result<Arc<RwLock<MentisDb>>, Box<dyn Error + Send + Sync>> {
+        let chain_key = self.resolve_chain_key(chain_key);
+        validate_chain_key_shape(&chain_key)?;
+        if let Some(existing) = self.chains.get(&chain_key) {
+            return Ok(Self::repair_if_idle(existing.clone()));
+        }
+        self.open_chain_single_flight(chain_key, storage_adapter)
+            .await
+    }
+
+    /// Opportunistically repair a missing implicit-edge sidecar when no other
+    /// request is currently writing.
+    fn repair_if_idle(existing: Arc<RwLock<MentisDb>>) -> Arc<RwLock<MentisDb>> {
+        if let Ok(mut chain) = existing.try_write() {
+            chain.ensure_implicit_edge_overlay();
+        }
+        existing
+    }
+
+    /// True when the registry or the storage directory already knows `chain_key`.
+    fn chain_exists_on_disk(&self, chain_key: &str) -> bool {
+        let dir = &self.config.chain_dir;
+        if [StorageAdapterKind::Binary, StorageAdapterKind::Jsonl]
+            .into_iter()
+            .any(|kind| dir.join(chain_storage_filename(chain_key, kind)).exists())
+        {
+            return true;
+        }
+        load_registered_chains(dir)
+            .map(|registry| registry.chains.contains_key(chain_key))
+            .unwrap_or(false)
+    }
+
+    /// Open `chain_key` on the blocking pool, exactly once per key.
+    ///
+    /// Replaying a chain is synchronous disk I/O, so it must neither run on an
+    /// async worker nor happen while a `DashMap` shard lock is held. A per-key
+    /// async mutex makes concurrent openers wait for the first one and then
+    /// pick up its result from the map.
+    async fn open_chain_single_flight(
+        &self,
+        chain_key: String,
+        storage_adapter: Option<StorageAdapterKind>,
+    ) -> Result<Arc<RwLock<MentisDb>>, Box<dyn Error + Send + Sync>> {
+        let lock = self
+            .open_locks
+            .entry(chain_key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _guard = lock.lock().await;
+        if let Some(existing) = self.chains.get(&chain_key) {
+            return Ok(existing.clone());
+        }
         let storage_kind = storage_adapter.unwrap_or(self.config.default_storage_adapter);
         let chain_dir = self.config.chain_dir.clone();
-        let chain_key_clone = chain_key.clone();
         let auto_flush = self.config.auto_flush;
         let dedup_threshold = self.config.dedup_threshold;
         let dedup_scan_window = self.config.dedup_scan_window;
         let webhook_manager = self.webhook_manager.clone();
-        let entry = self.chains.entry(chain_key).or_try_insert_with(|| {
-            MentisDb::open_with_key_and_storage_kind(&chain_dir, &chain_key_clone, storage_kind)
+        let key_for_open = chain_key.clone();
+        let opened = tokio::task::spawn_blocking(move || {
+            MentisDb::open_with_key_and_storage_kind(&chain_dir, &key_for_open, storage_kind)
                 .and_then(|mut db| {
                     db.set_auto_flush(auto_flush)?;
                     db.with_dedup_threshold(dedup_threshold);
                     db.with_dedup_scan_window(dedup_scan_window);
                     db.with_webhook_manager(webhook_manager);
                     db.apply_persisted_managed_vector_sidecars()?;
-                    Ok(Arc::new(RwLock::new(db)))
+                    Ok(db)
                 })
-                .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
-        })?;
-        Ok(entry.clone())
+        })
+        .await;
+        let opened = match opened {
+            Ok(result) => result,
+            Err(error) => {
+                self.open_locks.remove(&chain_key);
+                return Err(format!("chain open task failed: {error}").into());
+            }
+        };
+        let opened = match opened {
+            Ok(db) => db,
+            Err(error) => {
+                self.open_locks.remove(&chain_key);
+                return Err(Box::new(error));
+            }
+        };
+        let chain = Arc::new(RwLock::new(opened));
+        self.chains.insert(chain_key.clone(), chain.clone());
+        // Waiters hold their own Arc to the lock and will find the chain in the
+        // map; dropping the map entry keeps `open_locks` from growing.
+        self.open_locks.remove(&chain_key);
+        Ok(chain)
     }
 
     /// Discover ancestor chain keys by following `BranchesFrom` relations.
@@ -2792,7 +2892,9 @@ impl MentisDbService {
             .as_deref()
             .map(parse_storage_adapter_kind)
             .transpose()?;
-        let chain = self.get_chain(Some(&chain_key), storage_adapter).await?;
+        let chain = self
+            .get_or_create_chain(Some(&chain_key), storage_adapter)
+            .await?;
         let bootstrapped = {
             let is_empty = chain.read().await.thoughts().is_empty();
             if is_empty {
@@ -2872,7 +2974,7 @@ impl MentisDbService {
         request: AppendThoughtRequest,
     ) -> Result<AppendThoughtResponse, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
-        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let chain = self.get_or_create_chain(Some(&chain_key), None).await?;
 
         let thought_type = parse_thought_type(&request.thought_type)?;
         let role = request
@@ -2965,7 +3067,7 @@ impl MentisDbService {
         request: AppendRetrospectiveRequest,
     ) -> Result<AppendThoughtResponse, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
-        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let chain = self.get_or_create_chain(Some(&chain_key), None).await?;
 
         let thought_type = request
             .thought_type
@@ -3111,6 +3213,9 @@ impl MentisDbService {
         let page_size = request.limit.unwrap_or(50).max(1);
         let ranked_limit = offset.saturating_add(page_size).max(1);
 
+        // The requested chain must exist (404 otherwise); ancestors that fail
+        // to open are skipped below.
+        self.get_chain(Some(&chain_key), None).await?;
         let ancestor_keys = self.discover_ancestor_chain_keys(&chain_key).await;
         let chain_keys_to_search: Vec<String> = std::iter::once(chain_key.clone())
             .chain(ancestor_keys)
@@ -3854,7 +3959,7 @@ impl MentisDbService {
         request: UpsertAgentRequest,
     ) -> Result<AgentRecordResponse, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
-        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let chain = self.get_or_create_chain(Some(&chain_key), None).await?;
         let mut chain = chain.write().await;
         let status = request
             .status
@@ -4009,7 +4114,7 @@ impl MentisDbService {
         request: UpsertEntityTypeRequest,
     ) -> Result<UpsertEntityTypeResponse, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
-        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let chain = self.get_or_create_chain(Some(&chain_key), None).await?;
         let mut chain = chain.write().await;
         let record = chain.upsert_entity_type(&request.entity_type)?;
         self.log_interaction(InteractionLogEntry {
@@ -4104,7 +4209,7 @@ impl MentisDbService {
         request: ImportMarkdownRequest,
     ) -> Result<ImportMarkdownResponse, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
-        let chain_arc = self.get_chain(Some(&chain_key), None).await?;
+        let chain_arc = self.get_or_create_chain(Some(&chain_key), None).await?;
         let mut chain = chain_arc.write().await;
         let default_agent_id = request.default_agent_id.as_deref().unwrap_or("default");
         let imported = chain.import_from_memory_markdown(&request.markdown, default_agent_id)?;
@@ -4732,7 +4837,7 @@ impl MentisDbService {
         chain_key: &str,
         agent_id: &str,
     ) -> Result<AgentRecord, Box<dyn Error + Send + Sync>> {
-        let chain = self.get_chain(Some(chain_key), None).await?;
+        let chain = self.get_or_create_chain(Some(chain_key), None).await?;
         let chain = chain.read().await;
         let agent = chain.get_agent(agent_id).cloned().ok_or_else(|| {
             io::Error::new(
@@ -4860,7 +4965,7 @@ impl MentisDbService {
         // The target chain must already be registered.  `get_chain` will return
         // an error for an unknown key, which we surface as a 404.
         let target_arc = self
-            .get_chain(Some(target_key), None)
+            .get_or_create_chain(Some(target_key), None)
             .await
             .map_err(|_| not_found_error(format!("target chain '{target_key}' does not exist")))?;
 
@@ -7132,6 +7237,33 @@ fn invalid_input_error(message: impl Into<String>) -> Box<dyn Error + Send + Syn
 /// 404 so callers get a distinct status from generic validation failures.
 fn not_found_error(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
     Box::new(io::Error::new(io::ErrorKind::NotFound, message.into()))
+}
+
+/// Maximum accepted `chain_key` length in bytes.
+pub const MAX_CHAIN_KEY_BYTES: usize = 256;
+
+/// Rejects chain keys that are empty, oversized, or contain control characters.
+///
+/// # Errors
+///
+/// Returns an `InvalidInput` I/O error describing the violation.
+pub fn validate_chain_key_shape(chain_key: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let invalid = |message: &str| -> Box<dyn Error + Send + Sync> {
+        Box::new(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            message.to_string(),
+        ))
+    };
+    if chain_key.trim().is_empty() {
+        return Err(invalid("chain_key must not be empty"));
+    }
+    if chain_key.len() > MAX_CHAIN_KEY_BYTES {
+        return Err(invalid("chain_key exceeds the maximum length"));
+    }
+    if chain_key.chars().any(char::is_control) {
+        return Err(invalid("chain_key must not contain control characters"));
+    }
+    Ok(())
 }
 
 fn service_call<T: Serialize>(
