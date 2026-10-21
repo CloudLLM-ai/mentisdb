@@ -4891,6 +4891,8 @@ impl MentisDb {
     /// Returns an error if:
     /// - `branch_thought_id` does not exist in the source chain
     /// - `branch_chain_key` is empty
+    /// - `branch_chain_key` already names a non-empty chain
+    ///   ([`io::ErrorKind::AlreadyExists`])
     /// - the new chain cannot be created or written to
     ///
     /// # Example
@@ -4930,6 +4932,16 @@ impl MentisDb {
             ));
         }
         let mut branch = Self::open_with_key(chain_dir, branch_chain_key)?;
+        if !branch.thoughts.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "branch chain '{branch_chain_key}' already contains {} thought(s); \
+                     choose an unused chain key",
+                    branch.thoughts.len()
+                ),
+            ));
+        }
         let input = ThoughtInput::new(
             ThoughtType::StateSnapshot,
             format!(
