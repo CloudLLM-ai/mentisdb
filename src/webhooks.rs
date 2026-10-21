@@ -5,11 +5,13 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Write};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Semaphore};
 use uuid::Uuid;
 
@@ -22,6 +24,29 @@ const WEBHOOK_MAX_RETRIES: u32 = 3;
 const WEBHOOK_INITIAL_BACKOFF_MS: u64 = 1000;
 const WEBHOOK_DELIVERY_QUEUE_CAPACITY: usize = 256;
 const WEBHOOK_MAX_CONCURRENT_DELIVERIES: usize = 16;
+/// Consecutive failed deliveries (each already retried) before a webhook is paused.
+pub const WEBHOOK_BREAKER_FAILURE_THRESHOLD: u32 = 5;
+/// How long a tripped webhook is skipped before deliveries are attempted again.
+pub const WEBHOOK_BREAKER_COOLDOWN: Duration = Duration::from_secs(300);
+
+/// Locks a mutex, recovering the guard if a previous holder panicked.
+///
+/// Webhook state is simple data that stays consistent across a panic, so
+/// poisoning must not take the daemon's append path down with it.
+fn lock_tolerant<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Policy deciding which webhook targets may be contacted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebhookUrlPolicy {
+    /// Reject loopback, private, link-local and other internal targets (default).
+    Strict,
+    /// Permit internal targets. Intended only for local testing.
+    AllowPrivate,
+}
 
 /// A registered webhook endpoint that receives notifications when thoughts are appended.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,8 +138,8 @@ impl From<&Thought> for WebhookThought {
 /// Manages webhook registrations and delivers notifications to registered endpoints.
 pub struct WebhookManager {
     chain_dir: PathBuf,
-    webhooks: Arc<Mutex<Vec<WebhookRegistration>>>,
-    dirty: Arc<Mutex<bool>>,
+    policy: WebhookUrlPolicy,
+    webhooks: Arc<RwLock<Arc<Vec<WebhookRegistration>>>>,
     delivery_queue: Option<mpsc::Sender<DeliveryJob>>,
 }
 
@@ -122,33 +147,64 @@ impl Clone for WebhookManager {
     fn clone(&self) -> Self {
         Self {
             chain_dir: self.chain_dir.clone(),
+            policy: self.policy,
             webhooks: Arc::clone(&self.webhooks),
-            dirty: Arc::clone(&self.dirty),
             delivery_queue: self.delivery_queue.clone(),
         }
     }
 }
 
+/// A queued webhook delivery.
 #[derive(Debug, Clone)]
-struct DeliveryJob {
-    url: String,
-    payload: WebhookPayload,
-    webhook_id: Uuid,
+pub struct DeliveryJob {
+    /// Target URL.
+    pub url: String,
+    /// Payload to POST.
+    pub payload: WebhookPayload,
+    /// Registration this job belongs to.
+    pub webhook_id: Uuid,
 }
 
 impl WebhookManager {
     /// Creates a new WebhookManager that loads and persists webhook registrations
     /// in `mentisdb-webhooks.json` within the specified chain directory.
     pub fn new(chain_dir: PathBuf) -> io::Result<Self> {
-        let webhooks = Self::load_webhooks(&chain_dir)?;
+        Self::new_with_policy(chain_dir, WebhookUrlPolicy::Strict)
+    }
+
+    /// Like [`WebhookManager::new`] but with an explicit target policy.
+    ///
+    /// Registrations loaded from disk are re-validated against the policy;
+    /// any that fail (for example hand-edited to point at an internal host)
+    /// are loaded inactive and a warning is logged.
+    pub fn new_with_policy(chain_dir: PathBuf, policy: WebhookUrlPolicy) -> io::Result<Self> {
+        let webhooks = Self::load_webhooks(&chain_dir)?
+            .into_iter()
+            .map(|mut registration| {
+                if let Err(error) = validate_webhook_url_with(&registration.url, policy) {
+                    log::warn!(
+                        target: "mentisdb::webhooks",
+                        "disabling webhook {} loaded from disk: {}",
+                        registration.id,
+                        error
+                    );
+                    registration.active = false;
+                }
+                registration
+            })
+            .collect();
         Ok(Self {
             chain_dir,
-            webhooks: Arc::new(Mutex::new(webhooks)),
-            dirty: Arc::new(Mutex::new(false)),
+            policy,
+            webhooks: Arc::new(RwLock::new(Arc::new(webhooks))),
             delivery_queue: tokio::runtime::Handle::try_current()
                 .ok()
-                .map(|_| spawn_delivery_worker()),
+                .map(|_| spawn_delivery_worker(policy)),
         })
+    }
+
+    fn policy(&self) -> WebhookUrlPolicy {
+        self.policy
     }
 
     fn webhooks_path(chain_dir: &Path) -> PathBuf {
@@ -169,10 +225,10 @@ impl WebhookManager {
 
     /// Persists webhook registrations to disk.
     pub fn save(&self) -> io::Result<()> {
-        let webhooks = self.webhooks.lock().unwrap();
+        let snapshot = self.snapshot();
         let registry = WebhookRegistry {
             version: 1,
-            webhooks: webhooks.clone(),
+            webhooks: snapshot.as_ref().clone(),
         };
         let path = Self::webhooks_path(&self.chain_dir);
         if let Some(parent) = path.parent() {
@@ -200,14 +256,26 @@ impl WebhookManager {
             let _ = fs::remove_file(&temp_path);
             return Err(error);
         }
-        let mut dirty = self.dirty.lock().unwrap();
-        *dirty = false;
         Ok(())
+    }
+
+    /// Cheap shared snapshot of the registrations (no per-call deep clone).
+    fn snapshot(&self) -> Arc<Vec<WebhookRegistration>> {
+        Arc::clone(&self.webhooks.read().unwrap_or_else(|p| p.into_inner()))
+    }
+
+    /// Copy-on-write mutation of the registration list.
+    fn mutate<R>(&self, f: impl FnOnce(&mut Vec<WebhookRegistration>) -> R) -> R {
+        let mut guard = self.webhooks.write().unwrap_or_else(|p| p.into_inner());
+        let mut next = guard.as_ref().clone();
+        let result = f(&mut next);
+        *guard = Arc::new(next);
+        result
     }
 
     /// Returns all webhook registrations.
     pub fn list_webhooks(&self) -> Vec<WebhookRegistration> {
-        self.webhooks.lock().unwrap().clone()
+        self.snapshot().as_ref().clone()
     }
 
     /// Registers a new webhook endpoint.
@@ -219,15 +287,17 @@ impl WebhookManager {
     /// # URL validation
     ///
     /// Only `http://` and `https://` schemes are accepted. URLs pointing to
-    /// loopback, private, or link-local addresses are rejected to prevent
-    /// server-side request forgery (SSRF).
+    /// loopback, private, link-local, multicast, CGNAT, documentation or
+    /// IPv4-mapped-IPv6 equivalents of those are rejected to prevent
+    /// server-side request forgery (SSRF). Hostnames are additionally
+    /// re-resolved and filtered at delivery time to defeat DNS rebinding.
     pub fn register_webhook(
         &self,
         url: String,
         chain_key_filter: Option<String>,
         thought_type_filter: Option<HashSet<ThoughtType>>,
     ) -> io::Result<WebhookRegistration> {
-        validate_webhook_url(&url)?;
+        validate_webhook_url_with(&url, self.policy())?;
         let registration = WebhookRegistration {
             id: Uuid::new_v4(),
             url,
@@ -236,14 +306,7 @@ impl WebhookManager {
             created_at: Utc::now(),
             active: true,
         };
-        {
-            let mut webhooks = self.webhooks.lock().unwrap();
-            webhooks.push(registration.clone());
-        }
-        {
-            let mut dirty = self.dirty.lock().unwrap();
-            *dirty = true;
-        }
+        self.mutate(|webhooks| webhooks.push(registration.clone()));
         self.save()?;
         Ok(registration)
     }
@@ -252,15 +315,11 @@ impl WebhookManager {
     ///
     /// Returns `true` if the webhook was found and deleted, `false` otherwise.
     pub fn delete_webhook(&self, id: Uuid) -> io::Result<bool> {
-        let mut webhooks = self.webhooks.lock().unwrap();
-        let initial_len = webhooks.len();
-        webhooks.retain(|w| w.id != id);
-        let deleted = webhooks.len() != initial_len;
-        if deleted {
-            let mut dirty = self.dirty.lock().unwrap();
-            *dirty = true;
-        }
-        drop(webhooks);
+        let deleted = self.mutate(|webhooks| {
+            let initial_len = webhooks.len();
+            webhooks.retain(|w| w.id != id);
+            webhooks.len() != initial_len
+        });
         if deleted {
             self.save()?;
         }
@@ -269,12 +328,7 @@ impl WebhookManager {
 
     /// Retrieves a webhook registration by ID.
     pub fn get_webhook(&self, id: Uuid) -> Option<WebhookRegistration> {
-        self.webhooks
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|w| w.id == id)
-            .cloned()
+        self.snapshot().iter().find(|w| w.id == id).cloned()
     }
 
     /// Delivers a webhook notification for a newly appended thought.
@@ -282,8 +336,8 @@ impl WebhookManager {
     /// This method is non-blocking: it spawns asynchronous tasks for each matching
     /// webhook and returns immediately.
     pub fn deliver_for_thought(&self, chain_key: &str, thought: &Thought) {
-        let webhooks = self.list_webhooks();
-        for registration in webhooks {
+        let webhooks = self.snapshot();
+        for registration in webhooks.iter() {
             if !registration.active {
                 continue;
             }
@@ -322,19 +376,120 @@ impl WebhookManager {
     }
 }
 
-fn spawn_delivery_worker() -> mpsc::Sender<DeliveryJob> {
+/// Per-webhook consecutive-failure circuit breaker.
+///
+/// After `threshold` consecutive failed deliveries a webhook is skipped for
+/// `cooldown`, so dead endpoints stop holding delivery permits. A success
+/// resets the counter.
+#[derive(Debug)]
+pub struct CircuitBreaker {
+    threshold: u32,
+    cooldown: Duration,
+    state: Mutex<HashMap<Uuid, BreakerState>>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct BreakerState {
+    consecutive_failures: u32,
+    paused_until: Option<Instant>,
+}
+
+impl CircuitBreaker {
+    /// Creates a breaker that trips after `threshold` consecutive failures.
+    pub fn new(threshold: u32, cooldown: Duration) -> Self {
+        Self {
+            threshold,
+            cooldown,
+            state: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Returns `true` when a delivery to `id` may be attempted at `now`.
+    pub fn allow(&self, id: Uuid, now: Instant) -> bool {
+        let mut state = lock_tolerant(&self.state);
+        match state.get_mut(&id) {
+            Some(entry) => match entry.paused_until {
+                Some(until) if now < until => false,
+                Some(_) => {
+                    // Cooldown elapsed: half-open, one more failure re-trips.
+                    entry.paused_until = None;
+                    entry.consecutive_failures = self.threshold.saturating_sub(1);
+                    true
+                }
+                None => true,
+            },
+            None => true,
+        }
+    }
+
+    /// Records a successful delivery, closing the breaker.
+    pub fn record_success(&self, id: Uuid) {
+        lock_tolerant(&self.state).remove(&id);
+    }
+
+    /// Records a failed delivery; returns `true` if this failure tripped the breaker.
+    pub fn record_failure(&self, id: Uuid, now: Instant) -> bool {
+        let mut state = lock_tolerant(&self.state);
+        let entry = state.entry(id).or_default();
+        entry.consecutive_failures += 1;
+        if entry.consecutive_failures >= self.threshold {
+            entry.paused_until = Some(now + self.cooldown);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Spawns the background delivery worker and returns its job queue.
+///
+/// Must be called from within a Tokio runtime.
+pub fn spawn_delivery_worker(policy: WebhookUrlPolicy) -> mpsc::Sender<DeliveryJob> {
+    spawn_delivery_worker_with_breaker(
+        policy,
+        Arc::new(CircuitBreaker::new(
+            WEBHOOK_BREAKER_FAILURE_THRESHOLD,
+            WEBHOOK_BREAKER_COOLDOWN,
+        )),
+    )
+}
+
+/// Like [`spawn_delivery_worker`] with a caller-provided circuit breaker.
+pub fn spawn_delivery_worker_with_breaker(
+    policy: WebhookUrlPolicy,
+    breaker: Arc<CircuitBreaker>,
+) -> mpsc::Sender<DeliveryJob> {
     let (tx, mut rx) = mpsc::channel::<DeliveryJob>(WEBHOOK_DELIVERY_QUEUE_CAPACITY);
     let semaphore = Arc::new(Semaphore::new(WEBHOOK_MAX_CONCURRENT_DELIVERIES));
     let runtime = tokio::runtime::Handle::try_current()
         .expect("webhook delivery worker requires a Tokio runtime");
     runtime.spawn(async move {
         while let Some(job) = rx.recv().await {
+            if !breaker.allow(job.webhook_id, Instant::now()) {
+                log::debug!(
+                    target: "mentisdb::webhooks",
+                    "webhook {} paused by circuit breaker; skipping delivery",
+                    job.webhook_id
+                );
+                continue;
+            }
             let semaphore = Arc::clone(&semaphore);
             match semaphore.acquire_owned().await {
                 Ok(permit) => {
+                    let breaker = Arc::clone(&breaker);
                     tokio::spawn(async move {
                         let _permit = permit;
-                        deliver_with_retries(job.url, job.payload, job.webhook_id).await;
+                        let ok = deliver_with_retries(job.url, job.payload, job.webhook_id, policy)
+                            .await;
+                        if ok {
+                            breaker.record_success(job.webhook_id);
+                        } else if breaker.record_failure(job.webhook_id, Instant::now()) {
+                            log::error!(
+                                target: "mentisdb::webhooks",
+                                "webhook {} paused after repeated delivery failures",
+                                job.webhook_id
+                            );
+                        }
                     });
                 }
                 Err(error) => {
@@ -351,33 +506,95 @@ fn spawn_delivery_worker() -> mpsc::Sender<DeliveryJob> {
     tx
 }
 
-fn webhook_http_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
+/// DNS resolver that drops blocked addresses, defeating DNS rebinding and
+/// hostnames that point at internal ranges.
+struct SsrfGuardResolver;
+
+impl reqwest::dns::Resolve for SsrfGuardResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
+                .await?
+                .filter(|addr| !is_blocked_ip(&addr.ip()))
+                .collect();
+            if addrs.is_empty() {
+                return Err(Box::new(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "webhook host resolves only to blocked addresses",
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
 }
 
-async fn deliver_with_retries(url: String, payload: WebhookPayload, webhook_id: Uuid) {
-    let client = webhook_http_client();
+fn build_client(policy: WebhookUrlPolicy) -> reqwest::Client {
+    let builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy();
+    let builder = match policy {
+        WebhookUrlPolicy::Strict => builder.dns_resolver(Arc::new(SsrfGuardResolver)),
+        WebhookUrlPolicy::AllowPrivate => builder,
+    };
+    builder
+        .build()
+        .expect("webhook HTTP client configuration is static and valid")
+}
+
+fn webhook_http_client(policy: WebhookUrlPolicy) -> &'static reqwest::Client {
+    static STRICT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    static PERMISSIVE: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    match policy {
+        WebhookUrlPolicy::Strict => STRICT.get_or_init(|| build_client(policy)),
+        WebhookUrlPolicy::AllowPrivate => PERMISSIVE.get_or_init(|| build_client(policy)),
+    }
+}
+
+/// Reduces a URL to `scheme://host[:port]` so credentials, paths and query
+/// strings (which often carry secrets) never reach logs.
+pub fn redact_webhook_url(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(parsed) => {
+            let host = parsed.host_str().unwrap_or("?");
+            match parsed.port() {
+                Some(port) => format!("{}://{}:{}", parsed.scheme(), host, port),
+                None => format!("{}://{}", parsed.scheme(), host),
+            }
+        }
+        Err(_) => "<invalid-url>".to_string(),
+    }
+}
+
+async fn deliver_with_retries(
+    url: String,
+    payload: WebhookPayload,
+    webhook_id: Uuid,
+    policy: WebhookUrlPolicy,
+) -> bool {
+    let client = webhook_http_client(policy);
+    let redacted = redact_webhook_url(&url);
     let mut backoff_ms = WEBHOOK_INITIAL_BACKOFF_MS;
 
     for attempt in 0..WEBHOOK_MAX_RETRIES {
-        match deliver_once(client, &url, &payload).await {
+        match deliver_once(client, &url, &payload, policy).await {
             Ok(()) => {
                 log::info!(
                     target: "mentisdb::webhooks",
                     "webhook {} delivered successfully to {} on attempt {}",
                     webhook_id,
-                    url,
+                    redacted,
                     attempt + 1
                 );
-                return;
+                return true;
             }
             Err(e) => {
                 log::warn!(
                     target: "mentisdb::webhooks",
                     "webhook {} delivery failed to {} on attempt {}: {}",
                     webhook_id,
-                    url,
+                    redacted,
                     attempt + 1,
                     e
                 );
@@ -392,307 +609,140 @@ async fn deliver_with_retries(url: String, payload: WebhookPayload, webhook_id: 
         target: "mentisdb::webhooks",
         "webhook {} failed to deliver to {} after {} attempts",
         webhook_id,
-        url,
+        redacted,
         WEBHOOK_MAX_RETRIES
     );
+    false
 }
 
 async fn deliver_once(
     client: &reqwest::Client,
     url: &str,
     payload: &WebhookPayload,
+    policy: WebhookUrlPolicy,
 ) -> io::Result<()> {
+    // Re-validate at delivery time: literal IPs bypass the DNS resolver.
+    validate_webhook_url_with(url, policy)?;
     let timeout = tokio::time::Duration::from_secs(WEBHOOK_DELIVERY_TIMEOUT_SECS);
+    // Redirects are disabled, so a 3xx surfaces as a non-success status
+    // (an error) instead of a hop to an unvalidated target.
     client
         .post(url)
         .json(payload)
         .timeout(timeout)
         .send()
         .await
-        .map_err(|e| io::Error::other(format!("webhook request failed: {}", e)))?
+        .map_err(|e| io::Error::other(format!("webhook request failed: {}", e.without_url())))?
         .error_for_status()
-        .map_err(|e| io::Error::other(format!("webhook response error: {}", e)))?;
+        .map_err(|e| io::Error::other(format!("webhook response error: {}", e.without_url())))?;
     Ok(())
 }
 
-/// Validate that a webhook URL is safe to deliver to.
+/// Validate that a webhook URL is safe to deliver to (strict policy).
 ///
-/// Rejects non-HTTP(S) schemes and URLs pointing to loopback, private, or
-/// link-local IP addresses to prevent server-side request forgery (SSRF).
-fn validate_webhook_url(url: &str) -> io::Result<()> {
-    let parsed = url::Url::parse(url).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("invalid webhook URL: {e}"),
-        )
-    })?;
+/// # Errors
+///
+/// Returns `InvalidInput` for unparsable URLs, non-HTTP(S) schemes,
+/// `localhost`, and literal IPs in blocked ranges.
+pub fn validate_webhook_url(url: &str) -> io::Result<()> {
+    validate_webhook_url_with(url, WebhookUrlPolicy::Strict)
+}
+
+/// Validate a webhook URL under an explicit [`WebhookUrlPolicy`].
+pub fn validate_webhook_url_with(url: &str, policy: WebhookUrlPolicy) -> io::Result<()> {
+    let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let parsed = url::Url::parse(url).map_err(|e| invalid(format!("invalid webhook URL: {e}")))?;
 
     match parsed.scheme() {
         "http" | "https" => {}
         scheme => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("webhook URL scheme '{scheme}' is not allowed; use http or https"),
-            ));
+            return Err(invalid(format!(
+                "webhook URL scheme '{scheme}' is not allowed; use http or https"
+            )));
         }
     }
+    if policy == WebhookUrlPolicy::AllowPrivate {
+        return Ok(());
+    }
 
-    if let Some(host) = parsed.host_str() {
-        // Reject well-known internal hostnames.
-        if host == "localhost" {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "webhook URLs pointing to localhost are not allowed",
-            ));
-        }
-
-        // Try to parse as an IP address and check against blocked ranges.
-        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-            if is_blocked_ip(&ip) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("webhook URL points to a blocked IP address ({ip}); private, loopback, and link-local addresses are not allowed"),
-                ));
+    match parsed.host() {
+        None => Err(invalid("webhook URL has no host".to_string())),
+        Some(url::Host::Domain(domain)) => {
+            let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+            if domain == "localhost" || domain.ends_with(".localhost") {
+                Err(invalid(
+                    "webhook URLs pointing to localhost are not allowed".to_string(),
+                ))
+            } else {
+                Ok(())
             }
         }
+        Some(url::Host::Ipv4(ip)) => check_ip(IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => check_ip(IpAddr::V6(ip)),
     }
-
-    Ok(())
 }
 
-/// Returns `true` if the IP address is in a private, loopback, or link-local
-/// range that should not be reachable from a webhook delivery worker.
-fn is_blocked_ip(ip: &std::net::IpAddr) -> bool {
+fn check_ip(ip: IpAddr) -> io::Result<()> {
+    if is_blocked_ip(&ip) {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("webhook URL points to a blocked IP address ({ip}); internal, private, loopback and link-local addresses are not allowed"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn is_blocked_v4(v4: &Ipv4Addr) -> bool {
+    let [a, b, c, _] = v4.octets();
+    v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_unspecified()
+        || v4.is_broadcast()
+        || v4.is_multicast()
+        || (a == 100 && (b & 0xc0) == 64) // CGNAT 100.64.0.0/10
+        || (a == 192 && b == 0 && c == 0) // IETF protocol assignments
+        || (a == 192 && b == 0 && c == 2) // TEST-NET-1
+        || (a == 198 && b == 51 && c == 100) // TEST-NET-2
+        || (a == 203 && b == 0 && c == 113) // TEST-NET-3
+        || (a == 198 && (b & 0xfe) == 18) // benchmarking 198.18.0.0/15
+        || a >= 240 // reserved
+}
+
+/// Returns `true` if the IP address is in a range that must not be reachable
+/// from a webhook delivery worker.
+///
+/// IPv6 addresses that embed an IPv4 address (IPv4-mapped, IPv4-compatible,
+/// NAT64 and 6to4) are checked as the embedded IPv4 address.
+pub fn is_blocked_ip(ip: &IpAddr) -> bool {
     match ip {
-        std::net::IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                // Shared address space (100.64.0.0/10, CGNAT)
-                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
-        }
-        std::net::IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || (v6.segments()[0] & 0xfe00) == 0xfc00 // ULA
-                || (v6.segments()[0] & 0xffc0) == 0xfe80 // link-local
-        }
+        IpAddr::V4(v4) => is_blocked_v4(v4),
+        IpAddr::V6(v6) => is_blocked_v6(v6),
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashSet;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use tempfile::tempdir;
-
-    #[test]
-    fn webhook_registration_round_trips() {
-        let dir = tempdir().unwrap();
-        let manager = WebhookManager::new(dir.path().to_path_buf()).unwrap();
-        let registration = manager
-            .register_webhook(
-                "https://example.com/webhook".to_string(),
-                Some("test-chain".to_string()),
-                None,
-            )
-            .unwrap();
-        assert!(registration.id != Uuid::nil());
-        let all = manager.list_webhooks();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].url, "https://example.com/webhook");
-        let loaded = manager.get_webhook(registration.id).unwrap();
-        assert_eq!(loaded.id, registration.id);
+fn is_blocked_v6(v6: &Ipv6Addr) -> bool {
+    if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
+        return true;
     }
-
-    #[test]
-    fn webhook_delete() {
-        let dir = tempdir().unwrap();
-        let manager = WebhookManager::new(dir.path().to_path_buf()).unwrap();
-        let registration = manager
-            .register_webhook("https://example.com/webhook".to_string(), None, None)
-            .unwrap();
-        let deleted = manager.delete_webhook(registration.id).unwrap();
-        assert!(deleted);
-        assert!(manager.list_webhooks().is_empty());
-        assert!(manager.get_webhook(registration.id).is_none());
+    if let Some(v4) = v6.to_ipv4_mapped().or_else(|| v6.to_ipv4()) {
+        return is_blocked_v4(&v4);
     }
-
-    #[test]
-    fn webhook_chain_key_filter() {
-        let dir = tempdir().unwrap();
-        let manager = WebhookManager::new(dir.path().to_path_buf()).unwrap();
-        manager
-            .register_webhook("https://example.com/all".to_string(), None, None)
-            .unwrap();
-        manager
-            .register_webhook(
-                "https://example.com/only-test".to_string(),
-                Some("test-chain".to_string()),
-                None,
-            )
-            .unwrap();
-        let all = manager.list_webhooks();
-        assert_eq!(all.len(), 2);
+    let seg = v6.segments();
+    let embedded =
+        |hi: u16, lo: u16| Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8);
+    // NAT64 well-known prefix 64:ff9b::/96 embeds the IPv4 target.
+    if seg[0] == 0x64 && seg[1] == 0xff9b && seg[2..6].iter().all(|s| *s == 0) {
+        return is_blocked_v4(&embedded(seg[6], seg[7]));
     }
-
-    #[test]
-    fn webhook_thought_type_filter() {
-        let dir = tempdir().unwrap();
-        let manager = WebhookManager::new(dir.path().to_path_buf()).unwrap();
-        let mut type_filter = HashSet::new();
-        type_filter.insert(ThoughtType::LessonLearned);
-        manager
-            .register_webhook(
-                "https://example.com/lessons".to_string(),
-                None,
-                Some(type_filter),
-            )
-            .unwrap();
-        let all = manager.list_webhooks();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].thought_type_filter.as_ref().unwrap().len(), 1);
+    // 6to4 2002::/16 embeds the IPv4 target in segments 1-2.
+    if seg[0] == 0x2002 {
+        return is_blocked_v4(&embedded(seg[1], seg[2]));
     }
-
-    #[test]
-    fn webhook_save_keeps_existing_registry_when_rename_fails() {
-        let dir = tempdir().unwrap();
-        let manager = WebhookManager::new(dir.path().to_path_buf()).unwrap();
-        manager
-            .register_webhook("https://example.com/original".to_string(), None, None)
-            .unwrap();
-
-        let path = WebhookManager::webhooks_path(dir.path());
-        let original = fs::read_to_string(&path).unwrap();
-        fs::remove_file(&path).unwrap();
-        fs::create_dir(&path).unwrap();
-
-        {
-            let mut webhooks = manager.webhooks.lock().unwrap();
-            webhooks.push(WebhookRegistration {
-                id: Uuid::new_v4(),
-                url: "https://example.com/new".to_string(),
-                chain_key_filter: None,
-                thought_type_filter: None,
-                created_at: Utc::now(),
-                active: true,
-            });
-        }
-
-        let error = manager.save().unwrap_err();
-        assert!(
-            matches!(
-                error.kind(),
-                io::ErrorKind::AlreadyExists
-                    | io::ErrorKind::IsADirectory
-                    | io::ErrorKind::PermissionDenied
-                    | io::ErrorKind::Other
-            ),
-            "unexpected save error kind: {:?}",
-            error.kind()
-        );
-        let restored_path = path.with_extension("json.restored");
-        fs::write(&restored_path, &original).unwrap();
-        assert_eq!(fs::read_to_string(&restored_path).unwrap(), original);
-        assert!(!path.with_extension("json.tmp").exists());
-        fs::remove_dir(&path).unwrap();
-        fs::rename(&restored_path, &path).unwrap();
-    }
-
-    #[tokio::test]
-    async fn delivery_worker_applies_backpressure_with_bounded_concurrency() {
-        let active = Arc::new(AtomicUsize::new(0));
-        let max_seen = Arc::new(AtomicUsize::new(0));
-        let active_for_server = Arc::clone(&active);
-        let max_seen_for_server = Arc::clone(&max_seen);
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            loop {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                let active_for_conn = Arc::clone(&active_for_server);
-                let max_seen_for_conn = Arc::clone(&max_seen_for_server);
-                tokio::spawn(async move {
-                    let current = active_for_conn.fetch_add(1, Ordering::SeqCst) + 1;
-                    max_seen_for_conn.fetch_max(current, Ordering::SeqCst);
-                    let mut buffer = [0_u8; 4096];
-                    loop {
-                        let read = tokio::io::AsyncReadExt::read(&mut socket, &mut buffer)
-                            .await
-                            .unwrap();
-                        if read == 0
-                            || buffer[..read]
-                                .windows(4)
-                                .any(|window| window == b"\r\n\r\n")
-                        {
-                            break;
-                        }
-                    }
-                    tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
-                    tokio::io::AsyncWriteExt::write_all(
-                        &mut socket,
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    )
-                    .await
-                    .unwrap();
-                    active_for_conn.fetch_sub(1, Ordering::SeqCst);
-                });
-            }
-        });
-
-        let receiver = spawn_delivery_worker();
-        let payload = WebhookPayload {
-            event: "thought.appended".to_string(),
-            chain_key: "test-chain".to_string(),
-            thought: WebhookThought {
-                id: Uuid::new_v4(),
-                thought_type: ThoughtType::Finding,
-                content: "payload".to_string(),
-                importance: 0.5,
-                confidence: Some(0.9),
-                tags: Vec::new(),
-                concepts: Vec::new(),
-                agent_id: "agent".to_string(),
-                index: 1,
-                timestamp: Utc::now(),
-            },
-            timestamp: Utc::now(),
-        };
-
-        for i in 0..(WEBHOOK_MAX_CONCURRENT_DELIVERIES * 3) {
-            receiver
-                .send(DeliveryJob {
-                    url: format!("http://{address}/webhook/{i}"),
-                    payload: payload.clone(),
-                    webhook_id: Uuid::new_v4(),
-                })
-                .await
-                .unwrap();
-        }
-        drop(receiver);
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(450)).await;
-        assert!(max_seen.load(Ordering::SeqCst) <= WEBHOOK_MAX_CONCURRENT_DELIVERIES);
-        server.abort();
-    }
-
-    #[test]
-    fn validate_webhook_url_rejects_private_addresses() {
-        assert!(validate_webhook_url("http://127.0.0.1:8080/hook").is_err());
-        assert!(validate_webhook_url("http://localhost:8080/hook").is_err());
-        assert!(validate_webhook_url("http://10.0.0.1/hook").is_err());
-        assert!(validate_webhook_url("http://192.168.1.1/hook").is_err());
-        assert!(validate_webhook_url("http://169.254.169.254/latest/meta-data").is_err());
-        assert!(validate_webhook_url("file:///etc/passwd").is_err());
-        assert!(validate_webhook_url("gopher://evil.com").is_err());
-    }
-
-    #[test]
-    fn validate_webhook_url_accepts_public_addresses() {
-        assert!(validate_webhook_url("https://example.com/webhook").is_ok());
-        assert!(validate_webhook_url("http://8.8.8.8/webhook").is_ok());
-    }
+    (seg[0] & 0xfe00) == 0xfc00 // ULA
+        || (seg[0] & 0xffc0) == 0xfe80 // link-local
+        || (seg[0] & 0xffc0) == 0xfec0 // deprecated site-local
+        || (seg[0] == 0x2001 && seg[1] == 0x0db8) // documentation
+        || (seg[0] == 0x0100 && seg[1..4].iter().all(|s| *s == 0)) // discard-only
 }
