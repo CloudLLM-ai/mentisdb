@@ -4151,6 +4151,49 @@ trait ManagedEmbeddingProvider: Send + Sync {
     ) -> io::Result<Vec<crate::search::VectorDocument>>;
 }
 
+/// One invalidating relation (`Supersedes`, `Corrects`, `Invalidates`) aimed at
+/// a thought, with the timestamps that decide whether it is in force at a
+/// given point in time.
+struct InvalidatingEdge {
+    /// Timestamp of the thought that carries the relation.
+    source_timestamp: DateTime<Utc>,
+    valid_at: Option<DateTime<Utc>>,
+    invalid_at: Option<DateTime<Utc>>,
+}
+
+impl InvalidatingEdge {
+    /// Whether this edge was already in force at `as_of`.
+    fn in_force_at(&self, as_of: DateTime<Utc>) -> bool {
+        self.source_timestamp <= as_of
+            && !self.valid_at.is_some_and(|valid_at| valid_at > as_of)
+            && !self
+                .invalid_at
+                .is_some_and(|invalid_at| invalid_at <= as_of)
+    }
+}
+
+/// Record every invalidating relation carried by `thought` in both the live
+/// invalidated-id set and the per-target edge index.
+fn observe_invalidating_relations(
+    invalidated: &mut HashSet<Uuid>,
+    edges: &mut HashMap<Uuid, Vec<InvalidatingEdge>>,
+    thought: &Thought,
+) {
+    for relation in &thought.relations {
+        if is_invalidating_relation_kind(relation.kind) {
+            invalidated.insert(relation.target_id);
+            edges
+                .entry(relation.target_id)
+                .or_default()
+                .push(InvalidatingEdge {
+                    source_timestamp: thought.timestamp,
+                    valid_at: relation.valid_at,
+                    invalid_at: relation.invalid_at,
+                });
+        }
+    }
+}
+
 struct ManagedSidecarEntry {
     provider: Box<dyn ManagedEmbeddingProvider>,
     auto_sync: bool,
@@ -4581,6 +4624,10 @@ pub struct MentisDb {
     /// Default retrieval excludes these IDs in O(1); pass
     /// [`ThoughtQuery::with_include_invalidated`] to keep them.
     invalidated_thought_ids: HashSet<Uuid>,
+    /// Per-target invalidating relations, so [`MentisDb::is_invalidated_as_of`]
+    /// inspects only the edges aimed at one thought instead of scanning the
+    /// whole chain. Built at open and updated on append.
+    invalidating_edges: HashMap<Uuid, Vec<InvalidatingEdge>>,
     /// Optional deduplication threshold for automatic `Supersedes` relations.
     ///
     /// When set, each new thought's content is compared against recent thoughts
@@ -4728,6 +4775,7 @@ impl MentisDb {
             pending_chain_registration_sync: false,
             pending_chain_registration_updates: 0,
             invalidated_thought_ids: HashSet::new(),
+            invalidating_edges: HashMap::new(),
             dedup_threshold: None,
             dedup_scan_window: 64,
             implicit_edge_overlay: None,
@@ -4750,11 +4798,11 @@ impl MentisDb {
         // of a Supersedes, Corrects, or Invalidates relation is excluded from
         // default retrieval (see MentisDb::query / query_ranked).
         for thought in &chain.thoughts {
-            for relation in &thought.relations {
-                if is_invalidating_relation_kind(relation.kind) {
-                    chain.invalidated_thought_ids.insert(relation.target_id);
-                }
-            }
+            observe_invalidating_relations(
+                &mut chain.invalidated_thought_ids,
+                &mut chain.invalidating_edges,
+                thought,
+            );
         }
 
         if !chain.verify_integrity() {
@@ -5269,11 +5317,11 @@ impl MentisDb {
 
         // Update the invalidated-thoughts index if this thought contains
         // Supersedes, Corrects, or Invalidates relations.
-        for relation in &self.thoughts.last().unwrap().relations {
-            if is_invalidating_relation_kind(relation.kind) {
-                self.invalidated_thought_ids.insert(relation.target_id);
-            }
-        }
+        observe_invalidating_relations(
+            &mut self.invalidated_thought_ids,
+            &mut self.invalidating_edges,
+            self.thoughts.last().unwrap(),
+        );
 
         let last_thought = self.thoughts.last().unwrap().clone();
         self.sync_managed_vector_sidecars_for_append(&last_thought)?;
@@ -8731,28 +8779,9 @@ impl MentisDb {
         if !self.is_invalidated(thought_id) {
             return false;
         }
-        self.thoughts.iter().any(|thought| {
-            if thought.timestamp > as_of {
-                return false;
-            }
-            thought.relations.iter().any(|relation| {
-                if relation.target_id != thought_id || !is_invalidating_relation_kind(relation.kind)
-                {
-                    return false;
-                }
-                // Honor optional edge validity window when present.
-                if relation.valid_at.is_some_and(|valid_at| valid_at > as_of) {
-                    return false;
-                }
-                if relation
-                    .invalid_at
-                    .is_some_and(|invalid_at| invalid_at <= as_of)
-                {
-                    return false;
-                }
-                true
-            })
-        })
+        self.invalidating_edges
+            .get(&thought_id)
+            .is_some_and(|edges| edges.iter().any(|edge| edge.in_force_at(as_of)))
     }
 
     /// Select retrieval candidates with shared invalidation and optional
