@@ -477,7 +477,11 @@ impl VectorSidecar {
         hasher.update(serialized);
         Ok(VectorSidecarIntegrity::sha256(
             self.entries.len(),
-            format!("{:x}", hasher.finalize()),
+            hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
         ))
     }
 }
@@ -575,7 +579,11 @@ fn incremental_sidecar_digest(
     for value in &entry.vector {
         hasher.update(value.to_le_bytes());
     }
-    format!("{:x}", hasher.finalize())
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
 }
 
 fn replay_sidecar_wal(sidecar: &mut VectorSidecar, wal_path: &Path) -> io::Result<()> {
