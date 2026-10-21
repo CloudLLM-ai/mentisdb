@@ -4,7 +4,13 @@ const INDEX_HTML: &str = include_str!("../src/dashboard_static/index.html");
 
 #[test]
 fn dashboard_has_no_inline_event_handlers_with_interpolation() {
-    for attr in ["onclick=", "onchange=", "oninput=", "onsubmit=", "onkeydown="] {
+    for attr in [
+        "onclick=",
+        "onchange=",
+        "oninput=",
+        "onsubmit=",
+        "onkeydown=",
+    ] {
         for (i, line) in INDEX_HTML.lines().enumerate() {
             if let Some(pos) = line.find(attr) {
                 assert!(
