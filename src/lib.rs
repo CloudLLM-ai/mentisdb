@@ -4230,8 +4230,20 @@ impl ManagedSidecarEntry {
         auto_sync: bool,
         build_result: VectorBackendBuildResult,
     ) -> Self {
+        Self::from_boxed(
+            Box::new(RegisteredEmbeddingProvider { provider }),
+            auto_sync,
+            build_result,
+        )
+    }
+
+    fn from_boxed(
+        provider: Box<dyn ManagedEmbeddingProvider>,
+        auto_sync: bool,
+        build_result: VectorBackendBuildResult,
+    ) -> Self {
         Self {
-            provider: Box::new(RegisteredEmbeddingProvider { provider }),
+            provider,
             auto_sync,
             cached_index: build_result.backend,
             cached_sidecar: None,
@@ -4251,6 +4263,232 @@ struct PendingDerivedWrite {
     sidecar_wals: Vec<(PathBuf, crate::search::VectorSidecarWalRecord)>,
     sidecar_compacts: Vec<(PathBuf, crate::search::VectorSidecar)>,
     overlay: Option<(PathBuf, crate::search::ImplicitEdgeOverlay)>,
+}
+
+/// How a chain handle obtains embeddings when it is opened by a service.
+///
+/// Selected process-wide with the `MENTISDB_EMBEDDINGS` environment variable
+/// (see [`EmbeddingsMode::from_env`]) and applied by
+/// [`MentisDb::apply_persisted_managed_vector_sidecars`]. The default,
+/// [`EmbeddingsMode::Auto`], keeps the historical behaviour: use the
+/// `fastembed` model when it is compiled in and fall back to the built-in
+/// local text embeddings otherwise.
+///
+/// # Examples
+///
+/// ```rust
+/// use mentisdb::EmbeddingsMode;
+///
+/// assert_eq!("off".parse::<EmbeddingsMode>().unwrap(), EmbeddingsMode::Off);
+/// assert_eq!(EmbeddingsMode::LocalText.to_string(), "local-text");
+/// assert!("bogus".parse::<EmbeddingsMode>().is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum EmbeddingsMode {
+    /// Historical behaviour: `fastembed` when available, local text otherwise.
+    #[default]
+    Auto,
+    /// No managed vector sidecars at all; retrieval stays lexical.
+    Off,
+    /// Only the deterministic built-in local text embeddings. Never loads an
+    /// ONNX model.
+    LocalText,
+    /// Prefer the `fastembed` model (same as [`EmbeddingsMode::Auto`] when the
+    /// `local-embeddings` feature is compiled in).
+    FastEmbed,
+}
+
+impl EmbeddingsMode {
+    /// Name of the environment variable read by [`EmbeddingsMode::from_env`].
+    pub const ENV_VAR: &'static str = "MENTISDB_EMBEDDINGS";
+
+    /// Read `MENTISDB_EMBEDDINGS` (`off`, `local-text` or `fastembed`).
+    ///
+    /// An unset or empty variable yields [`EmbeddingsMode::Auto`]. An
+    /// unrecognised value is logged and also yields `Auto`, so a typo never
+    /// disables search silently.
+    pub fn from_env() -> Self {
+        match std::env::var(Self::ENV_VAR) {
+            Ok(value) if !value.trim().is_empty() => value.parse().unwrap_or_else(|error| {
+                eprintln!("[mentisdb] {error}; using default embeddings mode");
+                Self::Auto
+            }),
+            _ => Self::Auto,
+        }
+    }
+}
+
+impl std::fmt::Display for EmbeddingsMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Auto => "auto",
+            Self::Off => "off",
+            Self::LocalText => "local-text",
+            Self::FastEmbed => "fastembed",
+        })
+    }
+}
+
+/// Error returned when parsing an [`EmbeddingsMode`] from text fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseEmbeddingsModeError(String);
+
+impl std::fmt::Display for ParseEmbeddingsModeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown MENTISDB_EMBEDDINGS value '{}' (expected off, local-text or fastembed)",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for ParseEmbeddingsModeError {}
+
+impl std::str::FromStr for EmbeddingsMode {
+    type Err = ParseEmbeddingsModeError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "off" => Ok(Self::Off),
+            "local-text" | "local_text" | "localtext" => Ok(Self::LocalText),
+            "fastembed" | "fast-embed" => Ok(Self::FastEmbed),
+            other => Err(ParseEmbeddingsModeError(other.to_owned())),
+        }
+    }
+}
+
+/// Number of thoughts embedded per call by the background sidecar rebuild, so
+/// peak memory stays bounded regardless of chain size.
+const SIDECAR_REBUILD_BATCH: usize = 32;
+
+/// Maximum number of thoughts appended while a background rebuild ran that
+/// are embedded synchronously when the finished sidecar is adopted.
+const SIDECAR_ADOPT_CATCHUP_LIMIT: usize = 256;
+
+type SidecarRebuildJob = Box<dyn FnOnce() + Send + 'static>;
+
+/// Queue feeding the single process-wide sidecar rebuild worker, or `None` if
+/// the worker thread could not be spawned.
+fn sidecar_rebuild_queue() -> Option<&'static mpsc::Sender<SidecarRebuildJob>> {
+    static QUEUE: std::sync::OnceLock<Option<mpsc::Sender<SidecarRebuildJob>>> =
+        std::sync::OnceLock::new();
+    QUEUE
+        .get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<SidecarRebuildJob>();
+            thread::Builder::new()
+                .name("mentisdb-sidecar-rebuild".to_string())
+                .spawn(move || {
+                    // Concurrency 1: jobs run strictly one after another. A
+                    // panicking job must not kill the worker.
+                    while let Ok(job) = rx.recv() {
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                    }
+                })
+                .ok()
+                .map(|_| tx)
+        })
+        .as_ref()
+}
+
+/// Sidecar paths that currently have a rebuild queued or running.
+static SIDECAR_REBUILDS_IN_FLIGHT: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
+
+/// Single-flight token for one sidecar path; released on drop, including when
+/// the job panics or is never run.
+struct SidecarRebuildGuard(PathBuf);
+
+impl SidecarRebuildGuard {
+    fn try_acquire(path: &Path) -> Option<Self> {
+        let mut in_flight = SIDECAR_REBUILDS_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        in_flight
+            .get_or_insert_with(HashSet::new)
+            .insert(path.to_path_buf())
+            .then(|| Self(path.to_path_buf()))
+    }
+}
+
+impl Drop for SidecarRebuildGuard {
+    fn drop(&mut self) {
+        let mut in_flight = SIDECAR_REBUILDS_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(set) = in_flight.as_mut() {
+            set.remove(&self.0);
+        }
+    }
+}
+
+/// Result of one background sidecar rebuild: the provider that built it and
+/// the persisted sidecar.
+type SidecarRebuildOutcome = io::Result<(
+    Box<dyn ManagedEmbeddingProvider>,
+    crate::search::VectorSidecar,
+)>;
+
+/// A rebuild this handle is waiting on.
+struct PendingSidecarRebuild {
+    metadata: crate::search::EmbeddingMetadata,
+    slot: Arc<Mutex<Option<SidecarRebuildOutcome>>>,
+}
+
+/// One thought's worth of input captured for a background rebuild.
+struct SidecarRebuildRow {
+    input: crate::search::EmbeddingInput,
+    thought_id: Uuid,
+    thought_index: u64,
+    thought_hash: String,
+}
+
+/// Embed `rows` in bounded batches and persist the resulting sidecar.
+fn build_sidecar_in_background<P, F>(
+    make_provider: F,
+    metadata: &crate::search::EmbeddingMetadata,
+    chain_key: String,
+    path: &Path,
+    rows: Vec<SidecarRebuildRow>,
+    thought_count: usize,
+    head_hash: Option<String>,
+) -> SidecarRebuildOutcome
+where
+    P: crate::search::EmbeddingProvider + Send + Sync + 'static,
+    F: FnOnce() -> io::Result<P>,
+{
+    let provider = make_provider()?;
+    if provider.metadata() != metadata {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "background sidecar rebuild provider does not match the requested embedding space",
+        ));
+    }
+    let mut entries = Vec::with_capacity(rows.len());
+    for chunk in rows.chunks(SIDECAR_REBUILD_BATCH) {
+        let batch: Vec<crate::search::EmbeddingInput> =
+            chunk.iter().map(|row| row.input.clone()).collect();
+        let documents = crate::search::embed_batch_to_documents(&provider, &batch)
+            .map_err(|error| io::Error::other(format!("Failed to build embeddings: {error}")))?;
+        entries.extend(chunk.iter().zip(documents).map(|(row, document)| {
+            crate::search::VectorSidecarEntry::new(
+                row.thought_id,
+                row.thought_index,
+                row.thought_hash.clone(),
+                document.vector,
+            )
+        }));
+    }
+    let sidecar = crate::search::VectorSidecar::build(
+        chain_key,
+        metadata.clone(),
+        thought_count,
+        head_hash,
+        Utc::now(),
+        entries,
+    )?;
+    sidecar.save_to_path(path)?;
+    Ok((Box::new(RegisteredEmbeddingProvider { provider }), sidecar))
 }
 
 struct PendingVectorBackendBuild {
@@ -4658,6 +4896,9 @@ pub struct MentisDb {
     adjacency_index: std::sync::Mutex<Option<(usize, Arc<crate::search::ThoughtAdjacencyIndex>)>>,
     /// Derived-artifact writes queued during append (sidecar WAL, overlay).
     pending_derived: std::sync::Mutex<PendingDerivedWrite>,
+    /// Sidecar rebuilds handed to the process-wide background worker whose
+    /// results this handle has not adopted yet.
+    pending_sidecar_rebuilds: Vec<PendingSidecarRebuild>,
     /// When true, [`Self::append_thought`] skips [`Self::flush_pending_derived`].
     defer_derived_flush: bool,
     /// Cosine similarity threshold for auto-inferred edges.
@@ -4793,6 +5034,7 @@ impl MentisDb {
             implicit_edge_overlay: None,
             adjacency_index: std::sync::Mutex::new(None),
             pending_derived: std::sync::Mutex::new(PendingDerivedWrite::default()),
+            pending_sidecar_rebuilds: Vec::new(),
             defer_derived_flush: false,
             auto_edge_threshold: std::env::var("MENTISDB_AUTO_EDGE_THRESHOLD")
                 .ok()
@@ -6954,6 +7196,191 @@ impl MentisDb {
         Ok(sidecar)
     }
 
+    /// Rebuild one vector sidecar in the process-wide background worker.
+    ///
+    /// Opening a chain must not embed its whole history on the caller's
+    /// thread, so services hand missing or stale sidecars to a single worker
+    /// thread (concurrency 1 across all chains) that embeds in bounded
+    /// batches and persists the result. Until it finishes the chain simply
+    /// serves lexical results. Finished work is adopted by
+    /// [`MentisDb::poll_vector_backend_upgrades`], which append-time sync calls
+    /// automatically; read-mostly services should call it periodically.
+    ///
+    /// `make_provider` runs on the worker thread (so model loading is off the
+    /// caller too) and must return a provider whose metadata equals
+    /// `metadata`. The sidecar stays rebuildable derived state: a failed
+    /// rebuild is logged and leaves the chain untouched.
+    ///
+    /// Returns `Ok(false)` without queueing anything when a rebuild of the
+    /// same sidecar (same chain and embedding space) is already queued or
+    /// running anywhere in the process (single-flight).
+    ///
+    /// # Errors
+    ///
+    /// Fails when the handle has no persistence metadata or the worker thread
+    /// is unavailable.
+    pub fn schedule_vector_sidecar_rebuild<P, F>(
+        &mut self,
+        metadata: crate::search::EmbeddingMetadata,
+        make_provider: F,
+    ) -> io::Result<bool>
+    where
+        P: crate::search::EmbeddingProvider + Send + Sync + 'static,
+        F: FnOnce() -> io::Result<P> + Send + 'static,
+    {
+        let chain_key = self.persistence_metadata()?.chain_key.clone();
+        let path = self.vector_sidecar_path(&metadata)?;
+        let Some(guard) = SidecarRebuildGuard::try_acquire(&path) else {
+            return Ok(false);
+        };
+        let Some(queue) = sidecar_rebuild_queue() else {
+            return Err(io::Error::other(
+                "sidecar rebuild worker thread is unavailable",
+            ));
+        };
+        let rows: Vec<SidecarRebuildRow> = self
+            .thoughts
+            .iter()
+            .map(|thought| SidecarRebuildRow {
+                input: crate::search::EmbeddingInput::new(
+                    thought.id.to_string(),
+                    self.thought_embedding_text(thought),
+                ),
+                thought_id: thought.id,
+                thought_index: thought.index,
+                thought_hash: thought.hash.clone(),
+            })
+            .collect();
+        let thought_count = self.thoughts.len();
+        let head_hash = self.head_hash().map(ToOwned::to_owned);
+        let slot: Arc<Mutex<Option<SidecarRebuildOutcome>>> = Arc::new(Mutex::new(None));
+        let job_slot = Arc::clone(&slot);
+        let job_metadata = metadata.clone();
+        let job: SidecarRebuildJob = Box::new(move || {
+            let _guard = guard;
+            let outcome = build_sidecar_in_background(
+                make_provider,
+                &job_metadata,
+                chain_key,
+                &path,
+                rows,
+                thought_count,
+                head_hash,
+            );
+            *job_slot.lock().unwrap_or_else(|error| error.into_inner()) = Some(outcome);
+        });
+        queue
+            .send(job)
+            .map_err(|_| io::Error::other("sidecar rebuild worker has stopped"))?;
+        self.pending_sidecar_rebuilds
+            .push(PendingSidecarRebuild { metadata, slot });
+        Ok(true)
+    }
+
+    /// Whether this handle is still waiting on a background sidecar rebuild.
+    pub fn has_pending_sidecar_rebuilds(&self) -> bool {
+        !self.pending_sidecar_rebuilds.is_empty()
+    }
+
+    /// Adopt background sidecar rebuilds that have finished.
+    fn adopt_finished_sidecar_rebuilds(&mut self) {
+        for item in std::mem::take(&mut self.pending_sidecar_rebuilds) {
+            let outcome = item
+                .slot
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            match outcome {
+                None => self.pending_sidecar_rebuilds.push(item),
+                Some(Err(error)) => eprintln!(
+                    "[mentisdb] background vector sidecar rebuild for '{}' failed: {error}",
+                    item.metadata.model_id
+                ),
+                Some(Ok((provider, sidecar))) => {
+                    if let Err(error) = self.adopt_rebuilt_sidecar(item.metadata, provider, sidecar)
+                    {
+                        eprintln!("[mentisdb] could not adopt rebuilt vector sidecar: {error}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Register a freshly rebuilt sidecar, first embedding the few thoughts
+    /// appended while the rebuild ran.
+    fn adopt_rebuilt_sidecar(
+        &mut self,
+        metadata: crate::search::EmbeddingMetadata,
+        provider: Box<dyn ManagedEmbeddingProvider>,
+        mut sidecar: crate::search::VectorSidecar,
+    ) -> io::Result<()> {
+        let path = self.vector_sidecar_path(&metadata)?;
+        let covered = sidecar.thought_count;
+        let head_matches = match covered.checked_sub(1) {
+            None => sidecar.head_hash.is_none(),
+            Some(last) => self
+                .thoughts
+                .get(last)
+                .is_some_and(|thought| sidecar.head_hash.as_deref() == Some(&thought.hash)),
+        };
+        if !head_matches || covered > self.thoughts.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "rebuilt vector sidecar no longer matches the chain; it will rebuild on next open",
+            ));
+        }
+        let delta = self.thoughts.len() - covered;
+        if delta > SIDECAR_ADOPT_CATCHUP_LIMIT {
+            return Err(io::Error::other(format!(
+                "{delta} thoughts were appended during the sidecar rebuild; \
+                 it will rebuild again on next open"
+            )));
+        }
+        for (chunk_start, chunk) in self.thoughts[covered..]
+            .chunks(SIDECAR_REBUILD_BATCH)
+            .enumerate()
+        {
+            let inputs: Vec<crate::search::EmbeddingInput> = chunk
+                .iter()
+                .map(|thought| {
+                    crate::search::EmbeddingInput::new(
+                        thought.id.to_string(),
+                        self.thought_embedding_text(thought),
+                    )
+                })
+                .collect();
+            let documents = provider.embed_documents(&inputs)?;
+            for (offset, (thought, document)) in chunk.iter().zip(documents).enumerate() {
+                let count = covered + chunk_start * SIDECAR_REBUILD_BATCH + offset + 1;
+                sidecar.extend_with_entry(
+                    crate::search::VectorSidecarEntry::new(
+                        thought.id,
+                        thought.index,
+                        thought.hash.clone(),
+                        document.vector,
+                    ),
+                    count,
+                    Some(thought.hash.clone()),
+                )?;
+            }
+        }
+        if delta > 0 {
+            sidecar.compact_to_path(&path)?;
+        }
+        let graph_path = self.vector_hnsw_graph_path(&metadata).ok();
+        let build_result = build_vector_backend_async(
+            &metadata,
+            sidecar_entries_to_documents(&sidecar.entries),
+            graph_path.as_deref(),
+        );
+        self.managed_vector_sidecars.insert(
+            metadata,
+            ManagedSidecarEntry::from_boxed(provider, true, build_result).with_sidecar(sidecar),
+        );
+        self.load_or_rebuild_implicit_edge_overlay();
+        Ok(())
+    }
+
     /// Check for finished background HNSW graph builds and swap them into the
     /// cached index.
     ///
@@ -6964,6 +7391,7 @@ impl MentisDb {
     /// services may also call it periodically if they want read-only queries to
     /// pick up the approximate backend as soon as it is ready.
     pub fn poll_vector_backend_upgrades(&mut self) {
+        self.adopt_finished_sidecar_rebuilds();
         let keys: Vec<crate::search::EmbeddingMetadata> =
             self.managed_vector_sidecars.keys().cloned().collect();
         for metadata in keys {
@@ -7076,63 +7504,63 @@ impl MentisDb {
     /// to the current handle.
     ///
     /// `mentisdb` uses this when it opens a chain so vector sidecars remain
-    /// enabled across daemon restarts.
+    /// enabled across daemon restarts. The embeddings mode comes from the
+    /// `MENTISDB_EMBEDDINGS` environment variable (`off`, `local-text` or
+    /// `fastembed`; see [`EmbeddingsMode`]), defaulting to the historical
+    /// behaviour.
+    ///
+    /// This never embeds a chain's history on the calling thread for the
+    /// `fastembed` model: a missing or stale sidecar is rebuilt by the
+    /// process-wide background worker (see
+    /// [`MentisDb::schedule_vector_sidecar_rebuild`]) while the chain serves
+    /// lexical results, and opening a chain never rewrites its persisted
+    /// provider configuration.
     pub fn apply_persisted_managed_vector_sidecars(&mut self) -> io::Result<()> {
+        self.apply_persisted_managed_vector_sidecars_with_mode(EmbeddingsMode::from_env())
+    }
+
+    /// Like [`MentisDb::apply_persisted_managed_vector_sidecars`] with an
+    /// explicit [`EmbeddingsMode`] instead of reading the environment.
+    pub fn apply_persisted_managed_vector_sidecars_with_mode(
+        &mut self,
+        mode: EmbeddingsMode,
+    ) -> io::Result<()> {
         #[cfg(feature = "local-embeddings")]
         {
-            self.unmanage_vector_sidecar(&ManagedVectorProviderKind::LocalTextV1.metadata());
-            let mut config = self.persisted_managed_vector_sidecar_config()?;
-            let fastembed_enabled = config
-                .providers
-                .iter()
-                .find(|p| p.provider_kind == ManagedVectorProviderKind::FastEmbedMiniLM)
-                .map(|p| p.enabled)
-                .unwrap_or(true);
-            match crate::search::FastEmbedProvider::try_new() {
-                Ok(p) => {
-                    if fastembed_enabled {
-                        self.manage_vector_sidecar(p).map_err(|e| {
-                            io::Error::other(format!("FastEmbed sidecar rebuild failed: {e}"))
-                        })?;
-                    } else {
-                        self.register_vector_sidecar_for_search(p);
-                    }
-                    let has_fastembed = config
-                        .providers
-                        .iter()
-                        .any(|p| p.provider_kind == ManagedVectorProviderKind::FastEmbedMiniLM);
-                    if !has_fastembed {
-                        for entry in &mut config.providers {
-                            if entry.provider_kind == ManagedVectorProviderKind::LocalTextV1 {
-                                entry.enabled = false;
-                            }
-                        }
-                        config.providers.push(ManagedVectorSidecarConfig {
-                            provider_kind: ManagedVectorProviderKind::FastEmbedMiniLM,
-                            enabled: fastembed_enabled,
-                        });
-                        self.save_managed_vector_sidecar_config(&config)?;
-                    }
-                }
-                Err(e) => {
-                    log::warn!("FastEmbed provider init failed, falling back to LocalTextV1: {e}");
-                    self.manage_vector_sidecar(crate::search::LocalTextEmbeddingProvider::new())
-                        .map_err(
-                            vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>,
-                        )?;
-                }
-            }
-            Ok(())
+            self.apply_persisted_managed_vector_sidecars_with_fastembed_factory(mode, || {
+                crate::search::FastEmbedProvider::try_new()
+                    .map_err(|error| io::Error::other(error.to_string()))
+            })
         }
-
         #[cfg(not(feature = "local-embeddings"))]
         {
-            let config = self.persisted_managed_vector_sidecar_config()?;
-            for provider in config.providers {
-                let metadata = provider.provider_kind.metadata();
-                if provider.enabled {
+            self.apply_mode_without_fastembed(mode)
+        }
+    }
+
+    /// Apply modes that never involve a `fastembed` model (all modes when the
+    /// `local-embeddings` feature is not compiled in).
+    fn apply_mode_without_fastembed(&mut self, mode: EmbeddingsMode) -> io::Result<()> {
+        match mode {
+            EmbeddingsMode::Off => {
+                self.unmanage_all_builtin_vector_sidecars();
+                Ok(())
+            }
+            EmbeddingsMode::LocalText => {
+                #[cfg(feature = "local-embeddings")]
+                self.unmanage_vector_sidecar(
+                    &ManagedVectorProviderKind::FastEmbedMiniLM.metadata(),
+                );
+                self.manage_vector_sidecar(crate::search::LocalTextEmbeddingProvider::new())
+                    .map(|_| ())
+                    .map_err(vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>)
+            }
+            EmbeddingsMode::Auto | EmbeddingsMode::FastEmbed => {
+                let config = self.persisted_managed_vector_sidecar_config()?;
+                for provider in config.providers {
+                    let metadata = provider.provider_kind.metadata();
                     match provider.provider_kind {
-                        ManagedVectorProviderKind::LocalTextV1 => {
+                        ManagedVectorProviderKind::LocalTextV1 if provider.enabled => {
                             self.manage_vector_sidecar(
                                 crate::search::LocalTextEmbeddingProvider::new(),
                             )
@@ -7140,13 +7568,97 @@ impl MentisDb {
                                 vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>,
                             )?;
                         }
+                        _ => {
+                            self.unmanage_vector_sidecar(&metadata);
+                        }
                     }
-                } else {
-                    self.unmanage_vector_sidecar(&metadata);
                 }
+                Ok(())
             }
-            Ok(())
         }
+    }
+
+    fn unmanage_all_builtin_vector_sidecars(&mut self) {
+        self.unmanage_vector_sidecar(&ManagedVectorProviderKind::LocalTextV1.metadata());
+        #[cfg(feature = "local-embeddings")]
+        self.unmanage_vector_sidecar(&ManagedVectorProviderKind::FastEmbedMiniLM.metadata());
+    }
+
+    /// Apply persisted sidecar settings using `make_fastembed` to construct the
+    /// `fastembed`-space provider.
+    ///
+    /// Exposed (hidden) so tests can substitute a counting provider for the
+    /// real ONNX model; production code goes through
+    /// [`MentisDb::apply_persisted_managed_vector_sidecars`].
+    #[cfg(feature = "local-embeddings")]
+    #[doc(hidden)]
+    pub fn apply_persisted_managed_vector_sidecars_with_fastembed_factory<P, F>(
+        &mut self,
+        mode: EmbeddingsMode,
+        make_fastembed: F,
+    ) -> io::Result<()>
+    where
+        P: crate::search::EmbeddingProvider + Send + Sync + 'static,
+        F: FnOnce() -> io::Result<P> + Send + 'static,
+    {
+        if matches!(mode, EmbeddingsMode::Off | EmbeddingsMode::LocalText) {
+            return self.apply_mode_without_fastembed(mode);
+        }
+        self.unmanage_vector_sidecar(&ManagedVectorProviderKind::LocalTextV1.metadata());
+        // Read-only with respect to provider choice: the persisted config is
+        // consulted but never rewritten to enable fastembed on open.
+        let config = self.persisted_managed_vector_sidecar_config()?;
+        let fastembed_enabled = config
+            .providers
+            .iter()
+            .find(|p| p.provider_kind == ManagedVectorProviderKind::FastEmbedMiniLM)
+            .map(|p| p.enabled)
+            .unwrap_or(true);
+        let metadata = ManagedVectorProviderKind::FastEmbedMiniLM.metadata();
+        let sidecar = match self.load_vector_sidecar(&metadata) {
+            Ok(sidecar) => sidecar,
+            Err(error) => {
+                eprintln!("[mentisdb] ignoring unreadable fastembed sidecar: {error}");
+                None
+            }
+        };
+        let fresh = match &sidecar {
+            Some(sidecar) => matches!(
+                self.vector_sidecar_freshness(sidecar, &metadata)?,
+                crate::search::VectorSidecarFreshness::Fresh
+            ),
+            None => false,
+        };
+
+        if fresh {
+            let provider = match make_fastembed() {
+                Ok(provider) => provider,
+                Err(error) => {
+                    log::warn!(
+                        "FastEmbed provider init failed, falling back to LocalTextV1: {error}"
+                    );
+                    return self
+                        .manage_vector_sidecar(crate::search::LocalTextEmbeddingProvider::new())
+                        .map(|_| ())
+                        .map_err(
+                            vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>,
+                        );
+                }
+            };
+            if fastembed_enabled {
+                self.manage_vector_sidecar(provider)
+                    .map_err(|e| io::Error::other(format!("FastEmbed sidecar load failed: {e}")))?;
+            } else {
+                self.register_vector_sidecar_for_search(provider);
+            }
+        } else if fastembed_enabled {
+            self.schedule_vector_sidecar_rebuild(metadata, make_fastembed)?;
+        } else if sidecar.is_some() {
+            if let Ok(provider) = make_fastembed() {
+                self.register_vector_sidecar_for_search(provider);
+            }
+        }
+        Ok(())
     }
 
     /// Return runtime status for every persistently configured managed vector
