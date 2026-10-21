@@ -7935,18 +7935,26 @@ impl MentisDb {
         synonyms: &std::collections::HashMap<String, Vec<String>>,
         synonym_weight: f32,
     ) -> HashMap<usize, crate::search::lexical::LexicalHit> {
-        let positions: Vec<usize> = candidates
-            .iter()
-            .map(|thought| thought.index as usize)
-            .collect();
-        let mut query = crate::search::lexical::LexicalQuery::new(text);
+        use crate::search::lexical::{LexicalCandidates, LexicalQuery};
+        let mut query = LexicalQuery::new(text);
         if !synonyms.is_empty() {
             query = query.with_synonyms(synonyms.clone(), synonym_weight);
         }
-        self.lexical_index
-            .search_in_positions(&query, &positions)
-            .into_iter()
-            .map(|hit| (hit.doc_position, hit))
+        let scan = if candidates.len() == self.thoughts.len() {
+            // Candidates cover the whole chain: no position list needed.
+            self.lexical_index.scan(&query, LexicalCandidates::All)
+        } else {
+            let positions: Vec<usize> = candidates
+                .iter()
+                .map(|thought| thought.index as usize)
+                .collect();
+            // An empty subset matches nothing instead of scanning everything.
+            self.lexical_index
+                .scan(&query, LexicalCandidates::Subset(&positions))
+        };
+        scan.positions()
+            .iter()
+            .map(|&position| (position, self.lexical_index.hit_from_scan(&scan, position)))
             .collect()
     }
 
