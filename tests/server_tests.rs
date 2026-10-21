@@ -4214,11 +4214,12 @@ async fn start_servers_shares_state_across_mcp_and_rest() {
         });
         let raw = tokio::task::spawn_blocking(move || {
             ureq::post(&url)
-                .set("content-type", "application/json")
-                .set("accept", "application/json, text/event-stream")
-                .send_string(&body.to_string())
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .send(body.to_string())
                 .expect("MCP head call")
-                .into_string()
+                .into_body()
+                .read_to_string()
                 .expect("MCP head response body")
         })
         .await
@@ -4260,10 +4261,11 @@ async fn start_servers_shares_state_across_mcp_and_rest() {
     let append_rest_url = format!("{rest_url}/v1/thoughts");
     let appended: serde_json::Value = tokio::task::spawn_blocking(move || {
         ureq::post(&append_rest_url)
-            .set("content-type", "application/json")
-            .send_string(&append_body.to_string())
+            .header("content-type", "application/json")
+            .send(append_body.to_string())
             .expect("REST append")
-            .into_json::<serde_json::Value>()
+            .into_body()
+            .read_json::<serde_json::Value>()
             .expect("REST append body")
     })
     .await

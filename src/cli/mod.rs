@@ -331,7 +331,8 @@ fn run_add(cmd: &AddCommand, out: &mut dyn Write, _err: &mut dyn Write) -> Resul
         .send_json(body)
         .map_err(|e| format!("POST {url}: {e}"))?;
     let json: serde_json::Value = response
-        .into_json()
+        .into_body()
+        .read_json()
         .map_err(|e| format!("parse response: {e}"))?;
     let _ = writeln!(
         out,
@@ -380,7 +381,8 @@ fn run_search(
         .send_json(body)
         .map_err(|e| format!("POST {url}: {e}"))?;
     let json: serde_json::Value = response
-        .into_json()
+        .into_body()
+        .read_json()
         .map_err(|e| format!("parse response: {e}"))?;
     let _ = writeln!(
         out,
@@ -403,7 +405,8 @@ fn run_agents(
         .call()
         .map_err(|e| format!("GET {url}: {e}"))?;
     let json: serde_json::Value = response
-        .into_json()
+        .into_body()
+        .read_json()
         .map_err(|e| format!("parse response: {e}"))?;
     let _ = writeln!(
         out,
@@ -433,11 +436,11 @@ fn run_backup(
 
     // Try to flush the running daemon first. If connection is refused, the
     // daemon is not running — skip flush and proceed with whatever is on disk.
-    match ureq::post("http://127.0.0.1:9472/v1/admin/flush").call() {
+    match ureq::post("http://127.0.0.1:9472/v1/admin/flush").send_empty() {
         Ok(resp) if resp.status() == 200 => {
             let _ = writeln!(out, "Daemon detected — chains flushed.");
         }
-        Err(e) if e.kind() == ureq::ErrorKind::ConnectionFailed => {
+        Err(ureq::Error::ConnectionFailed) => {
             let _ = writeln!(out, "Daemon not running — capturing files as-is.");
         }
         Err(e) => {
@@ -499,7 +502,7 @@ fn run_restore(
 
     // Abort if the daemon is running — restoring while the daemon is active
     // risks the daemon's in-memory state overwriting restored files on next flush.
-    match ureq::post("http://127.0.0.1:9472/v1/admin/flush").call() {
+    match ureq::post("http://127.0.0.1:9472/v1/admin/flush").send_empty() {
         Ok(resp) if resp.status() == 200 => {
             return Err(
                 "Restore aborted: mentisdb is running. Stop the daemon first \
@@ -507,7 +510,7 @@ fn run_restore(
                     .to_string(),
             );
         }
-        Err(e) if e.kind() == ureq::ErrorKind::ConnectionFailed => {
+        Err(ureq::Error::ConnectionFailed) => {
             // Daemon not running — safe to proceed
         }
         Err(_) => {

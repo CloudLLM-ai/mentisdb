@@ -53,7 +53,7 @@ fastembed = { version = "5.13.1", optional = true }
 # pulls in rustls transitively via axum-server and reqwest; when both aws-lc-rs
 # and ring are compiled in, rustls refuses to auto-select a default provider.
 rustls = { version = "0.23", features = ["ring"], optional = true }
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
 url = "2.5.8"
 arboard = { version = "3", default-features = false }
 dotenvy = "0.15"
