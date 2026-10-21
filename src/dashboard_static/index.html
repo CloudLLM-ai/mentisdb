@@ -1124,7 +1124,9 @@
   }
 
   async function api(path, opts = {}) {
-    const r = await fetch(path, { credentials: 'include', ...opts });
+    // Always send the CSRF opt-in header; the server also checks Origin/Host.
+    const headers = { ...(opts.headers || {}), 'X-MentisDB-Dashboard': '1' };
+    const r = await fetch(path, { credentials: 'include', ...opts, headers });
     if (!r.ok) {
       let txt = '';
       try { txt = await r.text(); } catch (_) {}

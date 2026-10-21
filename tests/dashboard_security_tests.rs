@@ -189,6 +189,67 @@ async fn huge_per_page_is_clamped_not_panicking() {
 }
 
 #[tokio::test]
+async fn csrf_guard_blocks_cross_origin_and_allows_same_origin_or_header() {
+    let dir = unique_dir();
+    let app = router(&dir);
+    let body = json!({"chain_key": "csrf1", "content": "x"}).to_string();
+
+    let mk = |origin: Option<&str>, referer: Option<&str>, custom: bool| {
+        let mut b = Request::builder()
+            .method("POST")
+            .uri("/dashboard/api/chains")
+            .header("host", "localhost:19999")
+            .header("content-type", "application/json");
+        if let Some(o) = origin {
+            b = b.header("origin", o);
+        }
+        if let Some(r) = referer {
+            b = b.header("referer", r);
+        }
+        if custom {
+            b = b.header("x-mentisdb-dashboard", "1");
+        }
+        b.body(Body::from(body.clone())).unwrap()
+    };
+
+    let (status, _) = send(&app, mk(Some("http://evil.example"), None, false)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // A custom header does not override a mismatching Origin.
+    let (status, _) = send(&app, mk(Some("http://evil.example"), None, true)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = send(&app, mk(None, Some("http://evil.example/page"), false)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Neither header and no opt-in header.
+    let (status, _) = send(&app, mk(None, None, false)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _) = send(&app, mk(Some("http://localhost:19999"), None, false)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send(
+        &app,
+        mk(None, Some("http://localhost:19999/dashboard"), false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send(&app, mk(None, None, true)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // GETs are never blocked.
+    let (status, _) = send(
+        &app,
+        Request::builder()
+            .uri("/dashboard/api/chains")
+            .header("origin", "http://evil.example")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn settings_never_leak_dashboard_pin_and_blank_save_keeps_it() {
     let dir = unique_dir();
     std::fs::create_dir_all(&dir).unwrap();

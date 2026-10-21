@@ -53,6 +53,16 @@ fn dashboard_router_with_chains(
         auto_flush: Arc::new(AtomicBool::new(true)),
         bearer_token_access: Arc::new(AtomicBool::new(false)),
     })
+    // Programmatic clients (no Origin/Referer) must send the CSRF opt-in header.
+    .layer(axum::middleware::map_request(
+        |mut req: axum::extract::Request| async move {
+            req.headers_mut().insert(
+                "x-mentisdb-dashboard",
+                axum::http::HeaderValue::from_static("1"),
+            );
+            req
+        },
+    ))
 }
 
 fn dashboard_router_for_dir(dir: &PathBuf) -> axum::Router {
@@ -1147,6 +1157,7 @@ async fn deleting_a_cached_chain_does_not_reregister_it_on_last_drop() {
             Request::builder()
                 .method("DELETE")
                 .uri("/dashboard/api/chains/source")
+                .header("x-mentisdb-dashboard", "1")
                 .body(Body::empty())
                 .unwrap(),
         )
