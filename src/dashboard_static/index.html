@@ -1969,8 +1969,15 @@
   // ROUTER
   // =====================================================================
   let _ddCloseH = null;
+  // Incremented on every route change; async renderers capture it and bail
+  // when a newer navigation has superseded them (prevents stale overwrites).
+  let _routeSeq = 0;
+  let _exLoadSeq = 0;
 
   function route() {
+    _routeSeq++;
+    const bsForm = document.getElementById('cl-bootstrap-modal');
+    if (bsForm) bsForm.style.display = 'none';
     if (_ddCloseH) { document.removeEventListener('click', _ddCloseH); _ddCloseH = null; }
     updateNav();
     const hash  = window.location.hash.slice(1) || 'chains';
@@ -2641,8 +2648,12 @@
     if (searching && searchText) url += '&text=' + encodeURIComponent(searchText);
     if (searching && searchAgentId) url += '&agent_id=' + encodeURIComponent(searchAgentId);
     if (searching && searchEntityType) url += '&entity_type=' + encodeURIComponent(searchEntityType);
+    const myLoad = ++_exLoadSeq;
+    const myRoute = _routeSeq;
+    const stale = () => myLoad !== _exLoadSeq || myRoute !== _routeSeq;
     api(url)
       .then(data => {
+        if (stale()) return;
         const normalized = searching
           ? normalizeExplorerSearchPayload(data, page, perPage)
           : normalizeExplorerSearchPayload(data, page, perPage);
@@ -2727,6 +2738,7 @@
         }
       })
       .catch(err => {
+        if (stale()) return;
         errBox(body, searching ? `Search failed: ${err.message}` : err.message);
         if (bundlesEl) bundlesEl.innerHTML = '';
         if (pgEl) pgEl.innerHTML = '';
@@ -2759,14 +2771,14 @@
           const ck = c.chain_key || '';
           return `
             <div class="section-label" id="${agentListAnchorId(ck)}"><a href="${agentListHash(ck)}" class="mono" style="color:inherit;text-decoration:none">Chain: ${esc(ck)}</a></div>
-            <div style="display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px" id="al-badges-${esc(ck)}">
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px" id="al-badges-${encodeURIComponent(ck)}">
               <span class="badge badge-blue">Total Agents: —</span>
               <span class="badge badge-purple">Total Thoughts: —</span>
             </div>
             <div class="card" style="margin-bottom:20px">
               <div class="table-wrap"><table>
                 <thead><tr><th>Agent ID</th><th>Display Name</th><th>Owner</th><th>Thoughts</th><th>Status</th><th></th></tr></thead>
-                <tbody id="al-tbody-${esc(ck)}">
+                <tbody id="al-tbody-${encodeURIComponent(ck)}">
                   <tr><td colspan="6"><div class="spinner-wrap"><div class="spinner"></div></div></td></tr>
                 </tbody>
               </table></div>
@@ -2784,8 +2796,8 @@
           const ck = c.chain_key || '';
           api(`/dashboard/api/agents/${encodeURIComponent(ck)}`)
             .then(agents => {
-              const tbody = document.getElementById(`al-tbody-${esc(ck)}`);
-              const badges = document.getElementById(`al-badges-${esc(ck)}`);
+              const tbody = document.getElementById(`al-tbody-${encodeURIComponent(ck)}`);
+              const badges = document.getElementById(`al-badges-${encodeURIComponent(ck)}`);
               if (!tbody) return;
 
               const totalThoughts = agents.reduce((sum, a) => sum + Number(a.thought_count || 0), 0);
@@ -2813,7 +2825,7 @@
               `).join('');
             })
             .catch(err => {
-              const tbody = document.getElementById(`al-tbody-${esc(ck)}`);
+              const tbody = document.getElementById(`al-tbody-${encodeURIComponent(ck)}`);
               if (tbody) tbody.innerHTML = `<tr><td colspan="6" class="empty-state" style="color:#f85149">${esc(err.message)}</td></tr>`;
             });
         });
@@ -2833,9 +2845,10 @@
       </div>
       <div id="ad-body"><div class="spinner-wrap"><div class="spinner"></div></div></div>
     `;
+    const seq = _routeSeq;
     api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}`)
-      .then(agent => buildAgentDetail(chainKey, agentId, agent))
-      .catch(err  => errBox(document.getElementById('ad-body'), err.message));
+      .then(agent => { if (seq === _routeSeq) buildAgentDetail(chainKey, agentId, agent); })
+      .catch(err  => { if (seq === _routeSeq) errBox(document.getElementById('ad-body'), err.message); });
   }
 
   function buildAgentDetail(chainKey, agentId, agent) {
@@ -3278,25 +3291,30 @@
 
   async function renderAgentThoughts(chainKey, agentId) {
     updateNav();
+    const seq = _routeSeq;
     const main = document.getElementById('app');
     main.innerHTML = '<div class="spinner-wrap"><div class="spinner"></div></div>';
     let agent = null;
     try {
       agent = await api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}`);
     } catch (_) {}
+    if (seq !== _routeSeq) return;
     const displayName = (agent && (agent.display_name || agent.id)) || agentId;
 
     let page = 1, perPage = 50, order = 'desc';
     let total = 0;
 
     async function load() {
+      if (seq !== _routeSeq) return;
       main.innerHTML = '<div class="spinner-wrap"><div class="spinner"></div></div>';
       let data;
       try {
         data = await api(`/dashboard/api/chains/${encodeURIComponent(chainKey)}/agents/${encodeURIComponent(agentId)}/thoughts?page=${page}&per_page=${perPage}&order=${order}`);
       } catch (err) {
+        if (seq !== _routeSeq) return;
         main.innerHTML = `<div class="error-box">Error: ${esc(err.message)}</div>`; return;
       }
+      if (seq !== _routeSeq) return;
       const thoughts = data.thoughts || [];
       total = data.total || 0;
       const pages = data.pages || Math.max(1, Math.ceil(total / perPage));
