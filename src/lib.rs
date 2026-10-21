@@ -833,6 +833,7 @@ impl BackgroundWriter {
         file_path: PathBuf,
         error_state: Arc<Mutex<Option<BackgroundWriteError>>>,
     ) -> io::Result<Self> {
+        repair_torn_binary_tail(&file_path)?;
         let (tx, rx) = mpsc::sync_channel(BACKGROUND_WRITE_QUEUE_CAPACITY);
         let join = thread::Builder::new()
             .name("mentisdb-binary-writer".to_string())
@@ -10391,24 +10392,7 @@ where
     T: serde::de::DeserializeOwned,
 {
     let mut thoughts = Vec::new();
-    loop {
-        let mut length_bytes = [0_u8; 8];
-        match reader.read_exact(&mut length_bytes) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(e) => return Err(e),
-        }
-        let length_u64 = u64::from_le_bytes(length_bytes);
-        if length_u64 > MAX_THOUGHT_PAYLOAD_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "binary thought payload length {length_u64} exceeds maximum {MAX_THOUGHT_PAYLOAD_BYTES}"
-                ),
-            ));
-        }
-        let mut payload = vec![0_u8; length_u64 as usize];
-        reader.read_exact(&mut payload)?;
+    while let Some(payload) = read_next_binary_payload(reader)? {
         let (thought, _): (T, usize) =
             bincode::serde::decode_from_slice(&payload, bincode::config::standard()).map_err(
                 |e| {
@@ -10858,12 +10842,41 @@ fn rebuild_hash_chain(thoughts: &mut [Thought]) {
     }
 }
 
+/// Read as many bytes as available into `buf`, returning the count read.
+///
+/// Unlike [`Read::read_exact`] this reports how much of the buffer was filled
+/// when the stream ends early, which lets callers tell a clean EOF from a
+/// torn record.
+fn read_up_to(reader: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(filled)
+}
+
+/// Read the next length-prefixed payload, tolerating a torn final record.
+///
+/// A crash mid-append can leave a partial 8-byte length prefix or a payload
+/// shorter than its prefix at the end of the file. Both are treated as end of
+/// stream (with a warning) so the good prefix of the chain still loads;
+/// [`repair_torn_binary_tail`] removes the garbage before the next append.
 fn read_next_binary_payload(reader: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     let mut length_bytes = [0_u8; 8];
-    match reader.read_exact(&mut length_bytes) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(error),
+    let prefix_read = read_up_to(reader, &mut length_bytes)?;
+    if prefix_read == 0 {
+        return Ok(None);
+    }
+    if prefix_read < length_bytes.len() {
+        eprintln!(
+            "[mentisdb] torn binary chain tail: partial length prefix ({prefix_read} of 8 bytes)"
+        );
+        return Ok(None);
     }
     let length_u64 = u64::from_le_bytes(length_bytes);
     if length_u64 > MAX_THOUGHT_PAYLOAD_BYTES {
@@ -10875,23 +10888,39 @@ fn read_next_binary_payload(reader: &mut impl Read) -> io::Result<Option<Vec<u8>
         ));
     }
     let mut payload = vec![0_u8; length_u64 as usize];
-    reader.read_exact(&mut payload)?;
+    let payload_read = read_up_to(reader, &mut payload)?;
+    if payload_read < payload.len() {
+        eprintln!(
+            "[mentisdb] torn binary chain tail: partial payload ({payload_read} of {length_u64} bytes)"
+        );
+        return Ok(None);
+    }
     Ok(Some(payload))
 }
 
-/// Count length-prefixed binary thoughts without deserializing payloads.
-fn count_binary_chain_thoughts(file_path: &Path) -> io::Result<u64> {
-    if !file_path.exists() {
-        return Ok(0);
-    }
+/// Result of scanning the record framing of a binary chain file.
+struct BinaryChainScan {
+    /// Number of complete length-prefixed records.
+    count: u64,
+    /// Byte offset just past the last complete record.
+    good_len: u64,
+    /// Actual file length in bytes.
+    file_len: u64,
+}
+
+/// Walk the record framing of a binary chain without deserializing payloads.
+///
+/// A partial length prefix or a payload that runs past EOF is not counted and
+/// leaves `good_len < file_len`.
+fn scan_binary_chain(file_path: &Path) -> io::Result<BinaryChainScan> {
     let mut file = File::open(file_path)?;
+    let file_len = file.metadata()?.len();
     let mut count = 0_u64;
+    let mut good_len = 0_u64;
     loop {
         let mut length_bytes = [0_u8; 8];
-        match file.read_exact(&mut length_bytes) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(error) => return Err(error),
+        if read_up_to(&mut file, &mut length_bytes)? < length_bytes.len() {
+            break;
         }
         let length_u64 = u64::from_le_bytes(length_bytes);
         if length_u64 > MAX_THOUGHT_PAYLOAD_BYTES {
@@ -10902,10 +10931,59 @@ fn count_binary_chain_thoughts(file_path: &Path) -> io::Result<u64> {
                 ),
             ));
         }
-        file.seek(SeekFrom::Current(length_u64 as i64))?;
+        let end = good_len + 8 + length_u64;
+        if end > file_len {
+            break;
+        }
+        file.seek(SeekFrom::Start(end))?;
+        good_len = end;
         count += 1;
     }
-    Ok(count)
+    Ok(BinaryChainScan {
+        count,
+        good_len,
+        file_len,
+    })
+}
+
+/// Truncate a torn final record off a binary chain file.
+///
+/// The removed bytes are preserved beside the chain as `<file>.torn-<millis>`
+/// so no data is destroyed silently. Called before the append writer first
+/// opens the file, so new records are never written after garbage.
+fn repair_torn_binary_tail(file_path: &Path) -> io::Result<()> {
+    if !file_path.exists() {
+        return Ok(());
+    }
+    let scan = scan_binary_chain(file_path)?;
+    if scan.good_len == scan.file_len {
+        return Ok(());
+    }
+    eprintln!(
+        "[mentisdb] truncating torn tail of {}: keeping {} bytes ({} records), dropping {} bytes",
+        file_path.display(),
+        scan.good_len,
+        scan.count,
+        scan.file_len - scan.good_len
+    );
+    let mut source = File::open(file_path)?;
+    source.seek(SeekFrom::Start(scan.good_len))?;
+    let mut tail = Vec::new();
+    source.read_to_end(&mut tail)?;
+    let mut torn_name = file_path.as_os_str().to_owned();
+    torn_name.push(format!(".torn-{}", Utc::now().timestamp_millis()));
+    fs::write(PathBuf::from(torn_name), &tail)?;
+    let file = OpenOptions::new().write(true).open(file_path)?;
+    file.set_len(scan.good_len)?;
+    file.sync_all()
+}
+
+/// Count complete length-prefixed binary thoughts without deserializing payloads.
+fn count_binary_chain_thoughts(file_path: &Path) -> io::Result<u64> {
+    if !file_path.exists() {
+        return Ok(0);
+    }
+    scan_binary_chain(file_path).map(|scan| scan.count)
 }
 
 fn count_jsonl_chain_thoughts(file_path: &Path) -> io::Result<u64> {
