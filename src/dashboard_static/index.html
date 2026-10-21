@@ -3950,10 +3950,12 @@
           body: JSON.stringify({ markdown, default_agent_id: defaultAgentId || undefined }),
         })
         .then(d => {
-          const n = d.imported != null ? d.imported : (d.count != null ? d.count : '?');
+          // The server returns the imported indices as an array.
+          const n = Array.isArray(d.imported) ? d.imported.length : (d.count != null ? d.count : '?');
           showFeedback(fb, true, `Imported ${n} thought${n === 1 ? '' : 's'}`);
           textarea.value = '';
           agentIn.value  = '';
+          if (document.getElementById('ex-body') && EX.chainKey === _chainKey) { EX.page = 1; loadThoughts(); }
           setTimeout(close, 1800);
         });
       },
@@ -4150,10 +4152,14 @@
       .then(d => {
         const name = (d && (d.name || d.skill_id)) || 'skill';
         showFeedback(fb, true, `Saved new version of "${name}".`);
+        // Capture before closeEditSkill() nulls it, and unpin the viewed
+        // version so the detail page shows the newly saved one.
+        const savedId = _editSkillId;
         setTimeout(() => {
           closeEditSkill();
+          if (SD.skillId === savedId) SD.versionId = null;
           if (location.hash === '#skills' || location.hash === '') renderSkillList();
-          else if (location.hash === '#skills/' + encodeURIComponent(_editSkillId)) renderSkillDetail(_editSkillId);
+          else if (savedId && location.hash === '#skills/' + encodeURIComponent(savedId)) renderSkillDetail(savedId);
         }, 1200);
       })
       .catch(err => {
