@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.10.10.55 — Docker image, private webhook targets, older Linux</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article .meta { color: #888; font-size: 0.85rem; margin-bottom: 1rem; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    .callout { background: #eef2ff; border-left: 3px solid #4361ee; border-radius: 0 4px 4px 0; padding: 1rem; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="index.html">MentisDB Blog</a></h1>
+    <p>Durable memory for AI agents</p>
+  </header>
+
+  <article>
+    <h2>MentisDB 0.10.10.55 &mdash; Docker image, private webhook targets, older Linux</h2>
+    <div class="meta">October 22, 2026</div>
+
+    <p>
+      0.10.10.55 is a deployment release. It does not change how MentisDB stores or
+      retrieves memory; it changes where and how you can run it. There is now an
+      official Docker image, a way to send webhooks to services on your private
+      network, Linux binaries that start on Ubuntu 22.04 and Debian 12, and a daemon
+      that shuts down cleanly when a supervisor asks it to. All three user-facing
+      items came from the community.
+    </p>
+
+    <h3>1. An official Docker image</h3>
+    <p>
+      <a href="https://github.com/nycterent">@nycterent</a> contributed a Dockerfile
+      and a GitHub Container Registry workflow in
+      <a href="https://github.com/CloudLLM-ai/mentisdb/pull/16">#16</a>; we finished
+      it in <a href="https://github.com/CloudLLM-ai/mentisdb/pull/24">#24</a>. Every
+      release now publishes a multi-arch image for <code>linux/amd64</code> and
+      <code>linux/arm64</code>:
+    </p>
+    <pre><code>docker run -d --name mentisdb \
+  -p 127.0.0.1:9471:9471 -p 127.0.0.1:9472:9472 -p 127.0.0.1:9475:9475 \
+  -v mentisdb-data:/var/lib/mentisdb \
+  ghcr.io/cloudllm-ai/mentisdb:latest</code></pre>
+    <ul>
+      <li>Tags: the release tag (<code>0.10.10.55</code>), the crate version (<code>0.10.10</code>) and <code>latest</code>.</li>
+      <li>Debian trixie base, so local embeddings (FastEmbed over ONNX Runtime) work no matter how old the host is.</li>
+      <li>Runs as a non-root user; chains, skills, TLS certificates and the model cache live in the <code>/var/lib/mentisdb</code> volume.</li>
+      <li><code>mentisdb --headless</code> under <code>tini</code>, with a <code>HEALTHCHECK</code> on <code>/health</code>. No TTY needed.</li>
+      <li>Publishing refuses a tag that does not match the crate version, so a stray tag cannot move <code>latest</code>; <code>.env</code> files and keys stay out of the build context.</li>
+    </ul>
+    <p>
+      The container listens on all interfaces and a fresh daemon has no
+      authentication, so publish ports on <code>127.0.0.1</code> and turn on bearer
+      tokens before exposing it anywhere else. The
+      <a href="https://github.com/CloudLLM-ai/mentisdb#docker">README</a> has a
+      Compose file and the full list of security notes.
+    </p>
+
+    <h3>2. <code>docker stop</code> now means a clean shutdown</h3>
+    <p>
+      Getting the image right surfaced a real bug. Headless mode only listened for
+      Ctrl+C, so SIGTERM, which is what <code>docker stop</code>, Kubernetes and
+      systemd send, killed the process without draining its servers. The daemon now
+      registers SIGTERM and SIGINT handlers before it reports ready, shuts the HTTP
+      servers down and exits <code>0</code>. An integration test runs the headless
+      daemon without a TTY and checks the exit status. The interactive TUI got the
+      same treatment: SIGTERM now restores the terminal and drains the servers too.
+    </p>
+
+    <h3>3. Webhooks to your private network</h3>
+    <p>
+      0.10.9 hardened webhooks against SSRF by refusing every internal address. takver
+      pointed out in <a href="https://github.com/CloudLLM-ai/mentisdb/issues/22">#22</a>
+      that this also locked out legitimate self-hosted setups, where the webhook
+      consumer sits on a WireGuard or Tailscale network. The new
+      <code>MENTISDB_WEBHOOK_ALLOWED_CIDRS</code> variable opens exactly the ranges
+      you list and nothing else:
+    </p>
+    <pre><code>MENTISDB_WEBHOOK_ALLOWED_CIDRS=100.64.0.0/10,fd7a:115c:a1e0::/48</code></pre>
+    <p>
+      The allowlist is enforced everywhere the guard is: at registration, when saved
+      webhooks are reloaded, and again at delivery time after DNS resolution, so DNS
+      rebinding cannot route around it. <code>localhost</code> stays blocked, any
+      entry broader than <code>/8</code> is refused (so nobody can re-open half the
+      address space with <code>0.0.0.0/1</code>), a malformed list stops the daemon at
+      startup instead of being quietly ignored, and a range that covers loopback or
+      the <code>169.254.169.254</code> cloud metadata address gets a loud warning.
+    </p>
+
+    <h3>4. Linux binaries for Ubuntu 22.04 and Debian 12</h3>
+    <p>
+      takver also reported in
+      <a href="https://github.com/CloudLLM-ai/mentisdb/issues/21">#21</a> that our
+      Linux binaries required glibc 2.39 and would not start on Ubuntu 22.04 LTS or
+      Debian 12. The obvious fix, building on an older distro, does not work for the
+      full binary: the prebuilt ONNX Runtime behind local embeddings is itself built
+      against glibc 2.38 and GCC 13. So Linux releases now ship two flavours:
+    </p>
+    <ul>
+      <li><code>mentisdb-linux-x86_64</code> / <code>-arm64</code>: full features including local embeddings; glibc 2.39+ (Ubuntu 24.04+, Debian 13+).</li>
+      <li><code>mentisdb-linux-x86_64-compat</code> / <code>-arm64-compat</code>: built on Ubuntu 22.04 without local embeddings (lexical search plus <code>local-text-v1</code> vectors) and without the startup sound, so no ALSA is needed; glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9).</li>
+    </ul>
+    <p>
+      Run <code>ldd --version</code> to see which one you can use. If you are on an
+      older distro and want local embeddings, use the Docker image. CI now fails the
+      release if a compat binary ever needs a newer glibc than 2.35, so a runner
+      image update cannot silently raise the floor again.
+    </p>
+
+    <h3>Benchmarks</h3>
+    <p>
+      We did not re-run LoCoMo and LongMemEval for this release. Nothing in retrieval,
+      scoring or embeddings changed since 0.10.9.54, so
+      <a href="mentisdb-0.10.9.54.html">its numbers</a> still apply.
+    </p>
+
+    <h3>Upgrade notes</h3>
+    <ul>
+      <li>No data migration and no breaking changes; webhooks behave as before unless you set <code>MENTISDB_WEBHOOK_ALLOWED_CIDRS</code>.</li>
+      <li>The headless daemon exits <code>0</code> on SIGTERM after draining.</li>
+      <li>On Ubuntu 22.04 or Debian 12, download the <code>-compat</code> asset or use Docker.</li>
+    </ul>
+    <pre><code>cargo install mentisdb --locked --force
+# or
+docker pull ghcr.io/cloudllm-ai/mentisdb:0.10.10.55</code></pre>
+    <p>
+      Full details: <a href="mentisdb-0.10.10.55-release-notes.md">release notes</a>.
+      Thanks to @nycterent for the Docker work and to takver for
+      <a href="https://github.com/CloudLLM-ai/mentisdb/issues/21">#21</a> and
+      <a href="https://github.com/CloudLLM-ai/mentisdb/issues/22">#22</a>.
+    </p>
+  </article>
+</body>
+</html>
