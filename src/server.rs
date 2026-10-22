@@ -1797,6 +1797,18 @@ pub fn standard_mcp_router(
     (router, broadcaster)
 }
 
+/// Build the combined MCP router (streamable HTTP at `POST /` plus the legacy
+/// `/tools/list` and `/tools/execute` routes) without binding a socket.
+///
+/// This is the exact router shape served by the daemon, including bearer-token
+/// authorization for both transports. Authorization inspects only the fields the
+/// executing handler consumes: `tool` + `parameters` for `/tools/execute`, and
+/// `params.name` + `params.arguments` for JSON-RPC `tools/call`.
+pub fn combined_mcp_router(config: MentisDbServiceConfig, bind_host: IpAddr) -> Router {
+    let service = Arc::new(MentisDbService::new(config));
+    standard_and_legacy_mcp_router(service, SocketAddr::new(bind_host, 0), None, None)
+}
+
 /// Build the REST router without binding a socket.
 ///
 /// The REST router exposes every MentisDB operation as a plain JSON HTTP
@@ -2055,7 +2067,11 @@ impl BearerTokenAuthorizer for MentisDbBearerAuthorizer {
         let mut context = context.clone();
         if let Some(scope) = self.store.active_scope(token) {
             if let Some(payload) = context.payload.as_mut() {
-                inject_single_chain_scope_into_payload(payload, &scope);
+                inject_single_chain_scope_into_payload(
+                    payload,
+                    &scope,
+                    McpPayloadShape::from_action(context.action.as_str()),
+                );
             }
         }
         match bearer_auth_target(&context, &self.default_chain_key) {
@@ -2083,7 +2099,9 @@ fn bearer_auth_target(context: &BearerAuthContext, default_chain_key: &str) -> B
         "tools/call" | "tools/execute" => context
             .payload
             .as_ref()
-            .and_then(|payload| tool_call_auth_target(payload, default_chain_key))
+            .and_then(|payload| {
+                tool_call_auth_target(context.action.as_str(), payload, default_chain_key)
+            })
             .unwrap_or(BearerAuthTarget::GlobalOnly),
         _ => BearerAuthTarget::AnyActiveToken,
     }
@@ -2103,16 +2121,71 @@ fn webhook_register_target(parameters: &Value) -> BearerAuthTarget {
     }
 }
 
-fn tool_call_auth_target(payload: &Value, default_chain_key: &str) -> Option<BearerAuthTarget> {
+/// Which wire shape an MCP request uses. Authorization must read exactly the
+/// fields the executing handler consumes, never a union of both shapes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpPayloadShape {
+    /// Legacy `POST /tools/execute`: `{ "tool", "parameters" }`.
+    LegacyExecute,
+    /// JSON-RPC `tools/call` params: `{ "name", "arguments" }`.
+    JsonRpcCall,
+}
+
+impl McpPayloadShape {
+    fn from_action(action: &str) -> Option<Self> {
+        match action {
+            "tools/execute" => Some(Self::LegacyExecute),
+            "tools/call" => Some(Self::JsonRpcCall),
+            _ => None,
+        }
+    }
+
+    fn name_field(self) -> &'static str {
+        match self {
+            Self::LegacyExecute => "tool",
+            Self::JsonRpcCall => "name",
+        }
+    }
+
+    fn params_field(self) -> &'static str {
+        match self {
+            Self::LegacyExecute => "parameters",
+            Self::JsonRpcCall => "arguments",
+        }
+    }
+
+    /// Fields that belong to the other transport. Their presence is ambiguous.
+    fn foreign_fields(self) -> [&'static str; 2] {
+        match self {
+            Self::LegacyExecute => ["name", "arguments"],
+            Self::JsonRpcCall => ["tool", "parameters"],
+        }
+    }
+}
+
+/// True when a payload carries fields of the other transport's shape, which
+/// could make the authorizer and the executor disagree about the target.
+fn mcp_payload_is_ambiguous(shape: McpPayloadShape, payload: &Value) -> bool {
+    payload
+        .as_object()
+        .is_some_and(|map| shape.foreign_fields().iter().any(|f| map.contains_key(*f)))
+}
+
+fn tool_call_auth_target(
+    action: &str,
+    payload: &Value,
+    default_chain_key: &str,
+) -> Option<BearerAuthTarget> {
+    let shape = McpPayloadShape::from_action(action)?;
+    if mcp_payload_is_ambiguous(shape, payload) {
+        // Fail closed: global-only (the caller maps `None` to the same).
+        return None;
+    }
     let tool_name = payload
-        .get("name")
-        .or_else(|| payload.get("tool"))
+        .get(shape.name_field())
         .and_then(Value::as_str)
         .map(canonical_tool_name)?;
-    let parameters = payload
-        .get("arguments")
-        .or_else(|| payload.get("parameters"))
-        .unwrap_or(&Value::Null);
+    let parameters = payload.get(shape.params_field()).unwrap_or(&Value::Null);
 
     if global_only_mcp_tool(tool_name) {
         return Some(BearerAuthTarget::GlobalOnly);
@@ -2166,7 +2239,11 @@ fn extract_top_level_chain_keys(parameters: &Value) -> BTreeSet<String> {
 ///
 /// Global and multi-chain tokens are left unchanged: multi-chain callers must
 /// name a chain (or fall back to the server default when the tool allows it).
-fn inject_single_chain_scope_into_payload(payload: &mut Value, scope: &BearerTokenScope) -> bool {
+fn inject_single_chain_scope_into_payload(
+    payload: &mut Value,
+    scope: &BearerTokenScope,
+    shape: Option<McpPayloadShape>,
+) -> bool {
     let BearerTokenScope::Chains(chain_keys) = scope else {
         return false;
     };
@@ -2175,24 +2252,14 @@ fn inject_single_chain_scope_into_payload(payload: &mut Value, scope: &BearerTok
     }
     let chain_key = chain_keys[0].clone();
 
-    // Streamable MCP: { "name": "...", "arguments": { ... } }
-    // Legacy MCP:     { "tool": "...", "parameters": { ... } }
-    if payload.get("arguments").is_some() {
-        return payload
-            .get_mut("arguments")
-            .is_some_and(|args| inject_chain_key_object(args, &chain_key));
+    match shape {
+        // Inject only into the field the executor will read.
+        Some(shape) => payload
+            .get_mut(shape.params_field())
+            .is_some_and(|args| inject_chain_key_object(args, &chain_key)),
+        // Bare REST-style body: { "chain_key"?: "...", ... }
+        None => inject_chain_key_object(payload, &chain_key),
     }
-    if payload.get("parameters").is_some() {
-        return payload
-            .get_mut("parameters")
-            .is_some_and(|args| inject_chain_key_object(args, &chain_key));
-    }
-
-    // Bare REST-style body: { "chain_key"?: "...", ... }
-    if payload.get("jsonrpc").is_none() {
-        return inject_chain_key_object(payload, &chain_key);
-    }
-    false
 }
 
 /// Inserts `chain_key` when the object names no chain; returns whether it changed.
@@ -2244,33 +2311,71 @@ async fn inject_single_chain_bearer_scope_middleware(
     }
 
     let (parts, body) = request.into_parts();
-    let Some(token) = parts
+    let is_legacy_execute = parts.uri.path().ends_with("/tools/execute");
+    let body_bytes = match axum::body::to_bytes(body, 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(json!({ "error": "request body too large or unreadable" })),
+            )
+                .into_response();
+        }
+    };
+
+    // Reject payloads that mix the legacy and JSON-RPC shapes before any token
+    // is consulted: authorization and execution read different fields for each
+    // transport, so a mixed payload is an auth-bypass attempt.
+    if let Ok(payload) = serde_json::from_slice::<Value>(&body_bytes) {
+        let ambiguous = if is_legacy_execute {
+            mcp_payload_is_ambiguous(McpPayloadShape::LegacyExecute, &payload)
+        } else {
+            payload.get("method").and_then(Value::as_str) == Some("tools/call")
+                && payload.get("params").is_some_and(|params| {
+                    mcp_payload_is_ambiguous(McpPayloadShape::JsonRpcCall, params)
+                })
+        };
+        if ambiguous {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "ambiguous MCP payload: legacy (tool/parameters) and JSON-RPC (name/arguments) fields must not be mixed"
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    let scope = parts
         .headers
         .get("Authorization")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .map(str::trim)
         .filter(|token| !token.is_empty())
-    else {
-        let request = Request::from_parts(parts, body);
+        .and_then(|token| service.config.bearer_token_store.active_scope(token));
+    let Some(scope) = scope else {
+        let request = Request::from_parts(parts, Body::from(body_bytes));
         return next.run(request).await;
     };
 
-    let Some(scope) = service.config.bearer_token_store.active_scope(token) else {
-        let request = Request::from_parts(parts, body);
-        return next.run(request).await;
-    };
-
-    let body_bytes = axum::body::to_bytes(body, 1024 * 1024)
-        .await
-        .unwrap_or_default();
     let body_bytes = match serde_json::from_slice::<Value>(&body_bytes) {
         Ok(mut payload) => {
-            // JSON-RPC streamable body: params holds tool arguments.
-            if let Some(params) = payload.get_mut("params") {
-                inject_single_chain_scope_into_payload(params, &scope);
+            if is_legacy_execute {
+                inject_single_chain_scope_into_payload(
+                    &mut payload,
+                    &scope,
+                    Some(McpPayloadShape::LegacyExecute),
+                );
+            } else if let Some(params) = payload.get_mut("params") {
+                // JSON-RPC streamable body: params.arguments holds tool arguments.
+                inject_single_chain_scope_into_payload(
+                    params,
+                    &scope,
+                    Some(McpPayloadShape::JsonRpcCall),
+                );
             } else {
-                inject_single_chain_scope_into_payload(&mut payload, &scope);
+                inject_single_chain_scope_into_payload(&mut payload, &scope, None);
             }
             serde_json::to_vec(&payload).unwrap_or_else(|_| body_bytes.to_vec())
         }
@@ -6729,7 +6834,11 @@ async fn mcp_execute_handler(
                 "tool": request.tool.clone(),
                 "parameters": request.parameters.clone(),
             });
-            inject_single_chain_scope_into_payload(&mut payload, &scope);
+            inject_single_chain_scope_into_payload(
+                &mut payload,
+                &scope,
+                Some(McpPayloadShape::LegacyExecute),
+            );
             if let Some(parameters) = payload.get("parameters").cloned() {
                 request.parameters = parameters;
             }
@@ -6885,7 +6994,7 @@ pub(crate) async fn rest_bearer_auth_middleware(
     // to the token's only chain so auth and handlers agree. The body is only
     // re-serialized when the injection actually changed it.
     let modified = match (&scope, payload.as_mut()) {
-        (Some(scope), Some(json)) => inject_single_chain_scope_into_payload(json, scope),
+        (Some(scope), Some(json)) => inject_single_chain_scope_into_payload(json, scope, None),
         _ => false,
     };
     let body_bytes = match (&payload, modified) {
