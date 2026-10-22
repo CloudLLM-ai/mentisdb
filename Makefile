@@ -1,5 +1,5 @@
 # Makefile
-.PHONY: build release clean fmt check test doc bench help tasks clippy publish publish-dry-run build-mentisdb
+.PHONY: docker-build docker-run build release clean fmt check test doc bench help tasks clippy publish publish-dry-run build-mentisdb
 
 default: help
 CARGO_CMD=/usr/bin/env cargo
@@ -15,6 +15,14 @@ build: fmt ## Build the crate in release mode (runs fmt first)
 # Build the mentisdb daemon binary
 build-mentisdb: ## Build the mentisdb binary in release mode
 	${CARGO_CMD} build --bin mentisdb --release
+
+# Build the Docker image
+docker-build: ## Build the Docker image (mentisdb:local)
+	docker build -t mentisdb:local .
+
+# Run the Docker image with a named volume, ports published on loopback only
+docker-run: ## Run mentisdb:local headless with the mentisdb-data volume
+	docker run --rm --name mentisdb -p 127.0.0.1:9471:9471 -p 127.0.0.1:9472:9472 -p 127.0.0.1:9475:9475 -v mentisdb-data:/var/lib/mentisdb mentisdb:local
 
 # Full release process (ensures everything runs in the correct order)
 release: fmt check clippy build test doc ## Perform a full release (fmt, check, clippy, build, test, doc)

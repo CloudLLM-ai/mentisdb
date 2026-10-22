@@ -1,0 +1,185 @@
+name: Docker image
+
+# Publishes ghcr.io/<owner>/mentisdb for linux/amd64 and linux/arm64 when a
+# release tag is pushed, and builds (without pushing) on pull requests so CI
+# validates the Dockerfile.
+#
+# Release tags in this repo are four-part and have no `v` prefix (0.10.9.54).
+# GitHub tag filters are globs, so the glob below is a coarse pre-filter and the
+# "Validate tag" step enforces the exact `N.N.N.N` shape. It does not match the
+# `pymentisdb-v*` tags handled by publish.yml.
+on:
+  push:
+    tags:
+      - "[0-9]*.[0-9]*.[0-9]*.[0-9]*"
+  pull_request:
+    branches: ["master", "main"]
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - ".github/workflows/docker-publish.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "MENTISDB_SKILL.md"
+      - "src/**"
+      - "benches/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    name: build (${{ matrix.platform }})
+    # Native runners: compiling ONNX Runtime + the daemon under QEMU is far too slow.
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            slug: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            slug: arm64
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate tag
+        if: github.event_name == 'push'
+        run: |
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'${GITHUB_REF_NAME}' is not a N.N.N.N release tag; refusing to publish"
+            exit 1
+          fi
+
+      - name: Compute lowercase image name
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: OCI labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Build (pull request, no push)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: false
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.slug }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.slug }}
+
+      - name: Build and push by digest (tag)
+        id: push
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.slug }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.slug }}
+
+      - name: Export digest
+        if: github.event_name == 'push'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.slug }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: publish multi-arch manifest
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve names and versions
+        run: |
+          cargo_version="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          [ -n "${cargo_version}" ] || { echo "::error::cannot read version from Cargo.toml"; exit 1; }
+          {
+            echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}"
+            echo "CARGO_VERSION=${cargo_version}"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifest list
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          image="${REGISTRY}/${IMAGE_NAME}"
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            --tag "${image}:${GITHUB_REF_NAME}" \
+            --tag "${image}:${CARGO_VERSION}" \
+            --tag "${image}:latest" \
+            $(printf "${image}@sha256:%s " *)
+
+      - name: Inspect and summarize
+        run: |
+          image="${REGISTRY}/${IMAGE_NAME}"
+          docker buildx imagetools inspect "${image}:${GITHUB_REF_NAME}"
+          {
+            echo "## Published"
+            echo ""
+            echo "- \`${image}:${GITHUB_REF_NAME}\`"
+            echo "- \`${image}:${CARGO_VERSION}\`"
+            echo "- \`${image}:latest\`"
+            echo ""
+            echo "Run: \`docker run -d --name mentisdb -p 127.0.0.1:9471:9471 -p 127.0.0.1:9472:9472 -v mentisdb-data:/var/lib/mentisdb ${image}:${GITHUB_REF_NAME}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
