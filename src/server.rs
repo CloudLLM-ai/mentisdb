@@ -3189,17 +3189,17 @@ impl MentisDbService {
         .await;
         let opened = match opened {
             Ok(result) => result,
+            // The per-key lock entry is kept on failure or cancellation:
+            // removing it would let a new opener race a waiter that still
+            // holds the old mutex and open the chain twice. The map stays
+            // bounded because unknown keys are rejected before this point.
             Err(error) => {
-                self.open_locks.remove(&chain_key);
                 return Err(format!("chain open task failed: {error}").into());
             }
         };
         let opened = match opened {
             Ok(db) => db,
-            Err(error) => {
-                self.open_locks.remove(&chain_key);
-                return Err(Box::new(error));
-            }
+            Err(error) => return Err(Box::new(error)),
         };
         let chain = Arc::new(RwLock::new(opened));
         self.chains.insert(chain_key.clone(), chain.clone());
@@ -5275,18 +5275,61 @@ impl MentisDbService {
         &self,
         request: BranchChainRequest,
     ) -> Result<BranchChainResponse, Box<dyn Error + Send + Sync>> {
-        let chain_dir = self.config.chain_dir.clone();
-        let source_chain_key = request.source_chain_key.clone();
+        let request = BranchChainRequest {
+            source_chain_key: normalize_chain_key(&request.source_chain_key)?,
+            branch_chain_key: normalize_chain_key(&request.branch_chain_key)?,
+            ..request
+        };
         let branch_thought_id = request.branch_thought_id;
         let branch_chain_key = request.branch_chain_key.clone();
 
+        // Serialize creators of the same key with the open single-flight mutex.
+        let lock = self
+            .open_locks
+            .entry(branch_chain_key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let guard = lock.lock().await;
+        let created = self
+            .branch_chain_locked(&request, branch_thought_id, branch_chain_key.clone())
+            .await;
+        drop(guard);
+        // Entry is only needed while creators race; keep the map bounded.
+        self.open_locks.remove(&branch_chain_key);
+        let genesis_id = created?;
+        self.log_branch_chain(&request);
+        Ok(BranchChainResponse {
+            branch_chain_key: request.branch_chain_key,
+            genesis_thought_id: genesis_id,
+            source_chain_key: request.source_chain_key,
+            branch_thought_id: request.branch_thought_id,
+        })
+    }
+
+    /// Body of [`Self::branch_chain`] run while holding the per-key lock.
+    async fn branch_chain_locked(
+        &self,
+        request: &BranchChainRequest,
+        branch_thought_id: Uuid,
+        branch_chain_key: String,
+    ) -> Result<Uuid, Box<dyn Error + Send + Sync>> {
+        if self.chains.contains_key(&branch_chain_key)
+            || self.chain_exists_on_disk(&branch_chain_key)
+        {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("chain '{branch_chain_key}' already exists"),
+            )));
+        }
+
+        // Reuse the cached (or single-flight opened) source handle instead of
+        // opening its files a second time.
+        let source = self
+            .get_chain(Some(&request.source_chain_key), None)
+            .await?;
+        let source = source.read_owned().await;
         let branch = tokio::task::spawn_blocking(move || {
-            MentisDb::branch_from(
-                &chain_dir,
-                &source_chain_key,
-                branch_thought_id,
-                &branch_chain_key,
-            )
+            source.branch_into(branch_thought_id, &branch_chain_key)
         })
         .await
         .map_err(|e| {
@@ -5295,12 +5338,14 @@ impl MentisDbService {
         })??;
 
         let genesis_id = branch.thoughts()[0].id;
-
         self.chains.insert(
             request.branch_chain_key.clone(),
             Arc::new(RwLock::new(branch)),
         );
+        Ok(genesis_id)
+    }
 
+    fn log_branch_chain(&self, request: &BranchChainRequest) {
         self.log_interaction(InteractionLogEntry {
             access: "write",
             operation: "branch_chain",
@@ -5312,13 +5357,6 @@ impl MentisDbService {
                 request.source_chain_key, request.branch_thought_id
             )),
         });
-
-        Ok(BranchChainResponse {
-            branch_chain_key: request.branch_chain_key,
-            genesis_thought_id: genesis_id,
-            source_chain_key: request.source_chain_key,
-            branch_thought_id: request.branch_thought_id,
-        })
     }
 
     /// on the agent ID strings.  No new agents are created on the target chain.
@@ -5331,8 +5369,8 @@ impl MentisDbService {
         &self,
         request: MergeChainsRequest,
     ) -> Result<MergeChainsResponse, Box<dyn Error + Send + Sync>> {
-        let source_key = &request.source_chain_key;
-        let target_key = &request.target_chain_key;
+        let source_key = &normalize_chain_key(&request.source_chain_key)?;
+        let target_key = &normalize_chain_key(&request.target_chain_key)?;
 
         if source_key == target_key {
             return Err(invalid_input_error("source and target chain must differ"));
@@ -7607,6 +7645,23 @@ fn not_found_error(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
 
 /// Maximum accepted `chain_key` length in bytes.
 pub const MAX_CHAIN_KEY_BYTES: usize = 256;
+
+/// Trim a client-supplied chain key and validate its shape.
+///
+/// Authorization trims chain keys before comparing them with a token's scope,
+/// so every handler that takes a chain key from a request body must use the
+/// same canonical form; otherwise `"chA "` would pass the scope check as
+/// `chA` yet act on a different, unscoped key.
+///
+/// # Errors
+///
+/// Returns an `InvalidInput` I/O error when the trimmed key is empty,
+/// oversized, or contains control characters.
+pub fn normalize_chain_key(chain_key: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
+    let trimmed = chain_key.trim();
+    validate_chain_key_shape(trimmed)?;
+    Ok(trimmed.to_owned())
+}
 
 /// Rejects chain keys that are empty, oversized, or contain control characters.
 ///

@@ -5393,6 +5393,25 @@ impl MentisDb {
         branch_chain_key: &str,
     ) -> io::Result<Self> {
         let source = Self::open_with_key(chain_dir, source_chain_key)?;
+        source.branch_into(branch_thought_id, branch_chain_key)
+    }
+
+    /// Create a branch chain from this already-open chain.
+    ///
+    /// Same semantics as [`MentisDb::branch_from`] but reuses the open handle
+    /// instead of opening the source chain's files a second time, which
+    /// services that cache chains need so two handles never share one file.
+    ///
+    /// # Errors
+    ///
+    /// Fails with `NotFound` when the thought is absent, `InvalidInput` for an
+    /// empty branch key, `AlreadyExists` when the branch chain already holds
+    /// thoughts, and any I/O error from opening or appending to the branch.
+    pub fn branch_into(&self, branch_thought_id: Uuid, branch_chain_key: &str) -> io::Result<Self> {
+        let source = self;
+        let source_chain_key = source.chain_key().to_owned();
+        let chain_dir = source.chain_dir().to_path_buf();
+        let (source_chain_key, chain_dir) = (source_chain_key.as_str(), chain_dir.as_path());
         if source.get_thought_by_id(branch_thought_id).is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
