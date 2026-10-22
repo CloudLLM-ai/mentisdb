@@ -1302,6 +1302,12 @@ mentisdb backup --dir ~/.cloudllm/mentisdb -o /backups/mentisdb-2026-04-14.menti
 
 When the daemon is running, `backup` calls `POST /v1/admin/flush` before reading files to ensure a consistent snapshot even with `MENTISDB_AUTO_FLUSH=false`. If the daemon is not running, files are captured as-is.
 
+With `MENTISDB_BEARER_TOKEN_ACCESS=true`, `/v1/admin/flush` requires a **global** token. The
+`backup` command does not send one, so it prints a "could not flush daemon" warning and
+captures the files as they are on disk. For a guaranteed-consistent snapshot of a
+token-protected daemon, call the flush endpoint yourself with a global token first, or stop
+the daemon.
+
 ### Restore a backup
 
 The daemon must be stopped before restoring. If `mentisdb` is detected running, the restore aborts with a message to stop the daemon first.
@@ -1349,6 +1355,12 @@ A backup is a `.mentis` ZIP archive containing:
 - `tls/` — TLS certificates and keys (opt-in via `--include-tls`)
 
 Every file is verified by SHA-256 before restore writes anything to disk. A corrupted archive aborts with an error and leaves the target directory untouched.
+
+Restore safety limits (0.10.9):
+
+- archives that declare any entry larger than 64 GiB, or more than 256 GiB in total, are rejected before extraction
+- restore refuses to write through a symlink anywhere under the target directory
+- files are staged in a `.mentisdb-restore-<uuid>` directory created beside the target (same filesystem) and moved into place from there
 
 ### REST flush endpoint
 
