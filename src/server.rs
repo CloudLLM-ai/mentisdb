@@ -7641,10 +7641,17 @@ pub fn validate_chain_key_shape(chain_key: &str) -> Result<(), Box<dyn Error + S
 /// logged server-side only.
 pub fn classify_service_error(error: &(dyn Error + 'static)) -> (StatusCode, String) {
     if let Some(io_error) = error.downcast_ref::<io::Error>() {
+        // An error carrying an OS errno came straight from a filesystem call
+        // (missing sidecar/registry file, EACCES, ...): it is an internal
+        // fault whose message holds absolute paths, never a client error.
+        // `InvalidData` is how internal layers report corrupt on-disk state,
+        // so it is a server fault too; client validation uses `InvalidInput`
+        // or `ClientInputError`.
+        if io_error.raw_os_error().is_some() || io_error.kind() == io::ErrorKind::InvalidData {
+            return internal_error_response(error);
+        }
         return match io_error.kind() {
-            io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => {
-                (StatusCode::BAD_REQUEST, error.to_string())
-            }
+            io::ErrorKind::InvalidInput => (StatusCode::BAD_REQUEST, error.to_string()),
             io::ErrorKind::NotFound => (StatusCode::NOT_FOUND, error.to_string()),
             io::ErrorKind::PermissionDenied => (StatusCode::FORBIDDEN, error.to_string()),
             io::ErrorKind::AlreadyExists => (StatusCode::CONFLICT, error.to_string()),

@@ -9,14 +9,34 @@ fn classify(error: Error) -> (StatusCode, String) {
     classify_service_error(&error)
 }
 
-/// Validation-style I/O kinds map to 400 and keep their message.
+/// `InvalidInput` maps to 400 and keeps its message.
 #[test]
-fn test_invalid_input_and_data_map_to_400() {
-    for kind in [ErrorKind::InvalidInput, ErrorKind::InvalidData] {
-        let (status, message) = classify(Error::new(kind, "bad value"));
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(message, "bad value");
-    }
+fn test_invalid_input_maps_to_400() {
+    let (status, message) = classify(Error::new(ErrorKind::InvalidInput, "bad value"));
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(message, "bad value");
+}
+
+/// `InvalidData` signals corrupt internal state, so it is a generic 500.
+#[test]
+fn test_invalid_data_maps_to_generic_500() {
+    let (status, message) = classify(Error::new(
+        ErrorKind::InvalidData,
+        "corrupt /Users/secret/chain.tcbin",
+    ));
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(message, "internal server error");
+}
+
+/// A raw OS NotFound (for example a missing sidecar or registry file) must be
+/// a generic 500 and never leak the absolute path.
+#[test]
+fn test_internal_os_not_found_does_not_leak_path() {
+    let io_error = std::fs::read("/nonexistent-mentisdb-dir/secret-registry.json").unwrap_err();
+    assert_eq!(io_error.kind(), ErrorKind::NotFound);
+    let (status, message) = classify(io_error);
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(!message.contains("nonexistent"));
 }
 
 /// NotFound, PermissionDenied, AlreadyExists keep their dedicated statuses.
