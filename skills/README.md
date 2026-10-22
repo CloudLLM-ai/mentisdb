@@ -35,8 +35,11 @@ phrase, load the full skill before proceeding.
 - **`rust-criterion-benchmarking.md`** — Criterion bench structure, throughput
   groups, baselines, `tee` capture, gotchas. Triggers: "benchmark",
   "cargo bench", "criterion", "throughput", "latency", "performance measurement".
-- **`engineering-pipeline.md`** — release engineering pipeline (Phases 1-5).
-  Triggers: "release pipeline", "ship mentisdb", "version bump", "release checklist".
+- **`engineering-pipeline.md`** — release engineering pipeline (Phases 0-6):
+  gates, benchmarks, review, docs, then publish to crates.io, GitHub release
+  binaries and the ghcr.io Docker image, with post-release verification.
+  Triggers: "release pipeline", "ship mentisdb", "version bump", "release
+  checklist", "docker image release".
 - **`hotfix-release.md`** — fast-path release pipeline for hotfixes. Skips
   benchmarks and full review when the change is a small fix on top of a
   just-shipped release. Triggers: "hotfix release", "re-release",
