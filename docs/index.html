@@ -40,6 +40,20 @@
   </header>
 
   <article>
+    <h2><a href="mentisdb-0.10.9.54.html">MentisDB 0.10.9.54 &mdash; Security, reliability and retrieval</a></h2>
+    <div class="meta">October 21, 2026</div>
+    <p>
+      <strong>Security notice:</strong> fixes a legacy MCP <code>/tools/execute</code>
+      authorization bypass that let chain-scoped bearer tokens act outside their
+      chains (0.10.8.53 and earlier with bearer-token access enabled); upgrade
+      recommended. Also fixes the issue #23 memory blow-up (peak ~1.7 GB, was OOM),
+      repairs reranking (LoCoMo rerank R@10 5.9% &rarr; 74.1%), improves default
+      recall, roughly doubles query throughput, and hardens durability, webhooks,
+      the dashboard and backup restore.
+    </p>
+  </article>
+
+  <article>
     <h2><a href="mentisdb-0.10.8.53.html">MentisDB 0.10.8.53 &mdash; Technical Debt: Sidecar WAL Brick, CLI Thought Types</a></h2>
     <div class="meta">September 16, 2026</div>
     <p>

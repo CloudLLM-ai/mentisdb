@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.10.9.54 — Security, reliability and retrieval</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article .meta { color: #888; font-size: 0.85rem; margin-bottom: 1rem; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    .callout { background: #eef2ff; border-left: 3px solid #4361ee; border-radius: 0 4px 4px 0; padding: 1rem; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="index.html">MentisDB Blog</a></h1>
+    <p>Durable memory for AI agents</p>
+  </header>
+
+  <article>
+    <h2>MentisDB 0.10.9.54 &mdash; Security, reliability and retrieval</h2>
+    <div class="meta">October 21, 2026</div>
+
+    <p>
+      0.10.9.54 is the result of an exhaustive audit of the whole codebase:
+      server, dashboard, storage, search, dependencies and CI. The work ran as
+      parallel agent workstreams that coordinated through MentisDB itself &mdash;
+      plans, findings, checkpoints and hand-offs were appended to the project's
+      own chain, so each agent picked up where another left off. The audit found
+      a serious authorization bug, fixed the memory blow-up reported in
+      <a href="https://github.com/CloudLLM-ai/mentisdb/issues/23">issue #23</a>,
+      repaired reranking, and made ranked search faster and more accurate.
+    </p>
+
+    <div class="callout">
+      <strong>Security notice &mdash; upgrade recommended.</strong>
+      If your daemon has bearer-token access enabled and issues
+      <em>chain-scoped</em> tokens, versions up to and including 0.10.8.53 let
+      such a token escape its scope through the legacy MCP
+      <code>/tools/execute</code> endpoint. Upgrade with
+      <code>cargo install mentisdb --locked --force</code> and restart the daemon.
+    </div>
+
+    <h3>1. A chain-scoped token could act outside its chain</h3>
+    <p>
+      MentisDB supports bearer tokens scoped to one or more chains, so an agent can
+      be given its own memory and nothing else. The legacy MCP
+      <code>/tools/execute</code> route accepts a JSON body, and the authorizer and
+      the executor did not read the same fields of that body. A chain-scoped token
+      could therefore be authorized for one call and execute another: reading and
+      writing other chains, calling global-only tools such as listing every chain
+      with its storage path, and merging or deleting chains it was never granted.
+      This affects 0.10.8.53 and earlier whenever bearer-token access is enabled.
+    </p>
+    <p>
+      The fix follows a simple rule: <strong>authorization must inspect exactly the
+      fields the executor consumes</strong>. Each transport now has one field set
+      (<code>tool</code> + <code>parameters</code> for <code>tools/execute</code>,
+      <code>name</code> + <code>arguments</code> for <code>tools/call</code>), and
+      a payload carrying both shapes is rejected with <code>400</code>.
+    </p>
+    <p>The same review produced a set of smaller hardening fixes:</p>
+    <ul>
+      <li>One shared REST/MCP authorization table; listing chains, webhook management, cross-chain agent listing, skill mutations and admin flush need a global token.</li>
+      <li>Merge and branch chain keys are trimmed and validated before authorization, so a padded key cannot resolve to a different chain.</li>
+      <li>Webhooks refuse private, loopback, link-local, IPv4-translated, local NAT64 and Teredo targets, re-check DNS at delivery time, never follow redirects, and back off with a circuit breaker.</li>
+      <li>The dashboard fixes a stored XSS via crafted keys, guards every state-changing call and the login form against CSRF, and adds a <code>Host</code> allowlist against DNS rebinding (<code>MENTISDB_DASHBOARD_ALLOWED_HOSTS</code> for extra names).</li>
+      <li>Backup restore bounds the manifest, file count and declared sizes; secrets files are written <code>0600</code>.</li>
+    </ul>
+
+    <h3>2. Issue #23: memory blow-up after upgrading</h3>
+    <p>
+      takver reported a daemon growing to 28.8&nbsp;GiB and getting OOM-killed after
+      upgrading a data directory with many chains. The report was accurate. Every
+      chain loaded its own FastEmbed ONNX session, about 100&nbsp;MB each and never
+      released, and opening a chain without a fresh vector sidecar embedded its
+      whole history in one unbounded batch on the request path. Our reproduction
+      with 13 chains and 2,704 thoughts blew through a 6&nbsp;GB cap.
+    </p>
+    <p>
+      Now one model is shared per process, inference runs in small bounded chunks,
+      and missing sidecars are rebuilt by a single background worker while the chain
+      keeps serving lexical and graph results. The same reproduction peaks at about
+      <strong>1.7&nbsp;GB</strong>. The model cache moved from the working directory
+      to <code>&lt;MENTISDB_DIR&gt;/.fastembed_cache</code>, and
+      <code>MENTISDB_EMBEDDINGS=off|local-text|fastembed</code> lets you opt out of
+      ONNX entirely.
+    </p>
+
+    <h3>3. Reranking works again, and default retrieval improved</h3>
+    <p>
+      <code>enable_reranking=true</code> had been quietly broken: the raw Reciprocal
+      Rank Fusion total, a number around 0.05, replaced the additive score, so
+      LoCoMo R@5 fell to 3.6%. RRF is now a scaled consensus bonus added on top of
+      the score. The thesaurus is keyed by stem so inflected words expand, and its
+      weight was damped after benchmarks showed that more frequent expansion was
+      displacing literal matches.
+    </p>
+    <pre><code>                          BEFORE (b4372ff)   0.10.9.54
+LoCoMo default R@5/R@10       63.8 / 72.7    63.9 / 73.5
+LoCoMo rerank  R@5/R@10        3.6 /  5.9    66.0 / 74.1
+LME default R@5/R@10/R@20  66.8/72.0/78.2  68.0/72.8/78.8
+LME rerank  R@5                    2.8           68.6
+Query q/s (LoCoMo / LME)       206 / 159      384 / 385</code></pre>
+    <p>
+      One finding is worth sharing. An interim build was slower on queries, and the
+      cause was not our code: fastembed 7 brings an ONNX Runtime release that always
+      registers the CoreML execution provider on macOS, which made query embeddings
+      about 2.5x slower. Only sampling the live process revealed it. fastembed stays
+      on 5.x, with a test that guards the pin.
+    </p>
+
+    <h3>4. Durability and speed</h3>
+    <ul>
+      <li>A torn final record is preserved and truncated before the next append; corruption in the middle of a file fails the open instead of silently dropping records.</li>
+      <li>Registries are written atomically; the implicit-edge overlay catches up after a crash.</li>
+      <li><code>MENTISDB_FSYNC=1</code> opts into an <code>fsync</code> per group commit for power-loss durability.</li>
+      <li>Per-append cost dropped from 6.3&ndash;7.8&nbsp;ms to 1.4&nbsp;ms; benchmark ingest went from 171.5&nbsp;s to 75.1&nbsp;s (LoCoMo) and 725.6&nbsp;s to 184.2&nbsp;s (LongMemEval) on a host with varying load.</li>
+    </ul>
+
+    <h3>Upgrade notes</h3>
+    <ul>
+      <li>Reads of an unknown chain return <code>404</code>; call bootstrap before reading a new chain.</li>
+      <li>Reverse proxies in front of the dashboard must keep the original <code>Host</code> or forward a name listed in <code>MENTISDB_DASHBOARD_ALLOWED_HOSTS</code>. Scripts calling the dashboard API add <code>X-MentisDB-Dashboard: 1</code>.</li>
+      <li>MCP payloads mixing <code>tool</code>/<code>parameters</code> and <code>name</code>/<code>arguments</code> return <code>400</code>.</li>
+      <li>Large chains may serve lexical-only ranked results briefly after the first start while sidecars rebuild.</li>
+      <li>The Intel macOS binary is back, built without local embeddings.</li>
+    </ul>
+    <pre><code>cargo install mentisdb --locked --force</code></pre>
+    <p>
+      Full details: <a href="mentisdb-0.10.9.54-release-notes.md">release notes</a>.
+      Thanks again to takver for
+      <a href="https://github.com/CloudLLM-ai/mentisdb/issues/23">#23</a>.
+    </p>
+  </article>
+</body>
+</html>
