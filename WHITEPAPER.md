@@ -1,8 +1,8 @@
 # MentisDB: Durable Semantic Memory for Software Agents
 
 **Author:** Angel Leon
-**Version:** 0.10.8.53
-**Date:** 2026-08-16
+**Version:** 0.10.9.54
+**Date:** 2026-10-21
 
 ---
 
@@ -390,6 +390,34 @@ thought, preventing accidental cross-chain file sharing:
 
 The `.auto_edges.bin` file is a bincode-serialized implicit edge overlay (Section 6.7).
 It's rebuildable from the vector sidecar and is not part of the hash chain.
+
+
+### 4.4 Crash Recovery and Derived-State Invariants
+
+The canonical log is the only source of truth; everything else must be either atomically
+replaced or rebuildable from it. Since 0.10.9 four rules make that hold under crashes and
+concurrent load:
+
+- **Torn-tail repair is narrow.** Only a strict partial *final* record (a short length
+  prefix or a payload that ends at EOF) counts as torn. It is preserved to a `.torn`
+  file (mode `0600`) and truncated before the writer reopens the chain. If the bytes
+  after a bad length prefix still decode as complete records, the corruption is mid-file:
+  the open fails with `InvalidData` and the file is left untouched, so no acknowledged
+  thought is ever discarded as "tail". One writer process per chain directory is assumed.
+- **Durable commits.** A strict-mode append returns after its group commit is written to
+  the OS (process-crash safe). `MENTISDB_FSYNC=1` adds one `fsync` per group commit for
+  power-loss safety; explicit flush, shutdown and drop always sync. Registry JSON files
+  are written to a synced temp file and renamed.
+- **Overlay coverage metadata.** The implicit-edge overlay records the thought count and
+  head hash it covers. On load, a matching prefix is caught up by replaying only the
+  missing tail; a mismatch triggers a full rebuild. A crash between overlay saves
+  therefore loses no edges.
+- **Single-flight background sidecar rebuild.** Opening a chain never embeds its history
+  on the request path. Missing or stale vector sidecars are queued to one process-wide
+  worker (concurrency 1, at most one pending job per sidecar), built in bounded batches
+  with a shared model, and adopted by the read path once finished, catching up thoughts
+  appended in the meantime. Until adoption, ranked search serves lexical and graph
+  signals only.
 
 ---
 
@@ -963,6 +991,13 @@ Modern MCP clients bootstrap from a handshake:
 
 A versioned REST API (`/v1/...`) mirrors the MCP tools for non-MCP clients, with bearer
 token authorization supporting chain-scoped tokens.
+
+Authorization follows one rule: it must inspect exactly the fields the executing handler
+consumes. REST and MCP share a single operation table that marks each operation as
+chain-scoped or global-only; chain keys are normalized before both the check and the
+execution; and an MCP payload is read through the one field set its transport executes
+(`tool`/`parameters` or `name`/`arguments`), with payloads carrying both shapes rejected.
+A check that reads a different field than the executor is not a check.
 
 ---
 

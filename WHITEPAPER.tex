@@ -63,7 +63,7 @@
 \title{\textbf{MentisDB}\\[0.3em]
 \large Durable Semantic Memory for Software Agents}
 \author{Angel Leon\\[0.3em]
-\small Version 0.10.8.53 \quad \textemdash \quad September 16, 2026}
+\small Version 0.10.9.54 \quad \textemdash \quad October 21, 2026}
 \date{}
 
 \begin{document}
@@ -280,6 +280,30 @@ extension \texttt{.tcbin}. This format is 40–60\% smaller than JSON and deseri
 
 Two durability modes: \textbf{Strict} (each append blocks until flushed; 2ms group-commit
 window) and \textbf{Buffered} (flushes every 16 records; up to 15 may be lost on hard crash).
+
+\subsection{Crash Recovery and Derived-State Invariants}
+
+The canonical log is the only source of truth; everything else must be atomically
+replaced or rebuildable from it. Since 0.10.9 four rules make that hold:
+
+\begin{itemize}
+  \item \textbf{Torn-tail repair is narrow.} Only a strict partial \emph{final} record
+  counts as torn; it is preserved to a \texttt{.torn} file (mode \texttt{0600}) and
+  truncated before the writer reopens the chain. If the bytes after a bad length prefix
+  still decode as complete records, the corruption is mid-file: the open fails with
+  \texttt{InvalidData} and the file is left untouched. One writer per chain directory
+  is assumed.
+  \item \textbf{Durable commits.} A strict-mode append returns once its group commit is
+  written to the OS; \texttt{MENTISDB\_FSYNC=1} adds one \texttt{fsync} per group commit.
+  Explicit flush, shutdown and drop always sync; registries are replaced atomically.
+  \item \textbf{Overlay coverage metadata.} The implicit-edge overlay records the thought
+  count and head hash it covers; a matching prefix is caught up by replaying the missing
+  tail, a mismatch triggers a rebuild.
+  \item \textbf{Single-flight background sidecar rebuild.} Opening a chain never embeds
+  its history on the request path. Stale sidecars are rebuilt by one process-wide worker
+  (at most one pending job per sidecar, bounded batches, shared model) and adopted by the
+  read path when finished; until then ranked search uses lexical and graph signals.
+\end{itemize}
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Schema Evolution}
@@ -591,6 +615,12 @@ genesis checkpoint if empty), and \texttt{mentisdb\_recent\_context} loads prior
 
 A versioned REST API (\texttt{/v1/...}) mirrors the MCP tools for non-MCP clients, with
 bearer token authorization supporting chain-scoped tokens.
+
+Authorization must inspect exactly the fields the executing handler consumes. REST and
+MCP share one operation table marking each operation chain-scoped or global-only; chain
+keys are normalized before both the check and the execution; and an MCP payload is read
+through the single field set its transport executes (\texttt{tool}/\texttt{parameters}
+or \texttt{name}/\texttt{arguments}), rejecting payloads that carry both.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Empirical Evaluation}
