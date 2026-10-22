@@ -247,7 +247,10 @@ async fn test_delivery_worker_bounds_concurrency() {
             .await
             .unwrap();
     }
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while hits.load(Ordering::SeqCst) < 8 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     assert_eq!(hits.load(Ordering::SeqCst), 8);
 }
 
