@@ -71,6 +71,66 @@ cargo install mentisdb --no-default-features --features server
 
 This produces a smaller binary with no audio dependencies.
 
+### Docker
+
+Release images are published to GitHub Container Registry for `linux/amd64` and
+`linux/arm64`. Tags: the release tag (for example `0.10.9.54`), the crate version
+(`0.10.9`, moves with each release of that version) and `latest`.
+
+```bash
+docker run -d --name mentisdb \
+  -p 127.0.0.1:9471:9471 -p 127.0.0.1:9472:9472 -p 127.0.0.1:9475:9475 \
+  -v mentisdb-data:/var/lib/mentisdb \
+  ghcr.io/cloudllm-ai/mentisdb:latest
+```
+
+The entrypoint is `mentisdb --headless` under `tini`, so no TTY (`-t`) is needed
+and `docker stop` (SIGTERM) drains the servers and exits cleanly. Check it with
+`curl http://127.0.0.1:9472/health`; the image also has a Docker `HEALTHCHECK`.
+
+Docker Compose:
+
+```yaml
+services:
+  mentisdb:
+    image: ghcr.io/cloudllm-ai/mentisdb:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9471:9471"   # MCP (HTTP)
+      - "127.0.0.1:9472:9472"   # REST (HTTP)
+      - "127.0.0.1:9475:9475"   # dashboard (HTTPS, self-signed)
+    volumes:
+      - mentisdb-data:/var/lib/mentisdb
+    environment:
+      MENTISDB_BEARER_TOKEN_ACCESS: "true"
+      MENTISDB_DASHBOARD_PIN: "change-me"
+volumes:
+  mentisdb-data:
+```
+
+| Item | Value |
+| --- | --- |
+| Data volume | `/var/lib/mentisdb` (`MENTISDB_DIR`). Chains, the skill registry, TLS certificates and the local-embedding model cache (`.fastembed_cache`, downloaded on first use) all live here. |
+| User | non-root `mentisdb` (uid/gid `991`). Bind mounts must be writable by uid 991 (`chown 991:991 ./data`). |
+| Ports | `9471` MCP (HTTP), `9472` REST (HTTP), `9475` dashboard (HTTPS). HTTPS MCP/REST (`9473`/`9474`) are off in the image; set `MENTISDB_HTTPS_MCP_PORT` / `MENTISDB_HTTPS_REST_PORT` to enable them. |
+| Configuration | any variable from [Daemon Configuration](#daemon-configuration), passed with `-e` or `environment:`. |
+| Features | server + local embeddings + LLM extraction; the startup-sound/audio feature is not compiled in. |
+
+**Security notes.** Inside the container the daemon binds `0.0.0.0` (required for
+published ports to work), and a fresh daemon has no authentication. Therefore:
+
+- Publish ports on loopback (`-p 127.0.0.1:...`) unless you put a TLS reverse proxy
+  or VPN in front. Never publish `9471`/`9472` to the open internet as-is.
+- For any access beyond the host, set `MENTISDB_BEARER_TOKEN_ACCESS=true` and create
+  tokens: `docker exec mentisdb mentisdb bearertoken create --global admin`.
+- Set `MENTISDB_DASHBOARD_PIN`, and list the hostnames you reach the dashboard by in
+  `MENTISDB_DASHBOARD_ALLOWED_HOSTS` (the dashboard rejects unknown `Host` headers).
+- Back up the volume (`docker run --rm -v mentisdb-data:/d -v "$PWD":/b debian tar czf /b/mentisdb.tgz -C /d .`)
+  after stopping the container.
+
+Build locally with `make docker-build` (or `docker build -t mentisdb .`).
+
+
 ---
 
 ## Quick Start
