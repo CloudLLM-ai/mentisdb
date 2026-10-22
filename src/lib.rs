@@ -8923,11 +8923,15 @@ impl MentisDb {
             return HashMap::new();
         }
 
-        // When the candidates are the whole chain no filter is needed, so skip
-        // building the id set (one String per candidate) entirely. Otherwise
-        // restrict the backend by id and keep a dense position mask as a
-        // second line of defence.
-        let covers_chain = candidates.len() == self.thoughts.len();
+        // When the candidates are the whole chain no filter is needed. When
+        // they are most of it (typically after hiding a few invalidated
+        // thoughts) the excluded set is small, so over-fetch unfiltered by the
+        // excluded count and drop excluded hits with a dense position mask
+        // instead of building one UUID String per candidate. Only for small
+        // candidate subsets is the id-set filter pushed into the backend.
+        let excluded = self.thoughts.len().saturating_sub(candidates.len());
+        let covers_chain = excluded == 0;
+        let overfetch = !covers_chain && excluded <= candidates.len();
         let (filter, candidate_mask) = if covers_chain {
             (crate::search::VectorFilter::None, None)
         } else {
@@ -8937,13 +8941,16 @@ impl MentisDb {
                     *slot = true;
                 }
             }
-            (
+            let filter = if overfetch {
+                crate::search::VectorFilter::None
+            } else {
                 crate::search::VectorFilter::from_ids(
                     candidates.iter().map(|thought| thought.id.to_string()),
-                ),
-                Some(mask),
-            )
+                )
+            };
+            (filter, Some(mask))
         };
+        let base_limit = candidates.len().clamp(1, MAX_VECTOR_HITS);
         let mut scores = HashMap::new();
 
         for entry in self.managed_vector_sidecars.values() {
@@ -8962,15 +8969,20 @@ impl MentisDb {
                 continue;
             };
 
-            let limit = candidates.len().clamp(1, MAX_VECTOR_HITS);
-            let query = crate::search::VectorQuery::new(query_vector).with_limit(limit);
+            let fetch_limit = if overfetch {
+                base_limit.saturating_add(excluded)
+            } else {
+                base_limit
+            };
+            let query = crate::search::VectorQuery::new(query_vector).with_limit(fetch_limit);
             let hits = match cached.search_filtered(&query, &filter) {
                 Ok(hits) => hits,
                 Err(_) => continue,
             };
 
+            let mut accepted = 0_usize;
             for hit in hits {
-                if hit.score < MIN_VECTOR_COSINE {
+                if hit.score < MIN_VECTOR_COSINE || accepted >= base_limit {
                     break;
                 }
                 let Some(position) = Uuid::parse_str(&hit.document_id)
@@ -8985,6 +8997,7 @@ impl MentisDb {
                 {
                     continue;
                 }
+                accepted += 1;
                 let weighted_score = hit.score * FRESH_VECTOR_WEIGHT;
                 scores
                     .entry(position)
