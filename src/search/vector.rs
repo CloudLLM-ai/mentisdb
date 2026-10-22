@@ -615,7 +615,25 @@ fn filter_hits(hits: Vec<VectorSearchHit>, filter: &VectorFilter) -> Vec<VectorS
 #[derive(Debug, Clone)]
 pub struct VectorIndex {
     metadata: EmbeddingMetadata,
-    documents: BTreeMap<String, Vec<f32>>,
+    documents: BTreeMap<String, StoredVector>,
+}
+
+/// One stored document vector with its cached Euclidean norm.
+///
+/// The norm is derived in memory on insert and is never serialized, so the
+/// persisted sidecar format and integrity digests are unaffected. Caching it
+/// removes two of the three multiply-adds per document from every exact scan.
+#[derive(Debug, Clone)]
+struct StoredVector {
+    values: Vec<f32>,
+    norm: f32,
+}
+
+impl StoredVector {
+    fn new(values: Vec<f32>) -> Self {
+        let norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
+        Self { values, norm }
+    }
 }
 
 impl VectorIndex {
@@ -681,7 +699,8 @@ impl VectorIndex {
             Some(document.document_id.as_str()),
             "document",
         )?;
-        self.documents.insert(document.document_id, document.vector);
+        self.documents
+            .insert(document.document_id, StoredVector::new(document.vector));
         Ok(())
     }
 
@@ -692,7 +711,9 @@ impl VectorIndex {
 
     /// Return a clone of the stored vector for one document id, if present.
     pub fn get_vector(&self, document_id: &str) -> Option<Vec<f32>> {
-        self.documents.get(document_id).cloned()
+        self.documents
+            .get(document_id)
+            .map(|stored| stored.values.clone())
     }
 
     /// Rank indexed vectors by cosine similarity to the query vector,
@@ -703,7 +724,7 @@ impl VectorIndex {
         Ok(collect_top_vector_hits(
             self.documents
                 .iter()
-                .map(|(id, vector)| (id.as_str(), vector.as_slice())),
+                .map(|(id, stored)| (id.as_str(), stored.values.as_slice(), stored.norm)),
             &query.vector,
             query.limit,
         ))
@@ -730,7 +751,7 @@ impl VectorIndex {
             self.documents
                 .iter()
                 .filter(|(document_id, _)| filter.allows(document_id))
-                .map(|(id, vector)| (id.as_str(), vector.as_slice())),
+                .map(|(id, stored)| (id.as_str(), stored.values.as_slice(), stored.norm)),
             &query.vector,
             query.limit,
         ))
@@ -840,33 +861,56 @@ impl fmt::Display for VectorIndexError {
 impl Error for VectorIndexError {}
 
 fn collect_top_vector_hits<'a>(
-    documents: impl Iterator<Item = (&'a str, &'a [f32])>,
+    documents: impl Iterator<Item = (&'a str, &'a [f32], f32)>,
     query: &[f32],
     limit: usize,
 ) -> Vec<VectorSearchHit> {
-    let mut hits: Vec<VectorSearchHit> = documents
-        .map(|(document_id, vector)| VectorSearchHit {
-            document_id: document_id.to_string(),
-            score: cosine_similarity(query, vector).unwrap_or(0.0),
+    let query_norm = query.iter().map(|value| value * value).sum::<f32>().sqrt();
+    // Score first, keyed by borrowed ids; allocate id strings only for the
+    // `limit` hits that are returned.
+    let mut scored: Vec<(f32, &str)> = documents
+        .map(|(document_id, vector, norm)| {
+            (
+                cosine_with_norms(query, query_norm, vector, norm).unwrap_or(0.0),
+                document_id,
+            )
         })
         .collect();
     let limit = limit.max(1);
-    if hits.len() > limit {
-        hits.select_nth_unstable_by(limit, |left, right| {
-            right
-                .score
-                .total_cmp(&left.score)
-                .then_with(|| left.document_id.cmp(&right.document_id))
-        });
-        hits.truncate(limit);
+    let order = |left: &(f32, &str), right: &(f32, &str)| {
+        right.0.total_cmp(&left.0).then_with(|| left.1.cmp(right.1))
+    };
+    if scored.len() > limit {
+        scored.select_nth_unstable_by(limit, order);
+        scored.truncate(limit);
     }
-    hits.sort_by(|left, right| {
-        right
-            .score
-            .total_cmp(&left.score)
-            .then_with(|| left.document_id.cmp(&right.document_id))
-    });
-    hits
+    scored.sort_by(order);
+    scored
+        .into_iter()
+        .map(|(score, document_id)| VectorSearchHit {
+            document_id: document_id.to_string(),
+            score,
+        })
+        .collect()
+}
+
+/// Cosine similarity with both Euclidean norms precomputed.
+///
+/// Produces bit-identical results to [`cosine_similarity`]: the dot product is
+/// accumulated in the same order and the denominator is the same
+/// `left_norm * right_norm` product.
+fn cosine_with_norms(left: &[f32], left_norm: f32, right: &[f32], right_norm: f32) -> Option<f32> {
+    if left.len() != right.len() || left.is_empty() {
+        return None;
+    }
+    if left_norm == 0.0 || right_norm == 0.0 {
+        return None;
+    }
+    let mut dot = 0.0_f32;
+    for (left_value, right_value) in left.iter().zip(right.iter()) {
+        dot += left_value * right_value;
+    }
+    Some(dot / (left_norm * right_norm))
 }
 
 /// Compute cosine similarity for two vectors in the same space.

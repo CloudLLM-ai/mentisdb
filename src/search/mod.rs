@@ -73,8 +73,8 @@ pub use bundle::{
     ContextBundleResult, ContextBundleSeed,
 };
 pub use expansion::{
-    GraphExpansionHit, GraphExpansionMode, GraphExpansionQuery, GraphExpansionResult,
-    GraphExpansionStats,
+    ExpansionNodeRole, GraphExpansionHit, GraphExpansionMode, GraphExpansionQuery,
+    GraphExpansionResult, GraphExpansionStats, PASS_THROUGH_BUDGET_FACTOR,
 };
 #[cfg(feature = "local-embeddings")]
 pub use fastembed_provider::{

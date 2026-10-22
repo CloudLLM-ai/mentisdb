@@ -278,10 +278,20 @@ impl HnswBackend {
 
     /// Shared search implementation for filtered and unfiltered queries.
     ///
-    /// `allowed` is an optional bitmap of HNSW item ids. When present, the
-    /// search asks the approximate graph for more candidates than requested
-    /// (overshoot) and then discards those that are not in the bitmap before
-    /// re-scoring with exact cosine.
+    /// `allowed` is an optional bitmap of HNSW item ids.
+    ///
+    /// * Unfiltered: ask the graph for exactly `limit` neighbours.
+    /// * Filtered, selective filter (see [`use_exact_filtered_scan`]): the
+    ///   approximate graph is bypassed and exact cosine is computed over the
+    ///   allowed ids only. A post-filter over an oversampled graph result
+    ///   loses recall for selective filters because almost none of the
+    ///   nearest neighbours of the query are allowed.
+    /// * Filtered, permissive filter: oversample by
+    ///   [`filtered_candidate_count`], keep the allowed neighbours, and
+    ///   re-score them with exact cosine.
+    ///
+    /// Only the neighbours actually returned by the graph are considered; the
+    /// destination buffer's unused tail never leaks into the results.
     fn search_inner(
         &self,
         query: &VectorQuery,
@@ -293,14 +303,17 @@ impl HnswBackend {
             return Ok(Vec::new());
         }
 
-        // For unfiltered search we ask for exactly `limit` candidates. For
-        // filtered search we overshoot and then discard non-matching ids.
-        // The overshoot is capped by the live document count to avoid asking
-        // `nearest` for more candidates than exist.
-        let limit = query.limit.max(1).min(self.doc_to_id.len());
-        let candidate_count = allowed
-            .map(|_| (limit * 4).max(64).min(self.doc_to_id.len()))
-            .unwrap_or(limit);
+        let corpus = self.doc_to_id.len();
+        let limit = query.limit.max(1).min(corpus);
+        if let Some(allowed) = allowed {
+            if use_exact_filtered_scan(allowed.len() as usize, corpus) {
+                return Ok(self.exact_search_over(&query.vector, allowed.iter(), limit));
+            }
+        }
+        let candidate_count = match allowed {
+            Some(allowed) => filtered_candidate_count(limit, corpus, allowed.len() as usize),
+            None => limit,
+        };
         let ef = hnsw_ef_search().max(candidate_count);
         let mut dest = vec![
             Neighbor {
@@ -310,43 +323,102 @@ impl HnswBackend {
             candidate_count
         ];
         let mut searcher = hnsw::Searcher::default();
-        let _ = self
+        let found = self
             .hnsw
             .nearest(&query.vector, ef, &mut searcher, &mut dest);
 
-        let mut exact_scored: Vec<VectorSearchHit> = dest
-            .iter()
-            .filter_map(|neighbor| {
-                let index = neighbor.index;
-                if let Some(allowed) = allowed {
-                    if !allowed.contains(index as u32) {
-                        return None;
-                    }
-                }
+        let ids = found.iter().filter_map(|neighbor| {
+            let index = neighbor.index;
+            match allowed {
+                Some(allowed) if !allowed.contains(index as u32) => None,
+                _ => Some(index as u32),
+            }
+        });
+        Ok(self.exact_search_over(&query.vector, ids, limit))
+    }
+
+    /// Score the given HNSW item ids with exact cosine similarity and return
+    /// the best `limit` hits, best first (ties broken by document id).
+    ///
+    /// Ids that do not resolve to a live document are skipped.
+    fn exact_search_over(
+        &self,
+        query: &[f32],
+        ids: impl Iterator<Item = u32>,
+        limit: usize,
+    ) -> Vec<VectorSearchHit> {
+        let mut scored: Vec<(f32, &str)> = ids
+            .filter_map(|index| {
                 let doc_id = self
                     .id_to_doc
-                    .get(index)
-                    .filter(|s| !s.is_empty())
-                    .cloned()?;
-                let stored = self.vectors.get(&doc_id)?;
-                let score = super::vector::cosine_similarity(&query.vector, stored).unwrap_or(0.0);
-                Some(VectorSearchHit {
-                    document_id: doc_id,
-                    score,
-                })
+                    .get(index as usize)
+                    .filter(|s| !s.is_empty())?;
+                let stored = self.vectors.get(doc_id)?;
+                let score = super::vector::cosine_similarity(query, stored).unwrap_or(0.0);
+                Some((score, doc_id.as_str()))
             })
             .collect();
-        exact_scored.sort_by(|left, right| {
-            right
-                .score
-                .total_cmp(&left.score)
-                .then_with(|| left.document_id.cmp(&right.document_id))
-        });
-        if exact_scored.len() > limit {
-            exact_scored.truncate(limit);
+        let order = |left: &(f32, &str), right: &(f32, &str)| {
+            right.0.total_cmp(&left.0).then_with(|| left.1.cmp(right.1))
+        };
+        if scored.len() > limit {
+            scored.select_nth_unstable_by(limit - 1, order);
+            scored.truncate(limit);
         }
-        Ok(exact_scored)
+        scored.sort_by(order);
+        scored
+            .into_iter()
+            .map(|(score, doc_id)| VectorSearchHit {
+                document_id: doc_id.to_string(),
+                score,
+            })
+            .collect()
     }
+}
+
+/// Largest allowed-set size for which filtered search bypasses the HNSW graph
+/// and scores every allowed document exactly.
+pub const EXACT_FILTER_MAX_ALLOWED: usize = 4096;
+
+/// Return `true` when a filter that allows `allowed` of `corpus` documents is
+/// selective enough to be answered by an exact scan of the allowed ids.
+///
+/// That is the case when at most [`EXACT_FILTER_MAX_ALLOWED`] documents are
+/// allowed, or when fewer than 5% of the corpus is allowed. An exact scan of
+/// a small allowed set is both faster than an oversampled graph walk and
+/// exact (no recall loss).
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::search::hnsw_backend::use_exact_filtered_scan;
+///
+/// assert!(use_exact_filtered_scan(30, 1_000_000));
+/// assert!(use_exact_filtered_scan(40_000, 1_000_000));
+/// assert!(!use_exact_filtered_scan(500_000, 1_000_000));
+/// ```
+pub fn use_exact_filtered_scan(allowed: usize, corpus: usize) -> bool {
+    allowed <= EXACT_FILTER_MAX_ALLOWED || allowed.saturating_mul(20) < corpus
+}
+
+/// Number of graph candidates to request for a permissive filtered search.
+///
+/// Scales the oversampling with `corpus / allowed` (at least 4x, so that
+/// roughly `limit` allowed neighbours are expected among the candidates),
+/// with a floor of 64 and a cap of the corpus size.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::search::hnsw_backend::filtered_candidate_count;
+///
+/// assert_eq!(filtered_candidate_count(10, 100_000, 50_000), 64);
+/// assert_eq!(filtered_candidate_count(100, 100_000, 10_000), 1_000);
+/// assert_eq!(filtered_candidate_count(10, 50, 40), 50);
+/// ```
+pub fn filtered_candidate_count(limit: usize, corpus: usize, allowed: usize) -> usize {
+    let ratio = corpus.div_ceil(allowed.max(1)).max(4);
+    limit.saturating_mul(ratio).max(64).min(corpus)
 }
 
 impl std::fmt::Debug for HnswBackend {
