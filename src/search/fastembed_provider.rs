@@ -4,10 +4,12 @@
 //! It downloads an ~80 MB ONNX model on first use (AllMiniLML6V2) and produces
 //! 384-dimensional semantic embeddings locally — no API calls, no keys.
 
+use std::collections::HashMap;
 use std::fmt;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 
 use super::{EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector};
 
@@ -19,6 +21,81 @@ pub const FASTEMBED_MINILM_DIMENSION: usize = 384;
 
 /// Version label for the AllMiniLML6V2 embedding space.
 pub const FASTEMBED_MINILM_VERSION: &str = "1";
+
+/// Maximum number of texts sent to the ONNX runtime in a single inference call.
+///
+/// fastembed's default batch of 256 padded to the longest text (up to 512
+/// tokens) allocates gigabytes of activations. Measured on macOS arm64 (40 mixed-length
+/// texts): batch 32 peaked at 4.4 GB RSS, 8 at 1.9 GB, 4 at 1.3 GB, 2 at 0.9 GB with
+/// equal wall time, so 4 is used. Vectors are unchanged (max_length stays 512).
+pub const FASTEMBED_BATCH_SIZE: usize = 4;
+
+/// Directory name, under the MentisDB storage root, holding downloaded models.
+pub const FASTEMBED_CACHE_DIRNAME: &str = ".fastembed_cache";
+
+/// Pick the model cache directory.
+///
+/// An explicit `FASTEMBED_CACHE_DIR` value wins; otherwise models live in
+/// `<mentisdb_dir>/.fastembed_cache` rather than the process working directory
+/// (fastembed's default), so the cache follows the data directory.
+///
+/// # Examples
+///
+/// ```rust
+/// # #[cfg(feature = "local-embeddings")] {
+/// use std::path::{Path, PathBuf};
+/// use mentisdb::search::fastembed_provider::resolve_cache_dir;
+///
+/// assert_eq!(
+///     resolve_cache_dir(None, Path::new("/data/mentisdb")),
+///     PathBuf::from("/data/mentisdb/.fastembed_cache")
+/// );
+/// assert_eq!(
+///     resolve_cache_dir(Some(PathBuf::from("/models")), Path::new("/data/mentisdb")),
+///     PathBuf::from("/models")
+/// );
+/// # }
+/// ```
+pub fn resolve_cache_dir(explicit: Option<PathBuf>, mentisdb_dir: &Path) -> PathBuf {
+    explicit
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| mentisdb_dir.join(FASTEMBED_CACHE_DIRNAME))
+}
+
+/// Resolve the cache directory from the process environment
+/// (`FASTEMBED_CACHE_DIR`, then `MENTISDB_DIR` / the default MentisDB dir).
+pub fn cache_dir_from_env() -> PathBuf {
+    resolve_cache_dir(
+        std::env::var_os("FASTEMBED_CACHE_DIR").map(PathBuf::from),
+        &crate::paths::default_mentisdb_dir(),
+    )
+}
+
+/// Embed `inputs` in sequential chunks of at most `chunk_size` texts.
+///
+/// `embed_chunk` is invoked once per chunk and its output is converted and
+/// released before the next chunk runs, so peak memory is bounded by one chunk.
+/// Output order matches input order.
+///
+/// # Errors
+///
+/// Returns the first error produced by `embed_chunk`.
+///
+/// # Panics
+///
+/// Panics if `chunk_size` is zero.
+pub fn embed_in_chunks<E>(
+    inputs: &[EmbeddingInput],
+    chunk_size: usize,
+    mut embed_chunk: impl FnMut(&[&str]) -> Result<Vec<Vec<f32>>, E>,
+) -> Result<Vec<EmbeddingVector>, E> {
+    let mut vectors = Vec::with_capacity(inputs.len());
+    for chunk in inputs.chunks(chunk_size) {
+        let texts: Vec<&str> = chunk.iter().map(|i| i.text.as_str()).collect();
+        vectors.extend(embed_chunk(&texts)?.into_iter().map(EmbeddingVector::new));
+    }
+    Ok(vectors)
+}
 
 /// Opaque string-backed error for `fastembed` failures.
 ///
@@ -56,8 +133,40 @@ impl std::error::Error for FastEmbedError {}
 /// assert_eq!(vectors[0].values.len(), 384);
 /// ```
 pub struct FastEmbedProvider {
-    model: Mutex<TextEmbedding>,
+    model: SharedModel,
     metadata: EmbeddingMetadata,
+}
+
+/// Process-wide handle to one loaded ONNX session.
+type SharedModel = Arc<Mutex<TextEmbedding>>;
+
+/// Registry of loaded models keyed by stable model id.
+///
+/// Every chain used to build its own `TextEmbedding` (about 100 MB of ORT
+/// session each, never released); sharing one session per model id keeps the
+/// process footprint flat regardless of how many chains are open.
+fn model_registry() -> &'static Mutex<HashMap<&'static str, SharedModel>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<&'static str, SharedModel>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Return the shared model for `model_id`, loading it with `load` on first use.
+///
+/// The registry lock is held while loading so concurrent first callers load
+/// the model exactly once.
+fn shared_model(
+    model_id: &'static str,
+    load: impl FnOnce() -> Result<TextEmbedding, FastEmbedError>,
+) -> Result<SharedModel, FastEmbedError> {
+    let mut registry = model_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(existing) = registry.get(model_id) {
+        return Ok(Arc::clone(existing));
+    }
+    let loaded = Arc::new(Mutex::new(load()?));
+    registry.insert(model_id, Arc::clone(&loaded));
+    Ok(loaded)
 }
 
 impl fmt::Debug for FastEmbedProvider {
@@ -69,8 +178,14 @@ impl fmt::Debug for FastEmbedProvider {
 }
 
 impl FastEmbedProvider {
-    /// Initialize the AllMiniLML6V2 model.
+    /// Returns `true` when both providers use the same loaded ONNX session.
+    pub fn shares_model_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.model, &other.model)
+    }
+
+    /// Obtain a provider backed by the process-wide AllMiniLML6V2 session.
     ///
+    /// The model is loaded once per process; later calls return a cheap handle.
     /// Downloads the model (~80 MB) from Hugging Face on first use and caches
     /// it locally. Subsequent calls load from cache and are fast.
     ///
@@ -79,12 +194,16 @@ impl FastEmbedProvider {
     /// Returns `FastEmbedError` when the model cannot be downloaded or the
     /// ONNX runtime fails to initialise.
     pub fn try_new() -> Result<Self, FastEmbedError> {
-        let model = TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::AllMiniLML6V2).with_show_download_progress(true),
-        )
-        .map_err(|e| FastEmbedError(e.to_string()))?;
+        let model = shared_model(FASTEMBED_MINILM_MODEL_ID, || {
+            TextEmbedding::try_new(
+                TextInitOptions::new(EmbeddingModel::AllMiniLML6V2)
+                    .with_cache_dir(cache_dir_from_env())
+                    .with_show_download_progress(true),
+            )
+            .map_err(|e| FastEmbedError(e.to_string()))
+        })?;
         Ok(Self {
-            model: Mutex::new(model),
+            model,
             metadata: EmbeddingMetadata::new(
                 FASTEMBED_MINILM_MODEL_ID,
                 FASTEMBED_MINILM_DIMENSION,
@@ -108,14 +227,14 @@ impl EmbeddingProvider for FastEmbedProvider {
     /// Returns `FastEmbedError` when the ONNX runtime fails during inference,
     /// or when the internal mutex is poisoned (a previous call panicked).
     fn embed_batch(&self, inputs: &[EmbeddingInput]) -> Result<Vec<EmbeddingVector>, Self::Error> {
-        let texts: Vec<&str> = inputs.iter().map(|i| i.text.as_str()).collect();
-        let mut model = self
-            .model
-            .lock()
-            .map_err(|e| FastEmbedError(format!("fastembed mutex poisoned: {e}")))?;
-        let embeddings = model
-            .embed(texts, None)
-            .map_err(|e| FastEmbedError(e.to_string()))?;
-        Ok(embeddings.into_iter().map(EmbeddingVector::new).collect())
+        embed_in_chunks(inputs, FASTEMBED_BATCH_SIZE, |texts| {
+            let mut model = self
+                .model
+                .lock()
+                .map_err(|e| FastEmbedError(format!("fastembed mutex poisoned: {e}")))?;
+            model
+                .embed(texts, Some(FASTEMBED_BATCH_SIZE))
+                .map_err(|e| FastEmbedError(e.to_string()))
+        })
     }
 }

@@ -179,7 +179,11 @@ impl BackupManifest {
                 ));
                 continue;
             }
-            let computed = format!("{:x}", hasher.finalize());
+            let computed = hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
             if computed != entry.sha256 {
                 mismatches.push(format!(
                     "checksum mismatch for {}: expected {} got {}",
@@ -304,7 +308,14 @@ fn sha256_file(path: &Path) -> io::Result<(String, u64)> {
         hasher.update(&buf[..n]);
         size += n as u64;
     }
-    Ok((format!("{:x}", hasher.finalize()), size))
+    Ok((
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
+        size,
+    ))
 }
 
 /// Create a backup of the given `MENTISDB_DIR` and write an `.mentis` archive.
@@ -1345,7 +1356,10 @@ mod tests {
         let backup_path = tmp.path().join("unsafe.mentis");
 
         let payload = b"malicious";
-        let sha256 = format!("{:x}", Sha256::digest(payload));
+        let sha256 = Sha256::digest(payload)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
 
         let file = File::create(&backup_path).unwrap();
         let mut zip = zip::ZipWriter::new(file);

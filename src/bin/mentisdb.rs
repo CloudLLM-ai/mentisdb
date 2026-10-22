@@ -920,7 +920,9 @@ async fn fetch_latest_release(
 fn is_daemon_running(mcp_addr: &str) -> bool {
     let url = format!("http://{mcp_addr}/health");
     ureq::get(&url)
-        .timeout(std::time::Duration::from_millis(500))
+        .config()
+        .timeout_global(Some(std::time::Duration::from_millis(500)))
+        .build()
         .call()
         .map(|r| r.status() == 200)
         .unwrap_or(false)
@@ -1014,7 +1016,7 @@ async fn proxy_jsonrpc_to_daemon(mcp_addr: &str, request: &str) -> Option<String
         let request_bytes = request.as_bytes().to_vec();
         let _ = tokio::task::spawn_blocking(move || {
             let _ = ureq::post(&url)
-                .set("Content-Type", "application/json")
+                .header("Content-Type", "application/json")
                 .send(&*request_bytes);
         })
         .await;
@@ -1049,15 +1051,15 @@ async fn proxy_jsonrpc_to_daemon(mcp_addr: &str, request: &str) -> Option<String
     #[allow(clippy::result_large_err)]
     let resp = tokio::task::spawn_blocking(move || {
         ureq::post(&url)
-            .set("Content-Type", "application/json")
-            .set("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
             .send(&*request_bytes)
     })
     .await
     .ok()?;
 
     let resp = resp.ok()?;
-    let resp_body: String = resp.into_string().ok()?;
+    let resp_body: String = resp.into_body().read_to_string().ok()?;
 
     // The streamable HTTP endpoint may return:
     // 1. A bare JSON-RPC response (most common for single-request methods)

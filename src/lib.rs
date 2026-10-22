@@ -9142,7 +9142,11 @@ pub fn chain_filename(
 pub fn chain_storage_filename(chain_key: &str, kind: StorageAdapterKind) -> String {
     let mut hasher = Sha256::new();
     hasher.update(chain_key.as_bytes());
-    let digest = format!("{:x}", hasher.finalize());
+    let digest = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     let fingerprint = &digest[..16];
 
     let safe_key: String = chain_key
@@ -11224,7 +11228,11 @@ fn compute_thought_hash(thought: &Thought) -> String {
         .expect("canonical thought bincode serialization should not fail");
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
-    format!("{:x}", hasher.finalize())
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
 }
 
 /// Legacy hash algorithm used before bincode hashing was adopted.
@@ -11279,7 +11287,11 @@ fn compute_thought_hash_legacy(thought: &Thought) -> String {
         serde_json::to_vec(&canonical).expect("canonical thought serialization should not fail");
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
 }
 
 /// Recompute all hashes in a thought list using the canonical bincode algorithm,

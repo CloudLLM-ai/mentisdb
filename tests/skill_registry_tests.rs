@@ -549,7 +549,10 @@ fn skill_first_upload_stores_full_content() {
             );
 
             // Independently compute the SHA-256 hash and compare.
-            let expected_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+            let expected_hash = Sha256::digest(content.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
             assert_eq!(
                 version.content_hash, expected_hash,
                 "content_hash must be the SHA-256 hex digest of the uploaded raw text"
@@ -798,7 +801,10 @@ fn skill_migration_v1_to_v2() {
 
     let raw = export_skill(&document, SkillFormat::Markdown).unwrap();
     use sha2::{Digest, Sha256};
-    let content_hash = format!("{:x}", Sha256::digest(raw.as_bytes()));
+    let content_hash = Sha256::digest(raw.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
 
     let version_v1 = SkillVersionV1Mirror {
         version_id: Uuid::new_v4(),
@@ -1087,7 +1093,10 @@ fn skill_registry_opens_v2_written_before_schema_version_field() {
         "---\nschema_version: 1\nname: production-skill\ndescription: Pre-0.10.6 layout\n---\n\n# Body\n\n{}",
         "x".repeat(10633)
     );
-    let content_hash = format!("{:x}", Sha256::digest(raw.as_bytes()));
+    let content_hash = Sha256::digest(raw.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     let now = Utc::now();
     let version_id = Uuid::new_v4();
     let encoded = bincode::serde::encode_to_vec(

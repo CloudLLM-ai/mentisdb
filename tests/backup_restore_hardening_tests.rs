@@ -25,7 +25,10 @@ fn manifest_for(files: Vec<BackupFileEntry>) -> BackupManifest {
 fn entry(path: &str, declared: u64, data: &[u8]) -> BackupFileEntry {
     BackupFileEntry {
         relative_path: path.to_string(),
-        sha256: format!("{:x}", Sha256::digest(data)),
+        sha256: Sha256::digest(data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
         uncompressed_bytes: declared,
         required: true,
     }

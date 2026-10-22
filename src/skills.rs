@@ -2594,7 +2594,11 @@ fn compute_content_hash(raw: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(raw.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
 }
 
 fn parse_markdown_skill(content: &str) -> io::Result<SkillDocument> {

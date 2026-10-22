@@ -30,8 +30,8 @@ chrono = { version = "0.4.44", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 diffy = "0.5"
-ed25519-dalek = { version = "2", features = ["alloc"] }
-sha2 = "0.10.9"
+ed25519-dalek = { version = "3", features = ["alloc"] }
+sha2 = "0.11"
 crossterm = "0.29"
 ratatui = "0.30.0"
 toml_edit = "0.25"
@@ -48,12 +48,12 @@ rustls-pemfile = { version = "2", optional = true }
 x509-parser = { version = "0.18", optional = true }
 rodio = { version = "0.23", optional = true }
 tokio = { version = "1.50.0", features = ["full"], optional = true }
-fastembed = { version = "5.13.1", optional = true }
+fastembed = { version = "7", optional = true }
 # Needed to install an explicit rustls crypto provider.  The server feature
 # pulls in rustls transitively via axum-server and reqwest; when both aws-lc-rs
 # and ring are compiled in, rustls refuses to auto-select a default provider.
 rustls = { version = "0.23", features = ["ring"], optional = true }
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
 url = "2.5.8"
 arboard = { version = "3", default-features = false }
 dotenvy = "0.15"
@@ -87,11 +87,11 @@ reqwest = { version = "0.13.2", features = ["json", "native-tls"], optional = tr
 bincode = { version = "2.0.1", features = ["serde"] }
 chrono = { version = "0.4.44", features = ["serde"] }
 criterion = { version = "0.8", features = ["html_reports"] }
-ed25519-dalek = { version = "2", features = ["alloc"] }
+ed25519-dalek = { version = "3", features = ["alloc"] }
 rand = "0.10"
 rand_distr = "0.6"
 serde = { version = "1.0.228", features = ["derive"] }
-sha2 = "0.10.9"
+sha2 = "0.11"
 tempfile = "3"
 tower = { version = "0.5.3", features = ["util"] }
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
