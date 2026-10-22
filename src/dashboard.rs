@@ -226,11 +226,122 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
         ));
 
     // ── Full dashboard router ─────────────────────────────────────────────
+    // The login POST sits under the same Origin/CSRF check as the API, and the
+    // Host allowlist wraps every route (GET included) to defeat DNS rebinding.
     Router::new()
         .merge(protected)
         .route("/dashboard/login", get(serve_login))
-        .route("/dashboard/login", post(handle_login))
+        .route(
+            "/dashboard/login",
+            post(handle_login).layer(middleware::from_fn(csrf_guard_middleware)),
+        )
         .with_state(state)
+        .layer(middleware::from_fn(host_allowlist_middleware))
+}
+
+// ── Host allowlist (DNS-rebinding defence) ────────────────────────────────────
+
+/// Environment variable with extra comma-separated hostnames/IPs the dashboard
+/// accepts in the `Host` header (e.g. a reverse-proxy or public DNS name).
+pub(crate) const DASHBOARD_ALLOWED_HOSTS_ENV: &str = "MENTISDB_DASHBOARD_ALLOWED_HOSTS";
+
+/// Strip the port and IPv6 brackets from a `Host` authority and lowercase it.
+fn normalize_host(authority: &str) -> String {
+    let authority = authority.trim();
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        // "[::1]:9475" -> "::1"
+        rest.split(']').next().unwrap_or(rest)
+    } else {
+        // "example.com:9475" -> "example.com" (a bare IPv6 has several colons
+        // and no brackets; leave it alone).
+        match authority.matches(':').count() {
+            1 => authority.split(':').next().unwrap_or(authority),
+            _ => authority,
+        }
+    };
+    host.trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Decide whether `authority` (a `Host` header value) names this daemon.
+///
+/// Allowed: `localhost`, `127.0.0.1`, `[::1]`, the documented `my.mentisdb.com`
+/// alias, the configured `MENTISDB_BIND_HOST`, every `MENTISDB_DASHBOARD_ALLOWED_HOSTS`
+/// entry, and, when the daemon is bound to a wildcard address, the machine's
+/// own interface IPs.
+pub(crate) fn dashboard_host_allowed(authority: &str) -> bool {
+    use std::net::IpAddr;
+    let host = normalize_host(authority);
+    if host.is_empty() {
+        return false;
+    }
+    if matches!(
+        host.as_str(),
+        "localhost" | "127.0.0.1" | "::1" | "my.mentisdb.com"
+    ) {
+        return true;
+    }
+    let host_ip = host.parse::<IpAddr>().ok();
+    let same = |candidate: &str| {
+        let candidate = normalize_host(candidate);
+        match (candidate.parse::<IpAddr>().ok(), host_ip) {
+            (Some(a), Some(b)) => a == b,
+            _ => candidate == host,
+        }
+    };
+    if let Ok(extra) = std::env::var(DASHBOARD_ALLOWED_HOSTS_ENV) {
+        if extra
+            .split(',')
+            .map(str::trim)
+            .any(|entry| !entry.is_empty() && same(entry))
+        {
+            return true;
+        }
+    }
+    if let Ok(bind) = std::env::var("MENTISDB_BIND_HOST") {
+        let bind = bind.trim();
+        if let Ok(bind_ip) = bind.parse::<IpAddr>() {
+            if bind_ip.is_unspecified() {
+                // Wildcard bind (LAN/VPS use): accept our own interface IPs.
+                if let (Some(ip), Ok(interfaces)) = (host_ip, if_addrs::get_if_addrs()) {
+                    return interfaces.iter().any(|iface| iface.addr.ip() == ip);
+                }
+                return false;
+            }
+            return host_ip == Some(bind_ip);
+        }
+        return !bind.is_empty() && same(bind);
+    }
+    false
+}
+
+/// Reject requests whose `Host` is not one of this daemon's own names.
+///
+/// A DNS-rebinding page resolves its own hostname to 127.0.0.1 and then talks
+/// to the dashboard as "same-origin", bypassing the Origin check and CORS. The
+/// browser still sends the attacker's hostname in `Host`, so refusing unknown
+/// hosts closes that path for every method. Requests with no Host at all
+/// (HTTP/1.0, in-process callers) cannot be browser-driven rebinding.
+async fn host_allowlist_middleware(request: axum::extract::Request, next: Next) -> Response {
+    let host = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| request.uri().authority().map(|a| a.as_str().to_string()));
+    if let Some(host) = host {
+        if !dashboard_host_allowed(&host) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": format!(
+                        "host '{host}' is not allowed; set {DASHBOARD_ALLOWED_HOSTS_ENV} to a comma-separated list of permitted hostnames"
+                    )
+                })),
+            )
+                .into_response();
+        }
+    }
+    next.run(request).await
 }
 
 // ── CSRF guard middleware ─────────────────────────────────────────────────────
@@ -459,10 +570,17 @@ struct LoginForm {
 /// automated brute-force attacks from the same machine.
 async fn handle_login(
     State(state): State<DashboardState>,
+    connect_info: Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    let ip_key = "localhost"; // Dashboard binds to 127.0.0.1; all clients share this key.
+    // Key the brute-force limiter per client IP so one attacker cannot lock the
+    // owner out. `X-Forwarded-For` is deliberately ignored (spoofable); behind a
+    // reverse proxy all clients share the proxy's address.
+    let ip_key_owned = connect_info
+        .map(|axum::Extension(axum::extract::ConnectInfo(addr))| addr.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let ip_key = ip_key_owned.as_str();
 
     // Check rate limit before PIN comparison.
     {
@@ -535,6 +653,12 @@ async fn handle_login(
     } else {
         let now = Instant::now();
         let mut map = RATE_LIMIT_MAP.lock().unwrap();
+        // Bound memory: drop expired entries once the table grows large.
+        if map.len() >= 10_000 {
+            map.retain(|_, (_, first)| {
+                now.duration_since(*first).as_secs() < RATE_LIMIT_WINDOW_SECS
+            });
+        }
         let entry = map.entry(ip_key.to_string()).or_insert_with(|| (0, now));
         entry.0 += 1;
         entry.1 = now;

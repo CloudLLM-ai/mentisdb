@@ -1999,6 +1999,7 @@ async fn fresh_session_token_unlocks_dashboard() {
             Request::builder()
                 .method("POST")
                 .uri("/dashboard/login")
+                .header("x-mentisdb-dashboard", "1")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from("pin=1234"))
                 .unwrap(),
@@ -2078,6 +2079,7 @@ async fn pin_login_behind_http_proxy_issues_cookie_without_secure_and_unlocks_da
             Request::builder()
                 .method("POST")
                 .uri("/dashboard/login")
+                .header("x-mentisdb-dashboard", "1")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("x-forwarded-proto", "http")
                 .body(Body::from("pin=1234"))
@@ -2145,6 +2147,7 @@ async fn pin_login_behind_https_proxy_sets_secure_cookie() {
             Request::builder()
                 .method("POST")
                 .uri("/dashboard/login")
+                .header("x-mentisdb-dashboard", "1")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("x-forwarded-proto", "https")
                 .body(Body::from("pin=1234"))
