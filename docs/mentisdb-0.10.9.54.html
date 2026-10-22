@@ -69,20 +69,16 @@
     <h3>1. A chain-scoped token could act outside its chain</h3>
     <p>
       MentisDB supports bearer tokens scoped to one or more chains, so an agent can
-      be given its own memory and nothing else. The legacy MCP
-      <code>/tools/execute</code> route accepts a JSON body, and the authorizer and
-      the executor did not read the same fields of that body. A chain-scoped token
-      could therefore be authorized for one call and execute another: reading and
-      writing other chains, calling global-only tools such as listing every chain
+      be given its own memory and nothing else. Through the legacy MCP
+      <code>/tools/execute</code> route, a chain-scoped token could act outside its
+      scope: reading and writing other chains, calling global-only tools such as listing every chain
       with its storage path, and merging or deleting chains it was never granted.
       This affects 0.10.8.53 and earlier whenever bearer-token access is enabled.
     </p>
     <p>
       The fix follows a simple rule: <strong>authorization must inspect exactly the
-      fields the executor consumes</strong>. Each transport now has one field set
-      (<code>tool</code> + <code>parameters</code> for <code>tools/execute</code>,
-      <code>name</code> + <code>arguments</code> for <code>tools/call</code>), and
-      a payload carrying both shapes is rejected with <code>400</code>.
+      fields the executor consumes</strong>, and every operation on both REST and
+      MCP is now checked against one shared authorization table.
     </p>
     <p>The same review produced a set of smaller hardening fixes:</p>
     <ul>

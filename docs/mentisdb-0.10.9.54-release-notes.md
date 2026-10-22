@@ -5,9 +5,8 @@
 ## Security notice — upgrade recommended
 
 **Legacy MCP `/tools/execute` authorization bypass (affects 0.10.8.53 and earlier).**
-When bearer-token access is enabled (`MENTISDB_BEARER_TOKEN_ACCESS=true`), the token
-authorizer and the legacy `/tools/execute` executor read different fields of the same
-request body. A holder of a *chain-scoped* token could therefore:
+When bearer-token access is enabled (`MENTISDB_BEARER_TOKEN_ACCESS=true`), a holder of a
+*chain-scoped* token could use the legacy `/tools/execute` endpoint to:
 
 - invoke tools against chains outside the token's scope (read and write),
 - call global-only tools, such as listing every chain together with its storage path,
@@ -16,9 +15,7 @@ request body. A holder of a *chain-scoped* token could therefore:
 Daemons that do not enable bearer-token access are not affected by this issue (without
 tokens every client already has full access by design). If you issue chain-scoped tokens
 to agents or users you do not fully trust, **upgrade now** and review recent activity on
-your chains. The fix authorizes exactly the fields each transport executes
-(`tools/execute`: `tool` + `parameters`; `tools/call`: `name` + `arguments`) and rejects
-payloads that carry both shapes with `400`.
+your chains. Authorization now inspects exactly the request fields that are executed.
 
 Other security fixes in this release:
 
