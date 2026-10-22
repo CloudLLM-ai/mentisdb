@@ -669,10 +669,14 @@ async fn handle_login(
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
 /// Build a `500 Internal Server Error` JSON response.
+///
+/// The body is generic on purpose: error text can carry absolute paths and
+/// other host details. The detail is logged server-side instead.
 fn internal_error(err: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
+    log::error!(target: "mentisdb::dashboard", "dashboard internal error: {err}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({ "error": err.to_string() })),
+        Json(json!({ "error": "internal server error" })),
     )
 }
 
@@ -687,7 +691,10 @@ fn not_found(msg: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
 /// Map skill registry read failures to user-facing dashboard status codes.
 fn skill_read_error(err: std::io::Error) -> (StatusCode, Json<Value>) {
     match err.kind() {
-        std::io::ErrorKind::NotFound => not_found(err),
+        std::io::ErrorKind::NotFound => {
+            log::debug!(target: "mentisdb::dashboard", "skill not found: {err}");
+            not_found("skill not found")
+        }
         std::io::ErrorKind::InvalidInput => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": err.to_string() })),
@@ -750,6 +757,17 @@ fn validate_new_chain_key(key: &str) -> Result<(), (StatusCode, Json<Value>)> {
     }
 }
 
+/// Return the registry-recorded chain file only when it is an existing file
+/// whose canonical path lies inside the canonical mentisdb directory.
+fn trusted_registry_location(mentisdb_dir: &std::path::Path, location: &str) -> Option<PathBuf> {
+    if location.is_empty() {
+        return None;
+    }
+    let located = std::fs::canonicalize(location).ok()?;
+    let root = std::fs::canonicalize(mentisdb_dir).ok()?;
+    (located.is_file() && located.starts_with(&root)).then_some(located)
+}
+
 /// Look up a chain in the live cache; fall back to opening it from disk.
 ///
 /// The opened chain is inserted into `state.chains` so subsequent requests
@@ -761,14 +779,21 @@ async fn get_or_open_chain(
     let registry = load_registered_chains(&state.mentisdb_dir).map_err(internal_error)?;
     // Prefer the registry's recorded storage location when that file exists;
     // otherwise derive the path from the chain key.
+    // The registry is data on disk: only follow its `storage_location` when it
+    // resolves (symlinks included) to a file inside the mentisdb directory and
+    // the recorded adapter kind is the binary one that `BinaryStorageAdapter`
+    // reads. Anything else falls back to the derived, in-directory path.
     let registered_storage = registry.chains.get(chain_key).map(|entry| {
-        let located = PathBuf::from(&entry.storage_location);
-        if entry.storage_location.is_empty() || !located.is_file() {
-            entry
-                .storage_adapter
-                .for_chain_key(&state.mentisdb_dir, chain_key)
+        let trusted = if entry.storage_adapter == StorageAdapterKind::Binary {
+            trusted_registry_location(&state.mentisdb_dir, &entry.storage_location)
         } else {
-            Box::new(BinaryStorageAdapter::new(located))
+            None
+        };
+        match trusted {
+            None => entry
+                .storage_adapter
+                .for_chain_key(&state.mentisdb_dir, chain_key),
+            Some(located) => Box::new(BinaryStorageAdapter::new(located)),
         }
     });
 
@@ -813,8 +838,10 @@ async fn get_or_open_chain(
         return Err(not_found(format!("chain '{chain_key}' not found")));
     };
 
-    let mut chain = MentisDb::open_with_storage(storage)
-        .map_err(|e| not_found(format!("chain '{chain_key}': {e}")))?;
+    let mut chain = MentisDb::open_with_storage(storage).map_err(|e| {
+        log::error!(target: "mentisdb::dashboard", "failed to open chain '{chain_key}': {e}");
+        not_found(format!("chain '{chain_key}' could not be opened"))
+    })?;
     chain
         .set_auto_flush(state.auto_flush.load(Ordering::Relaxed))
         .map_err(internal_error)?;
@@ -3483,7 +3510,22 @@ async fn api_update_settings(
             }
         }
 
-        let mut file = std::fs::File::create(&env_path).map_err(internal_error)?;
+        // The .env can hold the dashboard PIN: keep it owner-only, including
+        // when the file already existed with looser permissions.
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&env_path).map_err(internal_error)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(internal_error)?;
+        }
         for line in &lines {
             writeln!(file, "{}", line).map_err(internal_error)?;
         }
