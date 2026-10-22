@@ -375,6 +375,12 @@ Once startup completes, it prints:
   example a public DNS name or the name a reverse proxy forwards). Set it in the environment
   or a `.env` file (`./.env` or `<MENTISDB_DIR>/.env`); it is not editable from the dashboard Settings
   tab. See "Dashboard API rules" below for the built-in allowlist.
+- `MENTISDB_WEBHOOK_ALLOWED_CIDRS`
+  Private ranges webhooks may target despite the SSRF guard, for self-hosted consumers on a
+  private network. One or more CIDRs or bare IPs separated by commas and/or whitespace, e.g.
+  `100.64.0.0/10,fd7a:115c:a1e0::/48` (Tailscale). Unset (default) keeps every internal range
+  blocked; an invalid value or a `/0` entry stops the daemon from starting. Set it in the
+  environment or a `.env` file (`./.env` or `<MENTISDB_DIR>/.env`). See "Webhook targets" below.
 - `MENTISDB_BEARER_TOKEN_ACCESS`
   Require bearer tokens for MCP requests. Default: `false`. Set `true` for remote
   or multi-user MCP servers. This can also be toggled live from the dashboard Settings screen.
@@ -1508,11 +1514,45 @@ The daemon currently exposes 42 MCP tools:
 Webhook targets (0.10.9):
 
 - only `http` and `https` URLs are accepted, and redirects are never followed
-- `localhost`, loopback, private (RFC 1918), link-local, CGNAT (`100.64.0.0/10`), documentation/TEST-NET, benchmarking, multicast, broadcast, reserved and unspecified addresses are rejected, as are IPv6 ULA/link-local/documentation addresses and IPv6 forms that embed a blocked IPv4 address (IPv4-mapped, IPv4-translated `::ffff:0:0:0/96`, NAT64, 6to4); the local-use NAT64 prefix `64:ff9b:1::/48` and Teredo `2001::/32` are rejected outright
+- by default, `localhost`, loopback, private (RFC 1918), link-local, CGNAT (`100.64.0.0/10`), documentation/TEST-NET, benchmarking, multicast, broadcast, reserved and unspecified addresses are rejected, as are IPv6 ULA/link-local/documentation addresses and IPv6 forms that embed a blocked IPv4 address (IPv4-mapped, IPv4-translated `::ffff:0:0:0/96`, NAT64, 6to4); the local-use NAT64 prefix `64:ff9b:1::/48` and Teredo `2001::/32` are rejected outright
 - the same check runs on every address a hostname resolves to at delivery time, so DNS names pointing at internal ranges (or DNS rebinding) cannot reach them
 - webhooks persisted in `mentisdb-webhooks.json` that point at a blocked target are loaded **inactive** with a warning
 - a circuit breaker pauses a webhook for 5 minutes after 5 consecutive failed deliveries; a success resets it
 - logs show only `scheme://host[:port]` of the target, never paths, query strings or credentials
+
+Allowing private webhook targets with `MENTISDB_WEBHOOK_ALLOWED_CIDRS`:
+
+Self-hosted deployments whose webhook consumers live on a private network (a Tailscale
+tailnet, a WireGuard subnet, a LAN host) can open just those ranges:
+
+```bash
+# Tailscale tailnet (IPv4 CGNAT range + Tailscale's IPv6 ULA prefix)
+MENTISDB_WEBHOOK_ALLOWED_CIDRS=100.64.0.0/10,fd7a:115c:a1e0::/48
+# a WireGuard subnet
+MENTISDB_WEBHOOK_ALLOWED_CIDRS=10.8.0.0/24
+# a single host (a bare address means /32 or /128)
+MENTISDB_WEBHOOK_ALLOWED_CIDRS=192.168.1.50
+```
+
+- entries are separated by commas and/or whitespace; each is `addr/prefix` (IPv4 or IPv6,
+  `[...]` brackets allowed around IPv6) or a bare address; host bits are normalized
+  (`10.8.0.7/24` becomes `10.8.0.0/24`)
+- an address inside a listed range is allowed even if it falls in a blocked range; every
+  other internal range stays blocked. IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) match
+  IPv4 ranges
+- `localhost` host names are still rejected even if loopback is listed; use the IP literal
+  (`http://127.0.0.1:8080/hook`)
+- the list applies at registration, when persisted registrations are reloaded, and at
+  delivery time (to every resolved DNS address and to literal IPs). Removing the variable,
+  or narrowing it so a registration is no longer covered, loads that registration
+  **inactive** again on the next start
+- a `/0` entry or any unparsable entry makes the daemon refuse to start; the active ranges
+  are logged as a warning at startup
+- list only the narrowest ranges your consumers live in (your tailnet, one `/24`, one host).
+  Never list cloud metadata (`169.254.169.254`, `169.254.0.0/16`) or broad ranges like
+  `10.0.0.0/8`: any token allowed to register webhooks (global tokens, and chain-scoped
+  tokens with an in-scope `chain_key_filter`) can make the daemon send requests into the
+  listed ranges
 
 The detailed request and response shapes for the MCP surface live in
 [`MENTISDB_MCP.md`](../MENTISDB_MCP.md). The REST equivalents live in
