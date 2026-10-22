@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
@@ -27,6 +28,47 @@ pub const FASTEMBED_MINILM_VERSION: &str = "1";
 /// tokens) allocates gigabytes of activations; 32 keeps peak memory bounded
 /// without changing the produced vectors.
 pub const FASTEMBED_BATCH_SIZE: usize = 32;
+
+/// Directory name, under the MentisDB storage root, holding downloaded models.
+pub const FASTEMBED_CACHE_DIRNAME: &str = ".fastembed_cache";
+
+/// Pick the model cache directory.
+///
+/// An explicit `FASTEMBED_CACHE_DIR` value wins; otherwise models live in
+/// `<mentisdb_dir>/.fastembed_cache` rather than the process working directory
+/// (fastembed's default), so the cache follows the data directory.
+///
+/// # Examples
+///
+/// ```rust
+/// # #[cfg(feature = "local-embeddings")] {
+/// use std::path::{Path, PathBuf};
+/// use mentisdb::search::fastembed_provider::resolve_cache_dir;
+///
+/// assert_eq!(
+///     resolve_cache_dir(None, Path::new("/data/mentisdb")),
+///     PathBuf::from("/data/mentisdb/.fastembed_cache")
+/// );
+/// assert_eq!(
+///     resolve_cache_dir(Some(PathBuf::from("/models")), Path::new("/data/mentisdb")),
+///     PathBuf::from("/models")
+/// );
+/// # }
+/// ```
+pub fn resolve_cache_dir(explicit: Option<PathBuf>, mentisdb_dir: &Path) -> PathBuf {
+    explicit
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| mentisdb_dir.join(FASTEMBED_CACHE_DIRNAME))
+}
+
+/// Resolve the cache directory from the process environment
+/// (`FASTEMBED_CACHE_DIR`, then `MENTISDB_DIR` / the default MentisDB dir).
+pub fn cache_dir_from_env() -> PathBuf {
+    resolve_cache_dir(
+        std::env::var_os("FASTEMBED_CACHE_DIR").map(PathBuf::from),
+        &crate::paths::default_mentisdb_dir(),
+    )
+}
 
 /// Embed `inputs` in sequential chunks of at most `chunk_size` texts.
 ///
@@ -153,7 +195,9 @@ impl FastEmbedProvider {
     pub fn try_new() -> Result<Self, FastEmbedError> {
         let model = shared_model(FASTEMBED_MINILM_MODEL_ID, || {
             TextEmbedding::try_new(
-                InitOptions::new(EmbeddingModel::AllMiniLML6V2).with_show_download_progress(true),
+                InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+                    .with_cache_dir(cache_dir_from_env())
+                    .with_show_download_progress(true),
             )
             .map_err(|e| FastEmbedError(e.to_string()))
         })?;
