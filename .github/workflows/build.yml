@@ -47,7 +47,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential binutils ca-certificates curl git pkg-config libasound2-dev libssl-dev
+            build-essential binutils ca-certificates curl git pkg-config libssl-dev
 
       - uses: actions/checkout@v7
 
@@ -67,8 +67,10 @@ jobs:
           restore-keys: |
             linux-ubuntu2204-compat-${{ matrix.target }}-cargo-build-
 
-      - name: Build mentisdb (release, without local-embeddings)
-        run: cargo build --bin mentisdb --release --target ${{ matrix.target }} --no-default-features --features server,startup-sound,llm-extraction
+      # Also without startup-sound: compat binaries target minimal servers, which
+      # often lack libasound.so.2 (ALSA); a missing shared lib would stop startup.
+      - name: Build mentisdb (release, without local-embeddings or startup-sound)
+        run: cargo build --bin mentisdb --release --target ${{ matrix.target }} --no-default-features --features server,llm-extraction
 
       - name: Stage target-specific binary
         run: |
