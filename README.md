@@ -1370,7 +1370,7 @@ The flush operation is also available as a standalone REST endpoint:
 POST http://127.0.0.1:9472/v1/admin/flush
 ```
 
-Returns `{"status": "flushed"}` on success. Iterates all open chains and calls `flush()` on each adapter, blocking until all writes are durable.
+Returns `{"status": "flushed"}` on success. Iterates all open chains and calls `flush()` on each adapter, blocking until all writes are durable (flush always fsyncs, regardless of `MENTISDB_FSYNC`). When bearer-token access is enabled this endpoint requires a global token.
 
 ---
 
@@ -1678,8 +1678,23 @@ mentisdb bearertoken remove alice-agent
 
 Global tokens can call every MCP tool and access every chain. Chain-scoped tokens
 can call tools for any chain in their configured set, including requests that
-omit `chain_key` when the daemon default chain is in their scope. Tools that
-expose server-wide state, such as `mentisdb_list_chains`, require a global token.
+omit `chain_key` when the daemon default chain is in their scope. REST and MCP
+share one authorization table, so the same rules apply on both surfaces.
+
+Operations that expose or change server-wide state require a **global** token:
+
+- listing chains (`GET /v1/chains`, `mentisdb_list_chains`)
+- listing and deleting webhooks (`GET /v1/webhooks`, `DELETE /v1/webhooks/{id}`, `mentisdb_list_webhooks`, `mentisdb_delete_webhook`)
+- skill registry mutations: upload, deprecate, revoke, delete (`/v1/skills/{upload,deprecate,revoke,delete}` and the matching MCP tools)
+- `POST /v1/admin/flush` (so `mentisdb backup` cannot flush a token-protected daemon; see Backup and Restore)
+
+Registering a webhook with a chain-scoped token is allowed only when the request sets
+`chain_key_filter` to a chain inside the token's scope. `POST /v1/agents` (and the other
+agent-registry routes) are checked against the requested `chain_key`; a single-chain token
+that omits it gets its own chain. Out-of-scope calls are rejected with `401`.
+
+A token's `last_used_at` is updated in memory on every request but written to disk at most
+once every 60 seconds, so `mentisdb bearertoken list` may lag by up to a minute.
 
 #### Bearer Token MCP Client Config Examples
 
