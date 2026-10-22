@@ -958,10 +958,11 @@ The run applied the built-in thesaurus transparently on every `ranked_search` ca
 ### Search Scoring (0.10.9)
 
 - **RRF rerank fixed** — `enable_reranking=true` no longer replaces the additive score with the tiny raw RRF total (which collapsed rankings). RRF now adds a consensus bonus scaled by `RRF_SCORE_SCALE` (50): a rank-1 hit in all three lists is worth about +2.5, enough to break ties and reward agreement without overriding a clearly stronger lexical match. Only lists with a positive score for a candidate contribute.
-- **Stemmed thesaurus keys** — synonyms now expand for inflected query terms (`debugging` expands like `debug`, `deploys` like `deploy`).
+- **Stemmed thesaurus keys** — synonyms now expand for inflected query terms (`debugging` expands like `debug`, `deploys` like `deploy`). Because stem keys make expansion fire more often, automatic synonyms are damped to weight 0.3 with at most 3 synonyms per term (the previous 0.7 / 5 displaced literal matches and cost about 2.4 points of LongMemEval R@5).
 - **Federated search keyed by chain + id** — `POST /v1/federated-search` / `mentisdb_federated_search` fuse per-chain rankings with the same additive RRF bonus, keyed by `(chain_key, thought id)`, and deduplicate before paging, so `offset`/`limit` pages no longer repeat or drop results.
 - **Faster ranked, lexical, vector and graph paths** — score-only top-k selection, dense lexical scans, cached vector norms and exact top-k, and a bounded graph-expansion arena. Filtered lexical and heuristic queries are roughly 10x faster in the criterion benches.
 - **Filtered HNSW recall** — when filters are active, the HNSW backend switches to an exact scan over the filtered set or oversamples, so filtered vector searches no longer lose matches the approximate graph skipped.
+- **Benchmarks (0.10.9.54 vs the 0.10.8 code line, `fastembed-minilm`)** — LoCoMo-10P default R@5/R@10 63.8/72.7% → 63.9/73.5%; LoCoMo rerank R@5/R@10 3.6/5.9% → 66.0/74.1%; LongMemEval default R@5/R@10/R@20 66.8/72.0/78.2% → 68.0/72.8/78.8%; LongMemEval rerank R@5 2.8% → 68.6%; query throughput about 206/159 → 384/385 queries/s (LoCoMo/LongMemEval).
 
 ### Vector Sidecars
 
