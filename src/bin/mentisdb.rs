@@ -1426,9 +1426,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = Arc::clone(&running);
 
-    // Spawn Ctrl+C handler
+    // Stop on Ctrl+C or SIGTERM (`kill`, systemd, `docker run -t` + `docker stop`)
+    // so the TUI restores the terminal and the servers drain.
+    let shutdown_signal = wait_for_shutdown_signal();
     let ctrlc_handle = tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
+        shutdown_signal.await;
         running_clone.store(false, Ordering::SeqCst);
     });
 
@@ -1920,8 +1922,9 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = Arc::clone(&running);
 
+    let shutdown_signal = wait_for_shutdown_signal();
     let ctrlc_handle = tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
+        shutdown_signal.await;
         running_clone.store(false, Ordering::SeqCst);
     });
 
