@@ -193,3 +193,31 @@ fn test_llm_extraction_parse_error_includes_raw_output() {
     assert!(rendered.contains("missing field `thought_type`"));
     assert!(rendered.contains("Raw output:"));
 }
+
+/// A reply wrapped in a ```json fence must parse like bare JSON.
+#[test]
+fn test_parse_extraction_reply_accepts_json_code_fence() {
+    let body = r#"{"thoughts":[{"thought_type":"Decision","content":"Use Rust."}]}"#;
+    let fenced = format!("```json\n{body}\n```");
+    let plain = mentisdb::llm::parse_extraction_reply(body).unwrap();
+    let from_fence = mentisdb::llm::parse_extraction_reply(&fenced).unwrap();
+    assert_eq!(from_fence.len(), 1);
+    assert_eq!(from_fence[0].content, plain[0].content);
+
+    let bare_fence = format!("```\n{body}\n```");
+    assert_eq!(
+        mentisdb::llm::parse_extraction_reply(&bare_fence)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// Non-JSON text is still rejected with a parse error.
+#[test]
+fn test_parse_extraction_reply_rejects_garbage() {
+    assert!(matches!(
+        mentisdb::llm::parse_extraction_reply("```json\nnot json\n```"),
+        Err(LlmExtractionError::ParseError(_))
+    ));
+}

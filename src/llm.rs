@@ -137,14 +137,7 @@ pub async fn extract_memories_from_text(
         .content
         .trim();
 
-    let extracted: ExtractedThoughts = serde_json::from_str(raw_content).map_err(|e| {
-        LlmExtractionError::ParseError(format!(
-            "LLM output is not valid JSON: {}\nRaw output: {}",
-            e, raw_content
-        ))
-    })?;
-
-    let thoughts = validate_and_transform_thoughts(extracted.thoughts)?;
+    let thoughts = parse_extraction_reply(raw_content)?;
 
     Ok(ExtractionResult {
         thoughts,
@@ -155,6 +148,63 @@ pub async fn extract_memories_from_text(
             total_tokens: response.usage.total_tokens,
         },
     })
+}
+
+/// Strip one surrounding Markdown code fence (```` ``` ```` or ```` ```json ````)
+/// from an LLM reply, returning the inner text trimmed.
+///
+/// Models frequently wrap JSON in a fence even when asked not to. Text without
+/// a surrounding fence is returned trimmed but otherwise unchanged.
+///
+/// # Examples
+///
+/// ```rust
+/// use mentisdb::llm::strip_code_fence;
+///
+/// assert_eq!(strip_code_fence("```json\n{\"a\":1}\n```"), "{\"a\":1}");
+/// assert_eq!(strip_code_fence("  {\"a\":1}  "), "{\"a\":1}");
+/// ```
+pub fn strip_code_fence(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    let Some(rest) = trimmed.strip_prefix("```") else {
+        return trimmed;
+    };
+    let Some(body) = rest.strip_suffix("```") else {
+        return trimmed;
+    };
+    // Drop the optional language tag on the opening fence line.
+    match body.split_once('\n') {
+        Some((_lang, inner)) => inner.trim(),
+        None => body.trim(),
+    }
+}
+
+/// Parse and validate the raw text of an LLM extraction reply.
+///
+/// Accepts plain JSON or JSON wrapped in a Markdown code fence.
+///
+/// # Errors
+///
+/// Returns [`LlmExtractionError::ParseError`] when the text is not valid JSON
+/// and [`LlmExtractionError::SchemaMismatch`] when a thought is invalid.
+///
+/// # Examples
+///
+/// ```rust
+/// use mentisdb::llm::parse_extraction_reply;
+///
+/// let reply = "```json\n{\"thoughts\": []}\n```";
+/// assert!(parse_extraction_reply(reply).unwrap().is_empty());
+/// ```
+pub fn parse_extraction_reply(raw: &str) -> Result<Vec<ThoughtInput>, LlmExtractionError> {
+    let json = strip_code_fence(raw);
+    let extracted: ExtractedThoughts = serde_json::from_str(json).map_err(|e| {
+        LlmExtractionError::ParseError(format!(
+            "LLM output is not valid JSON: {}\nRaw output: {}",
+            e, raw
+        ))
+    })?;
+    validate_and_transform_thoughts(extracted.thoughts)
 }
 
 /// Validate extracted thought raw JSON and transform into [`ThoughtInput`] records.

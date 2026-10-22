@@ -35,17 +35,61 @@ impl FileSystem for OsFileSystem {
     }
 
     fn write_string(&self, path: &Path, content: &str) -> io::Result<()> {
-        fs::write(path, content)?;
-        // If the content contains a bearer token, restrict file permissions
-        // to owner-only on Unix to prevent other local users from reading
-        // the token.
-        #[cfg(unix)]
-        if content.contains("Bearer ") {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-        }
-        Ok(())
+        write_string_atomic(path, content)
     }
+}
+
+/// Write `content` to `path` through a sibling temp file and an atomic rename.
+///
+/// The temp file is created with owner-only permissions on Unix when the
+/// content carries a bearer token, so the secret is never readable by other
+/// users even briefly; otherwise the original file's permissions are kept.
+/// The first time an existing file is rewritten its original content is saved
+/// next to it as `<name>.bak`. Symlinked config files are written through to
+/// their target.
+fn write_string_atomic(path: &Path, content: &str) -> io::Result<()> {
+    use std::io::Write;
+
+    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let existing_perms = fs::metadata(&target).ok().map(|meta| meta.permissions());
+    if existing_perms.is_some() {
+        let mut backup = target.clone().into_os_string();
+        backup.push(".bak");
+        let backup = PathBuf::from(backup);
+        if !backup.exists() {
+            fs::copy(&target, &backup)?;
+        }
+    }
+
+    let mut tmp_name = target.clone().into_os_string();
+    tmp_name.push(format!(".tmp-{}", std::process::id()));
+    let tmp = PathBuf::from(tmp_name);
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mode = if content.contains("Bearer ") {
+            0o600
+        } else {
+            existing_perms
+                .as_ref()
+                .map_or(0o644, |perms| perms.mode() & 0o777)
+        };
+        options.mode(mode);
+    }
+    let result = (|| {
+        let mut file = options.open(&tmp)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, &target)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// Result of applying MentisDB setup to one integration target.
