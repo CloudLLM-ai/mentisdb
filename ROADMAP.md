@@ -1,6 +1,16 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 -> 0.10.8.53)
+## Shipped (0.8.2 -> 0.10.9.54)
+
+### 0.10.9.54 - Security, reliability and retrieval
+- **Security: legacy MCP `/tools/execute` authorization bypass** — the bearer-token authorizer and the legacy executor read different fields of the request body, so chain-scoped tokens could invoke tools on other chains, call global-only tools, and merge/delete other chains (0.10.8.53 and earlier, when bearer-token access is enabled). Authorization now inspects exactly the fields each transport executes; mixed-shape payloads return 400. Upgrade recommended.
+- **Security hardening** — shared REST/MCP operation authorization table (global-only ops for chain listing, webhooks, cross-chain agents, skill mutations, admin flush); merge/branch key normalization before authorization; webhook SSRF hardening (IPv4-translated, local NAT64, Teredo, DNS re-check at delivery, no redirects, circuit breaker); dashboard stored XSS, CSRF, DNS-rebinding `Host` allowlist (`MENTISDB_DASHBOARD_ALLOWED_HOSTS`), per-IP login limiter; backup restore bounds; `0600` secrets files.
+- **Issue #23 memory blow-up** — one shared FastEmbed model per process, bounded inference chunks, single background sidecar rebuild worker, model cache under `<MENTISDB_DIR>`, `MENTISDB_EMBEDDINGS` opt-out. 13 chains / 2,704 thoughts: previously >6 GB (reporter OOM at 28.8 GiB), now ~1.7 GB peak.
+- **Retrieval** — RRF rerank is a scaled consensus bonus (LoCoMo rerank R@10 5.9% -> 74.1%, LongMemEval rerank R@5 2.8% -> 68.6%); stemmed thesaurus damped to weight 0.3 / cap 3; federated RRF keyed by (chain, id); filtered HNSW recall. Default LoCoMo R@10 72.7 -> 73.5, LongMemEval R@5 66.8 -> 68.0; query throughput ~206/159 -> ~384/385 q/s.
+- **Durability** — torn-tail repair limited to a strict partial final record (mid-file corruption fails open); atomic registries; overlay coverage metadata with crash catch-up; opt-in `MENTISDB_FSYNC`; lone durable appends skip the group-commit wait. Per-append cost 6.3-7.8 ms -> 1.4 ms.
+- **Server behaviour** — unknown-chain reads return 404; accurate error statuses; 413 over 1 MiB; single-flight off-thread chain open; `<MENTISDB_DIR>/.env` loaded.
+- **CI and deps** — Intel macOS binary returns without `local-embeddings`; ureq 3, sha2 0.11, ed25519-dalek 3, zip 9, crossterm 0.29 and more; fastembed kept on 5.x (fastembed 7 / ort rc.15 auto-registers CoreML on macOS, ~2.5x slower queries).
+- Audit run as parallel agent workstreams coordinated through MentisDB. Full LoCoMo/LongMemEval re-run.
 
 ### 0.10.8.53 - Technical Debt: Sidecar WAL Self-Consistency, CLI Thought Types
 - **Vector sidecar WAL brick (issue #20)** — compaction wrote the full-corpus snapshot digest but never rebased the live in-memory WAL head, so the first append past the 32-record threshold made the next chain open fail with `vector sidecar WAL digest chain mismatch`. Because the chain could not be opened, every write and most reads failed until `.wal` was deleted by hand. Compaction now rebases the WAL head, the managed append path rebases at schedule time, and a full snapshot clears any sibling `.wal` before the atomic rename. Unreadable sidecars rebuild from the canonical log instead of aborting the open.
