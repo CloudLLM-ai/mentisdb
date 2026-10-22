@@ -2982,6 +2982,21 @@ impl MentisDbService {
         );
         let webhook_policy = crate::webhooks::WebhookUrlPolicy::from_env()?;
         if let crate::webhooks::WebhookUrlPolicy::AllowCidrs(cidrs) = &webhook_policy {
+            let sensitive: [IpAddr; 3] = [
+                IpAddr::from([169, 254, 169, 254]),
+                IpAddr::from([127, 0, 0, 1]),
+                IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+            ];
+            for cidr in cidrs.iter() {
+                if let Some(ip) = sensitive.iter().find(|ip| cidr.contains(ip)) {
+                    log::warn!(
+                        target: "mentisdb::webhooks",
+                        "{} in MENTISDB_WEBHOOK_ALLOWED_CIDRS covers {} (loopback or cloud metadata); webhooks can now reach it",
+                        cidr,
+                        ip
+                    );
+                }
+            }
             log::warn!(
                 target: "mentisdb::webhooks",
                 "webhooks may target internal addresses in: {}",

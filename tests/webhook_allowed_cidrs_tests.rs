@@ -39,8 +39,9 @@ fn test_webhook_cidr_parses_and_normalizes() {
     assert_eq!(cidr("100.64.0.0/10").network(), ip("100.64.0.0"));
 }
 
-/// Malformed entries, out-of-range prefixes and /0 (which would disable the
-/// SSRF guard entirely) are rejected with an error naming the entry.
+/// Malformed entries, out-of-range prefixes and ranges broader than /8 (which
+/// would re-open most of the address space the SSRF guard protects) are
+/// rejected with an error naming the entry.
 #[test]
 fn test_webhook_cidr_rejects_invalid_entries() {
     for bad in [
@@ -51,6 +52,11 @@ fn test_webhook_cidr_rejects_invalid_entries() {
         "10.0.0.0/",
         "0.0.0.0/0",
         "::/0",
+        "0.0.0.0/1",
+        "128.0.0.0/1",
+        "10.0.0.0/7",
+        "::/1",
+        "fc00::/7",
     ] {
         let error = bad.parse::<WebhookCidr>().expect_err(bad);
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{bad}");
@@ -78,6 +84,15 @@ fn test_webhook_cidr_contains_respects_prefix_and_family() {
     assert!(ula.contains(&ip("fd7a:115c:a1e0:ab12::1")));
     assert!(!ula.contains(&ip("fd7a:115c:a1e1::1")));
     assert!(!ula.contains(&ip("100.64.0.1")));
+}
+
+/// The broadest accepted ranges are exactly /8 for both address families.
+#[test]
+fn test_webhook_cidr_accepts_prefixes_at_the_minimum() {
+    assert_eq!(cidr("10.0.0.0/8").prefix_len(), 8);
+    assert_eq!(cidr("fd00::/8").prefix_len(), 8);
+    assert_eq!(mentisdb::webhooks::MIN_ALLOWED_PREFIX_V4, 8);
+    assert_eq!(mentisdb::webhooks::MIN_ALLOWED_PREFIX_V6, 8);
 }
 
 /// The list accepts commas and/or whitespace; blank means the strict default;

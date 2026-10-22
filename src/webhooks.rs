@@ -43,6 +43,16 @@ fn lock_tolerant<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// though they fall inside otherwise-blocked internal ranges.
 pub const WEBHOOK_ALLOWED_CIDRS_ENV: &str = "MENTISDB_WEBHOOK_ALLOWED_CIDRS";
 
+/// Broadest IPv4 prefix accepted in [`WEBHOOK_ALLOWED_CIDRS_ENV`] (`/8`).
+///
+/// Anything broader (for example `0.0.0.0/1`) would quietly re-open most of
+/// the internal address space the SSRF guard exists to protect.
+pub const MIN_ALLOWED_PREFIX_V4: u8 = 8;
+
+/// Broadest IPv6 prefix accepted in [`WEBHOOK_ALLOWED_CIDRS_ENV`] (`/8`, so
+/// the common unique-local `fd00::/8` still fits).
+pub const MIN_ALLOWED_PREFIX_V6: u8 = 8;
+
 /// Policy deciding which webhook targets may be contacted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebhookUrlPolicy {
@@ -85,8 +95,8 @@ impl WebhookUrlPolicy {
     /// # Errors
     ///
     /// Returns `InvalidInput` naming the first entry that fails to parse, or
-    /// any `/0` entry (allowing every address is never what you want; there is
-    /// no opt-out from the SSRF guard).
+    /// any entry broader than [`MIN_ALLOWED_PREFIX_V4`] / [`MIN_ALLOWED_PREFIX_V6`]
+    /// (there is no opt-out from the SSRF guard).
     ///
     /// # Examples
     ///
@@ -210,8 +220,15 @@ impl std::str::FromStr for WebhookCidr {
                 .filter(|len| *len <= max)
                 .ok_or_else(|| invalid(&format!("prefix length must be 0-{max}")))?,
         };
-        if prefix_len == 0 {
-            return Err(invalid("a /0 range would disable the webhook SSRF guard"));
+        let min = if addr.is_ipv4() {
+            MIN_ALLOWED_PREFIX_V4
+        } else {
+            MIN_ALLOWED_PREFIX_V6
+        };
+        if prefix_len < min {
+            return Err(invalid(&format!(
+                "prefix /{prefix_len} is broader than /{min}; list the narrow ranges your webhook consumers actually use"
+            )));
         }
         let network = match addr {
             IpAddr::V4(v4) => IpAddr::V4(Ipv4Addr::from(mask_v4(u32::from(v4), prefix_len))),
