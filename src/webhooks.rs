@@ -736,6 +736,19 @@ fn is_blocked_v6(v6: &Ipv6Addr) -> bool {
     if seg[0] == 0x64 && seg[1] == 0xff9b && seg[2..6].iter().all(|s| *s == 0) {
         return is_blocked_v4(&embedded(seg[6], seg[7]));
     }
+    // IPv4-translated (SIIT, RFC 2765) ::ffff:0:0:0/96 embeds the IPv4 target
+    // in the low 32 bits.
+    if seg[..4].iter().all(|s| *s == 0) && seg[4] == 0xffff && seg[5] == 0 {
+        return is_blocked_v4(&embedded(seg[6], seg[7]));
+    }
+    // Local-use NAT64 64:ff9b:1::/48 (RFC 8215) is operator-defined: block it.
+    if seg[0] == 0x64 && seg[1] == 0xff9b && seg[2] == 1 {
+        return true;
+    }
+    // Teredo 2001::/32 tunnels to arbitrary (obfuscated) IPv4 endpoints.
+    if seg[0] == 0x2001 && seg[1] == 0 {
+        return true;
+    }
     // 6to4 2002::/16 embeds the IPv4 target in segments 1-2.
     if seg[0] == 0x2002 {
         return is_blocked_v4(&embedded(seg[1], seg[2]));
