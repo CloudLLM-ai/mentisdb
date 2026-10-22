@@ -85,9 +85,10 @@ Linux binaries come in two flavours (since 0.10.10, [#21](https://github.com/Clo
 
 The full builds need a recent glibc because the prebuilt ONNX Runtime they link
 for local embeddings is itself built against glibc 2.38+. The `-compat` builds are
-compiled on Ubuntu 22.04 without the `local-embeddings` feature: lexical search
-and `local-text-v1` vectors work as usual, but there is no `fastembed-minilm`
-semantic vector provider (the same trade-off as the Intel macOS binary). Release
+compiled on Ubuntu 22.04 without the `local-embeddings` and `startup-sound`
+features: lexical search and `local-text-v1` vectors work as usual, but there is no
+`fastembed-minilm` semantic vector provider (the same trade-off as the Intel macOS
+binary) and no startup chime, so they need no ALSA (`libasound.so.2`) on the host. Release
 CI fails the build if a `-compat` binary ever needs a glibc newer than 2.35.
 
 Check your glibc before picking one:
@@ -480,7 +481,8 @@ Once startup completes, it prints:
   Private ranges webhooks may target despite the SSRF guard, for self-hosted consumers on a
   private network. One or more CIDRs or bare IPs separated by commas and/or whitespace, e.g.
   `100.64.0.0/10,fd7a:115c:a1e0::/48` (Tailscale). Unset (default) keeps every internal range
-  blocked; an invalid value or a `/0` entry stops the daemon from starting. Set it in the
+  blocked; an invalid value or an entry broader than `/8` (IPv4 or IPv6) stops the daemon
+  from starting. Set it in the
   environment or a `.env` file (`./.env` or `<MENTISDB_DIR>/.env`). See "Webhook targets" below.
 - `MENTISDB_BEARER_TOKEN_ACCESS`
   Require bearer tokens for MCP requests. Default: `false`. Set `true` for remote
@@ -1647,8 +1649,10 @@ MENTISDB_WEBHOOK_ALLOWED_CIDRS=192.168.1.50
   delivery time (to every resolved DNS address and to literal IPs). Removing the variable,
   or narrowing it so a registration is no longer covered, loads that registration
   **inactive** again on the next start
-- a `/0` entry or any unparsable entry makes the daemon refuse to start; the active ranges
-  are logged as a warning at startup
+- any unparsable entry, or any entry broader than `/8` (IPv4 or IPv6; `fd00::/8` still
+  fits), makes the daemon refuse to start. The active ranges are logged as a warning at
+  startup, plus a dedicated warning for any listed range that covers loopback
+  (`127.0.0.1`, `::1`) or the cloud metadata address `169.254.169.254`
 - list only the narrowest ranges your consumers live in (your tailnet, one `/24`, one host).
   Never list cloud metadata (`169.254.169.254`, `169.254.0.0/16`) or broad ranges like
   `10.0.0.0/8`: any token allowed to register webhooks (global tokens, and chain-scoped
