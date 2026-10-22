@@ -4628,12 +4628,12 @@ impl MentisDbService {
         if !active_keys.is_empty() {
             // Agent has registered public keys — a valid signature is mandatory.
             let key_id = request.signing_key_id.as_deref().ok_or_else(|| {
-                Box::<dyn Error + Send + Sync>::from(
+                permission_denied_error(
                     "agent has registered public keys; `signing_key_id` is required for skill upload",
                 )
             })?;
             let sig_bytes = request.skill_signature.as_deref().ok_or_else(|| {
-                Box::<dyn Error + Send + Sync>::from(
+                permission_denied_error(
                     "agent has registered public keys; `skill_signature` is required for skill upload",
                 )
             })?;
@@ -4641,13 +4641,13 @@ impl MentisDbService {
                 .iter()
                 .find(|k| k.key_id == key_id)
                 .ok_or_else(|| {
-                    Box::<dyn Error + Send + Sync>::from(format!(
+                    permission_denied_error(format!(
                         "signing key '{key_id}' not found or has been revoked for agent '{}'",
                         agent.agent_id
                     ))
                 })?;
             verify_ed25519_signature(&key.public_key_bytes, request.content.as_bytes(), sig_bytes)
-                .map_err(Box::<dyn Error + Send + Sync>::from)?;
+                .map_err(permission_denied_error)?;
         }
         // --- End signature verification ---
 
@@ -6715,10 +6715,13 @@ async fn mcp_execute_handler(
 
     match protocol.execute(&request.tool, request.parameters).await {
         Ok(result) => (StatusCode::OK, Json(json!({ "result": result }))),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "result": ToolResult::failure(error.to_string()) })),
-        ),
+        Err(error) => {
+            let (status, message) = classify_service_error(error.as_ref());
+            (
+                status,
+                Json(json!({ "result": ToolResult::failure(message) })),
+            )
+        }
     }
 }
 
@@ -7442,19 +7445,75 @@ pub fn validate_chain_key_shape(chain_key: &str) -> Result<(), Box<dyn Error + S
     Ok(())
 }
 
+/// Classifies a service error into an HTTP status and a client-safe message.
+///
+/// Mapping: `InvalidInput`/`InvalidData`, JSON, UUID and thought-type parse
+/// errors become 400; `NotFound` 404; `PermissionDenied` 403; `AlreadyExists`
+/// 409; `Unsupported` 501. Everything else is a server fault: the caller gets a
+/// generic 500 message and the detail (which may contain absolute paths) is
+/// logged server-side only.
+pub fn classify_service_error(error: &(dyn Error + 'static)) -> (StatusCode, String) {
+    if let Some(io_error) = error.downcast_ref::<io::Error>() {
+        return match io_error.kind() {
+            io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => {
+                (StatusCode::BAD_REQUEST, error.to_string())
+            }
+            io::ErrorKind::NotFound => (StatusCode::NOT_FOUND, error.to_string()),
+            io::ErrorKind::PermissionDenied => (StatusCode::FORBIDDEN, error.to_string()),
+            io::ErrorKind::AlreadyExists => (StatusCode::CONFLICT, error.to_string()),
+            io::ErrorKind::Unsupported => (StatusCode::NOT_IMPLEMENTED, error.to_string()),
+            _ => internal_error_response(error),
+        };
+    }
+    let client_error = error.is::<serde_json::Error>()
+        || error.is::<uuid::Error>()
+        || error.is::<crate::ParseThoughtTypeError>()
+        || error.is::<ClientInputError>();
+    if client_error {
+        return (StatusCode::BAD_REQUEST, error.to_string());
+    }
+    internal_error_response(error)
+}
+
+fn internal_error_response(error: &(dyn Error + 'static)) -> (StatusCode, String) {
+    log::error!(target: "mentisdb::server", "internal error: {error}");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "internal server error".to_string(),
+    )
+}
+
+/// Wraps any displayable validation failure as a [`ClientInputError`] (HTTP 400).
+fn client_input_error<E: std::fmt::Display>(error: E) -> Box<dyn Error + Send + Sync> {
+    Box::new(ClientInputError(error.to_string()))
+}
+
+/// Builds a `PermissionDenied` error (HTTP 403).
+fn permission_denied_error(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
+    Box::new(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        message.into(),
+    ))
+}
+
+/// A validation failure caused by the request contents (maps to HTTP 400).
+#[derive(Debug)]
+pub struct ClientInputError(pub String);
+
+impl std::fmt::Display for ClientInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Error for ClientInputError {}
+
 fn service_call<T: Serialize>(
     result: Result<T, Box<dyn Error + Send + Sync>>,
 ) -> Result<Json<T>, (StatusCode, Json<Value>)> {
     result.map(Json).map_err(|error| {
-        let status = error
-            .downcast_ref::<io::Error>()
-            .map(|error| match error.kind() {
-                io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
-                io::ErrorKind::PermissionDenied => StatusCode::FORBIDDEN,
-                _ => StatusCode::BAD_REQUEST,
-            })
-            .unwrap_or(StatusCode::BAD_REQUEST);
-        (status, Json(json!({ "error": error.to_string() })))
+        let (status, message) = classify_service_error(error.as_ref());
+        (status, Json(json!({ "error": message })))
     })
 }
 
@@ -8714,7 +8773,11 @@ fn parse_thought_role(input: &str) -> Result<ThoughtRole, Box<dyn Error + Send +
         "handoff" => ThoughtRole::Handoff,
         "audit" => ThoughtRole::Audit,
         "retrospective" => ThoughtRole::Retrospective,
-        _ => return Err(format!("Unknown ThoughtRole '{input}'").into()),
+        _ => {
+            return Err(Box::new(ClientInputError(format!(
+                "Unknown ThoughtRole '{input}'"
+            ))))
+        }
     };
 
     Ok(role)
@@ -8725,7 +8788,7 @@ fn parse_storage_adapter_kind(
 ) -> Result<StorageAdapterKind, Box<dyn Error + Send + Sync>> {
     input
         .parse::<StorageAdapterKind>()
-        .map_err(|error| error.into())
+        .map_err(client_input_error)
 }
 
 fn parse_memory_scope(input: &str) -> Option<MemoryScope> {
@@ -8753,24 +8816,28 @@ fn parse_thought_relation_kind(
         "branchesfrom" => ThoughtRelationKind::BranchesFrom,
         "relatedto" => ThoughtRelationKind::RelatedTo,
         "supersedes" => ThoughtRelationKind::Supersedes,
-        _ => return Err(format!("Unknown ThoughtRelationKind '{input}'").into()),
+        _ => {
+            return Err(Box::new(ClientInputError(format!(
+                "Unknown ThoughtRelationKind '{input}'"
+            ))))
+        }
     };
     Ok(kind)
 }
 
 fn parse_agent_status(input: &str) -> Result<AgentStatus, Box<dyn Error + Send + Sync>> {
-    input.parse::<AgentStatus>().map_err(|error| error.into())
+    input.parse::<AgentStatus>().map_err(client_input_error)
 }
 
 fn parse_skill_format(input: Option<&str>) -> Result<SkillFormat, Box<dyn Error + Send + Sync>> {
     input
         .unwrap_or("markdown")
         .parse::<SkillFormat>()
-        .map_err(|error| error.into())
+        .map_err(client_input_error)
 }
 
 fn parse_skill_status(input: &str) -> Result<SkillStatus, Box<dyn Error + Send + Sync>> {
-    input.parse::<SkillStatus>().map_err(|error| error.into())
+    input.parse::<SkillStatus>().map_err(client_input_error)
 }
 
 fn parse_public_key_algorithm(
@@ -8778,7 +8845,7 @@ fn parse_public_key_algorithm(
 ) -> Result<PublicKeyAlgorithm, Box<dyn Error + Send + Sync>> {
     input
         .parse::<PublicKeyAlgorithm>()
-        .map_err(|error| error.into())
+        .map_err(client_input_error)
 }
 
 fn infer_storage_adapter_name(storage_location: &str) -> String {
