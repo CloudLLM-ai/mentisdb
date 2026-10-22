@@ -1497,7 +1497,7 @@ The daemon currently exposes 42 MCP tools:
 Webhook targets (0.10.9):
 
 - only `http` and `https` URLs are accepted, and redirects are never followed
-- `localhost`, loopback, private (RFC 1918), link-local, CGNAT (`100.64.0.0/10`), documentation/TEST-NET, benchmarking, multicast, broadcast, reserved and unspecified addresses are rejected, as are IPv6 ULA/link-local/documentation addresses and IPv6 forms that embed a blocked IPv4 address (IPv4-mapped, NAT64, 6to4)
+- `localhost`, loopback, private (RFC 1918), link-local, CGNAT (`100.64.0.0/10`), documentation/TEST-NET, benchmarking, multicast, broadcast, reserved and unspecified addresses are rejected, as are IPv6 ULA/link-local/documentation addresses and IPv6 forms that embed a blocked IPv4 address (IPv4-mapped, IPv4-translated `::ffff:0:0:0/96`, NAT64, 6to4); the local-use NAT64 prefix `64:ff9b:1::/48` and Teredo `2001::/32` are rejected outright
 - the same check runs on every address a hostname resolves to at delivery time, so DNS names pointing at internal ranges (or DNS rebinding) cannot reach them
 - webhooks persisted in `mentisdb-webhooks.json` that point at a blocked target are loaded **inactive** with a warning
 - a circuit breaker pauses a webhook for 5 minutes after 5 consecutive failed deliveries; a success resets it
