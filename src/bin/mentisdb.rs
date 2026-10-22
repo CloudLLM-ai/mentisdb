@@ -40,11 +40,13 @@ use mentisdb::server::{
     MentisDbMcpProtocol, MentisDbServerConfig, MentisDbServerHandles, MentisDbService,
 };
 use mentisdb::tui::{self, AgentInfo, ChainInfo, SkillInfo, TuiState};
+#[cfg(feature = "startup-sound")]
+use mentisdb::ThoughtType;
 use mentisdb::{
     cli::help_text as cli_help_text, load_registered_chains, migrate_chain_hash_algorithm,
     migrate_registered_chains_with_adapter, migrate_skill_registry,
     refresh_registered_chain_counts, MentisDb, MentisDbMigrationEvent, MentisDbMigrationReport,
-    SkillRegistry, ThoughtType,
+    SkillRegistry,
 };
 use serde::Deserialize;
 use std::ffi::OsString;
@@ -1601,6 +1603,7 @@ async fn run_startup_sequence(
     } else {
         None
     };
+    #[cfg_attr(not(feature = "startup-sound"), allow(unused_mut))]
     let mut config = MentisDbServerConfig::from_env();
 
     // Update check
