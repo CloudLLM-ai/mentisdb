@@ -11764,12 +11764,36 @@ fn read_next_binary_payload(reader: &mut impl Read) -> io::Result<Option<Vec<u8>
     let mut payload = vec![0_u8; length_u64 as usize];
     let payload_read = read_up_to(reader, &mut payload)?;
     if payload_read < payload.len() {
+        reject_non_torn_partial_payload(&payload[..payload_read], length_u64)?;
         eprintln!(
             "[mentisdb] torn binary chain tail: partial payload ({payload_read} of {length_u64} bytes)"
         );
         return Ok(None);
     }
     Ok(Some(payload))
+}
+
+/// Distinguish a genuinely torn final record from a corrupted length prefix.
+///
+/// A crash mid-append leaves a strict prefix of one serialized thought, which
+/// can never decode on its own. If the bytes after a length prefix that points
+/// past EOF already decode as a complete thought, the prefix itself is
+/// corrupt (for example a mid-file bit flip) and everything after it is real
+/// data that must not be truncated, so the chain fails open with `InvalidData`.
+fn reject_non_torn_partial_payload(partial: &[u8], claimed_len: u64) -> io::Result<()> {
+    if (partial.len() as u64) > MAX_THOUGHT_PAYLOAD_BYTES + 8
+        || deserialize_binary_thought_payload(partial).is_ok()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "binary thought length prefix {claimed_len} points past end of file but the \
+                 following {} bytes hold a complete record; refusing to treat it as a torn tail",
+                partial.len()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Result of scanning the record framing of a binary chain file.
@@ -11807,6 +11831,9 @@ fn scan_binary_chain(file_path: &Path) -> io::Result<BinaryChainScan> {
         }
         let end = good_len + 8 + length_u64;
         if end > file_len {
+            let mut partial = vec![0_u8; (file_len - good_len - 8) as usize];
+            let read = read_up_to(&mut file, &mut partial)?;
+            reject_non_torn_partial_payload(&partial[..read], length_u64)?;
             break;
         }
         file.seek(SeekFrom::Start(end))?;
@@ -11825,6 +11852,16 @@ fn scan_binary_chain(file_path: &Path) -> io::Result<BinaryChainScan> {
 /// The removed bytes are preserved beside the chain as `<file>.torn-<millis>`
 /// so no data is destroyed silently. Called before the append writer first
 /// opens the file, so new records are never written after garbage.
+///
+/// Only a single partial record is ever treated as torn; an unreadable
+/// remainder that holds a complete record (corrupt mid-file length prefix)
+/// fails open with `InvalidData` and the file is left untouched.
+///
+/// # Single-writer assumption
+///
+/// MentisDB assumes exactly one writer process per chain directory. This
+/// repair performs no cross-process locking: a second process appending while
+/// another opens the chain could have its in-flight record truncated.
 fn repair_torn_binary_tail(file_path: &Path) -> io::Result<()> {
     if !file_path.exists() {
         return Ok(());
@@ -11846,7 +11883,18 @@ fn repair_torn_binary_tail(file_path: &Path) -> io::Result<()> {
     source.read_to_end(&mut tail)?;
     let mut torn_name = file_path.as_os_str().to_owned();
     torn_name.push(format!(".torn-{}", Utc::now().timestamp_millis()));
-    fs::write(PathBuf::from(torn_name), &tail)?;
+    // `create_new` refuses to follow or clobber an existing path; 0600 keeps
+    // preserved memory content private on unix.
+    let mut torn_options = OpenOptions::new();
+    torn_options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        torn_options.mode(0o600);
+    }
+    let mut torn_file = torn_options.open(PathBuf::from(torn_name))?;
+    torn_file.write_all(&tail)?;
+    torn_file.sync_all()?;
     let file = OpenOptions::new().write(true).open(file_path)?;
     file.set_len(scan.good_len)?;
     file.sync_all()

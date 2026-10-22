@@ -90,3 +90,49 @@ fn test_intact_chain_is_not_modified_on_append_open() {
         .filter_map(Result::ok)
         .all(|entry| !entry.file_name().to_string_lossy().contains(".torn-")));
 }
+
+/// A corrupted length prefix on a middle record must fail open with
+/// `InvalidData` and leave the file byte-identical, never truncating the
+/// valid records that follow it.
+#[test]
+fn test_corrupt_middle_length_prefix_fails_open_without_truncation() {
+    let temp = tempdir().unwrap();
+    let path = write_chain(temp.path(), 6);
+    let mut bytes = std::fs::read(&path).unwrap();
+    let first_len = u64::from_le_bytes(bytes[0..8].try_into().unwrap()) as usize;
+    let second = 8 + first_len;
+    bytes[second..second + 8].copy_from_slice(&9_000_000_u64.to_le_bytes());
+    std::fs::write(&path, &bytes).unwrap();
+
+    let result = MentisDb::open_with_key(temp.path(), "torn");
+    assert!(result.is_err(), "corrupt middle prefix must not open");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        bytes,
+        "file must be untouched"
+    );
+    assert!(std::fs::read_dir(temp.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .all(|entry| !entry.file_name().to_string_lossy().contains(".torn-")));
+}
+
+/// The preserved `.torn-*` file must be private (0600) on unix.
+#[cfg(unix)]
+#[test]
+fn test_torn_tail_file_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempdir().unwrap();
+    let path = write_chain(temp.path(), 2);
+    append_bytes(&path, &[1, 2, 3]);
+    let mut chain = MentisDb::open_with_key(temp.path(), "torn").unwrap();
+    chain.append("agent", ThoughtType::Finding, "x").unwrap();
+    chain.flush().unwrap();
+    let torn = std::fs::read_dir(temp.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|e| e.file_name().to_string_lossy().contains(".torn-"))
+        .expect("torn file preserved");
+    let mode = torn.metadata().unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}
