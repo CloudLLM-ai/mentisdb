@@ -8147,10 +8147,12 @@ impl MentisDb {
 
         const MAX_GRAPH_SEEDS: usize = 20;
         let adjacency = self.cached_adjacency_index();
-        let candidate_positions: HashSet<usize> = candidates
-            .iter()
-            .map(|thought| thought.index as usize)
-            .collect();
+        let mut candidate_mask = vec![false; self.thoughts.len()];
+        for thought in candidates {
+            if let Some(slot) = candidate_mask.get_mut(thought.index as usize) {
+                *slot = true;
+            }
+        }
         let seeds: Vec<crate::search::ThoughtLocator> = lexical_scan
             .top_scores(MAX_GRAPH_SEEDS)
             .into_iter()
@@ -8164,11 +8166,28 @@ impl MentisDb {
             .filter_map(|seed| seed.thought_index.map(|index| index as usize))
             .collect();
 
-        let id_lookup = adjacency.locator_map().clone();
+        // Borrow the locator map; cloning it per query is a deep copy.
+        let id_lookup = adjacency.locator_map();
         let mut hits = Vec::new();
         for seed in seeds {
             let seed_position = seed.thought_index.map(|index| index as usize);
-            let seed_result = crate::search::GraphExpansionResult::expand_with_overlay(
+            // Only candidates count against `max_visited` and can be emitted;
+            // other seeds count but are reported through their own expansion;
+            // excluded nodes are traversed through without spending budget.
+            let classify = |locator: &crate::search::ThoughtLocator| {
+                use crate::search::ExpansionNodeRole;
+                let Some(position) = locator.thought_index.map(|index| index as usize) else {
+                    return ExpansionNodeRole::PassThrough;
+                };
+                if !candidate_mask.get(position).copied().unwrap_or(false) {
+                    ExpansionNodeRole::PassThrough
+                } else if seed_positions.contains(&position) && Some(position) != seed_position {
+                    ExpansionNodeRole::CountOnly
+                } else {
+                    ExpansionNodeRole::Emit
+                }
+            };
+            let seed_result = crate::search::GraphExpansionResult::expand_with_overlay_classified(
                 &adjacency,
                 &crate::search::GraphExpansionQuery::new(vec![seed])
                     .with_max_depth(graph.max_depth)
@@ -8176,20 +8195,10 @@ impl MentisDb {
                     .with_include_seeds(graph.include_seeds)
                     .with_mode(graph.mode),
                 self.implicit_edge_overlay.as_ref(),
-                &id_lookup,
+                id_lookup,
+                classify,
             );
-
-            hits.extend(seed_result.hits.into_iter().filter(|hit| {
-                hit.locator
-                    .thought_index
-                    .map(|index| {
-                        let position = index as usize;
-                        candidate_positions.contains(&position)
-                            && (!seed_positions.contains(&position)
-                                || Some(position) == seed_position)
-                    })
-                    .unwrap_or(false)
-            }));
+            hits.extend(seed_result.hits);
         }
 
         hits

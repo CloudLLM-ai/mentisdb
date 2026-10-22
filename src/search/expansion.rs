@@ -1,8 +1,9 @@
 use super::{
-    AdjacencyDirection, GraphEdge, GraphEdgeProvenance, GraphExpansionPath, ThoughtAdjacencyIndex,
-    ThoughtLocator,
+    AdjacencyDirection, GraphEdge, GraphEdgeProvenance, GraphExpansionHop, GraphExpansionPath,
+    ThoughtAdjacencyIndex, ThoughtLocator,
 };
 use crate::ThoughtRelationKind;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
 
@@ -133,69 +134,135 @@ impl GraphExpansionResult {
     }
 
     /// Expand with an optional implicit-edge overlay supplementing explicit relations.
+    ///
+    /// Every reached node counts against `max_visited` and is emitted as a hit.
+    /// See [`GraphExpansionResult::expand_with_overlay_classified`] to count
+    /// and emit only a subset of nodes.
     pub fn expand_with_overlay(
         index: &ThoughtAdjacencyIndex,
         query: &GraphExpansionQuery,
         overlay: Option<&crate::search::ImplicitEdgeOverlay>,
         id_lookup: &HashMap<Uuid, ThoughtLocator>,
     ) -> Self {
-        let mut queue = VecDeque::new();
+        Self::expand_with_overlay_classified(index, query, overlay, id_lookup, |_| {
+            ExpansionNodeRole::Emit
+        })
+    }
+
+    /// Expand with an overlay, letting `classify` decide how each reached node
+    /// is treated (see [`ExpansionNodeRole`]).
+    ///
+    /// This is how ranked search keeps its visit budget for nodes that can
+    /// actually be returned: nodes excluded by a candidate filter are
+    /// [`ExpansionNodeRole::PassThrough`], so they are traversed (they can
+    /// connect allowed nodes) but neither count against `max_visited` nor
+    /// produce hits. Pass-through nodes are themselves capped at
+    /// [`PASS_THROUGH_BUDGET_FACTOR`] times `max_visited` so a filter that
+    /// excludes most of a large graph cannot make one expansion walk all of it.
+    ///
+    /// Paths are stored in a parent-pointer arena and reconstructed only for
+    /// emitted hits, so queued nodes cost one small record instead of a full
+    /// cloned [`GraphExpansionPath`].
+    pub fn expand_with_overlay_classified<F>(
+        index: &ThoughtAdjacencyIndex,
+        query: &GraphExpansionQuery,
+        overlay: Option<&crate::search::ImplicitEdgeOverlay>,
+        id_lookup: &HashMap<Uuid, ThoughtLocator>,
+        mut classify: F,
+    ) -> Self
+    where
+        F: FnMut(&ThoughtLocator) -> ExpansionNodeRole,
+    {
+        let mut arena: Vec<ArenaNode<'_>> = Vec::new();
+        let mut queue: VecDeque<usize> = VecDeque::new();
         let mut seen = HashSet::new();
         let mut hits = Vec::new();
         let mut stats = GraphExpansionStats::default();
+        let mut counted = 0usize;
+        let mut passed = 0usize;
+        let pass_budget = query.max_visited.saturating_mul(PASS_THROUGH_BUDGET_FACTOR);
 
         for seed in dedupe_seed_order(&query.seeds) {
-            if seen.len() >= query.max_visited {
+            let role = classify(&seed);
+            if role.counts() && counted >= query.max_visited {
                 stats.truncated = true;
                 break;
             }
             if !seen.insert(seed.clone()) {
                 continue;
             }
-            let path = GraphExpansionPath::new(seed.clone());
-            if query.include_seeds {
+            if role.counts() {
+                counted += 1;
+            } else {
+                passed += 1;
+            }
+            let id = arena.len();
+            if query.include_seeds && role == ExpansionNodeRole::Emit {
                 hits.push(GraphExpansionHit {
                     locator: seed.clone(),
                     depth: 0,
-                    path: path.clone(),
+                    path: GraphExpansionPath::new(seed.clone()),
                 });
             }
-            queue.push_back(path);
+            arena.push(ArenaNode {
+                parent: None,
+                kind: NodeKind::Root(seed),
+                depth: 0,
+            });
+            queue.push_back(id);
         }
 
-        'outer: while let Some(path) = queue.pop_front() {
-            if path.depth() >= query.max_depth {
+        'outer: while let Some(node_id) = queue.pop_front() {
+            let depth = arena[node_id].depth;
+            if depth >= query.max_depth {
                 continue;
             }
+            let current = arena[node_id].locator().clone();
 
             for &direction in query.mode.directions() {
-                for edge in index.neighbors(path.current(), direction) {
+                for edge in index.neighbors(&current, direction) {
                     stats.traversed_edge_count += 1;
-                    let Ok(next_path) = path.extend(direction, edge) else {
-                        continue;
-                    };
-                    let next_locator = next_path.current().clone();
-                    if seen.contains(&next_locator) {
+                    let next_locator = edge.arrival(direction);
+                    if seen.contains(next_locator) {
                         continue;
                     }
-                    if seen.len() >= query.max_visited {
-                        stats.truncated = true;
-                        break 'outer;
+                    let role = classify(next_locator);
+                    if role.counts() {
+                        if counted >= query.max_visited {
+                            stats.truncated = true;
+                            break 'outer;
+                        }
+                        counted += 1;
+                    } else {
+                        if passed >= pass_budget {
+                            continue;
+                        }
+                        passed += 1;
                     }
-
                     seen.insert(next_locator.clone());
-                    hits.push(GraphExpansionHit {
-                        locator: next_locator,
-                        depth: next_path.depth(),
-                        path: next_path.clone(),
+                    let next_id = arena.len();
+                    arena.push(ArenaNode {
+                        parent: Some(node_id),
+                        kind: NodeKind::Hop {
+                            direction,
+                            edge: Cow::Borrowed(edge),
+                        },
+                        depth: depth + 1,
                     });
-                    queue.push_back(next_path);
+                    if role == ExpansionNodeRole::Emit {
+                        hits.push(GraphExpansionHit {
+                            locator: next_locator.clone(),
+                            depth: depth + 1,
+                            path: build_path(&arena, next_id),
+                        });
+                    }
+                    queue.push_back(next_id);
                 }
             }
 
             // Implicit edges from overlay (treated as bidirectional RelatedTo)
             if let Some(overlay) = overlay {
-                if let Some(neighbors) = overlay.edges.get(&path.current().thought_id) {
+                if let Some(neighbors) = overlay.edges.get(&current.thought_id) {
                     for neighbor in neighbors {
                         let Some(neighbor_locator) = id_lookup.get(&neighbor.thought_id) else {
                             continue;
@@ -203,13 +270,22 @@ impl GraphExpansionResult {
                         if seen.contains(neighbor_locator) {
                             continue;
                         }
-                        if seen.len() >= query.max_visited {
-                            stats.truncated = true;
-                            break 'outer;
+                        let role = classify(neighbor_locator);
+                        if role.counts() {
+                            if counted >= query.max_visited {
+                                stats.truncated = true;
+                                break 'outer;
+                            }
+                            counted += 1;
+                        } else {
+                            if passed >= pass_budget {
+                                continue;
+                            }
+                            passed += 1;
                         }
 
                         let synthetic_edge = GraphEdge {
-                            source: path.current().clone(),
+                            source: current.clone(),
                             target: neighbor_locator.clone(),
                             provenances: vec![GraphEdgeProvenance::Relation {
                                 relation_position: 0,
@@ -217,18 +293,24 @@ impl GraphExpansionResult {
                                 chain_key: None,
                             }],
                         };
-                        let Ok(next_path) =
-                            path.extend(AdjacencyDirection::Outgoing, &synthetic_edge)
-                        else {
-                            continue;
-                        };
                         seen.insert(neighbor_locator.clone());
-                        hits.push(GraphExpansionHit {
-                            locator: neighbor_locator.clone(),
-                            depth: next_path.depth(),
-                            path: next_path.clone(),
+                        let next_id = arena.len();
+                        arena.push(ArenaNode {
+                            parent: Some(node_id),
+                            kind: NodeKind::Hop {
+                                direction: AdjacencyDirection::Outgoing,
+                                edge: Cow::Owned(synthetic_edge),
+                            },
+                            depth: depth + 1,
                         });
-                        queue.push_back(next_path);
+                        if role == ExpansionNodeRole::Emit {
+                            hits.push(GraphExpansionHit {
+                                locator: neighbor_locator.clone(),
+                                depth: depth + 1,
+                                path: build_path(&arena, next_id),
+                            });
+                        }
+                        queue.push_back(next_id);
                     }
                 }
             }
@@ -238,6 +320,79 @@ impl GraphExpansionResult {
         stats.emitted_count = hits.len();
         Self { hits, stats }
     }
+}
+
+/// How [`GraphExpansionResult::expand_with_overlay_classified`] treats a
+/// reached node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExpansionNodeRole {
+    /// Counts against the visit budget and is emitted as a hit.
+    Emit,
+    /// Counts against the visit budget but is not emitted (for example another
+    /// seed that is reported through its own expansion).
+    CountOnly,
+    /// Traversed through but neither counted nor emitted (for example a node
+    /// excluded by a candidate filter). Bounded by
+    /// [`PASS_THROUGH_BUDGET_FACTOR`].
+    PassThrough,
+}
+
+impl ExpansionNodeRole {
+    fn counts(self) -> bool {
+        !matches!(self, Self::PassThrough)
+    }
+}
+
+/// Pass-through nodes may number at most this many times `max_visited`.
+pub const PASS_THROUGH_BUDGET_FACTOR: usize = 8;
+
+/// One discovered node in the expansion arena.
+struct ArenaNode<'a> {
+    parent: Option<usize>,
+    kind: NodeKind<'a>,
+    depth: usize,
+}
+
+enum NodeKind<'a> {
+    Root(ThoughtLocator),
+    Hop {
+        direction: AdjacencyDirection,
+        edge: Cow<'a, GraphEdge>,
+    },
+}
+
+impl ArenaNode<'_> {
+    fn locator(&self) -> &ThoughtLocator {
+        match &self.kind {
+            NodeKind::Root(locator) => locator,
+            NodeKind::Hop { direction, edge } => edge.arrival(*direction),
+        }
+    }
+}
+
+/// Reconstruct the full provenance path to `node_id` by walking parent
+/// pointers back to the seed.
+fn build_path(arena: &[ArenaNode<'_>], node_id: usize) -> GraphExpansionPath {
+    let mut hops = Vec::with_capacity(arena[node_id].depth);
+    let mut cursor = node_id;
+    let seed = loop {
+        let node = &arena[cursor];
+        match &node.kind {
+            NodeKind::Root(locator) => break locator.clone(),
+            NodeKind::Hop { direction, edge } => {
+                hops.push(GraphExpansionHop::new(
+                    *direction,
+                    edge.clone().into_owned(),
+                ));
+            }
+        }
+        match node.parent {
+            Some(parent) => cursor = parent,
+            None => break node.locator().clone(),
+        }
+    };
+    hops.reverse();
+    GraphExpansionPath { seed, hops }
 }
 
 fn dedupe_seed_order(seeds: &[ThoughtLocator]) -> Vec<ThoughtLocator> {
