@@ -9,7 +9,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 
 use super::{EmbeddingInput, EmbeddingMetadata, EmbeddingProvider, EmbeddingVector};
 
@@ -195,7 +195,7 @@ impl FastEmbedProvider {
     pub fn try_new() -> Result<Self, FastEmbedError> {
         let model = shared_model(FASTEMBED_MINILM_MODEL_ID, || {
             TextEmbedding::try_new(
-                InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+                TextInitOptions::new(EmbeddingModel::AllMiniLML6V2)
                     .with_cache_dir(cache_dir_from_env())
                     .with_show_download_progress(true),
             )
