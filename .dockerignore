@@ -1,25 +1,32 @@
+# Keep the build context small. Everything the cargo build needs is kept:
+#   * src/, Cargo.toml, Cargo.lock
+#   * MENTISDB_SKILL.md   (include_str! from src/server.rs and src/bin/mentisdb.rs)
+#   * benches/            (Cargo.toml declares [[bench]] targets; cargo refuses to
+#                          load the manifest when their files are missing)
+# Do NOT add any of the above to this file.
 target/
 **/target/
 .git/
 .github/
+.claude/
+.fastembed_cache/
+data/
 docs/
-benches/
+examples/
+tests/
 lme-benches/
 locomo-benches/
-tests/
+pymentisdb/
+scripts/
+skills/
 *.tex
 *.pdf
-*.html
 WHITEPAPER.*
 build-whitepaper.sh
-README.md
 ROADMAP.md
-ENGINEERING_PIPELINE.md
 AGENTS.md
-0.8.6-plan.md
-# NOTE: MENTISDB_SKILL.md is needed at build time — src/server.rs and
-# src/bin/mentisdbd.rs embed it via include_str!("../MENTISDB_SKILL.md").
-# Do NOT add it to this ignore list.
-data/
-examples/
-pymentisdb/
+changelog.txt
+code-performance-reviewer.md
+start_mentisdb
+Dockerfile
+.dockerignore
