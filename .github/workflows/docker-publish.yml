@@ -139,6 +139,12 @@ jobs:
         run: |
           cargo_version="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n 1)"
           [ -n "${cargo_version}" ] || { echo "::error::cannot read version from Cargo.toml"; exit 1; }
+          # Release tags are <cargo version>.<release counter>; refuse to move
+          # :latest for a tag that does not belong to this Cargo version.
+          if [ "${GITHUB_REF_NAME%.*}" != "${cargo_version}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${cargo_version}"
+            exit 1
+          fi
           {
             echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}"
             echo "CARGO_VERSION=${cargo_version}"
