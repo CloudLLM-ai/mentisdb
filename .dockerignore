@@ -4,6 +4,12 @@
 #   * benches/            (Cargo.toml declares [[bench]] targets; cargo refuses to
 #                          load the manifest when their files are missing)
 # Do NOT add any of the above to this file.
+# Secrets: never send local env files or keys into the build context.
+.env
+.env.*
+*.pem
+*.key
+**/*keypair*.json
 target/
 **/target/
 .git/
