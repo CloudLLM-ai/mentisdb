@@ -373,16 +373,32 @@ Once startup completes, it prints:
   or multi-user MCP servers. This can also be toggled live from the dashboard Settings screen.
 - `MENTISDB_AUTO_FLUSH`
   Controls per-write durability of the `binary` storage adapter.
-  - `true` (default): every `append_thought` flushes to disk immediately. Full durability.
+  - `true` (default): every `append_thought` returns only after its group commit has been
+    written to the chain file. Survives a process crash; add `MENTISDB_FSYNC=1` to also
+    survive power loss.
   - `false`: writes are batched and flushed every 16 appends (`FLUSH_THRESHOLD`). Up to 15
     thoughts may be lost on a hard crash or power failure, but write throughput increases
     significantly for multi-agent hubs with many concurrent writers.
   Supported values: `1`, `0`, `true`, `false`. Has no effect on the `jsonl` adapter.
 - `MENTISDB_GROUP_COMMIT_MS`
   Group-commit window in milliseconds for the background binary writer.
-  The writer batches appends within this window before flushing to disk.
-  Lower values = lower latency; higher values = better throughput.
+  The writer batches appends that are already queued, waiting up to this window for
+  more; when no other append is queued it flushes immediately, so a lone append never
+  pays the window. Lower values = lower latency; higher values = better throughput.
   Default: `2`
+- `MENTISDB_FSYNC`
+  Set `1` (or `true`, `on`, `yes`) to `fsync` the chain file after every group commit,
+  for power-loss durability. Default: off — each group commit is written to the OS
+  (survives a process crash) but not forced to the device, because a per-commit fsync
+  roughly quadruples append latency (`F_FULLFSYNC` on macOS). Explicit flushes
+  (`POST /v1/admin/flush`), clean shutdown and dropping a chain handle always sync.
+- `MENTISDB_EMBEDDINGS`
+  Process-wide embeddings mode for managed vector sidecars: `off` (lexical/graph only),
+  `local-text` (built-in hashing embeddings, never loads ONNX) or `fastembed`. Unset
+  means FastEmbed when the `local-embeddings` feature is compiled in, `local-text`
+  otherwise. Unknown values are logged and treated as unset.
+- `FASTEMBED_CACHE_DIR`
+  Where the FastEmbed ONNX model is cached. Default: `<MENTISDB_DIR>/.fastembed_cache`.
 - `MENTISDB_UPDATE_CHECK`
   Background GitHub release check for `mentisdb`. Enabled by default; set `0`, `false`, `no`,
   or `off` to disable update checks after startup. Default: `true`
@@ -445,7 +461,7 @@ at startup. Existing shell environment variables take precedence over `.env` val
 file is silently ignored when absent, so it is safe to commit a template `.env.example`
 while keeping your actual `.env` in `.gitignore`.
 
-Example — full durability (production default):
+Example — full durability (crash-safe default plus per-commit fsync):
 
 ```bash
 MENTISDB_DIR=/tmp/mentisdb \
@@ -458,8 +474,22 @@ MENTISDB_MCP_PORT=9471 \
 MENTISDB_REST_PORT=9472 \
 MENTISDB_DASHBOARD_PIN=change-me \
 MENTISDB_AUTO_FLUSH=true \
+MENTISDB_FSYNC=1 \
 cargo run --bin mentisdb
 ```
+
+#### Durability and crash recovery (0.10.9)
+
+- **Canonical record first.** An append returns `Ok` as soon as the hash-chained record is
+  durable in the chain file. Derived state (lexical/vector sidecars, implicit-edge overlay,
+  registries) is updated afterwards; if that fails it is logged and retried or rebuilt on
+  the next append or open, instead of failing an append that already committed.
+- **Torn-tail recovery.** If the daemon or machine died mid-write, opening a binary chain
+  truncates a partial final record back to the last complete one and saves the dropped
+  bytes beside the chain file as `<chain file>.torn-<unix-millis>` for inspection.
+- **Atomic registry writes.** The chain registry, agent registry, webhook list and other
+  JSON registries are written to a temporary file and renamed into place, so a crash never
+  leaves a half-written registry.
 
 Example — multi-agent / long-lived chain (recommended: enable near-duplicate superseding):
 
