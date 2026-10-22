@@ -1,8 +1,8 @@
 # MentisDB: Durable Semantic Memory for Software Agents
 
 **Author:** Angel Leon
-**Version:** 0.10.9.54
-**Date:** 2026-10-21
+**Version:** 0.10.10.55
+**Date:** 2026-10-22
 
 ---
 
