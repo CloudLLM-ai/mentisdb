@@ -43,7 +43,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential binutils ca-certificates curl git pkg-config libasound2-dev
+            build-essential binutils ca-certificates curl git pkg-config libasound2-dev libssl-dev
 
       - uses: actions/checkout@v7
 
