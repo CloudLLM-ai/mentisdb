@@ -5,16 +5,19 @@
     (issue #22). Takes CIDR ranges or single addresses separated by commas
     and/or whitespace; addresses inside a listed range are permitted even
     when they fall in a blocked range, everything else stays blocked.
-    Localhost host names are still rejected and a `/0` entry is refused,
-    so the guard cannot be switched off wholesale. Host bits are
-    normalized, IPv4-mapped IPv6 addresses match IPv4 ranges, and the
+    Localhost host names are still rejected and any entry broader than
+    `/8` (IPv4 or IPv6; `fd00::/8` still fits) is refused, so the guard
+    cannot be re-opened wholesale with something like `0.0.0.0/1`. Host
+    bits are normalized, IPv4-mapped IPv6 addresses match IPv4 ranges, and the
     allowlist applies at registration, when persisted registrations are
     reloaded, in the delivery-time DNS resolver and in the literal-IP
     re-check. An invalid list fails daemon startup; active ranges are
-    logged at startup. New public API: `WebhookUrlPolicy::AllowCidrs`,
+    logged at startup, with a dedicated warning when a listed range covers
+    loopback or the 169.254.169.254 cloud metadata address. New public API: `WebhookUrlPolicy::AllowCidrs`,
     `WebhookUrlPolicy::from_env`, `WebhookUrlPolicy::from_allowed_cidrs`,
     `WebhookUrlPolicy::permits_ip`, `WebhookCidr`,
-    `WEBHOOK_ALLOWED_CIDRS_ENV`, `WebhookManager::policy`;
+    `WEBHOOK_ALLOWED_CIDRS_ENV`, `MIN_ALLOWED_PREFIX_V4`,
+    `MIN_ALLOWED_PREFIX_V6`, `WebhookManager::policy`;
     `WebhookUrlPolicy` is now `Clone` instead of `Copy`. Thanks to takver
     for the request.
   - feat(docker): official multi-arch (`linux/amd64`, `linux/arm64`) image
@@ -28,20 +31,26 @@
     `mentisdb --headless` under `tini`, so no TTY is needed. HTTPS MCP/REST
     and the update check are off in the image. Native amd64/arm64 runners
     build by digest and merge a manifest list; pull requests build without
-    pushing. Contributed by @nycterent in #16, finished in #24.
+    pushing; publishing is refused unless the tag's first three components
+    match the Cargo.toml version, so a stray tag cannot move `latest`.
+    `.dockerignore` keeps `.env*`, `*.pem`, `*.key` and keypair JSON files
+    out of the build context. Contributed by @nycterent in #16, finished in #24.
   - fix(daemon): headless mode drains the HTTP servers and exits 0 on
     SIGTERM (`docker stop`, Kubernetes, systemd). It used to wait only for
     Ctrl+C, so SIGTERM killed the process without a graceful shutdown.
     SIGTERM/SIGINT handlers are registered before readiness is announced,
-    so a signal right after startup is not lost. Integration test runs
+    so a signal right after startup is not lost. TUI mode also shuts down
+    cleanly on SIGTERM (`kill`, systemd, `docker run -t` + `docker stop`),
+    restoring the terminal and draining the servers. Integration test runs
     `mentisdb --headless` without a TTY and asserts a clean exit.
   - ci: Linux release binaries now come in two flavours (issue #21). The
     full-featured `mentisdb-linux-x86_64` / `-arm64` assets are unchanged
     (local embeddings, glibc 2.39+: Ubuntu 24.04+, Debian 13+). New
     `mentisdb-linux-x86_64-compat` / `-arm64-compat` assets are built in an
     `ubuntu:22.04` container without `local-embeddings` (lexical +
-    `local-text-v1` vectors, like the Intel macOS binary) and measure a
-    glibc 2.34 requirement, so they run on Ubuntu 22.04 LTS, Debian 12 and
+    `local-text-v1` vectors, like the Intel macOS binary) and without
+    `startup-sound` (no chime, no `libasound.so.2`/ALSA runtime
+    dependency on minimal servers), and measure a glibc 2.34 requirement, so they run on Ubuntu 22.04 LTS, Debian 12 and
     RHEL 9. A CI guard (`objdump -T`) fails the build if a compat binary
     ever needs glibc newer than 2.35, plus a `--help` smoke test inside the
     old userland. A full-featured binary cannot go lower without building
