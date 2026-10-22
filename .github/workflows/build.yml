@@ -11,12 +11,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Linux release binaries are built inside an older distro so they run on
-  # every supported LTS, not just the runner's own glibc (#21). A glibc binary
-  # only runs on systems with the glibc it was linked against or newer;
-  # ubuntu:22.04 ships glibc 2.35, which covers Ubuntu 22.04+, Debian 12+,
-  # and current RHEL/Fedora/Arch.
-  build-linux:
+  # Compatibility Linux binaries for older distros (#21). A glibc binary only
+  # runs on systems with the glibc it was linked against or newer, so these
+  # build inside ubuntu:22.04 (glibc 2.35: Ubuntu 22.04+, Debian 12+).
+  #
+  # They are built WITHOUT `local-embeddings`: the prebuilt ONNX Runtime that
+  # ort/fastembed link is itself compiled against glibc 2.38+ and GCC 13
+  # libstdc++ (__isoc23_strtol, _M_replace_cold), so it cannot link on 22.04.
+  # The full-featured `mentisdb-linux-*` assets from the `build` job keep local
+  # embeddings and need glibc 2.38+.
+  build-linux-compat:
     name: mentisdb (${{ matrix.target }}, glibc <= ${{ matrix.max_glibc }})
     runs-on: ${{ matrix.os }}
     container: ubuntu:22.04
@@ -29,11 +33,11 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: mentisdb-linux-x86_64
+            artifact: mentisdb-linux-x86_64-compat
             max_glibc: "2.35"
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            artifact: mentisdb-linux-arm64
+            artifact: mentisdb-linux-arm64-compat
             max_glibc: "2.35"
 
     steps:
@@ -59,12 +63,12 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: linux-ubuntu2204-${{ matrix.target }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          key: linux-ubuntu2204-compat-${{ matrix.target }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            linux-ubuntu2204-${{ matrix.target }}-cargo-build-
+            linux-ubuntu2204-compat-${{ matrix.target }}-cargo-build-
 
-      - name: Build mentisdb (release)
-        run: cargo build --bin mentisdb --release --target ${{ matrix.target }}
+      - name: Build mentisdb (release, without local-embeddings)
+        run: cargo build --bin mentisdb --release --target ${{ matrix.target }} --no-default-features --features server,startup-sound,llm-extraction
 
       - name: Stage target-specific binary
         run: |
@@ -112,6 +116,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Full-featured Linux binaries (incl. local embeddings); need glibc
+          # 2.38+ because of the prebuilt ONNX Runtime. See build-linux-compat.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: mentisdb
+            artifact: mentisdb-linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary: mentisdb
+            artifact: mentisdb-linux-arm64
           - os: macos-latest
             target: aarch64-apple-darwin
             binary: mentisdb
@@ -137,6 +151,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Install Linux audio build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libasound2-dev
 
       - name: Cache Cargo registry + build
         uses: actions/cache@v6
