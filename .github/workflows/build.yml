@@ -11,6 +11,97 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Linux release binaries are built inside an older distro so they run on
+  # every supported LTS, not just the runner's own glibc (#21). A glibc binary
+  # only runs on systems with the glibc it was linked against or newer;
+  # ubuntu:22.04 ships glibc 2.35, which covers Ubuntu 22.04+, Debian 12+,
+  # and current RHEL/Fedora/Arch.
+  build-linux:
+    name: mentisdb (${{ matrix.target }}, glibc <= ${{ matrix.max_glibc }})
+    runs-on: ${{ matrix.os }}
+    container: ubuntu:22.04
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: mentisdb-linux-x86_64
+            max_glibc: "2.35"
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: mentisdb-linux-arm64
+            max_glibc: "2.35"
+
+    steps:
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential binutils ca-certificates curl git pkg-config libasound2-dev
+
+      - uses: actions/checkout@v7
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo registry + build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-ubuntu2204-${{ matrix.target }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            linux-ubuntu2204-${{ matrix.target }}-cargo-build-
+
+      - name: Build mentisdb (release)
+        run: cargo build --bin mentisdb --release --target ${{ matrix.target }}
+
+      - name: Stage target-specific binary
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/mentisdb" "dist/${{ matrix.artifact }}"
+          test -s "dist/${{ matrix.artifact }}"
+
+      # Regression guard for #21: fail if the binary needs a newer glibc than
+      # the floor we promise in the docs.
+      - name: Check glibc floor
+        run: |
+          required=$(objdump -T "dist/${{ matrix.artifact }}" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -Vu | tail -1)
+          echo "highest required glibc: ${required}"
+          highest=$(printf '%s\n%s\n' "$required" "${{ matrix.max_glibc }}" | sort -V | tail -1)
+          if [ "$highest" != "${{ matrix.max_glibc }}" ]; then
+            echo "::error::${{ matrix.artifact }} requires glibc ${required}, above the supported floor ${{ matrix.max_glibc }}"
+            exit 1
+          fi
+
+      - name: Smoke test binary
+        run: |
+          "./dist/${{ matrix.artifact }}" --help > /dev/null
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          retention-days: 30
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/${{ matrix.artifact }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   build:
     name: mentisdb (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -21,14 +112,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary: mentisdb
-            artifact: mentisdb-linux-x86_64
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            binary: mentisdb
-            artifact: mentisdb-linux-arm64
           - os: macos-latest
             target: aarch64-apple-darwin
             binary: mentisdb
@@ -54,12 +137,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Install Linux audio build deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libasound2-dev
 
       - name: Cache Cargo registry + build
         uses: actions/cache@v6
