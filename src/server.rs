@@ -2980,12 +2980,27 @@ impl MentisDbService {
                 format!("failed to open MentisDB interaction log at {target}: {error}")
             })?,
         );
-        let webhook_manager = WebhookManager::new(config.chain_dir.clone()).map_err(|error| {
-            format!(
-                "failed to open MentisDB webhook manager at {}: {error}",
-                config.chain_dir.display()
-            )
-        })?;
+        let webhook_policy = crate::webhooks::WebhookUrlPolicy::from_env()?;
+        if let crate::webhooks::WebhookUrlPolicy::AllowCidrs(cidrs) = &webhook_policy {
+            log::warn!(
+                target: "mentisdb::webhooks",
+                "webhooks may target internal addresses in: {}",
+                cidrs
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        let webhook_manager =
+            WebhookManager::new_with_policy(config.chain_dir.clone(), webhook_policy).map_err(
+                |error| {
+                    format!(
+                        "failed to open MentisDB webhook manager at {}: {error}",
+                        config.chain_dir.display()
+                    )
+                },
+            )?;
         let skills = SkillRegistry::open(&config.chain_dir).map_err(|error| {
             format!(
                 "failed to open MentisDB skill registry at {}: {error}",

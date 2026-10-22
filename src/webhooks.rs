@@ -39,13 +39,195 @@ fn lock_tolerant<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Environment variable listing CIDR ranges that webhooks may target even
+/// though they fall inside otherwise-blocked internal ranges.
+pub const WEBHOOK_ALLOWED_CIDRS_ENV: &str = "MENTISDB_WEBHOOK_ALLOWED_CIDRS";
+
 /// Policy deciding which webhook targets may be contacted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebhookUrlPolicy {
     /// Reject loopback, private, link-local and other internal targets (default).
     Strict,
+    /// Like [`WebhookUrlPolicy::Strict`], but addresses inside any of these
+    /// CIDR ranges are permitted even when they fall in a blocked range.
+    ///
+    /// Intended for self-hosted deployments whose webhook consumers live on a
+    /// private network (for example a WireGuard or Tailscale overlay in
+    /// `100.64.0.0/10`). Everything outside the listed ranges stays blocked,
+    /// and `localhost` host names are still rejected.
+    AllowCidrs(Arc<[WebhookCidr]>),
     /// Permit internal targets. Intended only for local testing.
     AllowPrivate,
+}
+
+impl WebhookUrlPolicy {
+    /// Build the daemon policy from [`WEBHOOK_ALLOWED_CIDRS_ENV`].
+    ///
+    /// Unset or blank yields [`WebhookUrlPolicy::Strict`]; otherwise the
+    /// value is parsed with [`WebhookUrlPolicy::from_allowed_cidrs`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidInput` when any entry is not a valid CIDR or IP.
+    pub fn from_env() -> io::Result<Self> {
+        match std::env::var(WEBHOOK_ALLOWED_CIDRS_ENV) {
+            Ok(value) => Self::from_allowed_cidrs(&value),
+            Err(_) => Ok(Self::Strict),
+        }
+    }
+
+    /// Parse a list of CIDR ranges separated by commas and/or whitespace.
+    ///
+    /// Each entry is `address/prefix` (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`)
+    /// or a bare address meaning a single host (`/32` or `/128`). A blank
+    /// list yields [`WebhookUrlPolicy::Strict`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidInput` naming the first entry that fails to parse, or
+    /// any `/0` entry (allowing every address is never what you want; there is
+    /// no opt-out from the SSRF guard).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::webhooks::WebhookUrlPolicy;
+    ///
+    /// let policy = WebhookUrlPolicy::from_allowed_cidrs("100.64.0.0/10, 10.8.0.0/24").unwrap();
+    /// assert!(matches!(policy, WebhookUrlPolicy::AllowCidrs(ref cidrs) if cidrs.len() == 2));
+    /// assert_eq!(WebhookUrlPolicy::from_allowed_cidrs(" ").unwrap(), WebhookUrlPolicy::Strict);
+    /// assert!(WebhookUrlPolicy::from_allowed_cidrs("10.0.0.0/33").is_err());
+    /// ```
+    pub fn from_allowed_cidrs(list: &str) -> io::Result<Self> {
+        let cidrs = list
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|entry| !entry.is_empty())
+            .map(str::parse::<WebhookCidr>)
+            .collect::<io::Result<Vec<_>>>()?;
+        if cidrs.is_empty() {
+            Ok(Self::Strict)
+        } else {
+            Ok(Self::AllowCidrs(cidrs.into()))
+        }
+    }
+
+    /// Whether `ip` may be contacted under this policy.
+    pub fn permits_ip(&self, ip: &IpAddr) -> bool {
+        match self {
+            Self::AllowPrivate => true,
+            Self::Strict => !is_blocked_ip(ip),
+            Self::AllowCidrs(cidrs) => {
+                !is_blocked_ip(ip) || cidrs.iter().any(|cidr| cidr.contains(ip))
+            }
+        }
+    }
+}
+
+/// An IPv4 or IPv6 network in CIDR notation, used by
+/// [`WebhookUrlPolicy::AllowCidrs`].
+///
+/// IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) are matched against IPv4
+/// ranges, so `::ffff:100.64.1.2` falls inside `100.64.0.0/10`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebhookCidr {
+    network: IpAddr,
+    prefix_len: u8,
+}
+
+impl WebhookCidr {
+    /// The network address with host bits cleared.
+    pub fn network(&self) -> IpAddr {
+        self.network
+    }
+
+    /// The prefix length in bits.
+    pub fn prefix_len(&self) -> u8 {
+        self.prefix_len
+    }
+
+    /// Whether `ip` lies inside this network.
+    pub fn contains(&self, ip: &IpAddr) -> bool {
+        let ip = match ip {
+            IpAddr::V6(v6) => v6
+                .to_ipv4_mapped()
+                .map(IpAddr::V4)
+                .unwrap_or(IpAddr::V6(*v6)),
+            IpAddr::V4(_) => *ip,
+        };
+        match (self.network, ip) {
+            (IpAddr::V4(net), IpAddr::V4(addr)) => {
+                mask_v4(u32::from(addr), self.prefix_len) == u32::from(net)
+            }
+            (IpAddr::V6(net), IpAddr::V6(addr)) => {
+                mask_v6(u128::from(addr), self.prefix_len) == u128::from(net)
+            }
+            _ => false,
+        }
+    }
+}
+
+fn mask_v4(bits: u32, prefix_len: u8) -> u32 {
+    if prefix_len == 0 {
+        0
+    } else {
+        bits & (u32::MAX << (32 - u32::from(prefix_len)))
+    }
+}
+
+fn mask_v6(bits: u128, prefix_len: u8) -> u128 {
+    if prefix_len == 0 {
+        0
+    } else {
+        bits & (u128::MAX << (128 - u32::from(prefix_len)))
+    }
+}
+
+impl std::str::FromStr for WebhookCidr {
+    type Err = io::Error;
+
+    fn from_str(entry: &str) -> Result<Self, Self::Err> {
+        let invalid = |reason: &str| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid {WEBHOOK_ALLOWED_CIDRS_ENV} entry '{entry}': {reason}"),
+            )
+        };
+        let (addr, prefix) = match entry.split_once('/') {
+            Some((addr, prefix)) => (addr, Some(prefix)),
+            None => (entry, None),
+        };
+        let addr: IpAddr = addr
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse()
+            .map_err(|_| invalid("not an IP address"))?;
+        let max = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix_len = match prefix {
+            None => max,
+            Some(prefix) => prefix
+                .parse::<u8>()
+                .ok()
+                .filter(|len| *len <= max)
+                .ok_or_else(|| invalid(&format!("prefix length must be 0-{max}")))?,
+        };
+        if prefix_len == 0 {
+            return Err(invalid("a /0 range would disable the webhook SSRF guard"));
+        }
+        let network = match addr {
+            IpAddr::V4(v4) => IpAddr::V4(Ipv4Addr::from(mask_v4(u32::from(v4), prefix_len))),
+            IpAddr::V6(v6) => IpAddr::V6(Ipv6Addr::from(mask_v6(u128::from(v6), prefix_len))),
+        };
+        Ok(Self {
+            network,
+            prefix_len,
+        })
+    }
+}
+
+impl std::fmt::Display for WebhookCidr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.network, self.prefix_len)
+    }
 }
 
 /// A registered webhook endpoint that receives notifications when thoughts are appended.
@@ -147,7 +329,7 @@ impl Clone for WebhookManager {
     fn clone(&self) -> Self {
         Self {
             chain_dir: self.chain_dir.clone(),
-            policy: self.policy,
+            policy: self.policy.clone(),
             webhooks: Arc::clone(&self.webhooks),
             delivery_queue: self.delivery_queue.clone(),
         }
@@ -181,7 +363,7 @@ impl WebhookManager {
         let webhooks = Self::load_webhooks(&chain_dir)?
             .into_iter()
             .map(|mut registration| {
-                if let Err(error) = validate_webhook_url_with(&registration.url, policy) {
+                if let Err(error) = check_webhook_url(&registration.url, &policy) {
                     log::warn!(
                         target: "mentisdb::webhooks",
                         "disabling webhook {} loaded from disk: {}",
@@ -193,18 +375,20 @@ impl WebhookManager {
                 registration
             })
             .collect();
+        let delivery_queue = tokio::runtime::Handle::try_current()
+            .ok()
+            .map(|_| spawn_delivery_worker(policy.clone()));
         Ok(Self {
             chain_dir,
             policy,
             webhooks: Arc::new(RwLock::new(Arc::new(webhooks))),
-            delivery_queue: tokio::runtime::Handle::try_current()
-                .ok()
-                .map(|_| spawn_delivery_worker(policy)),
+            delivery_queue,
         })
     }
 
-    fn policy(&self) -> WebhookUrlPolicy {
-        self.policy
+    /// The target policy this manager validates and delivers under.
+    pub fn policy(&self) -> &WebhookUrlPolicy {
+        &self.policy
     }
 
     fn webhooks_path(chain_dir: &Path) -> PathBuf {
@@ -297,7 +481,7 @@ impl WebhookManager {
         chain_key_filter: Option<String>,
         thought_type_filter: Option<HashSet<ThoughtType>>,
     ) -> io::Result<WebhookRegistration> {
-        validate_webhook_url_with(&url, self.policy())?;
+        check_webhook_url(&url, &self.policy)?;
         let registration = WebhookRegistration {
             id: Uuid::new_v4(),
             url,
@@ -460,6 +644,8 @@ pub fn spawn_delivery_worker_with_breaker(
     breaker: Arc<CircuitBreaker>,
 ) -> mpsc::Sender<DeliveryJob> {
     let (tx, mut rx) = mpsc::channel::<DeliveryJob>(WEBHOOK_DELIVERY_QUEUE_CAPACITY);
+    let client = build_client(&policy);
+    let policy = Arc::new(policy);
     let semaphore = Arc::new(Semaphore::new(WEBHOOK_MAX_CONCURRENT_DELIVERIES));
     let runtime = tokio::runtime::Handle::try_current()
         .expect("webhook delivery worker requires a Tokio runtime");
@@ -477,10 +663,18 @@ pub fn spawn_delivery_worker_with_breaker(
             match semaphore.acquire_owned().await {
                 Ok(permit) => {
                     let breaker = Arc::clone(&breaker);
+                    let client = client.clone();
+                    let policy = Arc::clone(&policy);
                     tokio::spawn(async move {
                         let _permit = permit;
-                        let ok = deliver_with_retries(job.url, job.payload, job.webhook_id, policy)
-                            .await;
+                        let ok = deliver_with_retries(
+                            &client,
+                            job.url,
+                            job.payload,
+                            job.webhook_id,
+                            &policy,
+                        )
+                        .await;
                         if ok {
                             breaker.record_success(job.webhook_id);
                         } else if breaker.record_failure(job.webhook_id, Instant::now()) {
@@ -506,17 +700,20 @@ pub fn spawn_delivery_worker_with_breaker(
     tx
 }
 
-/// DNS resolver that drops blocked addresses, defeating DNS rebinding and
-/// hostnames that point at internal ranges.
-struct SsrfGuardResolver;
+/// DNS resolver that drops addresses the policy does not permit, defeating DNS
+/// rebinding and hostnames that point at internal ranges.
+struct SsrfGuardResolver {
+    policy: WebhookUrlPolicy,
+}
 
 impl reqwest::dns::Resolve for SsrfGuardResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
         let host = name.as_str().to_string();
+        let policy = self.policy.clone();
         Box::pin(async move {
             let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
                 .await?
-                .filter(|addr| !is_blocked_ip(&addr.ip()))
+                .filter(|addr| policy.permits_ip(&addr.ip()))
                 .collect();
             if addrs.is_empty() {
                 return Err(Box::new(io::Error::new(
@@ -530,26 +727,23 @@ impl reqwest::dns::Resolve for SsrfGuardResolver {
     }
 }
 
-fn build_client(policy: WebhookUrlPolicy) -> reqwest::Client {
+/// Build the delivery client for `policy`. One client is created per delivery
+/// worker and shared by all its deliveries (it pools connections internally).
+fn build_client(policy: &WebhookUrlPolicy) -> reqwest::Client {
     let builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy();
     let builder = match policy {
-        WebhookUrlPolicy::Strict => builder.dns_resolver(Arc::new(SsrfGuardResolver)),
         WebhookUrlPolicy::AllowPrivate => builder,
+        WebhookUrlPolicy::Strict | WebhookUrlPolicy::AllowCidrs(_) => {
+            builder.dns_resolver(Arc::new(SsrfGuardResolver {
+                policy: policy.clone(),
+            }))
+        }
     };
     builder
         .build()
         .expect("webhook HTTP client configuration is static and valid")
-}
-
-fn webhook_http_client(policy: WebhookUrlPolicy) -> &'static reqwest::Client {
-    static STRICT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    static PERMISSIVE: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    match policy {
-        WebhookUrlPolicy::Strict => STRICT.get_or_init(|| build_client(policy)),
-        WebhookUrlPolicy::AllowPrivate => PERMISSIVE.get_or_init(|| build_client(policy)),
-    }
 }
 
 /// Reduces a URL to `scheme://host[:port]` so credentials, paths and query
@@ -568,12 +762,12 @@ pub fn redact_webhook_url(url: &str) -> String {
 }
 
 async fn deliver_with_retries(
+    client: &reqwest::Client,
     url: String,
     payload: WebhookPayload,
     webhook_id: Uuid,
-    policy: WebhookUrlPolicy,
+    policy: &WebhookUrlPolicy,
 ) -> bool {
-    let client = webhook_http_client(policy);
     let redacted = redact_webhook_url(&url);
     let mut backoff_ms = WEBHOOK_INITIAL_BACKOFF_MS;
 
@@ -619,10 +813,10 @@ async fn deliver_once(
     client: &reqwest::Client,
     url: &str,
     payload: &WebhookPayload,
-    policy: WebhookUrlPolicy,
+    policy: &WebhookUrlPolicy,
 ) -> io::Result<()> {
     // Re-validate at delivery time: literal IPs bypass the DNS resolver.
-    validate_webhook_url_with(url, policy)?;
+    check_webhook_url(url, policy)?;
     let timeout = tokio::time::Duration::from_secs(WEBHOOK_DELIVERY_TIMEOUT_SECS);
     // Redirects are disabled, so a 3xx surfaces as a non-success status
     // (an error) instead of a hop to an unvalidated target.
@@ -649,7 +843,19 @@ pub fn validate_webhook_url(url: &str) -> io::Result<()> {
 }
 
 /// Validate a webhook URL under an explicit [`WebhookUrlPolicy`].
+///
+/// Host names are only checked for `localhost` here; the addresses they
+/// resolve to are checked against the same policy at delivery time.
+///
+/// # Errors
+///
+/// Returns `InvalidInput` for unparsable URLs, non-HTTP(S) schemes,
+/// `localhost`, and literal IPs the policy does not permit.
 pub fn validate_webhook_url_with(url: &str, policy: WebhookUrlPolicy) -> io::Result<()> {
+    check_webhook_url(url, &policy)
+}
+
+fn check_webhook_url(url: &str, policy: &WebhookUrlPolicy) -> io::Result<()> {
     let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let parsed = url::Url::parse(url).map_err(|e| invalid(format!("invalid webhook URL: {e}")))?;
 
@@ -661,7 +867,7 @@ pub fn validate_webhook_url_with(url: &str, policy: WebhookUrlPolicy) -> io::Res
             )));
         }
     }
-    if policy == WebhookUrlPolicy::AllowPrivate {
+    if *policy == WebhookUrlPolicy::AllowPrivate {
         return Ok(());
     }
 
@@ -677,16 +883,16 @@ pub fn validate_webhook_url_with(url: &str, policy: WebhookUrlPolicy) -> io::Res
                 Ok(())
             }
         }
-        Some(url::Host::Ipv4(ip)) => check_ip(IpAddr::V4(ip)),
-        Some(url::Host::Ipv6(ip)) => check_ip(IpAddr::V6(ip)),
+        Some(url::Host::Ipv4(ip)) => check_ip(IpAddr::V4(ip), policy),
+        Some(url::Host::Ipv6(ip)) => check_ip(IpAddr::V6(ip), policy),
     }
 }
 
-fn check_ip(ip: IpAddr) -> io::Result<()> {
-    if is_blocked_ip(&ip) {
+fn check_ip(ip: IpAddr, policy: &WebhookUrlPolicy) -> io::Result<()> {
+    if !policy.permits_ip(&ip) {
         Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("webhook URL points to a blocked IP address ({ip}); internal, private, loopback and link-local addresses are not allowed"),
+            format!("webhook URL points to a blocked IP address ({ip}); internal, private, loopback and link-local addresses are not allowed unless listed in {WEBHOOK_ALLOWED_CIDRS_ENV}"),
         ))
     } else {
         Ok(())
