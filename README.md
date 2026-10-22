@@ -551,9 +551,42 @@ REST endpoints:
 - `POST /v1/skills/delete`
 - `POST /v1/webhooks`
 - `GET /v1/webhooks`
-- `GET /v1/webhooks/{id}`
 - `DELETE /v1/webhooks/{id}`
 - `POST /v1/head`
+- `POST /v1/federated-search`
+- `POST /v1/summary-candidates`
+- `POST /v1/entity-types`
+- `POST /v1/entity-types/upsert`
+- `POST /v1/extract-memories`
+- `POST /v1/admin/flush`
+
+#### Chain resolution and error statuses
+
+Only operations that write a chain create it when its `chain_key` does not exist yet:
+`POST /v1/bootstrap`, `POST /v1/thoughts`, `POST /v1/retrospectives`,
+`POST /v1/import-markdown`, `POST /v1/agents/upsert`, `POST /v1/entity-types/upsert`,
+and the target of `POST /v1/chains/merge`. Every other route
+(search, head, agents, thought lookup, metadata updates, ...) returns **404** for an
+unknown `chain_key` and persists nothing. The configured default chain
+(`MENTISDB_DEFAULT_CHAIN_KEY`) is the one exception: it is created on demand so a fresh
+daemon answers reads. Call `POST /v1/bootstrap` (or `mentisdb_bootstrap` over MCP)
+before reading a new chain.
+
+A `chain_key` must be non-empty, at most 256 bytes, and free of control characters;
+anything else is rejected with **400**.
+
+REST and MCP errors map to HTTP statuses as follows:
+
+| Status | Meaning |
+|---|---|
+| `400` | Invalid input: malformed JSON, bad UUID, unknown thought type/role, invalid `chain_key` |
+| `401` | Missing/invalid bearer token, or a token whose scope does not cover the operation |
+| `403` | Permission denied (e.g. missing or invalid signature on a signed skill upload, inactive agent) |
+| `404` | Unknown chain (see above) or another missing resource |
+| `409` | Conflict, e.g. `POST /v1/chains/branch` into a chain key that already holds thoughts |
+| `413` | Request body over 1 MiB (enforced while bearer-token access is enabled) |
+| `500` | Server fault; the body says only `"internal server error"` and details go to the daemon log |
+| `501` | `POST /v1/extract-memories` on a build without the `llm-extraction` feature |
 
 ### Append Thought — `POST /v1/thoughts`
 
