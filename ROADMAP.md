@@ -1,6 +1,13 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 -> 0.10.9.54)
+## Shipped (0.8.2 -> 0.10.10.55)
+
+### 0.10.10.55 - Docker image, private webhook targets, Linux compat binaries
+- **`MENTISDB_WEBHOOK_ALLOWED_CIDRS` (issue #22)** — operator-listed CIDRs/addresses that webhooks may target despite the SSRF guard (WireGuard, Tailscale, LAN consumers). Applied at registration, reload, delivery-time DNS resolution and literal-IP re-check; IPv4-mapped IPv6 matches v4 ranges; localhost names still rejected; entries broader than `/8` and malformed lists fail startup; loopback/metadata coverage is warned about.
+- **Official Docker image** — multi-arch `ghcr.io/cloudllm-ai/mentisdb` (amd64/arm64) on every release tag, tagged `<release>`, `<crate version>`, `latest`; Debian trixie base, non-root, `/var/lib/mentisdb` volume, `HEALTHCHECK`, `mentisdb --headless` under `tini`; publishing refuses tags that do not match `Cargo.toml`. Contributed by @nycterent in #16, finished in #24.
+- **Graceful SIGTERM** — headless mode drains servers and exits 0; TUI mode also stops cleanly on SIGTERM.
+- **Linux compat binaries (issue #21)** — `mentisdb-linux-{x86_64,arm64}-compat` built on Ubuntu 22.04 without local embeddings or startup sound, glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9), with a CI glibc floor guard; full binaries keep local embeddings and need glibc 2.39 (prebuilt ONNX Runtime needs 2.38+).
+- Benchmarks not re-run (owner exception): no retrieval or scoring changes since 0.10.9.54.
 
 ### 0.10.9.54 - Security, reliability and retrieval
 - **Security: legacy MCP `/tools/execute` authorization bypass** — chain-scoped tokens could invoke tools on other chains, call global-only tools, and merge/delete other chains (0.10.8.53 and earlier, when bearer-token access is enabled). Authorization now inspects exactly the request fields that are executed. Upgrade recommended.
