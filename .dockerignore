@@ -1,0 +1,25 @@
+target/
+**/target/
+.git/
+.github/
+docs/
+benches/
+lme-benches/
+locomo-benches/
+tests/
+*.tex
+*.pdf
+*.html
+WHITEPAPER.*
+build-whitepaper.sh
+README.md
+ROADMAP.md
+ENGINEERING_PIPELINE.md
+AGENTS.md
+0.8.6-plan.md
+# NOTE: MENTISDB_SKILL.md is needed at build time — src/server.rs and
+# src/bin/mentisdbd.rs embed it via include_str!("../MENTISDB_SKILL.md").
+# Do NOT add it to this ignore list.
+data/
+examples/
+pymentisdb/
