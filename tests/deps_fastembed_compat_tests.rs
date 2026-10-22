@@ -9,7 +9,7 @@ use mentisdb::search::fastembed_provider::{
 use mentisdb::search::{EmbeddingInput, EmbeddingProvider};
 
 /// First eight components of the AllMiniLML6V2 embedding of "hello world",
-/// captured with fastembed 5.x; fastembed 7.x must reproduce them.
+/// captured with fastembed 5.x; any later fastembed (or execution provider) must reproduce them.
 const HELLO_WORLD_HEAD: [f32; 8] = [
     -0.03447729,
     0.031023258,

@@ -48,7 +48,11 @@ rustls-pemfile = { version = "2", optional = true }
 x509-parser = { version = "0.18", optional = true }
 rodio = { version = "0.23", optional = true }
 tokio = { version = "1.50.0", features = ["full"], optional = true }
-fastembed = { version = "7", optional = true }
+# Kept on 5.x on purpose: fastembed 7 pulls ort 2.0.0-rc.15, which auto-registers the
+# CoreML execution provider on macOS with no public switch to opt out. CoreML made query
+# embedding ~2.5x slower (LoCoMo 363 -> 141 q/s) and is not bit-compatible with the CPU
+# vectors stored in existing sidecars. Revisit once fastembed exposes the session builder.
+fastembed = { version = "5.13.1", optional = true }
 # Needed to install an explicit rustls crypto provider.  The server feature
 # pulls in rustls transitively via axum-server and reqwest; when both aws-lc-rs
 # and ring are compiled in, rustls refuses to auto-select a default provider.
