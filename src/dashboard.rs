@@ -22,10 +22,10 @@ use crate::{
         parse_bearer_token_access, BearerTokenError, BearerTokenRecord, BearerTokenScope,
         BearerTokenStore, MENTISDB_BEARER_TOKEN_ACCESS_ENV,
     },
-    deregister_chain, load_registered_chains, AgentStatus, ManagedVectorProviderKind, MentisDb,
-    PublicKeyAlgorithm, RankedSearchGraph, RankedSearchQuery, SkillFormat, SkillRegistry,
-    SkillUpload, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelationKind,
-    ThoughtRole, ThoughtType,
+    deregister_chain, load_registered_chains, AgentStatus, BinaryStorageAdapter,
+    ManagedVectorProviderKind, MentisDb, PublicKeyAlgorithm, RankedSearchGraph, RankedSearchQuery,
+    SkillFormat, SkillRegistry, SkillUpload, StorageAdapterKind, Thought, ThoughtInput,
+    ThoughtQuery, ThoughtRelationKind, ThoughtRole, ThoughtType,
 };
 
 use axum::{
@@ -214,6 +214,8 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
         .route("/bearer-tokens/{alias}", delete(api_delete_bearer_token));
 
     // ── Protected surface (PIN-gated when pin is set) ─────────────────────
+    let api = api.layer(middleware::from_fn(csrf_guard_middleware));
+
     let protected = Router::new()
         .route("/dashboard", get(serve_dashboard))
         .route("/dashboard/", get(serve_dashboard))
@@ -229,6 +231,71 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
         .route("/dashboard/login", get(serve_login))
         .route("/dashboard/login", post(handle_login))
         .with_state(state)
+}
+
+// ── CSRF guard middleware ─────────────────────────────────────────────────────
+
+/// Name of the custom header non-browser clients must send on state-changing
+/// dashboard API requests that carry no `Origin`/`Referer`.
+pub(crate) const DASHBOARD_CSRF_HEADER: &str = "x-mentisdb-dashboard";
+
+/// Extract the authority (`host[:port]`) from an origin or referer URL.
+fn url_authority(value: &str) -> Option<&str> {
+    let rest = value.split_once("://")?.1;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..end];
+    if authority.is_empty() {
+        None
+    } else {
+        Some(authority)
+    }
+}
+
+/// Reject cross-site state-changing requests to the dashboard API.
+///
+/// Safe methods (GET/HEAD/OPTIONS) pass. For other methods the `Origin` header
+/// (or `Referer` when `Origin` is absent) must have the same authority as
+/// `Host`. Requests carrying neither header (curl, CLI) must send
+/// `X-MentisDB-Dashboard: 1`.
+async fn csrf_guard_middleware(request: axum::extract::Request, next: Next) -> Response {
+    use axum::http::Method;
+    let method = request.method();
+    if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
+        return next.run(request).await;
+    }
+    let headers = request.headers();
+    // HTTP/2 carries the authority in the request URI rather than a Host header.
+    let host = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| request.uri().authority().map(|a| a.as_str()));
+    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
+    let referer = headers.get(header::REFERER).and_then(|v| v.to_str().ok());
+    let same_host = |url: &str| match (url_authority(url), host) {
+        (Some(a), Some(h)) => a.eq_ignore_ascii_case(h),
+        _ => false,
+    };
+    let allowed = match (origin, referer) {
+        (Some(o), _) => same_host(o),
+        (None, Some(r)) => same_host(r),
+        (None, None) => {
+            headers
+                .get(DASHBOARD_CSRF_HEADER)
+                .and_then(|v| v.to_str().ok())
+                == Some("1")
+        }
+    };
+    if allowed {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "cross-origin request rejected; non-browser clients must send 'X-MentisDB-Dashboard: 1'"
+            })),
+        )
+            .into_response()
+    }
 }
 
 // ── PIN authentication middleware ─────────────────────────────────────────────
@@ -520,6 +587,45 @@ async fn evict_deleted_cached_chain(
     Ok(false)
 }
 
+/// Maximum accepted length of a chain key supplied by dashboard clients.
+const MAX_CHAIN_KEY_LEN: usize = 128;
+/// Maximum accepted `per_page` for dashboard listing endpoints.
+const MAX_PER_PAGE: usize = 500;
+/// Maximum accepted 1-based page number for dashboard listing endpoints.
+const MAX_PAGE: usize = 1_000;
+
+/// Clamp a client-supplied `per_page` into `1..=MAX_PER_PAGE`.
+fn clamp_per_page(per_page: usize) -> usize {
+    per_page.clamp(1, MAX_PER_PAGE)
+}
+
+/// Clamp a client-supplied 1-based page into `1..=MAX_PAGE`.
+fn clamp_page(page: usize) -> usize {
+    page.clamp(1, MAX_PAGE)
+}
+
+/// Validate a chain key supplied by a client for creating a chain.
+///
+/// Only `[A-Za-z0-9_-]` up to 128 bytes is accepted so the key used for the
+/// live cache always equals the sanitized key used for storage and registry.
+fn validate_new_chain_key(key: &str) -> Result<(), (StatusCode, Json<Value>)> {
+    let ok = !key.is_empty()
+        && key.len() <= MAX_CHAIN_KEY_LEN
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    if ok {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "chain key must match [A-Za-z0-9_-]+ and be at most 128 characters"
+            })),
+        ))
+    }
+}
+
 /// Look up a chain in the live cache; fall back to opening it from disk.
 ///
 /// The opened chain is inserted into `state.chains` so subsequent requests
@@ -529,10 +635,17 @@ async fn get_or_open_chain(
     chain_key: &str,
 ) -> Result<Arc<RwLock<MentisDb>>, (StatusCode, Json<Value>)> {
     let registry = load_registered_chains(&state.mentisdb_dir).map_err(internal_error)?;
+    // Prefer the registry's recorded storage location when that file exists;
+    // otherwise derive the path from the chain key.
     let registered_storage = registry.chains.get(chain_key).map(|entry| {
-        entry
-            .storage_adapter
-            .for_chain_key(&state.mentisdb_dir, chain_key)
+        let located = PathBuf::from(&entry.storage_location);
+        if entry.storage_location.is_empty() || !located.is_file() {
+            entry
+                .storage_adapter
+                .for_chain_key(&state.mentisdb_dir, chain_key)
+        } else {
+            Box::new(BinaryStorageAdapter::new(located))
+        }
     });
 
     // Try the live cache first (clone the Arc to avoid holding the DashMap shard lock across an await).
@@ -655,8 +768,8 @@ fn paginated_thoughts<F>(
 where
     F: FnMut(&Thought) -> bool,
 {
-    let page = page.max(1);
-    let per_page = per_page.max(1);
+    let page = clamp_page(page);
+    let per_page = clamp_per_page(per_page);
     let start = (page.saturating_sub(1)).saturating_mul(per_page);
     let mut total = 0usize;
     let mut slice = Vec::with_capacity(per_page);
@@ -700,8 +813,8 @@ fn paginated_thought_refs(
     per_page: usize,
     reverse: bool,
 ) -> Value {
-    let page = page.max(1);
-    let per_page = per_page.max(1);
+    let page = clamp_page(page);
+    let per_page = clamp_per_page(per_page);
     let total = thoughts.len();
     let pages = total.div_ceil(per_page);
     let start = (page.saturating_sub(1)).saturating_mul(per_page);
@@ -1278,12 +1391,7 @@ async fn api_bootstrap_chain(
     Json(body): Json<BootstrapChainBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let chain_key = body.chain_key.trim().to_string();
-    if chain_key.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "chain_key must not be empty"})),
-        ));
-    }
+    validate_new_chain_key(&chain_key)?;
     let arc = match get_or_open_chain(&state, &chain_key).await {
         Ok(arc) => arc,
         Err((StatusCode::NOT_FOUND, _)) => {
@@ -1363,8 +1471,8 @@ async fn api_chain_thoughts(
 
     let type_filter = parse_type_filter(params.types.as_deref());
 
-    let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(50).max(1);
+    let page = clamp_page(params.page.unwrap_or(1));
+    let per_page = clamp_per_page(params.per_page.unwrap_or(50));
     let reverse = params.order.as_deref().unwrap_or("desc") != "asc";
 
     Ok(Json(paginated_thoughts(
@@ -1396,8 +1504,8 @@ async fn api_chain_search(
     let arc = get_or_open_chain(&state, &chain_key).await?;
     let chain = arc.read().await;
 
-    let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(50).max(1);
+    let page = clamp_page(params.page.unwrap_or(1));
+    let per_page = clamp_per_page(params.per_page.unwrap_or(50));
     let reverse = params.order.as_deref().unwrap_or("desc") != "asc";
     let filter = dashboard_search_filter(&params);
 
@@ -1493,8 +1601,8 @@ async fn api_chain_search_bundles(
     };
     let arc = get_or_open_chain(&state, &chain_key).await?;
     let chain = arc.read().await;
-    let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(50).max(1);
+    let page = clamp_page(params.page.unwrap_or(1));
+    let per_page = clamp_per_page(params.per_page.unwrap_or(50));
     let offset = (page.saturating_sub(1)).saturating_mul(per_page);
     let bundle_limit = offset.saturating_add(per_page).max(1);
     let result = chain.query_context_bundles(
@@ -1640,8 +1748,8 @@ async fn api_agent_thoughts(
 
     let type_filter = parse_type_filter(params.types.as_deref());
 
-    let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(50).max(1);
+    let page = clamp_page(params.page.unwrap_or(1));
+    let per_page = clamp_per_page(params.per_page.unwrap_or(50));
     let reverse = params.order.as_deref().unwrap_or("desc") != "asc";
 
     Ok(Json(paginated_thoughts(
@@ -2288,6 +2396,8 @@ async fn api_copy_agent_to_chain(
         ));
     }
 
+    validate_new_chain_key(&target_chain_key)?;
+
     // Open source chain (read-only snapshot).
     let src_arc = get_or_open_chain(&state, &chain_key).await?;
     let src_chain = src_arc.read().await;
@@ -2351,24 +2461,28 @@ async fn api_copy_agent_to_chain(
     }
 
     // Open (or create) the target chain.
-    let dst_arc = {
-        // create_new=false: open if it exists, create if it doesn't
-        let chain = MentisDb::open_with_key_and_storage_kind(
-            &state.mentisdb_dir,
-            &target_chain_key,
-            state.default_storage_adapter,
-        )
-        .map_err(|e| internal_error(format!("open target chain '{target_chain_key}': {e}")))?;
-        let mut chain = chain;
-        chain
-            .set_auto_flush(state.auto_flush.load(Ordering::Relaxed))
-            .map_err(internal_error)?;
-        chain
-            .apply_persisted_managed_vector_sidecars()
-            .map_err(internal_error)?;
-        let arc = Arc::new(RwLock::new(chain));
-        state.chains.insert(target_chain_key.clone(), arc.clone());
-        arc
+    // Reuse the live cached chain when present; only create on NotFound so a
+    // live handle is never replaced by a second one.
+    let dst_arc = match get_or_open_chain(&state, &target_chain_key).await {
+        Ok(arc) => arc,
+        Err((StatusCode::NOT_FOUND, _)) => {
+            let mut chain = MentisDb::open_with_key_and_storage_kind(
+                &state.mentisdb_dir,
+                &target_chain_key,
+                state.default_storage_adapter,
+            )
+            .map_err(|e| internal_error(format!("open target chain '{target_chain_key}': {e}")))?;
+            chain
+                .set_auto_flush(state.auto_flush.load(Ordering::Relaxed))
+                .map_err(internal_error)?;
+            chain
+                .apply_persisted_managed_vector_sidecars()
+                .map_err(internal_error)?;
+            let arc = Arc::new(RwLock::new(chain));
+            state.chains.insert(target_chain_key.clone(), arc.clone());
+            arc
+        }
+        Err(err) => return Err(err),
     };
 
     let mut dst_chain = dst_arc.write().await;
@@ -2633,12 +2747,7 @@ async fn api_branch_chain(
         }
     };
 
-    if body.branch_chain_key.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "branch_chain_key must not be empty"})),
-        ));
-    }
+    validate_new_chain_key(&body.branch_chain_key)?;
 
     if state.chains.contains_key(&body.branch_chain_key) {
         return Err((
@@ -2851,6 +2960,8 @@ struct DashboardSetting {
     description: String,
     kind: String,
     hot_reload: bool,
+    /// True when a secret value is configured but withheld from the response.
+    set: bool,
 }
 
 /// `GET /dashboard/api/settings`
@@ -2868,6 +2979,7 @@ async fn api_settings(
             description: "Directory where chain files and registry are stored.".to_string(),
             kind: "string".to_string(),
             hot_reload: false,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_DEFAULT_CHAIN_KEY".to_string(),
@@ -2878,6 +2990,7 @@ async fn api_settings(
             description: "Default chain key when none is specified.".to_string(),
             kind: "string".to_string(),
             hot_reload: false,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_STORAGE_ADAPTER".to_string(),
@@ -2886,6 +2999,7 @@ async fn api_settings(
             description: "Storage adapter: binary or jsonl.".to_string(),
             kind: "string".to_string(),
             hot_reload: false,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_AUTO_FLUSH".to_string(),
@@ -2895,6 +3009,7 @@ async fn api_settings(
                 .to_string(),
             kind: "boolean".to_string(),
             hot_reload: true,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_VERBOSE".to_string(),
@@ -2903,6 +3018,7 @@ async fn api_settings(
             description: "Enable verbose logging.".to_string(),
             kind: "boolean".to_string(),
             hot_reload: true,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_LOG_FILE".to_string(),
@@ -2911,6 +3027,7 @@ async fn api_settings(
             description: "Path to log file (optional).".to_string(),
             kind: "string".to_string(),
             hot_reload: false,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_BIND_HOST".to_string(),
@@ -2919,6 +3036,7 @@ async fn api_settings(
             description: "Host address to bind servers to.".to_string(),
             kind: "string".to_string(),
             hot_reload: false,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_MCP_PORT".to_string(),
@@ -2927,6 +3045,7 @@ async fn api_settings(
             description: "Port for the MCP server.".to_string(),
             kind: "number".to_string(),
             hot_reload: false,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_REST_PORT".to_string(),
@@ -2935,6 +3054,7 @@ async fn api_settings(
             description: "Port for the REST server.".to_string(),
             kind: "number".to_string(),
             hot_reload: false,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_HTTPS_MCP_PORT".to_string(),
@@ -2943,6 +3063,7 @@ async fn api_settings(
             description: "Port for the HTTPS MCP server (0 to disable).".to_string(),
             kind: "number".to_string(),
             hot_reload: false,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_HTTPS_REST_PORT".to_string(),
@@ -2951,6 +3072,7 @@ async fn api_settings(
             description: "Port for the HTTPS REST server (0 to disable).".to_string(),
             kind: "number".to_string(),
             hot_reload: false,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_TLS_CERT".to_string(),
@@ -2959,6 +3081,7 @@ async fn api_settings(
             description: "Path to TLS certificate.".to_string(),
             kind: "string".to_string(),
             hot_reload: false,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_TLS_KEY".to_string(),
@@ -2967,6 +3090,7 @@ async fn api_settings(
             description: "Path to TLS private key.".to_string(),
             kind: "string".to_string(),
             hot_reload: false,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_DASHBOARD_PORT".to_string(),
@@ -2975,14 +3099,18 @@ async fn api_settings(
             description: "Port for the web dashboard (0 to disable).".to_string(),
             kind: "number".to_string(),
             hot_reload: false,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_DASHBOARD_PIN".to_string(),
-            value: std::env::var("MENTISDB_DASHBOARD_PIN").unwrap_or_default(),
+            // The PIN is a secret: never echo it back to the browser.
+            value: String::new(),
             default_value: "".to_string(),
-            description: "Optional PIN to protect dashboard access.".to_string(),
+            description: "Optional PIN to protect dashboard access. Leave blank to keep the current value."
+                .to_string(),
             kind: "string".to_string(),
             hot_reload: false,
+            set: std::env::var("MENTISDB_DASHBOARD_PIN").is_ok_and(|v| !v.is_empty()),
         },
         DashboardSetting {
             name: MENTISDB_BEARER_TOKEN_ACCESS_ENV.to_string(),
@@ -2992,6 +3120,7 @@ async fn api_settings(
             description: "Require bearer tokens for MCP HTTP and HTTPS access.".to_string(),
             kind: "boolean".to_string(),
             hot_reload: true,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_UPDATE_CHECK".to_string(),
@@ -3000,6 +3129,7 @@ async fn api_settings(
             description: "Enable background GitHub release checks.".to_string(),
             kind: "boolean".to_string(),
             hot_reload: true,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_UPDATE_REPO".to_string(),
@@ -3009,6 +3139,7 @@ async fn api_settings(
             description: "GitHub repository for update checks.".to_string(),
             kind: "string".to_string(),
             hot_reload: true,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_STARTUP_SOUND".to_string(),
@@ -3017,6 +3148,7 @@ async fn api_settings(
             description: "Play a sound on daemon startup.".to_string(),
             kind: "boolean".to_string(),
             hot_reload: true,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_THOUGHT_SOUNDS".to_string(),
@@ -3025,6 +3157,7 @@ async fn api_settings(
             description: "Play sounds on thought append and read.".to_string(),
             kind: "boolean".to_string(),
             hot_reload: true,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_HNSW_THRESHOLD".to_string(),
@@ -3034,6 +3167,7 @@ async fn api_settings(
             description: "Minimum number of vectors before the HNSW approximate backend is selected.".to_string(),
             kind: "number".to_string(),
             hot_reload: true,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_HNSW_EF_CONSTRUCTION".to_string(),
@@ -3042,6 +3176,7 @@ async fn api_settings(
             description: "Search width during HNSW graph construction (higher = better recall, slower build).".to_string(),
             kind: "number".to_string(),
             hot_reload: true,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_HNSW_EF_SEARCH".to_string(),
@@ -3050,6 +3185,7 @@ async fn api_settings(
             description: "Search width during HNSW queries (higher = better recall, slower search).".to_string(),
             kind: "number".to_string(),
             hot_reload: true,
+            set: false,
         },
         DashboardSetting {
             name: "MENTISDB_HNSW_BACKGROUND_BUILD".to_string(),
@@ -3058,6 +3194,7 @@ async fn api_settings(
             description: "Build large HNSW graphs in a background thread so the daemon stays responsive.".to_string(),
             kind: "boolean".to_string(),
             hot_reload: true,
+            set: false,
         },
     ];
     Ok(Json(settings))
@@ -3150,6 +3287,12 @@ async fn api_update_settings(
                 StatusCode::BAD_REQUEST,
                 Json(json!({ "error": "Invalid setting", "message": msg })),
             ));
+        }
+
+        // The PIN is never returned by GET /settings, so a blank value means
+        // "unchanged" and must not wipe the configured PIN.
+        if name == "MENTISDB_DASHBOARD_PIN" && value.is_empty() {
+            continue;
         }
 
         let old_value = std::env::var(name).unwrap_or_default();

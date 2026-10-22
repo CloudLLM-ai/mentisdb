@@ -53,6 +53,16 @@ fn dashboard_router_with_chains(
         auto_flush: Arc::new(AtomicBool::new(true)),
         bearer_token_access: Arc::new(AtomicBool::new(false)),
     })
+    // Programmatic clients (no Origin/Referer) must send the CSRF opt-in header.
+    .layer(axum::middleware::map_request(
+        |mut req: axum::extract::Request| async move {
+            req.headers_mut().insert(
+                "x-mentisdb-dashboard",
+                axum::http::HeaderValue::from_static("1"),
+            );
+            req
+        },
+    ))
 }
 
 fn dashboard_router_for_dir(dir: &PathBuf) -> axum::Router {
@@ -727,9 +737,7 @@ async fn dashboard_chain_agent_counts_link_to_agent_sections() {
     assert!(html.contains("function agentListAnchorId(chainKey) {"));
     assert!(html.contains("function agentListHash(chainKey) {"));
     assert!(html.contains("else if (parts[0] === 'agents' && parts[1])             renderAgentList(decodeURIComponent(parts[1]));"));
-    assert!(html.contains(
-        r#"<td onclick="event.stopPropagation()"><a href="${agentListHash(c.chain_key)}""#
-    ));
+    assert!(html.contains(r#"<td data-act="noop"><a href="${agentListHash(c.chain_key)}""#));
     assert!(html.contains(
         r#"<div class="section-label" id="${agentListAnchorId(ck)}"><a href="${agentListHash(ck)}""#
     ));
@@ -1147,6 +1155,7 @@ async fn deleting_a_cached_chain_does_not_reregister_it_on_last_drop() {
             Request::builder()
                 .method("DELETE")
                 .uri("/dashboard/api/chains/source")
+                .header("x-mentisdb-dashboard", "1")
                 .body(Body::empty())
                 .unwrap(),
         )
