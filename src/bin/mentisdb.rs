@@ -1319,8 +1319,12 @@ async fn run_headless() -> Result<(), Box<dyn std::error::Error + Send + Sync>> 
         |_| {}, // no-op event handler
     );
 
+    // Install signal handlers before announcing readiness so a SIGTERM that
+    // arrives immediately after startup is never lost to the default action.
+    let shutdown_signal = wait_for_shutdown_signal();
+
     // Start servers
-    let handles = start_servers(config, None).await?;
+    let mut handles = start_servers(config, None).await?;
 
     eprintln!(
         "[mentisdb headless] MCP http://{} REST http://{}",
@@ -1328,9 +1332,57 @@ async fn run_headless() -> Result<(), Box<dyn std::error::Error + Send + Sync>> 
         handles.rest.local_addr(),
     );
 
-    // Wait for Ctrl+C
-    tokio::signal::ctrl_c().await.ok();
+    shutdown_signal.await;
+    eprintln!("[mentisdb headless] shutdown signal received, draining servers");
+    shutdown_handles(&mut handles);
+    // Give in-flight requests and group-commit writers a moment to finish.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     Ok(())
+}
+
+/// Install SIGINT (Ctrl+C) and, on Unix, SIGTERM handlers immediately and
+/// return a future that resolves when either signal arrives.
+///
+/// Container runtimes (`docker stop`, Kubernetes) and service managers
+/// (`systemd`) stop daemons with SIGTERM, so handling Ctrl+C alone would let
+/// the default SIGTERM disposition kill the process without any graceful drain.
+/// Registration happens eagerly (not on first poll) so no signal is missed
+/// between this call and the `.await`.
+fn wait_for_shutdown_signal() -> impl std::future::Future<Output = ()> {
+    #[cfg(unix)]
+    let signals = {
+        use tokio::signal::unix::{signal, SignalKind};
+        signal(SignalKind::terminate())
+            .and_then(|term| signal(SignalKind::interrupt()).map(|int| (term, int)))
+            .ok()
+    };
+    async move {
+        #[cfg(unix)]
+        if let Some((mut term, mut int)) = signals {
+            tokio::select! {
+                _ = term.recv() => {}
+                _ = int.recv() => {}
+            }
+            return;
+        }
+        tokio::signal::ctrl_c().await.ok();
+    }
+}
+
+/// Ask every running server to stop accepting connections and drain.
+fn shutdown_handles(handles: &mut mentisdb::server::MentisDbServerHandles) {
+    let _ = handles.mcp.shutdown();
+    let _ = handles.rest.shutdown();
+    for handle in [
+        handles.https_mcp.as_mut(),
+        handles.https_rest.as_mut(),
+        handles.dashboard.as_mut(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let _ = handle.shutdown();
+    }
 }
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
