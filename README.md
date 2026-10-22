@@ -71,11 +71,51 @@ cargo install mentisdb --no-default-features --features server
 
 This produces a smaller binary with no audio dependencies.
 
+### Prebuilt binaries
+
+Every [GitHub release](https://github.com/CloudLLM-ai/mentisdb/releases) ships
+ready-to-run `mentisdb` binaries for macOS (`mentisdb-macos-arm64`,
+`mentisdb-macos-x86_64`), Windows (`mentisdb-windows-x86_64.exe`) and Linux.
+Linux binaries come in two flavours (since 0.10.10, [#21](https://github.com/CloudLLM-ai/mentisdb/issues/21)):
+
+| Asset | Local embeddings (FastEmbed) | Minimum glibc | Runs on |
+| --- | --- | --- | --- |
+| `mentisdb-linux-x86_64`, `mentisdb-linux-arm64` | yes | 2.39 | Ubuntu 24.04+, Debian 13+, Fedora 40+, RHEL 10, Arch |
+| `mentisdb-linux-x86_64-compat`, `mentisdb-linux-arm64-compat` | no | 2.34 | Ubuntu 22.04 LTS, Debian 12, RHEL 9, and everything newer |
+
+The full builds need a recent glibc because the prebuilt ONNX Runtime they link
+for local embeddings is itself built against glibc 2.38+. The `-compat` builds are
+compiled on Ubuntu 22.04 without the `local-embeddings` feature: lexical search
+and `local-text-v1` vectors work as usual, but there is no `fastembed-minilm`
+semantic vector provider (the same trade-off as the Intel macOS binary). Release
+CI fails the build if a `-compat` binary ever needs a glibc newer than 2.35.
+
+Check your glibc before picking one:
+
+```bash
+ldd --version | head -1     # e.g. "ldd (Ubuntu GLIBC 2.35-0ubuntu3) 2.35"
+```
+
+A full binary started on an older glibc fails immediately with
+``version `GLIBC_2.39' not found``. If you are on an older distro and want local
+embeddings, use the [Docker image](#docker): it is self-contained and has full
+features regardless of the host's glibc. (Building from source with
+`--features local-embeddings` does not avoid the floor, because the ONNX Runtime
+library it downloads needs glibc 2.38+ too.)
+
+```bash
+# Example: Ubuntu 22.04 on x86_64
+curl -fLo mentisdb https://github.com/CloudLLM-ai/mentisdb/releases/latest/download/mentisdb-linux-x86_64-compat
+chmod +x mentisdb && ./mentisdb --help
+```
+
 ### Docker
 
 Release images are published to GitHub Container Registry for `linux/amd64` and
-`linux/arm64`. Tags: the release tag (for example `0.10.9.54`), the crate version
-(`0.10.9`, moves with each release of that version) and `latest`.
+`linux/arm64` (first published with 0.10.10.55). Tags: the release tag (for example
+`0.10.10.55`), the crate version (`0.10.10`, moves with each release of that version)
+and `latest`. This is also the way to get full features, including local embeddings,
+on Linux distros older than glibc 2.39 (see [Prebuilt binaries](#prebuilt-binaries)).
 
 ```bash
 docker run -d --name mentisdb \
@@ -144,7 +184,7 @@ cargo install mentisdb --features local-embeddings
 
 The `local-embeddings` feature enables the built-in `fastembed-minilm` ONNX embedding provider for real semantic vector search. Without it, MentisDB falls back to `local-text-v1` (text hashing). The auto-updater also installs with `--features local-embeddings`.
 
-The prebuilt Intel macOS (`x86_64-apple-darwin`) release binary is built **without** `local-embeddings`, because ONNX Runtime ships no prebuilt library for that target; it uses `local-text-v1` vectors. Every other release binary includes FastEmbed. Builds with `--no-default-features` (optionally re-adding `--features server` etc.) are supported.
+The prebuilt Intel macOS (`x86_64-apple-darwin`) release binary is built **without** `local-embeddings`, because ONNX Runtime ships no prebuilt library for that target; it uses `local-text-v1` vectors. The same applies to the `mentisdb-linux-*-compat` binaries for older glibc (see [Prebuilt binaries](#prebuilt-binaries)). Every other release binary includes FastEmbed. Builds with `--no-default-features` (optionally re-adding `--features server` etc.) are supported.
 
 Connect your local AI tools the fast way:
 
