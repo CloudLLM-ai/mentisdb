@@ -1439,11 +1439,11 @@ The daemon currently exposes 42 MCP tools:
 - `mentisdb_head`
   Return head metadata, the latest thought at the current chain tip, and integrity state.
 - `mentisdb_register_webhook`
-  Register a webhook to receive HTTP POST notifications when thoughts are appended. Delivery is fire-and-forget with exponential backoff retries (up to 5 attempts).
+  Register a webhook to receive HTTP POST notifications when thoughts are appended. Delivery is fire-and-forget with up to 3 attempts per event (5 s timeout, exponential backoff from 1 s). See the target restrictions below.
 - `mentisdb_list_webhooks`
-  List all registered webhooks.
+  List all registered webhooks. Requires a global token when bearer-token access is enabled.
 - `mentisdb_delete_webhook`
-  Remove a webhook registration by its UUID.
+  Remove a webhook registration by its UUID. Requires a global token when bearer-token access is enabled.
 - `mentisdb_federated_search`
   Run one ranked-search query across multiple chains simultaneously and return one merged, deduplicated, re-scored result list. Each hit carries the `chain_key` it came from, so multi-agent hubs and cross-organizational memory aggregations can share a single query surface. Per-chain queries may override limits, filters, and RRF settings.
 - `mentisdb_extract_memories`
@@ -1452,6 +1452,15 @@ The daemon currently exposes 42 MCP tools:
   List the per-chain entity-type registry (labels like `incident`, `customer`, `deploy`) including descriptions and usage counts.
 - `mentisdb_upsert_entity_type`
   Create or update one entity type (label + optional description) in the per-chain registry. Entity-type labels can be attached to any thought via the `entity_type` field and used as a filter on ranked search.
+
+Webhook targets (0.10.9):
+
+- only `http` and `https` URLs are accepted, and redirects are never followed
+- `localhost`, loopback, private (RFC 1918), link-local, CGNAT (`100.64.0.0/10`), documentation/TEST-NET, benchmarking, multicast, broadcast, reserved and unspecified addresses are rejected, as are IPv6 ULA/link-local/documentation addresses and IPv6 forms that embed a blocked IPv4 address (IPv4-mapped, NAT64, 6to4)
+- the same check runs on every address a hostname resolves to at delivery time, so DNS names pointing at internal ranges (or DNS rebinding) cannot reach them
+- webhooks persisted in `mentisdb-webhooks.json` that point at a blocked target are loaded **inactive** with a warning
+- a circuit breaker pauses a webhook for 5 minutes after 5 consecutive failed deliveries; a success resets it
+- logs show only `scheme://host[:port]` of the target, never paths, query strings or credentials
 
 The detailed request and response shapes for the MCP surface live in
 [`MENTISDB_MCP.md`](../MENTISDB_MCP.md). The REST equivalents live in
