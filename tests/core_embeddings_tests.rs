@@ -334,3 +334,38 @@ fn test_embeddings_mode_parses_and_displays() {
     assert!("sometimes".parse::<EmbeddingsMode>().is_err());
     assert_eq!(EmbeddingsMode::default(), EmbeddingsMode::Auto);
 }
+
+/// A rebuild that finishes more than `SIDECAR_ADOPT_CATCHUP_LIMIT` thoughts
+/// behind the chain is not abandoned: adoption continues over several polls
+/// until the sidecar is complete and fresh.
+#[test]
+fn test_adoption_beyond_catchup_limit_is_rescheduled_not_dropped() {
+    let _serial = serial();
+    let dir = tempdir().unwrap();
+    let mut chain = chain_with(dir.path(), "bigdelta", 5);
+    let probe = Arc::new(Probe::default());
+    let gate = Arc::new(Gate::default());
+
+    chain
+        .schedule_vector_sidecar_rebuild(fastembed_metadata(), factory(&probe, &gate))
+        .unwrap();
+    for i in 0..300 {
+        chain
+            .append("agent", ThoughtType::Finding, &format!("mid rebuild {i}"))
+            .unwrap();
+    }
+    gate.open();
+    wait_until_adopted(&mut chain);
+
+    let sidecar = chain
+        .load_vector_sidecar(&fastembed_metadata())
+        .unwrap()
+        .unwrap();
+    assert_eq!(sidecar.entries.len(), 305);
+    assert!(matches!(
+        chain
+            .vector_sidecar_freshness(&sidecar, &fastembed_metadata())
+            .unwrap(),
+        mentisdb::search::VectorSidecarFreshness::Fresh
+    ));
+}

@@ -7424,13 +7424,10 @@ impl MentisDb {
             ));
         }
         let delta = self.thoughts.len() - covered;
-        if delta > SIDECAR_ADOPT_CATCHUP_LIMIT {
-            return Err(io::Error::other(format!(
-                "{delta} thoughts were appended during the sidecar rebuild; \
-                 it will rebuild again on next open"
-            )));
-        }
-        for (chunk_start, chunk) in self.thoughts[covered..]
+        // Bound the embedding work done per adoption attempt; a larger gap is
+        // closed over several polls instead of abandoning the finished rebuild.
+        let step = delta.min(SIDECAR_ADOPT_CATCHUP_LIMIT);
+        for (chunk_start, chunk) in self.thoughts[covered..covered + step]
             .chunks(SIDECAR_REBUILD_BATCH)
             .enumerate()
         {
@@ -7457,6 +7454,14 @@ impl MentisDb {
                     Some(thought.hash.clone()),
                 )?;
             }
+        }
+        if step < delta {
+            // Still behind: park the extended sidecar and finish on a later poll.
+            let slot: Arc<Mutex<Option<SidecarRebuildOutcome>>> =
+                Arc::new(Mutex::new(Some(Ok((provider, sidecar)))));
+            self.pending_sidecar_rebuilds
+                .push(PendingSidecarRebuild { metadata, slot });
+            return Ok(());
         }
         if delta > 0 {
             sidecar.compact_to_path(&path)?;
