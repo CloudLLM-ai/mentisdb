@@ -128,7 +128,7 @@ Default to `References` only if no stronger fit. `DerivedFrom` for "I concluded 
 
 ## 🌿 MEMORY CHAIN BRANCHES
 
-Fork with `mentisdb_branch_from(source_chain_key, branch_thought_id, branch_chain_key)`. The new chain is born with a genesis thought carrying a `BranchesFrom` relation. Searches on the branch **transparently include ancestor chain results** annotated with `chain_key`. Use to isolate risky experiments, let sub-agents work in their own space, or fork per tenant/feature. Merge back explicitly with `mentisdb_merge_chains`.
+Fork with `mentisdb_branch_from(source_chain_key, branch_thought_id, branch_chain_key)`; `branch_chain_key` must name a new chain (an existing one returns 409). The new chain is born with a genesis thought carrying a `BranchesFrom` relation. Searches on the branch **transparently include ancestor chain results** annotated with `chain_key`. Use to isolate risky experiments, let sub-agents work in their own space, or fork per tenant/feature. Merge back explicitly with `mentisdb_merge_chains`.
 
 ## 🤖 SUB-AGENT ORCHESTRATION
 
