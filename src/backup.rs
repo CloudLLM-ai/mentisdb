@@ -83,6 +83,11 @@ pub const MAX_RESTORE_ENTRY_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 /// [`restore_backup`] (256 GiB).
 pub const MAX_RESTORE_TOTAL_BYTES: u64 = 256 * 1024 * 1024 * 1024;
 
+/// Upper bound on the manifest JSON size [`restore_backup`] will read (8 MiB).
+pub const MAX_RESTORE_MANIFEST_BYTES: u64 = 8 * 1024 * 1024;
+/// Upper bound on the number of files a restorable backup may declare.
+pub const MAX_RESTORE_FILE_COUNT: usize = 100_000;
+
 /// SHA-256 hex digest of a backed-up file, computed at backup time and
 /// verified at restore time.
 pub type FileChecksum = String;
@@ -565,8 +570,31 @@ pub fn restore_backup(
     let mut archive = ZipArchive::new(BufReader::new(file))?;
 
     // ── Read and verify manifest ────────────────────────────────────────────────
+    if archive.len() > MAX_RESTORE_FILE_COUNT.saturating_add(1) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("archive holds more than {MAX_RESTORE_FILE_COUNT} entries"),
+        ));
+    }
     let manifest_file = archive.by_name(MANIFEST_FILENAME)?;
-    let manifest: BackupManifest = serde_json::from_reader(manifest_file).map_err(|e| {
+    if manifest_file.size() > MAX_RESTORE_MANIFEST_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("manifest larger than {MAX_RESTORE_MANIFEST_BYTES} bytes"),
+        ));
+    }
+    // Never trust the declared size alone: bound the actual read as well.
+    let mut manifest_bytes = Vec::new();
+    manifest_file
+        .take(MAX_RESTORE_MANIFEST_BYTES + 1)
+        .read_to_end(&mut manifest_bytes)?;
+    if manifest_bytes.len() as u64 > MAX_RESTORE_MANIFEST_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("manifest larger than {MAX_RESTORE_MANIFEST_BYTES} bytes"),
+        ));
+    }
+    let manifest: BackupManifest = serde_json::from_slice(&manifest_bytes).map_err(|e| {
         io::Error::new(io::ErrorKind::InvalidData, format!("invalid manifest: {e}"))
     })?;
 
@@ -580,10 +608,20 @@ pub fn restore_backup(
         ));
     }
 
+    if manifest.files.len() > MAX_RESTORE_FILE_COUNT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "backup declares {} files, over the {MAX_RESTORE_FILE_COUNT} file limit",
+                manifest.files.len()
+            ),
+        ));
+    }
     for entry in &manifest.files {
         validate_restore_relative_path(&entry.relative_path)?;
     }
     validate_manifest_size_limits(&manifest)?;
+    verify_declared_sizes_match_archive(&manifest, &mut archive)?;
 
     // Verify all checksums before writing anything
     manifest.verify_archive(&mut archive).map_err(|e| {
@@ -595,6 +633,7 @@ pub fn restore_backup(
 
     let staging = create_restore_staging_dir(&target_dir)?;
     let restore_result = (|| {
+        ensure_free_space(&staging, manifest.total_uncompressed_bytes)?;
         extract_archive_to_staging(&mut archive, &manifest, &staging)?;
         fs::create_dir_all(&target_dir)?;
 
@@ -618,6 +657,12 @@ pub fn restore_backup(
 /// the (overflow-checked) total exceeds [`MAX_RESTORE_TOTAL_BYTES`].
 pub fn validate_manifest_size_limits(manifest: &BackupManifest) -> io::Result<()> {
     let too_big = |what: String| io::Error::new(io::ErrorKind::InvalidData, what);
+    if manifest.files.len() > MAX_RESTORE_FILE_COUNT {
+        return Err(too_big(format!(
+            "backup declares {} files, over the {MAX_RESTORE_FILE_COUNT} file limit",
+            manifest.files.len()
+        )));
+    }
     let mut total: u64 = 0;
     for entry in &manifest.files {
         if entry.uncompressed_bytes > MAX_RESTORE_ENTRY_BYTES {
@@ -636,6 +681,84 @@ pub fn validate_manifest_size_limits(manifest: &BackupManifest) -> io::Result<()
         return Err(too_big(format!(
             "backup declares more than {MAX_RESTORE_TOTAL_BYTES} uncompressed bytes"
         )));
+    }
+    Ok(())
+}
+
+/// Cross-checks every manifest-declared size against the uncompressed size the
+/// zip central directory reports for that entry.
+///
+/// The manifest is attacker-controlled data inside the archive; the central
+/// directory is parsed independently by the zip reader. A mismatch means one of
+/// them is lying about how much data will be extracted.
+///
+/// # Errors
+///
+/// Returns `InvalidData` when an entry is missing or its sizes disagree.
+pub fn verify_declared_sizes_match_archive<R: Read + io::Seek>(
+    manifest: &BackupManifest,
+    archive: &mut ZipArchive<R>,
+) -> io::Result<()> {
+    let mut central_total: u64 = 0;
+    for entry in &manifest.files {
+        let file = archive.by_name(&entry.relative_path).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("archive is missing {}", entry.relative_path),
+            )
+        })?;
+        if file.size() != entry.uncompressed_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "manifest declares {} bytes for {} but the archive directory reports {}",
+                    entry.uncompressed_bytes,
+                    entry.relative_path,
+                    file.size()
+                ),
+            ));
+        }
+        central_total = central_total.saturating_add(file.size());
+    }
+    if central_total > MAX_RESTORE_TOTAL_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("archive holds more than {MAX_RESTORE_TOTAL_BYTES} uncompressed bytes"),
+        ));
+    }
+    Ok(())
+}
+
+/// Fails with `StorageFull` when the filesystem holding `dir` has fewer than
+/// `needed` bytes available to unprivileged users.
+///
+/// Implemented with `statvfs` on unix; on other platforms (or when the query
+/// fails) the check is skipped rather than blocking a restore.
+pub fn ensure_free_space(dir: &Path, needed: u64) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        if let Ok(c_path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) {
+            let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+            // SAFETY: `c_path` is a valid NUL-terminated string and `stat` is a
+            // properly sized, writable `statvfs` struct.
+            let rc = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
+            if rc == 0 {
+                let available = (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64);
+                if available < needed {
+                    return Err(io::Error::new(
+                        io::ErrorKind::StorageFull,
+                        format!(
+                            "not enough free disk space to restore: need {needed} bytes, {available} available"
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (dir, needed);
     }
     Ok(())
 }
