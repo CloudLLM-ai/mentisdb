@@ -1323,15 +1323,20 @@ mentisdb backup --dir ~/.cloudllm/mentisdb -o /backups/mentisdb-2026-04-14.menti
 
 When the daemon is running, `backup` calls `POST /v1/admin/flush` before reading files to ensure a consistent snapshot even with `MENTISDB_AUTO_FLUSH=false`. If the daemon is not running, files are captured as-is.
 
-With `MENTISDB_BEARER_TOKEN_ACCESS=true`, `/v1/admin/flush` requires a **global** token. The
-`backup` command does not send one, so it prints a "could not flush daemon" warning and
-captures the files as they are on disk. For a guaranteed-consistent snapshot of a
-token-protected daemon, call the flush endpoint yourself with a global token first, or stop
-the daemon.
+With `MENTISDB_BEARER_TOKEN_ACCESS=true`, `/v1/admin/flush` requires a **global** token.
+Set `MENTISDB_BEARER_TOKEN` to one and `backup` (and `restore`'s running-daemon probe) send
+it as `Authorization: Bearer <token>`:
+
+```bash
+MENTISDB_BEARER_TOKEN=mentisdb_global_token mentisdb backup
+```
+
+Without it the flush is rejected, so `backup` prints a "could not flush daemon" warning and
+captures the files as they are on disk.
 
 ### Restore a backup
 
-The daemon must be stopped before restoring. If `mentisdb` is detected running, the restore aborts with a message to stop the daemon first.
+The daemon must be stopped before restoring. If `mentisdb` is detected running, the restore aborts with a message to stop the daemon first. Any HTTP answer from the flush probe, including `401` from a token-protected daemon, counts as running.
 
 ```bash
 # Idempotent restore (preserves existing files)
@@ -1380,6 +1385,9 @@ Every file is verified by SHA-256 before restore writes anything to disk. A corr
 Restore safety limits (0.10.9):
 
 - archives that declare any entry larger than 64 GiB, or more than 256 GiB in total, are rejected before extraction
+- the manifest itself may be at most 8 MiB and list at most 100,000 files
+- every size the manifest declares must equal the entry's uncompressed size in the ZIP, otherwise the archive is rejected
+- on Unix, restore checks free disk space on the target filesystem against the manifest's total size before extracting anything
 - restore refuses to write through a symlink anywhere under the target directory
 - files are staged in a `.mentisdb-restore-<uuid>` directory created beside the target (same filesystem) and moved into place from there
 
@@ -1711,7 +1719,7 @@ Operations that expose or change server-wide state require a **global** token:
 - listing chains (`GET /v1/chains`, `mentisdb_list_chains`)
 - listing and deleting webhooks (`GET /v1/webhooks`, `DELETE /v1/webhooks/{id}`, `mentisdb_list_webhooks`, `mentisdb_delete_webhook`)
 - skill registry mutations: upload, deprecate, revoke, delete (`/v1/skills/{upload,deprecate,revoke,delete}` and the matching MCP tools)
-- `POST /v1/admin/flush` (so `mentisdb backup` cannot flush a token-protected daemon; see Backup and Restore)
+- `POST /v1/admin/flush` (set `MENTISDB_BEARER_TOKEN` to a global token so `mentisdb backup` can flush; see Backup and Restore)
 
 Registering a webhook with a chain-scoped token is allowed only when the request sets
 `chain_key_filter` to a chain inside the token's scope. `POST /v1/agents` (and the other
