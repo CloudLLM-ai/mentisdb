@@ -83,6 +83,8 @@ cargo install mentisdb --features local-embeddings
 
 The `local-embeddings` feature enables the built-in `fastembed-minilm` ONNX embedding provider for real semantic vector search. Without it, MentisDB falls back to `local-text-v1` (text hashing). The auto-updater also installs with `--features local-embeddings`.
 
+The prebuilt Intel macOS (`x86_64-apple-darwin`) release binary is built **without** `local-embeddings`, because ONNX Runtime ships no prebuilt library for that target; it uses `local-text-v1` vectors. Every other release binary includes FastEmbed. Builds with `--no-default-features` (optionally re-adding `--features server` etc.) are supported.
+
 Connect your local AI tools the fast way:
 
 ```bash
@@ -996,6 +998,16 @@ Operational flow:
   - sync the sidecar to the latest chain state without changing the enable/disable setting
   - rebuild the sidecar from scratch after an explicit confirmation that the previous file will be deleted and recreated
 - if auto-sync is disabled, new thoughts can make the sidecar stale until the user syncs or rebuilds it
+
+Since 0.10.9 (issue #23, memory blow-up with many chains):
+
+- one FastEmbed model is loaded per process and shared by every chain, and texts are embedded in small bounded batches, so memory no longer grows with the number of open chains
+- the ONNX model cache lives in `<MENTISDB_DIR>/.fastembed_cache` instead of the daemon's working directory; set `FASTEMBED_CACHE_DIR` to put it elsewhere
+- opening a chain never embeds its history on the request path: chains with more than 32 thoughts and no fresh sidecar are rebuilt by a single background worker. Until the rebuilt sidecar is adopted (on the next request or append once the worker finishes), ranked search on that chain returns lexical and graph results only
+- opening a chain no longer rewrites its persisted vector provider configuration
+- `MENTISDB_EMBEDDINGS` selects the embeddings mode process-wide: unset (default: FastEmbed when compiled in, local text otherwise), `off` (no managed sidecars, lexical only), `local-text` (built-in `local-text-v1` hashing, never loads ONNX), or `fastembed`
+
+Upgrading from 0.10.1–0.10.8: the first start after upgrading may show lexical-only ranked results for large chains while their sidecars rebuild in the background. A stray `.fastembed_cache/` left in the directory you used to start the daemon from can be deleted; the model is re-downloaded into the new location once.
 
 ### HNSW approximate-nearest-neighbor vector backend
 
