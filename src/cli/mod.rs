@@ -436,7 +436,7 @@ fn run_backup(
 
     // Try to flush the running daemon first. If connection is refused, the
     // daemon is not running — skip flush and proceed with whatever is on disk.
-    match ureq::post("http://127.0.0.1:9472/v1/admin/flush").send_empty() {
+    match post_admin_flush() {
         Ok(resp) if resp.status() == 200 => {
             let _ = writeln!(out, "Daemon detected — chains flushed.");
         }
@@ -502,7 +502,7 @@ fn run_restore(
 
     // Abort if the daemon is running — restoring while the daemon is active
     // risks the daemon's in-memory state overwriting restored files on next flush.
-    match ureq::post("http://127.0.0.1:9472/v1/admin/flush").send_empty() {
+    match post_admin_flush() {
         Ok(resp) if resp.status() == 200 => {
             return Err(
                 "Restore aborted: mentisdb is running. Stop the daemon first \
@@ -512,6 +512,15 @@ fn run_restore(
         }
         Err(ureq::Error::ConnectionFailed) => {
             // Daemon not running — safe to proceed
+        }
+        Err(ureq::Error::StatusCode(_)) => {
+            // The daemon answered (for example 401 without a bearer token),
+            // so it is running.
+            return Err(
+                "Restore aborted: mentisdb is running (it rejected the flush request; \
+                 set MENTISDB_BEARER_TOKEN to a global token or stop the daemon first)."
+                    .to_string(),
+            );
         }
         Err(_) => {
             // Other connection error (timeout, etc.) — assume not running
@@ -592,4 +601,30 @@ fn run_restore(
 
     writeln!(out, "Restore complete.").map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Environment variable holding the bearer token the CLI sends to a running
+/// daemon (needed when `MENTISDB_BEARER_TOKEN_ACCESS=true`).
+pub const BEARER_TOKEN_ENV: &str = "MENTISDB_BEARER_TOKEN";
+
+/// Build the `Authorization` header value for daemon requests.
+///
+/// Returns `None` for a missing or blank token, otherwise `Bearer <token>`
+/// with surrounding whitespace trimmed.
+pub fn bearer_authorization_header(token: Option<&str>) -> Option<String> {
+    token
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(|token| format!("Bearer {token}"))
+}
+
+/// POST `/v1/admin/flush` to the local daemon, authenticating with
+/// `MENTISDB_BEARER_TOKEN` when it is set.
+fn post_admin_flush() -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    let mut request = ureq::post("http://127.0.0.1:9472/v1/admin/flush");
+    let token = std::env::var(BEARER_TOKEN_ENV).ok();
+    if let Some(value) = bearer_authorization_header(token.as_deref()) {
+        request = request.header("Authorization", value);
+    }
+    request.send_empty()
 }
