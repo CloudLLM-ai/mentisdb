@@ -2973,11 +2973,19 @@ impl MentisDbService {
             .await
     }
 
-    /// Opportunistically repair a missing implicit-edge sidecar when no other
-    /// request is currently writing.
+    /// Opportunistically repair a missing implicit-edge sidecar, and adopt any
+    /// finished background vector-sidecar rebuild, when no other request is
+    /// currently writing.
+    ///
+    /// Adoption needs `&mut MentisDb`, so without this a chain whose sidecar
+    /// was rebuilt in the background would serve no vector results until its
+    /// next append or reopen.
     fn repair_if_idle(existing: Arc<RwLock<MentisDb>>) -> Arc<RwLock<MentisDb>> {
         if let Ok(mut chain) = existing.try_write() {
             chain.ensure_implicit_edge_overlay();
+            if chain.has_pending_sidecar_rebuilds() {
+                chain.poll_vector_backend_upgrades();
+            }
         }
         existing
     }
