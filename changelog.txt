@@ -1,3 +1,117 @@
+0.10.9.54 OCT/21/2026
+  - fix(security): SECURITY — legacy MCP `/tools/execute` authorization
+    bypass. The bearer-token authorizer and the legacy executor read
+    different fields of the same request body, so a chain-scoped bearer
+    token could invoke tools against other chains, call global-only tools
+    (for example list every chain with its storage path), and merge or
+    delete chains outside its scope. Affects 0.10.8.53 and earlier when
+    bearer-token access (`MENTISDB_BEARER_TOKEN_ACCESS`) is enabled; daemons
+    without bearer tokens are unaffected because they grant full access by
+    design. The authorizer now inspects exactly the fields each transport
+    executes (`tools/execute`: `tool` + `parameters`; `tools/call`: `name`
+    + `arguments`) and payloads that carry both shapes are rejected with
+    400. Upgrading is strongly recommended for any daemon that issues
+    chain-scoped tokens.
+  - fix(security): one shared REST/MCP operation authorization table.
+    Listing chains, webhook register/list/delete, cross-chain agent
+    listing, skill mutations and `POST /v1/admin/flush` now require a
+    global token; chain-scoped tokens are confined to their chains on every
+    route. Token scope is resolved once per request.
+  - fix(security): merge/branch chain keys are trimmed and validated before
+    authorization and execution, so a scoped token can no longer reach a
+    different chain through a whitespace-padded key or branch into an
+    out-of-scope key. Branching into an existing chain returns 409.
+  - fix(security): webhook SSRF hardening. Targets resolving to loopback,
+    private, link-local, IPv4-mapped/translated (`::ffff:0:0:0/96`), local
+    NAT64 (`64:ff9b:1::/48`) and Teredo addresses are refused, every
+    resolved address is re-checked at delivery time (DNS rebinding),
+    redirects are not followed, URLs are redacted in logs, and a circuit
+    breaker pauses a webhook after 5 consecutive failures.
+  - fix(dashboard): stored XSS via crafted chain/agent keys (inline onclick
+    handlers replaced by `data-act` delegation), CSRF guard on every
+    state-changing dashboard API call and on login (`Origin`/`Referer` or
+    `X-MentisDB-Dashboard: 1`), DNS-rebinding defence through a `Host`
+    allowlist on all dashboard routes (`MENTISDB_DASHBOARD_ALLOWED_HOSTS`
+    for extra names), per-IP login rate limiting, `GET /settings` no longer
+    returns the PIN, registry `storage_location` confined to the data dir,
+    and generic error bodies.
+  - fix(security): backup restore bounds the manifest (8 MiB), file count
+    (100k) and declared sizes (cross-checked against the zip central
+    directory, plus a free-space check on Unix), and rejects zip bombs,
+    symlinks and partial writes. The dashboard `.env` (holds the PIN),
+    integration-config `.bak` copies and `.torn` files are written 0600;
+    integration temp files use unpredictable names opened `create_new`.
+  - fix(search): issue #23 — memory blow-up / OOM after upgrading with many
+    chains. Every chain used to load its own FastEmbed ONNX session and
+    embed its whole history in one unbounded batch on the request path; a
+    13-chain, 2,704-thought repro exceeded a 6 GB cap (the reporter hit OOM
+    at 28.8 GiB) and now peaks at ~1.7 GB. One model is shared per
+    process, inference runs in small bounded chunks, missing or stale
+    sidecars are rebuilt by a single background worker (single-flight per
+    sidecar) while the chain serves lexical/graph results, opening a chain
+    never rewrites its provider config, the model cache lives in
+    `<MENTISDB_DIR>/.fastembed_cache` (`FASTEMBED_CACHE_DIR` overrides), and
+    `MENTISDB_EMBEDDINGS=off|local-text|fastembed` selects the mode
+    process-wide. Thanks to takver for the detailed report.
+  - fix(search): `enable_reranking=true` was broken (LoCoMo R@5 3.6%,
+    LongMemEval R@5 2.8%) because the raw RRF total replaced the additive
+    score. RRF is now a scaled consensus bonus over positive-only lists:
+    LoCoMo rerank R@5/R@10 66.0/74.1, LongMemEval rerank R@5 68.6. RRF merge
+    is deterministic; federated search keys RRF by (chain, thought id) and
+    dedups before paging.
+  - fix(search): thesaurus synonyms keyed by stem so inflected terms
+    expand, damped to weight 0.3 with at most 3 synonyms per term (the old
+    0.7 / 5 cost ~2.4 pt of LongMemEval R@5 once stem keys fired more
+    often). Default path vs 0.10.8 baseline: LoCoMo R@5/R@10 63.8/72.7 ->
+    63.9/73.5; LongMemEval R@5/10/20 66.8/72.0/78.2 -> 68.0/72.8/78.8.
+    Filtered HNSW searches use an exact scan or recall-aware oversampling.
+  - fix(lib): durability. A torn final record is preserved to a `.torn`
+    file and truncated before the writer reopens the chain; only a strict
+    partial last record counts as torn, so mid-file corruption fails open
+    with InvalidData and nothing is dropped. Agent, entity-type and chain
+    registries are written atomically; chain migration rewrites via a
+    synced temp file; the implicit-edge overlay records its coverage and
+    catches up after a crash. Durable group commits can `fsync` once per
+    commit with the new opt-in `MENTISDB_FSYNC=1`; explicit flush, shutdown
+    and drop always sync; a lone durable append no longer waits for the
+    group-commit window.
+  - perf(lib/search): per-append cost 6.3-7.8 ms -> 1.4 ms (fsync off);
+    ranked query paths score-only with top-k selection, dense lexical scans,
+    cached vector norms, arena graph expansion (criterion: ranked lexical
+    997us -> 96us, filtered 138us -> 11us, heuristic 1.52ms -> 94us).
+    Benchmark query throughput ~206/159 -> ~384/385 q/s (LoCoMo/LME);
+    ingest LoCoMo 171.5 -> 75.1 s, LongMemEval 725.6 -> 184.2 s (host load
+    varied). fastembed stays on 5.x on purpose: fastembed 7 / ort rc.15
+    auto-registers CoreML on macOS and cut query throughput ~2.5x.
+  - fix(server): reads of an unknown chain return 404 instead of creating
+    it (call bootstrap first); chains open single-flight off the async
+    workers; disk I/O runs on the blocking pool; finished background
+    sidecar rebuilds are adopted on the read path; errors map to accurate
+    statuses (400/401/403/404/409/413/500) without leaking internals; REST
+    bodies over 1 MiB return 413 while bearer-token access is enabled; MCP
+    payloads mixing `tool`/`parameters` and `name`/`arguments` return 400;
+    skill upload no longer creates an unknown chain.
+  - fix(dashboard): chain keys restricted to `[A-Za-z0-9_-]{1,128}` on
+    create paths, paging clamped, stale fetches ignored, branch/merge
+    dialogs and chain pickers refresh, skill edit/import counts fixed,
+    copy-to reuses the live cached chain, 390px layout fixes.
+  - fix(bin): the daemon loads `<MENTISDB_DIR>/.env` after `./.env`, so
+    settings saved from the dashboard apply regardless of the working
+    directory. `mentisdb backup`/`restore` send `MENTISDB_BEARER_TOKEN` with
+    the daemon flush.
+  - ci: the Intel macOS (x86_64-apple-darwin) release binary returns,
+    built without `local-embeddings` (ort ships no prebuilt binaries for
+    that target); GitHub Actions moved to Node 24 runtimes.
+  - chore(deps): ureq 3, sha2 0.11, ed25519-dalek 3, zip 9, crossterm 0.29,
+    diffy 0.5, roaring 0.11, toml_edit 0.25, rodio 0.23, criterion 0.8,
+    plus `cargo update`. fastembed intentionally kept on 5.x (see perf).
+  - fix(build/bench): `--no-default-features` builds compile again (cli/tui
+    gated behind `server`, llm behind `llm-extraction`); the LoCoMo harness
+    passes `--reranking`/`--rerank-k` through to ranked_search; LLM
+    extraction accepts code-fenced JSON; TUI logger channel is bounded.
+  - Gates green (fmt, clippy --all-targets --all-features -D warnings, full
+    test suite). Full LoCoMo and LongMemEval re-run; see the release notes.
+
 0.10.8.53 SEP/16/2026
   - fix(sidecar): keep the vector sidecar WAL chain head consistent with the
     on-disk snapshot, fixing a deterministic chain brick (GitHub issue #20).
