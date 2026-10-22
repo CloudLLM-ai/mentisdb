@@ -610,7 +610,9 @@ daemon answers reads. Call `POST /v1/bootstrap` (or `mentisdb_bootstrap` over MC
 before reading a new chain.
 
 A `chain_key` must be non-empty, at most 256 bytes, and free of control characters;
-anything else is rejected with **400**.
+anything else is rejected with **400**. The source, target and branch keys of
+`POST /v1/chains/merge` and `POST /v1/chains/branch` (and the matching MCP tools) are
+trimmed of surrounding whitespace and then validated by the same rule.
 
 REST and MCP errors map to HTTP statuses as follows:
 
@@ -620,7 +622,7 @@ REST and MCP errors map to HTTP statuses as follows:
 | `401` | Missing/invalid bearer token, or a token whose scope does not cover the operation |
 | `403` | Permission denied (e.g. missing or invalid signature on a signed skill upload, inactive agent) |
 | `404` | Unknown chain (see above) or another missing resource |
-| `409` | Conflict, e.g. `POST /v1/chains/branch` into a chain key that already holds thoughts |
+| `409` | Conflict, e.g. `POST /v1/chains/branch` into a chain key that already exists |
 | `413` | Request body over 1 MiB (enforced while bearer-token access is enabled) |
 | `500` | Server fault; the body says only `"internal server error"` and details go to the daemon log |
 | `501` | `POST /v1/extract-memories` on a build without the `llm-extraction` feature |
@@ -1650,6 +1652,10 @@ qwen mcp add --transport http mentisdb http://127.0.0.1:9471
   live MCP protocol events — every tool call result and error is broadcast in real time
 - the legacy CloudLLM-compatible MCP endpoints at `POST /tools/list` and
   `POST /tools/execute`
+
+`POST /tools/execute` takes `tool` + `parameters`; JSON-RPC `tools/call` takes `name` +
+`arguments`. Authorization checks exactly the fields that transport executes, and a payload
+that mixes both shapes is rejected with `400`.
 
 That means you can:
 
