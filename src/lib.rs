@@ -685,6 +685,22 @@ fn group_commit_window() -> Duration {
     Duration::from_millis(ms)
 }
 
+/// Whether each durable group commit is followed by `sync_data` (power-loss
+/// durability).
+///
+/// Off by default: on macOS `sync_data` is `F_FULLFSYNC` and costs several
+/// milliseconds per commit, which cut ingestion throughput roughly in half in
+/// measurements. Enable with `MENTISDB_FSYNC=1` (also `true`, `on`, `yes`).
+/// Explicit [`BinaryStorageAdapter::flush`], shutdown and drop always sync.
+fn fsync_on_commit() -> bool {
+    std::env::var("MENTISDB_FSYNC").is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "on" | "yes"
+        )
+    })
+}
+
 /// Number of append-driven chain-registration count updates to batch before
 /// rewriting the global registry file.
 const CHAIN_REGISTRATION_FLUSH_THRESHOLD: usize = FLUSH_THRESHOLD;
@@ -857,6 +873,7 @@ impl BackgroundWriter {
                 // Read once at thread start so every append in this writer uses
                 // the same window. Avoids env::var() calls in the hot path.
                 let commit_window = group_commit_window();
+                let sync_commits = fsync_on_commit();
                 while let Ok(command) = rx.recv() {
                     let result = match command {
                         WriteCommand::Append { payload, ack_tx } => {
@@ -921,7 +938,7 @@ impl BackgroundWriter {
                                     &file_path,
                                     &mut write_buffer,
                                     &mut dirty_count,
-                                    true,
+                                    sync_commits,
                                 );
                                 if let Err(error) = &result {
                                     set_background_error(&error_state, error);
@@ -4151,6 +4168,11 @@ trait ManagedEmbeddingProvider: Send + Sync {
     ) -> io::Result<Vec<crate::search::VectorDocument>>;
 }
 
+/// Log a failed derived-state step that happened after the canonical write.
+fn log_derived_failure(what: &str, error: &io::Error) {
+    eprintln!("[mentisdb] {what} failed after the thought was persisted: {error}");
+}
+
 /// Return the parent chain key named by a genesis thought's `BranchesFrom`
 /// relation, if any.
 fn branch_parent_key(genesis: &Thought) -> Option<String> {
@@ -4363,6 +4385,10 @@ impl std::str::FromStr for EmbeddingsMode {
 /// peak memory stays bounded regardless of chain size.
 const SIDECAR_REBUILD_BATCH: usize = 32;
 
+/// Chains with at most this many thoughts are embedded inline on open (one
+/// bounded batch) instead of through the background worker.
+const SIDECAR_INLINE_REBUILD_MAX_THOUGHTS: usize = 32;
+
 /// Maximum number of thoughts appended while a background rebuild ran that
 /// are embedded synchronously when the finished sidecar is adopted.
 const SIDECAR_ADOPT_CATCHUP_LIMIT: usize = 256;
@@ -4529,6 +4555,9 @@ where
 }
 
 const MANAGED_VECTOR_SIDECAR_CONFIG_VERSION: u32 = 1;
+
+/// Number of appends between implicit-edge overlay file rewrites.
+const OVERLAY_PERSIST_INTERVAL: usize = 32;
 
 const AUTO_EDGE_DEFAULT_THRESHOLD: f32 = 0.85;
 const AUTO_EDGE_DEFAULT_K: usize = 5;
@@ -4896,9 +4925,14 @@ pub struct MentisDb {
     adjacency_index: std::sync::Mutex<Option<(usize, Arc<crate::search::ThoughtAdjacencyIndex>)>>,
     /// Derived-artifact writes queued during append (sidecar WAL, overlay).
     pending_derived: std::sync::Mutex<PendingDerivedWrite>,
+    /// Serializes [`Self::flush_pending_derived`] callers.
+    derived_flush_lock: std::sync::Mutex<()>,
     /// Sidecar rebuilds handed to the process-wide background worker whose
     /// results this handle has not adopted yet.
     pending_sidecar_rebuilds: Vec<PendingSidecarRebuild>,
+    /// Appends applied to the in-memory implicit-edge overlay since it was
+    /// last written to disk.
+    overlay_unsaved_appends: std::sync::atomic::AtomicUsize,
     /// When true, [`Self::append_thought`] skips [`Self::flush_pending_derived`].
     defer_derived_flush: bool,
     /// Cosine similarity threshold for auto-inferred edges.
@@ -5034,7 +5068,9 @@ impl MentisDb {
             implicit_edge_overlay: None,
             adjacency_index: std::sync::Mutex::new(None),
             pending_derived: std::sync::Mutex::new(PendingDerivedWrite::default()),
+            derived_flush_lock: std::sync::Mutex::new(()),
             pending_sidecar_rebuilds: Vec::new(),
+            overlay_unsaved_appends: std::sync::atomic::AtomicUsize::new(0),
             defer_derived_flush: false,
             auto_edge_threshold: std::env::var("MENTISDB_AUTO_EDGE_THRESHOLD")
                 .ok()
@@ -5567,17 +5603,35 @@ impl MentisDb {
             self.thoughts.last().unwrap(),
         );
 
+        // The canonical record is durable and indexed from here on. Everything
+        // below is derived or rebuildable state, so a failure is logged and
+        // left stale (the sidecar rebuilds on the next append; registries keep
+        // their dirty flag and are retried on the next append, flush or drop)
+        // instead of returning `Err` for a thought that *was* persisted, which
+        // would make clients retry and duplicate it.
         let last_thought = self.thoughts.last().unwrap().clone();
-        self.sync_managed_vector_sidecars_for_append(&last_thought)?;
+        if let Err(error) = self.sync_managed_vector_sidecars_for_append(&last_thought) {
+            log_derived_failure("vector sidecar sync", &error);
+        }
         self.sync_implicit_edge_overlay_for_append(&last_thought);
         self.mark_agent_registry_dirty();
-        self.maybe_flush_agent_registry(
+        if let Err(error) = self.maybe_flush_agent_registry(
             self.auto_flush || self.thoughts.len() == 1 || agent_count_changed,
-        )?;
+        ) {
+            log_derived_failure("agent registry persist", &error);
+        }
         self.mark_entity_type_registry_dirty();
-        self.maybe_flush_entity_type_registry(self.auto_flush || self.thoughts.len() == 1)?;
+        if let Err(error) =
+            self.maybe_flush_entity_type_registry(self.auto_flush || self.thoughts.len() == 1)
+        {
+            log_derived_failure("entity type registry persist", &error);
+        }
         self.mark_chain_registration_dirty();
-        self.maybe_flush_chain_registration(self.thoughts.len() == 1 || agent_count_changed)?;
+        if let Err(error) =
+            self.maybe_flush_chain_registration(self.thoughts.len() == 1 || agent_count_changed)
+        {
+            log_derived_failure("chain registration persist", &error);
+        }
 
         #[cfg(feature = "server")]
         if let Some(ref webhook_manager) = self.webhook_manager {
@@ -5592,7 +5646,9 @@ impl MentisDb {
         let defer_derived = self.defer_derived_flush;
         self.defer_derived_flush = false;
         if !defer_derived {
-            self.flush_pending_derived()?;
+            if let Err(error) = self.flush_pending_derived() {
+                log_derived_failure("derived sidecar flush", &error);
+            }
         }
 
         Ok(self.thoughts.last().unwrap())
@@ -5602,6 +5658,13 @@ impl MentisDb {
     ///
     /// Safe to call with only a shared lock: it does not mutate thought state.
     pub fn flush_pending_derived(&self) -> io::Result<()> {
+        // Held across take + writes so concurrent callers (the server flushes
+        // under a shared read lock) never interleave WAL records and a second
+        // caller does not return before the first caller's writes finished.
+        let _flush = self
+            .derived_flush_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let pending = {
             let mut guard = self
                 .pending_derived
@@ -5609,16 +5672,43 @@ impl MentisDb {
                 .unwrap_or_else(|error| error.into_inner());
             std::mem::take(&mut *guard)
         };
-        for (path, record) in pending.sidecar_wals {
-            crate::search::append_sidecar_wal_record(&path, &record)?;
+        let PendingDerivedWrite {
+            sidecar_wals,
+            sidecar_compacts,
+            overlay,
+        } = pending;
+        let mut wals = sidecar_wals.into_iter();
+        let mut compacts = sidecar_compacts.into_iter();
+        let mut overlay = overlay;
+        let result = (|| {
+            for (path, record) in wals.by_ref() {
+                crate::search::append_sidecar_wal_record(&path, &record)?;
+            }
+            for (path, mut sidecar) in compacts.by_ref() {
+                sidecar.compact_to_path(&path)?;
+            }
+            if let Some((path, snapshot)) = overlay.take() {
+                snapshot.save_to_path(&path)?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            // Keep everything not yet attempted (the failing item itself is
+            // dropped: a half-written WAL record must not be replayed). A
+            // skipped WAL record breaks the digest chain, which makes the
+            // rebuildable sidecar rebuild on next open rather than lose later
+            // work silently.
+            let mut guard = self
+                .pending_derived
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            guard.sidecar_wals.splice(0..0, wals);
+            guard.sidecar_compacts.splice(0..0, compacts);
+            if guard.overlay.is_none() {
+                guard.overlay = overlay;
+            }
         }
-        for (path, mut sidecar) in pending.sidecar_compacts {
-            sidecar.compact_to_path(&path)?;
-        }
-        if let Some((path, overlay)) = pending.overlay {
-            overlay.save_to_path(&path)?;
-        }
-        Ok(())
+        result
     }
 
     /// Queue derived sidecar/overlay I/O for [`Self::flush_pending_derived`].
@@ -7410,26 +7500,47 @@ impl MentisDb {
                 continue;
             }
 
-            let expected_count = self
-                .load_vector_sidecar(&metadata)
-                .ok()
-                .flatten()
-                .map(|sidecar| sidecar.entries.len());
+            // Compare against the live sidecar (the on-disk snapshot lags the
+            // WAL under continuous appends, so the build would never match).
+            let live_sidecar = match self
+                .managed_vector_sidecars
+                .get_mut(&metadata)
+                .and_then(|entry| entry.cached_sidecar.take())
+            {
+                Some(sidecar) => Some(sidecar),
+                None => self.load_vector_sidecar(&metadata).ok().flatten(),
+            };
             let backend = pending.join();
 
-            let accepted = if let (Some(count), Some(backend)) = (expected_count, backend) {
-                if backend.document_count() == count {
-                    self.managed_vector_sidecars
-                        .get_mut(&metadata)
-                        .unwrap()
-                        .cached_index = Some(backend);
-                    true
-                } else {
-                    false
+            // The build covers a prefix of the append-only sidecar: upsert the
+            // entries appended while it ran instead of discarding the work.
+            let upgraded = match (&live_sidecar, backend) {
+                (Some(sidecar), Some(mut backend))
+                    if backend.document_count() <= sidecar.entries.len() =>
+                {
+                    let built = backend.document_count();
+                    let caught_up = sidecar.entries[built..].iter().all(|entry| {
+                        backend
+                            .upsert_document(crate::search::VectorDocument::new(
+                                entry.thought_id.to_string(),
+                                entry.vector.clone(),
+                            ))
+                            .is_ok()
+                    });
+                    (caught_up && backend.document_count() == sidecar.entries.len())
+                        .then_some(backend)
                 }
-            } else {
-                false
+                _ => None,
             };
+            let accepted = upgraded.is_some();
+            if let Some(entry) = self.managed_vector_sidecars.get_mut(&metadata) {
+                if let Some(backend) = upgraded {
+                    entry.cached_index = Some(backend);
+                }
+                if entry.cached_sidecar.is_none() {
+                    entry.cached_sidecar = live_sidecar;
+                }
+            }
 
             if !accepted {
                 // The build was stale or failed; start a fresh one from the
@@ -7605,9 +7716,31 @@ impl MentisDb {
             return self.apply_mode_without_fastembed(mode);
         }
         self.unmanage_vector_sidecar(&ManagedVectorProviderKind::LocalTextV1.metadata());
-        // Read-only with respect to provider choice: the persisted config is
-        // consulted but never rewritten to enable fastembed on open.
-        let config = self.persisted_managed_vector_sidecar_config()?;
+        // An existing chain's persisted config is consulted but never
+        // rewritten to enable fastembed on open. Only a chain with no config
+        // yet (brand new) records the default provider choice.
+        let config_existed = {
+            let persistence = self.persistence_metadata()?;
+            chain_vector_sidecar_config_path(
+                &persistence.chain_dir,
+                &persistence.chain_key,
+                persistence.storage_kind,
+            )
+            .exists()
+        };
+        let mut config = self.persisted_managed_vector_sidecar_config()?;
+        if !config_existed {
+            for entry in &mut config.providers {
+                if entry.provider_kind == ManagedVectorProviderKind::LocalTextV1 {
+                    entry.enabled = false;
+                }
+            }
+            config.providers.push(ManagedVectorSidecarConfig {
+                provider_kind: ManagedVectorProviderKind::FastEmbedMiniLM,
+                enabled: true,
+            });
+            self.save_managed_vector_sidecar_config(&config)?;
+        }
         let fastembed_enabled = config
             .providers
             .iter()
@@ -7651,6 +7784,25 @@ impl MentisDb {
             } else {
                 self.register_vector_sidecar_for_search(provider);
             }
+        } else if fastembed_enabled && self.thoughts.len() <= SIDECAR_INLINE_REBUILD_MAX_THOUGHTS {
+            // Tiny (typically brand-new) chains fit in a single bounded batch:
+            // embed inline so they are searchable immediately.
+            let provider = match make_fastembed() {
+                Ok(provider) => provider,
+                Err(error) => {
+                    log::warn!(
+                        "FastEmbed provider init failed, falling back to LocalTextV1: {error}"
+                    );
+                    return self
+                        .manage_vector_sidecar(crate::search::LocalTextEmbeddingProvider::new())
+                        .map(|_| ())
+                        .map_err(
+                            vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>,
+                        );
+                }
+            };
+            self.manage_vector_sidecar(provider)
+                .map_err(|e| io::Error::other(format!("FastEmbed sidecar rebuild failed: {e}")))?;
         } else if fastembed_enabled {
             self.schedule_vector_sidecar_rebuild(metadata, make_fastembed)?;
         } else if sidecar.is_some() {
@@ -7930,37 +8082,68 @@ impl MentisDb {
         let Some(metadata) = metadata else {
             return;
         };
-
-        let sidecar = self
-            .managed_vector_sidecars
-            .get(&metadata)
-            .and_then(|entry| entry.cached_sidecar.clone());
-        let Some(sidecar) = sidecar else {
+        let Some(entry) = self.managed_vector_sidecars.get(&metadata) else {
             return;
         };
-        let new_vector = self
-            .managed_vector_sidecars
-            .get(&metadata)
-            .and_then(|entry| entry.cached_index.as_ref())
-            .and_then(|idx| idx.get_vector(&thought.id.to_string()));
+        // Borrow the live sidecar; no per-append deep clone.
+        let Some(sidecar) = entry.cached_sidecar.as_ref() else {
+            return;
+        };
+        let Some(new_vector) = entry
+            .cached_index
+            .as_ref()
+            .and_then(|idx| idx.get_vector(&thought.id.to_string()))
+        else {
+            return;
+        };
         let overlay_path = chain_auto_edges_path(
             &persistence.chain_dir,
             &persistence.chain_key,
             persistence.storage_kind,
         );
+        let Some(overlay) = self.implicit_edge_overlay.as_mut() else {
+            return;
+        };
+        overlay.add_thought(thought.id, &new_vector, sidecar);
 
-        if let Some(vec) = new_vector {
-            let snapshot = {
-                let overlay = self.implicit_edge_overlay.as_mut().unwrap();
-                overlay.add_thought(thought.id, &vec, &sidecar);
-                overlay.clone()
-            };
+        // The overlay file is rebuildable derived state, so it is persisted
+        // every OVERLAY_PERSIST_INTERVAL appends (and on flush/drop) instead
+        // of cloning and rewriting the whole overlay on every append.
+        let unsaved = self
+            .overlay_unsaved_appends
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        if unsaved >= OVERLAY_PERSIST_INTERVAL {
+            self.overlay_unsaved_appends
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+            let snapshot = overlay.clone();
             let mut pending = self
                 .pending_derived
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             pending.overlay = Some((overlay_path, snapshot));
         }
+    }
+
+    /// Write the implicit-edge overlay now if appends have changed it since
+    /// the last save. Best effort: the overlay is rebuildable.
+    fn persist_dirty_implicit_edge_overlay(&self) -> io::Result<()> {
+        if self
+            .overlay_unsaved_appends
+            .swap(0, std::sync::atomic::Ordering::Relaxed)
+            == 0
+        {
+            return Ok(());
+        }
+        let (Some(overlay), Some(persistence)) = (&self.implicit_edge_overlay, &self.persistence)
+        else {
+            return Ok(());
+        };
+        overlay.save_to_path(&chain_auto_edges_path(
+            &persistence.chain_dir,
+            &persistence.chain_key,
+            persistence.storage_kind,
+        ))
     }
 
     fn load_or_rebuild_implicit_edge_overlay(&mut self) {
@@ -8132,14 +8315,16 @@ impl MentisDb {
             }
             let path =
                 chain_vector_sidecar_path(&persist_dir, &persist_key, persist_kind, &metadata);
+            // Take (not clone) the live sidecar: it is put back below, so the
+            // per-append cost no longer grows with the corpus.
             let cached_sidecar = self
                 .managed_vector_sidecars
-                .get(&metadata)
-                .and_then(|entry| entry.cached_sidecar.clone());
+                .get_mut(&metadata)
+                .and_then(|entry| entry.cached_sidecar.take());
             let loaded =
                 cached_sidecar.or_else(|| crate::search::VectorSidecar::load_from_path(&path).ok());
             let sidecar = match loaded {
-                Some(sidecar)
+                Some(mut sidecar)
                     if matches!(
                         sidecar.freshness(
                             &persist_key,
@@ -8156,12 +8341,23 @@ impl MentisDb {
                         .unwrap()
                         .provider
                         .as_ref();
-                    let (mut new_sidecar, wal_record) =
-                        self.extend_fresh_vector_sidecar(provider, sidecar, thought)?;
+                    let wal_record =
+                        match self.extend_fresh_vector_sidecar(provider, &mut sidecar, thought) {
+                            Ok(record) => record,
+                            Err(error) => {
+                                // Nothing was mutated; keep the (now stale)
+                                // sidecar so the next append rebuilds it.
+                                if let Some(entry) = self.managed_vector_sidecars.get_mut(&metadata)
+                                {
+                                    entry.cached_sidecar = Some(sidecar);
+                                }
+                                return Err(error);
+                            }
+                        };
                     {
                         let entry = self.managed_vector_sidecars.get_mut(&metadata).unwrap();
                         if let Some(ref mut cached) = entry.cached_index {
-                            if let Some(last_entry) = new_sidecar.entries.last() {
+                            if let Some(last_entry) = sidecar.entries.last() {
                                 let document = crate::search::VectorDocument::new(
                                     last_entry.thought_id.to_string(),
                                     last_entry.vector.clone(),
@@ -8175,8 +8371,12 @@ impl MentisDb {
                             }
                         }
                     }
-                    self.queue_sidecar_wal(&path, wal_record, &mut new_sidecar, &metadata)?;
-                    new_sidecar
+                    let queued = self.queue_sidecar_wal(&path, wal_record, &mut sidecar, &metadata);
+                    if let Some(entry) = self.managed_vector_sidecars.get_mut(&metadata) {
+                        entry.cached_sidecar = Some(sidecar);
+                    }
+                    queued?;
+                    continue;
                 }
                 Some(_) | None => {
                     let provider = self
@@ -8273,12 +8473,9 @@ impl MentisDb {
     fn extend_fresh_vector_sidecar(
         &self,
         provider: &dyn ManagedEmbeddingProvider,
-        mut sidecar: crate::search::VectorSidecar,
+        sidecar: &mut crate::search::VectorSidecar,
         thought: &Thought,
-    ) -> io::Result<(
-        crate::search::VectorSidecar,
-        crate::search::VectorSidecarWalRecord,
-    )> {
+    ) -> io::Result<crate::search::VectorSidecarWalRecord> {
         let mut documents = provider.embed_documents(&[crate::search::EmbeddingInput::new(
             thought.id.to_string(),
             self.thought_embedding_text(thought),
@@ -8287,7 +8484,7 @@ impl MentisDb {
             .pop()
             .map(|document| document.vector)
             .ok_or_else(|| io::Error::other("managed embedding provider returned no vectors"))?;
-        let record = sidecar.extend_with_entry(
+        sidecar.extend_with_entry(
             crate::search::VectorSidecarEntry::new(
                 thought.id,
                 thought.index,
@@ -8296,8 +8493,7 @@ impl MentisDb {
             ),
             self.thoughts.len(),
             self.head_hash().map(ToOwned::to_owned),
-        )?;
-        Ok((sidecar, record))
+        )
     }
 
     fn rebuild_managed_vector_sidecar(
@@ -9381,6 +9577,7 @@ impl MentisDb {
     /// are durable before backup or shutdown.
     pub fn flush(&self) -> io::Result<()> {
         self.flush_pending_derived()?;
+        self.persist_dirty_implicit_edge_overlay()?;
         self.storage.flush()
     }
 
@@ -9675,6 +9872,8 @@ impl Drop for MentisDb {
         let _ = self.maybe_flush_agent_registry(true);
         let _ = self.maybe_flush_entity_type_registry(true);
         let _ = self.maybe_flush_chain_registration(true);
+        let _ = self.flush_pending_derived();
+        let _ = self.persist_dirty_implicit_edge_overlay();
     }
 }
 
@@ -10114,9 +10313,10 @@ fn load_agent_registry(
 /// [`MentisDb::persist_chain_registration`] atomic across threads.
 static CHAIN_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Serialize `value` as JSON to `path` through a unique sibling temp file,
-/// `sync_all`, and an atomic rename, so readers and crashes never observe a
-/// truncated or half-written registry.
+/// Serialize `value` as JSON to `path` through a unique sibling temp file and
+/// an atomic rename, so readers and crashes never observe a truncated or
+/// half-written registry. No fsync: registries are rewritten on every append
+/// and are rebuildable from the canonical chain, so only atomicity matters.
 fn write_json_atomic<T: Serialize>(
     path: &Path,
     value: &T,
@@ -10138,7 +10338,6 @@ fn write_json_atomic<T: Serialize>(
         serialized
             .map_err(|error| io::Error::other(format!("Failed to serialize {what}: {error}")))?;
         writer.flush()?;
-        writer.get_ref().sync_all()?;
         drop(writer);
         fs::rename(&temp_path, path)
     })();
