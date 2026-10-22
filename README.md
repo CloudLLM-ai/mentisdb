@@ -920,7 +920,7 @@ Starting in 0.8.7, ranked search adds:
 Starting in 0.8.6, ranked search adds three features:
 
 - **Irregular verb lemma expansion** — the query tokenizer maps irregular past-tense verbs to their base form (e.g. "went" → "go", "gave" → "give", "ran" → "run"). About 170 mappings. Indexed content is not modified — expansion is query-time only.
-- **Reciprocal Rank Fusion (RRF)** — an opt-in reranking pass. When `enable_reranking=true` is set on a ranked search query, the engine produces separate lexical-only, vector-only, and graph-only rankings over the top `rerank_k` candidates (default 50), merges them via `1/(k + rank)` with `k=60`, and replaces the additive total with the RRF total plus non-rankable signal adjustments. Use when lexical and vector signals disagree on top candidates.
+- **Reciprocal Rank Fusion (RRF)** — an opt-in reranking pass. When `enable_reranking=true` is set on a ranked search query, the engine produces separate lexical-only, vector-only, and graph-only rankings over the top `rerank_k` candidates (default 50), merges them via `1/(k + rank)` with `k=60`, and adds a scaled consensus bonus to the additive total. Use when lexical and vector signals disagree on top candidates. (Before 0.10.9 the RRF total replaced the additive total, which badly degraded results; see below.)
 - **Per-field BM25 DF cutoffs** — `Bm25DfCutoffs` on `LexicalQuery` allows configuring separate document-frequency cutoff ratios per field (content, tags, concepts, agent_id, agent_registry). Terms whose global DF exceeds the cutoff for a given field are skipped for that field only. Default cutoffs match the original behavior (content=0.30, tags=0.30, concepts=0.30, agent_id=0.70, agent_registry=0.60).
 
 ### Search Scoring (after 0.9.9)
@@ -935,6 +935,14 @@ The post-0.9.9 ranked-search validation run used real embeddings plus automatic 
 - **Vector sidecar: `fastembed-all-minilm-l6-v2`**, about 28 MB with 5882 indexed thoughts.
 
 The run applied the built-in thesaurus transparently on every `ranked_search` call and matches the whitepaper target of about 72% overall LoCoMo-10P R@10.
+
+### Search Scoring (0.10.9)
+
+- **RRF rerank fixed** — `enable_reranking=true` no longer replaces the additive score with the tiny raw RRF total (which collapsed rankings). RRF now adds a consensus bonus scaled by `RRF_SCORE_SCALE` (50): a rank-1 hit in all three lists is worth about +2.5, enough to break ties and reward agreement without overriding a clearly stronger lexical match. Only lists with a positive score for a candidate contribute.
+- **Stemmed thesaurus keys** — synonyms now expand for inflected query terms (`debugging` expands like `debug`, `deploys` like `deploy`).
+- **Federated search keyed by chain + id** — `POST /v1/federated-search` / `mentisdb_federated_search` fuse per-chain rankings with the same additive RRF bonus, keyed by `(chain_key, thought id)`, and deduplicate before paging, so `offset`/`limit` pages no longer repeat or drop results.
+- **Faster ranked, lexical, vector and graph paths** — score-only top-k selection, dense lexical scans, cached vector norms and exact top-k, and a bounded graph-expansion arena. Filtered lexical and heuristic queries are roughly 10x faster in the criterion benches.
+- **Filtered HNSW recall** — when filters are active, the HNSW backend switches to an exact scan over the filtered set or oversamples, so filtered vector searches no longer lose matches the approximate graph skipped.
 
 ### Vector Sidecars
 
