@@ -153,19 +153,28 @@ gh release view X.Y.Z.N --json isPrerelease
 
 ### 9. Publish to crates.io
 
-```bash
-cargo publish --allow-dirty
-```
+Publish from a clean worktree of the tag. Never use `--allow-dirty` and never
+move the owner's untracked files (e.g. `promo/`) out of the way:
 
-Use `--allow-dirty` only if there are untracked files not part of the
-release (e.g. `.grok/`, local config). If the working directory is
-clean, omit the flag.
+```bash
+git worktree add --detach <scratch>/publish X.Y.Z.N
+(cd <scratch>/publish && cargo publish --features local-embeddings)
+git worktree remove --force <scratch>/publish
+```
 
 Verify:
 
 ```bash
 cargo search mentisdb
 ```
+
+### 10. Release binaries and Docker image
+
+The tag triggers `Build` (7 release assets) and `Docker image`
+(`ghcr.io/cloudllm-ai/mentisdb` tagged `X.Y.Z.N`, `X.Y.Z`, `latest`; it fails
+if the tag does not match the Cargo.toml version). Watch both to green, then
+run the asset and image checks from `engineering-pipeline.md` Phase 6 steps 5–6
+(the image must be public and anonymously pullable for linux/amd64 and arm64).
 
 ## Key Rules
 
@@ -181,7 +190,11 @@ cargo search mentisdb
    know whether to upgrade.
 6. **CI should already be green** from the hotfix code commit. The
    version bump commit is docs-only.
+7. **A hotfix ships everywhere** — crates.io, GitHub release assets and the
+   ghcr.io image. It is not done until all three are verified.
 
 ## Version history
 
 - v1 (2026-06-20): extracted from the 0.10.3.48 hotfix release.
+- v2 (2026-10-22): publish from a clean worktree; verify release assets and the
+  ghcr.io Docker image (added in 0.10.10.55).
