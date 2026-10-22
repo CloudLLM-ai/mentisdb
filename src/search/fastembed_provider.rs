@@ -25,9 +25,10 @@ pub const FASTEMBED_MINILM_VERSION: &str = "1";
 /// Maximum number of texts sent to the ONNX runtime in a single inference call.
 ///
 /// fastembed's default batch of 256 padded to the longest text (up to 512
-/// tokens) allocates gigabytes of activations; 32 keeps peak memory bounded
-/// without changing the produced vectors.
-pub const FASTEMBED_BATCH_SIZE: usize = 32;
+/// tokens) allocates gigabytes of activations. Measured on macOS arm64 (40 mixed-length
+/// texts): batch 32 peaked at 4.4 GB RSS, 8 at 1.9 GB, 4 at 1.3 GB, 2 at 0.9 GB with
+/// equal wall time, so 4 is used. Vectors are unchanged (max_length stays 512).
+pub const FASTEMBED_BATCH_SIZE: usize = 4;
 
 /// Directory name, under the MentisDB storage root, holding downloaded models.
 pub const FASTEMBED_CACHE_DIRNAME: &str = ".fastembed_cache";

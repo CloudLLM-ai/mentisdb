@@ -2,7 +2,7 @@
 
 #![cfg(feature = "local-embeddings")]
 
-use mentisdb::search::fastembed_provider::{embed_in_chunks, FASTEMBED_BATCH_SIZE};
+use mentisdb::search::fastembed_provider::embed_in_chunks;
 use mentisdb::search::EmbeddingInput;
 
 fn inputs(n: usize) -> Vec<EmbeddingInput> {
@@ -16,7 +16,7 @@ fn inputs(n: usize) -> Vec<EmbeddingInput> {
 #[test]
 fn test_embed_in_chunks_bounds_each_call_and_preserves_order() {
     let mut sizes = Vec::new();
-    let out = embed_in_chunks::<()>(&inputs(70), FASTEMBED_BATCH_SIZE, |texts| {
+    let out = embed_in_chunks::<()>(&inputs(70), 32, |texts| {
         sizes.push(texts.len());
         Ok(texts
             .iter()
