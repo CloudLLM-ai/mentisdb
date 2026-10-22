@@ -370,6 +370,11 @@ Once startup completes, it prints:
   HTTPS dashboard port. Default: `9475`. Set to `0` to disable the web dashboard.
 - `MENTISDB_DASHBOARD_PIN`
   Optional PIN required to access the dashboard. Leave unset only for trusted localhost use.
+- `MENTISDB_DASHBOARD_ALLOWED_HOSTS`
+  Comma-separated extra hostnames or IPs the dashboard accepts in the `Host` header (for
+  example a public DNS name or the name a reverse proxy forwards). Set it in the environment
+  or the `.env` the daemon loads at startup; it is not editable from the dashboard Settings
+  tab. See "Dashboard API rules" below for the built-in allowlist.
 - `MENTISDB_BEARER_TOKEN_ACCESS`
   Require bearer tokens for MCP requests. Default: `false`. Set `true` for remote
   or multi-user MCP servers. This can also be toggled live from the dashboard Settings screen.
@@ -1174,15 +1179,29 @@ outside localhost.
 
 Dashboard API rules (0.10.9):
 
-- **CSRF protection.** `POST`, `PATCH` and `DELETE` calls under `/dashboard/api/` must come
-  from the dashboard's own origin: an `Origin` (or, without it, `Referer`) header whose
-  host matches the request host. Scripts and CLI clients that send neither header must add
-  `X-MentisDB-Dashboard: 1`; anything else gets `403`.
+- **Host allowlist (DNS-rebinding defence).** Every dashboard route, including `GET` pages
+  and `/dashboard/login`, rejects a request with `403` unless its `Host` header names this
+  daemon: `localhost`, `127.0.0.1`, `[::1]`, `my.mentisdb.com`, the configured
+  `MENTISDB_BIND_HOST`, the machine's own interface IPs when bound to `0.0.0.0` or `::`,
+  or an entry of `MENTISDB_DASHBOARD_ALLOWED_HOSTS` (comma-separated; set via environment
+  or `.env`, not from the dashboard). Reverse proxies must preserve the original `Host`
+  header, or forward a name listed in `MENTISDB_DASHBOARD_ALLOWED_HOSTS`.
+- **CSRF protection.** `POST`, `PATCH` and `DELETE` calls under `/dashboard/api/`, and the
+  `POST /dashboard/login` form, must come from the dashboard's own origin: an `Origin` (or,
+  without it, `Referer`) header whose host matches the request host. Scripts and CLI clients
+  that send neither header must add `X-MentisDB-Dashboard: 1`; anything else gets `403`.
+- **Login rate limiting** is keyed per client IP, so one client's failed PIN attempts do not
+  lock out others. `X-Forwarded-For` is ignored, so behind a reverse proxy all clients share
+  the proxy's address and one rate-limit bucket.
 - **Chain keys** created from the dashboard (bootstrap, branch target, copy-to target) must
   match `[A-Za-z0-9_-]` and be at most 128 characters, otherwise `400`.
 - **Paging** is clamped to `per_page` at most 500 and `page` at most 1000.
 - **PIN handling.** `GET` on the settings API never returns the PIN value (only whether one is
   set). Saving settings with a blank PIN keeps the current PIN.
+- **`.env` permissions.** Settings saved from the dashboard are written to
+  `<MENTISDB_DIR>/.env` with mode `0600` (it may hold the PIN), tightening an existing file too.
+- **Errors.** Dashboard `500` responses carry only `"internal server error"`; details go to
+  the daemon log.
 
 ---
 
