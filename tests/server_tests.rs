@@ -2621,6 +2621,8 @@ async fn standard_mcp_router_requires_active_bearer_token_when_enabled() {
 #[tokio::test]
 async fn standard_mcp_router_allows_missing_and_wrong_bearer_tokens_when_disabled() {
     let dir = unique_chain_dir();
+    // Reads only open existing chains, so create the probed chain up front.
+    MentisDb::open_with_key(&dir, "private").unwrap();
     let config = MentisDbServiceConfig::new(dir.clone(), "server-test", StorageAdapterKind::Binary)
         .with_bearer_token_access(false);
     let (router, _broadcaster) =
@@ -2678,6 +2680,10 @@ async fn standard_mcp_router_allows_missing_and_wrong_bearer_tokens_when_disable
 #[tokio::test]
 async fn standard_mcp_router_enforces_chain_scoped_bearer_tokens() {
     let dir = unique_chain_dir();
+    // Reads only open existing chains, so create the probed chains up front.
+    for key in ["shared", "private"] {
+        MentisDb::open_with_key(&dir, key).unwrap();
+    }
     let config = MentisDbServiceConfig::new(dir.clone(), "allowed", StorageAdapterKind::Binary)
         .with_bearer_token_access(true);
     let store = config.bearer_token_store.clone();

@@ -64,8 +64,8 @@ use crate::auth::{bearer_token_access_from_env, BearerTokenScope, BearerTokenSto
 use crate::search::thesaurus;
 use crate::webhooks::{WebhookManager, WebhookRegistration};
 use crate::{
-    deregister_chain, load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus,
-    EntityTypeRecord, LlmExtractionConfig, ManagedVectorProviderKind, MemoryScope, MentisDb,
+    chain_storage_filename, deregister_chain, load_registered_chains, AgentPublicKey, AgentRecord,
+    AgentStatus, EntityTypeRecord, ManagedVectorProviderKind, MemoryScope, MentisDb,
     PublicKeyAlgorithm, RankedSearchBackend, RankedSearchGraph, RankedSearchQuery,
     RankedSearchScore, SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus,
     SkillSummary, SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput,
@@ -1948,6 +1948,9 @@ pub struct MentisDbService {
     /// Concurrent chain map: lock-free lookup, per-chain `RwLock` for writes.
     pub(crate) chains: Arc<DashMap<String, Arc<RwLock<MentisDb>>>>,
     pub(crate) skills: Arc<RwLock<SkillRegistry>>,
+    /// Per-key single-flight locks so a chain is replayed from disk by exactly
+    /// one task even when many requests race to open it.
+    open_locks: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     interaction_log: Arc<InteractionLogSink>,
     webhook_manager: WebhookManager,
 }
@@ -2086,6 +2089,20 @@ fn bearer_auth_target(context: &BearerAuthContext, default_chain_key: &str) -> B
     }
 }
 
+/// Webhook registration is global unless it names a `chain_key_filter`, in
+/// which case the token must be allowed on that chain.
+fn webhook_register_target(parameters: &Value) -> BearerAuthTarget {
+    let chain_key_filter = parameters
+        .get("chain_key_filter")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|chain_key| !chain_key.is_empty());
+    match chain_key_filter {
+        Some(chain_key) => BearerAuthTarget::Chains(vec![chain_key.to_string()]),
+        None => BearerAuthTarget::GlobalOnly,
+    }
+}
+
 fn tool_call_auth_target(payload: &Value, default_chain_key: &str) -> Option<BearerAuthTarget> {
     let tool_name = payload
         .get("name")
@@ -2101,16 +2118,8 @@ fn tool_call_auth_target(payload: &Value, default_chain_key: &str) -> Option<Bea
         return Some(BearerAuthTarget::GlobalOnly);
     }
 
-    if tool_name == "mentisdb_register_webhook" {
-        let chain_key_filter = parameters
-            .get("chain_key_filter")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|chain_key| !chain_key.is_empty());
-        return Some(match chain_key_filter {
-            Some(chain_key) => BearerAuthTarget::Chains(vec![chain_key.to_string()]),
-            None => BearerAuthTarget::GlobalOnly,
-        });
+    if mcp_tool_auth(tool_name) == OperationAuth::WebhookRegister {
+        return Some(webhook_register_target(parameters));
     }
 
     // Prefer top-level chain fields for the primary target so nested relation
@@ -2157,47 +2166,48 @@ fn extract_top_level_chain_keys(parameters: &Value) -> BTreeSet<String> {
 ///
 /// Global and multi-chain tokens are left unchanged: multi-chain callers must
 /// name a chain (or fall back to the server default when the tool allows it).
-fn inject_single_chain_scope_into_payload(payload: &mut Value, scope: &BearerTokenScope) {
+fn inject_single_chain_scope_into_payload(payload: &mut Value, scope: &BearerTokenScope) -> bool {
     let BearerTokenScope::Chains(chain_keys) = scope else {
-        return;
+        return false;
     };
     if chain_keys.len() != 1 {
-        return;
+        return false;
     }
     let chain_key = chain_keys[0].clone();
 
     // Streamable MCP: { "name": "...", "arguments": { ... } }
     // Legacy MCP:     { "tool": "...", "parameters": { ... } }
     if payload.get("arguments").is_some() {
-        if let Some(args) = payload.get_mut("arguments") {
-            inject_chain_key_object(args, &chain_key);
-        }
-        return;
+        return payload
+            .get_mut("arguments")
+            .is_some_and(|args| inject_chain_key_object(args, &chain_key));
     }
     if payload.get("parameters").is_some() {
-        if let Some(args) = payload.get_mut("parameters") {
-            inject_chain_key_object(args, &chain_key);
-        }
-        return;
+        return payload
+            .get_mut("parameters")
+            .is_some_and(|args| inject_chain_key_object(args, &chain_key));
     }
 
     // Bare REST-style body: { "chain_key"?: "...", ... }
     if payload.get("jsonrpc").is_none() {
-        inject_chain_key_object(payload, &chain_key);
+        return inject_chain_key_object(payload, &chain_key);
     }
+    false
 }
 
-fn inject_chain_key_object(parameters: &mut Value, chain_key: &str) {
+/// Inserts `chain_key` when the object names no chain; returns whether it changed.
+fn inject_chain_key_object(parameters: &mut Value, chain_key: &str) -> bool {
     let Some(map) = parameters.as_object_mut() else {
-        return;
+        return false;
     };
     if object_has_explicit_chain_field(map) {
-        return;
+        return false;
     }
     map.insert(
         "chain_key".to_string(),
         Value::String(chain_key.to_string()),
     );
+    true
 }
 
 fn object_has_explicit_chain_field(map: &serde_json::Map<String, Value>) -> bool {
@@ -2329,15 +2339,201 @@ fn add_nonempty_chain_key(chain_keys: &mut BTreeSet<String>, chain_key: &str) {
 }
 
 fn global_only_mcp_tool(tool_name: &str) -> bool {
-    matches!(
-        tool_name,
-        "mentisdb_list_chains"
-            | "mentisdb_skill_md"
-            | "mentisdb_list_skills"
-            | "mentisdb_skill_manifest"
-            | "mentisdb_list_webhooks"
-            | "mentisdb_delete_webhook"
-    )
+    mcp_tool_requires_global(tool_name)
+}
+
+/// Authorization class of an operation, shared by the REST and MCP front ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationAuth {
+    /// Any active token may call it (no chain data involved).
+    AnyToken,
+    /// Only a global-scope token may call it.
+    GlobalOnly,
+    /// Authorization is derived from the chain keys named in the request.
+    ChainScoped,
+    /// Webhook registration: global unless a `chain_key_filter` inside the
+    /// token's scope is supplied.
+    WebhookRegister,
+}
+
+/// One row of the shared route/tool authorization table.
+#[derive(Debug, Clone, Copy)]
+pub struct OperationAuthRule {
+    /// REST path (exact), or empty when the operation has no REST route.
+    pub rest_route: &'static str,
+    /// REST method this row applies to (lowercase), or empty for any method.
+    pub rest_method: &'static str,
+    /// Canonical MCP tool name, or empty when the operation is REST-only.
+    pub mcp_tool: &'static str,
+    /// Class enforced on the REST route.
+    pub rest: OperationAuth,
+    /// Class enforced on the MCP tool.
+    pub mcp: OperationAuth,
+}
+
+const fn rule(
+    rest_route: &'static str,
+    rest_method: &'static str,
+    mcp_tool: &'static str,
+    rest: OperationAuth,
+    mcp: OperationAuth,
+) -> OperationAuthRule {
+    OperationAuthRule {
+        rest_route,
+        rest_method,
+        mcp_tool,
+        rest,
+        mcp,
+    }
+}
+
+/// The single source of truth for which operations are server-wide.
+///
+/// Anything not listed is chain-scoped: the chain keys in the request decide,
+/// and requests naming no chain require a global token (REST) or fall back to
+/// the default chain (MCP default-chain tools).
+pub const OPERATION_AUTH_TABLE: &[OperationAuthRule] = &[
+    rule(
+        "/health",
+        "",
+        "",
+        OperationAuth::AnyToken,
+        OperationAuth::AnyToken,
+    ),
+    rule(
+        "/mentisdb_skill_md",
+        "",
+        "mentisdb_skill_md",
+        OperationAuth::AnyToken,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/chains",
+        "",
+        "mentisdb_list_chains",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/skills",
+        "",
+        "mentisdb_list_skills",
+        OperationAuth::AnyToken,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/skills/manifest",
+        "",
+        "mentisdb_skill_manifest",
+        OperationAuth::AnyToken,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/skills/search",
+        "",
+        "mentisdb_search_skill",
+        OperationAuth::AnyToken,
+        OperationAuth::ChainScoped,
+    ),
+    rule(
+        "/v1/skills/read",
+        "",
+        "mentisdb_read_skill",
+        OperationAuth::AnyToken,
+        OperationAuth::ChainScoped,
+    ),
+    rule(
+        "/v1/skills/versions",
+        "",
+        "mentisdb_skill_versions",
+        OperationAuth::AnyToken,
+        OperationAuth::ChainScoped,
+    ),
+    // The skill registry is global state: mutations need a global token.
+    rule(
+        "/v1/skills/upload",
+        "",
+        "mentisdb_upload_skill",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/skills/deprecate",
+        "",
+        "mentisdb_deprecate_skill",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/skills/revoke",
+        "",
+        "mentisdb_revoke_skill",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/skills/delete",
+        "",
+        "mentisdb_delete_skill",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/admin/flush",
+        "",
+        "",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/webhooks",
+        "get",
+        "mentisdb_list_webhooks",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/webhooks",
+        "post",
+        "mentisdb_register_webhook",
+        OperationAuth::WebhookRegister,
+        OperationAuth::WebhookRegister,
+    ),
+    rule(
+        "",
+        "",
+        "mentisdb_delete_webhook",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+];
+
+/// Authorization class for a REST request, from the shared table.
+pub fn rest_route_auth(route: &str, method: &str) -> OperationAuth {
+    // `DELETE /v1/webhooks/{id}` addresses global webhook state.
+    if route.starts_with("/v1/webhooks/") {
+        return OperationAuth::GlobalOnly;
+    }
+    OPERATION_AUTH_TABLE
+        .iter()
+        .find(|rule| {
+            rule.rest_route == route && (rule.rest_method.is_empty() || rule.rest_method == method)
+        })
+        .map(|rule| rule.rest)
+        .unwrap_or(OperationAuth::ChainScoped)
+}
+
+/// Authorization class for an MCP tool, from the shared table.
+pub fn mcp_tool_auth(tool_name: &str) -> OperationAuth {
+    OPERATION_AUTH_TABLE
+        .iter()
+        .find(|rule| !rule.mcp_tool.is_empty() && rule.mcp_tool == tool_name)
+        .map(|rule| rule.mcp)
+        .unwrap_or(OperationAuth::ChainScoped)
+}
+
+fn mcp_tool_requires_global(tool_name: &str) -> bool {
+    mcp_tool_auth(tool_name) == OperationAuth::GlobalOnly
 }
 
 fn default_chain_mcp_tool(tool_name: &str) -> bool {
@@ -2651,38 +2847,52 @@ impl MentisDbService {
     ///
     /// The service opens the skill registry and webhook manager immediately;
     /// chain data is lazily loaded on first access via `get_chain`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when startup resources (interaction log, webhook registry, skill
+    /// registry) cannot be opened. Prefer [`MentisDbService::try_new`] when the
+    /// caller can report the failure.
     pub fn new(config: MentisDbServiceConfig) -> Self {
+        Self::try_new(config).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// Fallible variant of [`MentisDbService::new`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the resource and path that failed to open.
+    pub fn try_new(config: MentisDbServiceConfig) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let interaction_log = Arc::new(
-            InteractionLogSink::open(config.log_file.as_deref()).unwrap_or_else(|error| {
+            InteractionLogSink::open(config.log_file.as_deref()).map_err(|error| {
                 let target = config
                     .log_file
                     .as_ref()
                     .map(|path| path.display().to_string())
                     .unwrap_or_else(|| "<unset>".to_string());
-                panic!("failed to open MentisDB interaction log at {target}: {error}");
-            }),
+                format!("failed to open MentisDB interaction log at {target}: {error}")
+            })?,
         );
-        let webhook_manager =
-            WebhookManager::new(config.chain_dir.clone()).unwrap_or_else(|error| {
-                panic!(
-                    "failed to open MentisDB webhook manager at {}: {error}",
-                    config.chain_dir.display()
-                )
-            });
-        Self {
-            skills: Arc::new(RwLock::new(
-                SkillRegistry::open(&config.chain_dir).unwrap_or_else(|error| {
-                    panic!(
-                        "failed to open MentisDB skill registry at {}: {error}",
-                        config.chain_dir.display()
-                    )
-                }),
-            )),
+        let webhook_manager = WebhookManager::new(config.chain_dir.clone()).map_err(|error| {
+            format!(
+                "failed to open MentisDB webhook manager at {}: {error}",
+                config.chain_dir.display()
+            )
+        })?;
+        let skills = SkillRegistry::open(&config.chain_dir).map_err(|error| {
+            format!(
+                "failed to open MentisDB skill registry at {}: {error}",
+                config.chain_dir.display()
+            )
+        })?;
+        Ok(Self {
+            skills: Arc::new(RwLock::new(skills)),
             interaction_log,
             config,
             chains: Arc::new(DashMap::new()),
+            open_locks: Arc::new(DashMap::new()),
             webhook_manager,
-        }
+        })
     }
 
     /// Return (or lazily open) the chain for `chain_key`.
@@ -2696,62 +2906,155 @@ impl MentisDbService {
         agent_id: &str,
         input: ThoughtInput,
     ) -> Result<Thought, Box<dyn Error + Send + Sync>> {
-        let thought = {
-            let mut guard = chain.write().await;
+        // The append and the derived-state flush are synchronous disk I/O. Take
+        // owned guards and run them on the blocking pool so async workers are
+        // never stalled behind fsyncs while the chain lock is held.
+        let write_guard = chain.clone().write_owned().await;
+        let agent_id = agent_id.to_string();
+        let thought = tokio::task::spawn_blocking(move || {
+            let mut guard = write_guard;
             guard.defer_next_derived_flush();
-            match guard.append_thought(agent_id, input) {
-                Ok(thought) => thought.clone(),
+            match guard.append_thought(&agent_id, input) {
+                Ok(thought) => Ok(thought.clone()),
                 Err(error) => {
                     guard.cancel_deferred_derived_flush();
-                    return Err(error.into());
+                    Err(error)
                 }
             }
-        };
-        chain.read().await.flush_pending_derived()?;
+        })
+        .await
+        .map_err(|error| format!("append task failed: {error}"))??;
+        let read_guard = chain.clone().read_owned().await;
+        tokio::task::spawn_blocking(move || read_guard.flush_pending_derived())
+            .await
+            .map_err(|error| format!("flush task failed: {error}"))??;
         Ok(thought)
     }
 
+    /// Return an already-existing chain, opening it from disk if needed.
+    ///
+    /// Read paths and metadata mutations use this so that an arbitrary
+    /// `chain_key` can never create (and persist) a brand-new chain. Unknown
+    /// keys yield a `NotFound` error, which the REST layer maps to 404. The
+    /// operator-configured default chain is the one exception: it is created on
+    /// demand so a fresh daemon answers reads on its default chain.
     async fn get_chain(
         &self,
         chain_key: Option<&str>,
         storage_adapter: Option<StorageAdapterKind>,
     ) -> Result<Arc<RwLock<MentisDb>>, Box<dyn Error + Send + Sync>> {
-        let chain_key = chain_key
-            .unwrap_or(&self.config.default_chain_key)
-            .to_string();
-
-        // Fast path: chain already open. Opportunistically repair a missing
-        // implicit-edge sidecar if no other request is currently writing.
+        let chain_key = self.resolve_chain_key(chain_key);
+        validate_chain_key_shape(&chain_key)?;
         if let Some(existing) = self.chains.get(&chain_key) {
-            let existing = existing.clone();
-            if let Ok(mut chain) = existing.try_write() {
-                chain.ensure_implicit_edge_overlay();
-            }
-            return Ok(existing);
+            return Ok(Self::repair_if_idle(existing.clone()));
         }
+        if chain_key != self.config.default_chain_key && !self.chain_exists_on_disk(&chain_key) {
+            return Err(not_found_error(format!("chain '{chain_key}' not found")));
+        }
+        self.open_chain_single_flight(chain_key, storage_adapter)
+            .await
+    }
 
-        // Slow path: open the chain from disk and insert it.
-        // `or_try_insert_with` is shard-level atomic, preventing duplicate opens.
+    /// Return the chain for `chain_key`, creating it when it does not exist.
+    ///
+    /// Only append, bootstrap, import, agent/entity-type upserts and merge
+    /// targets call this; everything else uses [`Self::get_chain`].
+    async fn get_or_create_chain(
+        &self,
+        chain_key: Option<&str>,
+        storage_adapter: Option<StorageAdapterKind>,
+    ) -> Result<Arc<RwLock<MentisDb>>, Box<dyn Error + Send + Sync>> {
+        let chain_key = self.resolve_chain_key(chain_key);
+        validate_chain_key_shape(&chain_key)?;
+        if let Some(existing) = self.chains.get(&chain_key) {
+            return Ok(Self::repair_if_idle(existing.clone()));
+        }
+        self.open_chain_single_flight(chain_key, storage_adapter)
+            .await
+    }
+
+    /// Opportunistically repair a missing implicit-edge sidecar when no other
+    /// request is currently writing.
+    fn repair_if_idle(existing: Arc<RwLock<MentisDb>>) -> Arc<RwLock<MentisDb>> {
+        if let Ok(mut chain) = existing.try_write() {
+            chain.ensure_implicit_edge_overlay();
+        }
+        existing
+    }
+
+    /// True when the registry or the storage directory already knows `chain_key`.
+    fn chain_exists_on_disk(&self, chain_key: &str) -> bool {
+        let dir = &self.config.chain_dir;
+        if [StorageAdapterKind::Binary, StorageAdapterKind::Jsonl]
+            .into_iter()
+            .any(|kind| dir.join(chain_storage_filename(chain_key, kind)).exists())
+        {
+            return true;
+        }
+        load_registered_chains(dir)
+            .map(|registry| registry.chains.contains_key(chain_key))
+            .unwrap_or(false)
+    }
+
+    /// Open `chain_key` on the blocking pool, exactly once per key.
+    ///
+    /// Replaying a chain is synchronous disk I/O, so it must neither run on an
+    /// async worker nor happen while a `DashMap` shard lock is held. A per-key
+    /// async mutex makes concurrent openers wait for the first one and then
+    /// pick up its result from the map.
+    async fn open_chain_single_flight(
+        &self,
+        chain_key: String,
+        storage_adapter: Option<StorageAdapterKind>,
+    ) -> Result<Arc<RwLock<MentisDb>>, Box<dyn Error + Send + Sync>> {
+        let lock = self
+            .open_locks
+            .entry(chain_key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _guard = lock.lock().await;
+        if let Some(existing) = self.chains.get(&chain_key) {
+            return Ok(existing.clone());
+        }
         let storage_kind = storage_adapter.unwrap_or(self.config.default_storage_adapter);
         let chain_dir = self.config.chain_dir.clone();
-        let chain_key_clone = chain_key.clone();
         let auto_flush = self.config.auto_flush;
         let dedup_threshold = self.config.dedup_threshold;
         let dedup_scan_window = self.config.dedup_scan_window;
         let webhook_manager = self.webhook_manager.clone();
-        let entry = self.chains.entry(chain_key).or_try_insert_with(|| {
-            MentisDb::open_with_key_and_storage_kind(&chain_dir, &chain_key_clone, storage_kind)
+        let key_for_open = chain_key.clone();
+        let opened = tokio::task::spawn_blocking(move || {
+            MentisDb::open_with_key_and_storage_kind(&chain_dir, &key_for_open, storage_kind)
                 .and_then(|mut db| {
                     db.set_auto_flush(auto_flush)?;
                     db.with_dedup_threshold(dedup_threshold);
                     db.with_dedup_scan_window(dedup_scan_window);
                     db.with_webhook_manager(webhook_manager);
                     db.apply_persisted_managed_vector_sidecars()?;
-                    Ok(Arc::new(RwLock::new(db)))
+                    Ok(db)
                 })
-                .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
-        })?;
-        Ok(entry.clone())
+        })
+        .await;
+        let opened = match opened {
+            Ok(result) => result,
+            Err(error) => {
+                self.open_locks.remove(&chain_key);
+                return Err(format!("chain open task failed: {error}").into());
+            }
+        };
+        let opened = match opened {
+            Ok(db) => db,
+            Err(error) => {
+                self.open_locks.remove(&chain_key);
+                return Err(Box::new(error));
+            }
+        };
+        let chain = Arc::new(RwLock::new(opened));
+        self.chains.insert(chain_key.clone(), chain.clone());
+        // Waiters hold their own Arc to the lock and will find the chain in the
+        // map; dropping the map entry keeps `open_locks` from growing.
+        self.open_locks.remove(&chain_key);
+        Ok(chain)
     }
 
     /// Discover ancestor chain keys by following `BranchesFrom` relations.
@@ -2792,7 +3095,9 @@ impl MentisDbService {
             .as_deref()
             .map(parse_storage_adapter_kind)
             .transpose()?;
-        let chain = self.get_chain(Some(&chain_key), storage_adapter).await?;
+        let chain = self
+            .get_or_create_chain(Some(&chain_key), storage_adapter)
+            .await?;
         let bootstrapped = {
             let is_empty = chain.read().await.thoughts().is_empty();
             if is_empty {
@@ -2872,7 +3177,7 @@ impl MentisDbService {
         request: AppendThoughtRequest,
     ) -> Result<AppendThoughtResponse, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
-        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let chain = self.get_or_create_chain(Some(&chain_key), None).await?;
 
         let thought_type = parse_thought_type(&request.thought_type)?;
         let role = request
@@ -2940,12 +3245,21 @@ impl MentisDbService {
         }
 
         let thought = Self::append_thought_released(&chain, &agent_id, input).await?;
-        let guard = chain.read().await;
+        // Snapshot what the response and log need, then release the chain lock
+        // before doing any interaction-log I/O.
+        let (metadata, thought_value, head_hash) = {
+            let guard = chain.read().await;
+            (
+                InteractionMetadata::from_chain_thought(&guard, &thought),
+                thought_to_json(&guard, &thought),
+                guard.head_hash().map(ToOwned::to_owned),
+            )
+        };
         self.log_interaction(InteractionLogEntry {
             access: "write",
             operation: "append",
             chain_key,
-            metadata: InteractionMetadata::from_chain_thought(&guard, &thought),
+            metadata,
             result_count: Some(1),
             note: None,
         });
@@ -2955,8 +3269,8 @@ impl MentisDbService {
             tokio::task::spawn_blocking(move || cb(tt));
         }
         Ok(AppendThoughtResponse {
-            thought: thought_to_json(&guard, &thought),
-            head_hash: guard.head_hash().map(ToOwned::to_owned),
+            thought: thought_value,
+            head_hash,
         })
     }
 
@@ -2965,7 +3279,7 @@ impl MentisDbService {
         request: AppendRetrospectiveRequest,
     ) -> Result<AppendThoughtResponse, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
-        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let chain = self.get_or_create_chain(Some(&chain_key), None).await?;
 
         let thought_type = request
             .thought_type
@@ -3111,6 +3425,9 @@ impl MentisDbService {
         let page_size = request.limit.unwrap_or(50).max(1);
         let ranked_limit = offset.saturating_add(page_size).max(1);
 
+        // The requested chain must exist (404 otherwise); ancestors that fail
+        // to open are skipped below.
+        self.get_chain(Some(&chain_key), None).await?;
         let ancestor_keys = self.discover_ancestor_chain_keys(&chain_key).await;
         let chain_keys_to_search: Vec<String> = std::iter::once(chain_key.clone())
             .chain(ancestor_keys)
@@ -3762,9 +4079,12 @@ impl MentisDbService {
             .map(|e| (e.key().clone(), Arc::clone(e.value())))
             .collect();
         for (key, chain) in chains {
-            let guard = chain.read().await;
-            if let Err(e) = guard.flush() {
-                eprintln!("flush failed for chain {key}: {e}");
+            let guard = chain.read_owned().await;
+            let flushed = tokio::task::spawn_blocking(move || guard.flush()).await;
+            match flushed {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => log::error!("flush failed for chain {key}: {e}"),
+                Err(e) => log::error!("flush task failed for chain {key}: {e}"),
             }
         }
         Ok(())
@@ -3854,27 +4174,34 @@ impl MentisDbService {
         request: UpsertAgentRequest,
     ) -> Result<AgentRecordResponse, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
-        let chain = self.get_chain(Some(&chain_key), None).await?;
-        let mut chain = chain.write().await;
+        let chain = self.get_or_create_chain(Some(&chain_key), None).await?;
         let status = request
             .status
             .as_deref()
             .map(parse_agent_status)
             .transpose()?;
-        let agent = chain.upsert_agent(
-            &request.agent_id,
-            request.display_name.as_deref(),
-            request.agent_owner.as_deref(),
-            request.description.as_deref(),
-            status,
-        )?;
+        // Registry persistence is synchronous disk I/O: run it on the blocking
+        // pool with an owned guard, and log only after the lock is released.
+        let mut guard = chain.write_owned().await;
+        let logged_agent_id = request.agent_id.clone();
+        let agent = tokio::task::spawn_blocking(move || {
+            guard.upsert_agent(
+                &request.agent_id,
+                request.display_name.as_deref(),
+                request.agent_owner.as_deref(),
+                request.description.as_deref(),
+                status,
+            )
+        })
+        .await
+        .map_err(|error| format!("agent upsert task failed: {error}"))??;
         self.log_interaction(InteractionLogEntry {
             access: "write",
             operation: "upsert_agent",
             chain_key: chain_key.clone(),
             metadata: InteractionMetadata::default(),
             result_count: Some(1),
-            note: Some(format!("agent_id={}", request.agent_id)),
+            note: Some(format!("agent_id={}", logged_agent_id)),
         });
         Ok(AgentRecordResponse { chain_key, agent })
     }
@@ -4009,7 +4336,7 @@ impl MentisDbService {
         request: UpsertEntityTypeRequest,
     ) -> Result<UpsertEntityTypeResponse, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
-        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let chain = self.get_or_create_chain(Some(&chain_key), None).await?;
         let mut chain = chain.write().await;
         let record = chain.upsert_entity_type(&request.entity_type)?;
         self.log_interaction(InteractionLogEntry {
@@ -4104,7 +4431,7 @@ impl MentisDbService {
         request: ImportMarkdownRequest,
     ) -> Result<ImportMarkdownResponse, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
-        let chain_arc = self.get_chain(Some(&chain_key), None).await?;
+        let chain_arc = self.get_or_create_chain(Some(&chain_key), None).await?;
         let mut chain = chain_arc.write().await;
         let default_agent_id = request.default_agent_id.as_deref().unwrap_or("default");
         let imported = chain.import_from_memory_markdown(&request.markdown, default_agent_id)?;
@@ -4330,12 +4657,12 @@ impl MentisDbService {
         if !active_keys.is_empty() {
             // Agent has registered public keys — a valid signature is mandatory.
             let key_id = request.signing_key_id.as_deref().ok_or_else(|| {
-                Box::<dyn Error + Send + Sync>::from(
+                permission_denied_error(
                     "agent has registered public keys; `signing_key_id` is required for skill upload",
                 )
             })?;
             let sig_bytes = request.skill_signature.as_deref().ok_or_else(|| {
-                Box::<dyn Error + Send + Sync>::from(
+                permission_denied_error(
                     "agent has registered public keys; `skill_signature` is required for skill upload",
                 )
             })?;
@@ -4343,29 +4670,41 @@ impl MentisDbService {
                 .iter()
                 .find(|k| k.key_id == key_id)
                 .ok_or_else(|| {
-                    Box::<dyn Error + Send + Sync>::from(format!(
+                    permission_denied_error(format!(
                         "signing key '{key_id}' not found or has been revoked for agent '{}'",
                         agent.agent_id
                     ))
                 })?;
             verify_ed25519_signature(&key.public_key_bytes, request.content.as_bytes(), sig_bytes)
-                .map_err(Box::<dyn Error + Send + Sync>::from)?;
+                .map_err(permission_denied_error)?;
         }
         // --- End signature verification ---
 
         self.ensure_skill_registry_fresh().await?;
 
-        let mut registry = self.skills.write().await;
-        let mut upload = SkillUpload::new(&agent.agent_id, format, &request.content)
-            .with_agent_identity(Some(&agent.display_name), agent.owner.as_deref())
-            .with_signing(
-                request.signing_key_id.clone(),
-                request.skill_signature.clone(),
-            );
-        if let Some(skill_id) = request.skill_id.as_deref() {
-            upload = upload.with_skill_id(skill_id);
-        }
-        let skill = registry.upload_skill(upload)?;
+        let mut registry = self.skills.clone().write_owned().await;
+        // Skill persistence is synchronous disk I/O: run it on the blocking
+        // pool and release the registry lock before logging.
+        let (upload_agent, upload_content) = (agent.clone(), request.content.clone());
+        let (signing_key_id, skill_signature) = (
+            request.signing_key_id.clone(),
+            request.skill_signature.clone(),
+        );
+        let upload_skill_id = request.skill_id.clone();
+        let skill = tokio::task::spawn_blocking(move || {
+            let mut upload = SkillUpload::new(&upload_agent.agent_id, format, &upload_content)
+                .with_agent_identity(
+                    Some(&upload_agent.display_name),
+                    upload_agent.owner.as_deref(),
+                )
+                .with_signing(signing_key_id, skill_signature);
+            if let Some(skill_id) = upload_skill_id.as_deref() {
+                upload = upload.with_skill_id(skill_id);
+            }
+            registry.upload_skill(upload)
+        })
+        .await
+        .map_err(|error| format!("skill upload task failed: {error}"))??;
         self.log_interaction(InteractionLogEntry {
             access: "write",
             operation: "upload_skill",
@@ -4575,6 +4914,19 @@ impl MentisDbService {
         Ok(DeleteWebhookResponse { deleted })
     }
 
+    #[cfg(not(feature = "llm-extraction"))]
+    async fn extract_memories(
+        &self,
+        request: ExtractMemoriesRequest,
+    ) -> Result<ExtractMemoriesResponse, Box<dyn Error + Send + Sync>> {
+        let _ = (&request.text, &request.chain_key, &request.prompt_template);
+        Err(Box::new(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "memory extraction requires a build with the `llm-extraction` feature",
+        )))
+    }
+
+    #[cfg(feature = "llm-extraction")]
     async fn extract_memories(
         &self,
         request: ExtractMemoriesRequest,
@@ -4582,7 +4934,7 @@ impl MentisDbService {
         use crate::llm::extract_memories_from_text;
 
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
-        let config = LlmExtractionConfig::from_env()?;
+        let config = crate::LlmExtractionConfig::from_env()?;
         let _chain = self.get_chain(Some(&chain_key), None).await?;
 
         // Call the LLM extraction
@@ -4719,7 +5071,7 @@ impl MentisDbService {
         chain_key: &str,
         agent_id: &str,
     ) -> Result<AgentRecord, Box<dyn Error + Send + Sync>> {
-        let chain = self.get_chain(Some(chain_key), None).await?;
+        let chain = self.get_or_create_chain(Some(chain_key), None).await?;
         let chain = chain.read().await;
         let agent = chain.get_agent(agent_id).cloned().ok_or_else(|| {
             io::Error::new(
@@ -4847,7 +5199,7 @@ impl MentisDbService {
         // The target chain must already be registered.  `get_chain` will return
         // an error for an unknown key, which we surface as a 404.
         let target_arc = self
-            .get_chain(Some(target_key), None)
+            .get_or_create_chain(Some(target_key), None)
             .await
             .map_err(|_| not_found_error(format!("target chain '{target_key}' does not exist")))?;
 
@@ -6404,10 +6756,13 @@ async fn mcp_execute_handler(
 
     match protocol.execute(&request.tool, request.parameters).await {
         Ok(result) => (StatusCode::OK, Json(json!({ "result": result }))),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "result": ToolResult::failure(error.to_string()) })),
-        ),
+        Err(error) => {
+            let (status, message) = classify_service_error(error.as_ref());
+            (
+                status,
+                Json(json!({ "result": ToolResult::failure(message) })),
+            )
+        }
     }
 }
 
@@ -6484,33 +6839,62 @@ pub(crate) async fn rest_bearer_auth_middleware(
 
     let route = request.uri().path().to_string();
     let method = request.method().as_str().to_ascii_lowercase();
-    let authorizer = MentisDbBearerAuthorizer::new(&service.config);
 
     // Buffer the request body so we can extract chain keys for scope-aware
     // authorization, then reconstruct the request for the downstream handler.
     let (parts, body) = request.into_parts();
-    let body_bytes = axum::body::to_bytes(body, 1024 * 1024)
-        .await
-        .unwrap_or_default();
+    let body_bytes = match axum::body::to_bytes(body, MAX_REST_AUTH_BODY_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            // `to_bytes` fails when the limit is exceeded or the stream breaks.
+            // Surface that instead of authorizing against an empty body.
+            let too_large = {
+                // axum surfaces the `http_body_util` limit error only through
+                // its Display text ("length limit exceeded").
+                let mut chain = error.to_string();
+                let mut source = std::error::Error::source(&error);
+                while let Some(inner) = source {
+                    chain.push(' ');
+                    chain.push_str(&inner.to_string());
+                    source = inner.source();
+                }
+                chain.contains("length limit")
+            };
+            let status = if too_large {
+                StatusCode::PAYLOAD_TOO_LARGE
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            let message = if too_large {
+                "request body exceeds the maximum accepted size"
+            } else {
+                "failed to read request body"
+            };
+            return (status, Json(json!({ "error": message }))).into_response();
+        }
+    };
     let mut payload: Option<Value> = serde_json::from_slice(&body_bytes).ok();
 
-    // Single-chain tokens omit chain_key on many write clients; bind the body
-    // to the token's only chain so auth and handlers agree.
-    if let Some(token) = parts
+    // Resolve the token's scope exactly once per request (also records usage).
+    let provided = parts
         .headers
         .get("Authorization")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-    {
-        if let Some(scope) = service.config.bearer_token_store.active_scope(token) {
-            if let Some(ref mut json) = payload {
-                inject_single_chain_scope_into_payload(json, &scope);
-            }
-        }
-    }
-    let body_bytes = match &payload {
-        Some(json) => serde_json::to_vec(json).unwrap_or_else(|_| body_bytes.to_vec()),
-        None => body_bytes.to_vec(),
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let scope = provided.and_then(|token| service.config.bearer_token_store.authenticate(token));
+
+    // Single-chain tokens omit chain_key on many write clients; bind the body
+    // to the token's only chain so auth and handlers agree. The body is only
+    // re-serialized when the injection actually changed it.
+    let modified = match (&scope, payload.as_mut()) {
+        (Some(scope), Some(json)) => inject_single_chain_scope_into_payload(json, scope),
+        _ => false,
+    };
+    let body_bytes = match (&payload, modified) {
+        (Some(json), true) => serde_json::to_vec(json)
+            .map(axum::body::Bytes::from)
+            .unwrap_or(body_bytes),
+        _ => body_bytes,
     };
 
     // Extract chain keys from the JSON body (if any) and from the URI path.
@@ -6530,89 +6914,43 @@ pub(crate) async fn rest_bearer_auth_middleware(
         }
     }
 
-    let reconstructed = axum::http::Request::from_parts(parts, axum::body::Body::from(body_bytes));
-
-    // Endpoints that don't target a specific chain (listing, health, skills)
-    // accept any active token. Everything else requires a token scoped to the
-    // chain(s) it touches, or a global token.
-    let is_global_rest_route = matches!(
-        route.as_str(),
-        "/health"
-            | "/v1/chains"
-            | "/v1/agents"
-            | "/v1/skills"
-            | "/v1/skills/manifest"
-            | "/v1/skills/search"
-            | "/v1/skills/upload"
-            | "/v1/skills/read"
-            | "/v1/skills/versions"
-            | "/v1/skills/deprecate"
-            | "/v1/skills/revoke"
-            | "/v1/skills/delete"
-            | "/v1/admin/flush"
-            | "/v1/webhooks"
-            | "/mentisdb_skill_md"
-    ) || route.starts_with("/v1/skills/");
-
-    let target = if is_global_rest_route {
-        BearerAuthTarget::AnyActiveToken
-    } else if chain_keys.is_empty() {
-        // No chain key found — require a global token for safety.
-        BearerAuthTarget::GlobalOnly
-    } else {
-        BearerAuthTarget::Chains(chain_keys.into_iter().collect())
+    // The route/method classification comes from the table shared with MCP.
+    let target = match rest_route_auth(&route, &method) {
+        OperationAuth::AnyToken => BearerAuthTarget::AnyActiveToken,
+        OperationAuth::GlobalOnly => BearerAuthTarget::GlobalOnly,
+        OperationAuth::WebhookRegister => payload
+            .as_ref()
+            .map(webhook_register_target)
+            .unwrap_or(BearerAuthTarget::GlobalOnly),
+        OperationAuth::ChainScoped if chain_keys.is_empty() => {
+            // No chain key found: require a global token for safety.
+            BearerAuthTarget::GlobalOnly
+        }
+        OperationAuth::ChainScoped => BearerAuthTarget::Chains(chain_keys.into_iter().collect()),
     };
 
-    let context = BearerAuthContext {
-        client_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
-        route: route.clone(),
-        action: format!("rest:{method}"),
-        payload: payload.clone(),
-    };
-
-    let authorized = match target {
-        BearerAuthTarget::AnyActiveToken => {
-            // For global routes, still check if a token is needed.
-            let provided = reconstructed
-                .headers()
-                .get("Authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "));
-            match provided {
-                Some(token) => authorizer.store.authorize(token),
-                None => authorizer.allow_missing_bearer_token(&context),
-            }
-        }
-        BearerAuthTarget::Chains(keys) => {
-            let provided = reconstructed
-                .headers()
-                .get("Authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "));
-            match provided {
-                Some(token) => authorizer.store.authorize_for_chains(token, &keys),
-                None => authorizer.allow_missing_bearer_token(&context),
-            }
-        }
-        BearerAuthTarget::GlobalOnly => {
-            let provided = reconstructed
-                .headers()
-                .get("Authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "));
-            match provided {
-                Some(token) => authorizer.store.authorize_global(token),
-                None => authorizer.allow_missing_bearer_token(&context),
-            }
-        }
-    };
-
+    let authorized = scope
+        .as_ref()
+        .is_some_and(|scope| scope_permits_target(scope, &target));
     if !authorized {
         let (status, body) = bearer_token_required_response(&route);
         return (status, body).into_response();
     }
 
+    let reconstructed = axum::http::Request::from_parts(parts, axum::body::Body::from(body_bytes));
     next.run(reconstructed).await
+}
+
+/// Maximum REST request body the auth middleware will buffer (1 MiB).
+const MAX_REST_AUTH_BODY_BYTES: usize = 1024 * 1024;
+
+/// Evaluates an already-authenticated token scope against a request target.
+fn scope_permits_target(scope: &BearerTokenScope, target: &BearerAuthTarget) -> bool {
+    match target {
+        BearerAuthTarget::AnyActiveToken => true,
+        BearerAuthTarget::GlobalOnly => matches!(scope, BearerTokenScope::Global),
+        BearerAuthTarget::Chains(keys) => keys.iter().all(|key| scope.allows_chain(key)),
+    }
 }
 
 /// Parse `application/x-www-form-urlencoded` query pairs from a query string.
@@ -7121,19 +7459,102 @@ fn not_found_error(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
     Box::new(io::Error::new(io::ErrorKind::NotFound, message.into()))
 }
 
+/// Maximum accepted `chain_key` length in bytes.
+pub const MAX_CHAIN_KEY_BYTES: usize = 256;
+
+/// Rejects chain keys that are empty, oversized, or contain control characters.
+///
+/// # Errors
+///
+/// Returns an `InvalidInput` I/O error describing the violation.
+pub fn validate_chain_key_shape(chain_key: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let invalid = |message: &str| -> Box<dyn Error + Send + Sync> {
+        Box::new(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            message.to_string(),
+        ))
+    };
+    if chain_key.trim().is_empty() {
+        return Err(invalid("chain_key must not be empty"));
+    }
+    if chain_key.len() > MAX_CHAIN_KEY_BYTES {
+        return Err(invalid("chain_key exceeds the maximum length"));
+    }
+    if chain_key.chars().any(char::is_control) {
+        return Err(invalid("chain_key must not contain control characters"));
+    }
+    Ok(())
+}
+
+/// Classifies a service error into an HTTP status and a client-safe message.
+///
+/// Mapping: `InvalidInput`/`InvalidData`, JSON, UUID and thought-type parse
+/// errors become 400; `NotFound` 404; `PermissionDenied` 403; `AlreadyExists`
+/// 409; `Unsupported` 501. Everything else is a server fault: the caller gets a
+/// generic 500 message and the detail (which may contain absolute paths) is
+/// logged server-side only.
+pub fn classify_service_error(error: &(dyn Error + 'static)) -> (StatusCode, String) {
+    if let Some(io_error) = error.downcast_ref::<io::Error>() {
+        return match io_error.kind() {
+            io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => {
+                (StatusCode::BAD_REQUEST, error.to_string())
+            }
+            io::ErrorKind::NotFound => (StatusCode::NOT_FOUND, error.to_string()),
+            io::ErrorKind::PermissionDenied => (StatusCode::FORBIDDEN, error.to_string()),
+            io::ErrorKind::AlreadyExists => (StatusCode::CONFLICT, error.to_string()),
+            io::ErrorKind::Unsupported => (StatusCode::NOT_IMPLEMENTED, error.to_string()),
+            _ => internal_error_response(error),
+        };
+    }
+    let client_error = error.is::<serde_json::Error>()
+        || error.is::<uuid::Error>()
+        || error.is::<crate::ParseThoughtTypeError>()
+        || error.is::<ClientInputError>();
+    if client_error {
+        return (StatusCode::BAD_REQUEST, error.to_string());
+    }
+    internal_error_response(error)
+}
+
+fn internal_error_response(error: &(dyn Error + 'static)) -> (StatusCode, String) {
+    log::error!(target: "mentisdb::server", "internal error: {error}");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "internal server error".to_string(),
+    )
+}
+
+/// Wraps any displayable validation failure as a [`ClientInputError`] (HTTP 400).
+fn client_input_error<E: std::fmt::Display>(error: E) -> Box<dyn Error + Send + Sync> {
+    Box::new(ClientInputError(error.to_string()))
+}
+
+/// Builds a `PermissionDenied` error (HTTP 403).
+fn permission_denied_error(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
+    Box::new(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        message.into(),
+    ))
+}
+
+/// A validation failure caused by the request contents (maps to HTTP 400).
+#[derive(Debug)]
+pub struct ClientInputError(pub String);
+
+impl std::fmt::Display for ClientInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Error for ClientInputError {}
+
 fn service_call<T: Serialize>(
     result: Result<T, Box<dyn Error + Send + Sync>>,
 ) -> Result<Json<T>, (StatusCode, Json<Value>)> {
     result.map(Json).map_err(|error| {
-        let status = error
-            .downcast_ref::<io::Error>()
-            .map(|error| match error.kind() {
-                io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
-                io::ErrorKind::PermissionDenied => StatusCode::FORBIDDEN,
-                _ => StatusCode::BAD_REQUEST,
-            })
-            .unwrap_or(StatusCode::BAD_REQUEST);
-        (status, Json(json!({ "error": error.to_string() })))
+        let (status, message) = classify_service_error(error.as_ref());
+        (status, Json(json!({ "error": message })))
     })
 }
 
@@ -8393,7 +8814,11 @@ fn parse_thought_role(input: &str) -> Result<ThoughtRole, Box<dyn Error + Send +
         "handoff" => ThoughtRole::Handoff,
         "audit" => ThoughtRole::Audit,
         "retrospective" => ThoughtRole::Retrospective,
-        _ => return Err(format!("Unknown ThoughtRole '{input}'").into()),
+        _ => {
+            return Err(Box::new(ClientInputError(format!(
+                "Unknown ThoughtRole '{input}'"
+            ))))
+        }
     };
 
     Ok(role)
@@ -8404,7 +8829,7 @@ fn parse_storage_adapter_kind(
 ) -> Result<StorageAdapterKind, Box<dyn Error + Send + Sync>> {
     input
         .parse::<StorageAdapterKind>()
-        .map_err(|error| error.into())
+        .map_err(client_input_error)
 }
 
 fn parse_memory_scope(input: &str) -> Option<MemoryScope> {
@@ -8432,24 +8857,28 @@ fn parse_thought_relation_kind(
         "branchesfrom" => ThoughtRelationKind::BranchesFrom,
         "relatedto" => ThoughtRelationKind::RelatedTo,
         "supersedes" => ThoughtRelationKind::Supersedes,
-        _ => return Err(format!("Unknown ThoughtRelationKind '{input}'").into()),
+        _ => {
+            return Err(Box::new(ClientInputError(format!(
+                "Unknown ThoughtRelationKind '{input}'"
+            ))))
+        }
     };
     Ok(kind)
 }
 
 fn parse_agent_status(input: &str) -> Result<AgentStatus, Box<dyn Error + Send + Sync>> {
-    input.parse::<AgentStatus>().map_err(|error| error.into())
+    input.parse::<AgentStatus>().map_err(client_input_error)
 }
 
 fn parse_skill_format(input: Option<&str>) -> Result<SkillFormat, Box<dyn Error + Send + Sync>> {
     input
         .unwrap_or("markdown")
         .parse::<SkillFormat>()
-        .map_err(|error| error.into())
+        .map_err(client_input_error)
 }
 
 fn parse_skill_status(input: &str) -> Result<SkillStatus, Box<dyn Error + Send + Sync>> {
-    input.parse::<SkillStatus>().map_err(|error| error.into())
+    input.parse::<SkillStatus>().map_err(client_input_error)
 }
 
 fn parse_public_key_algorithm(
@@ -8457,7 +8886,7 @@ fn parse_public_key_algorithm(
 ) -> Result<PublicKeyAlgorithm, Box<dyn Error + Send + Sync>> {
     input
         .parse::<PublicKeyAlgorithm>()
-        .map_err(|error| error.into())
+        .map_err(client_input_error)
 }
 
 fn infer_storage_adapter_name(storage_location: &str) -> String {

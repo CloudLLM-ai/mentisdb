@@ -32,11 +32,17 @@ use std::time::{Duration, Instant};
 /// A custom logger that routes log records into the TUI's log buffer via a channel,
 /// preventing raw stderr output from corrupting the ratatui alternate screen.
 pub struct TuiLogger {
-    tx: mpsc::Sender<String>,
+    tx: mpsc::SyncSender<String>,
 }
 
+/// Capacity of the bounded log channel feeding the TUI log panel. When the UI
+/// falls behind, new records are dropped instead of growing memory unboundedly.
+pub const LOG_CHANNEL_CAPACITY: usize = 4096;
+
 impl TuiLogger {
-    pub fn new(tx: mpsc::Sender<String>) -> Self {
+    /// Creates a logger that forwards formatted records to `tx` without ever
+    /// blocking; records are dropped when the channel is full.
+    pub fn new(tx: mpsc::SyncSender<String>) -> Self {
         Self { tx }
     }
 }
@@ -58,7 +64,8 @@ impl log::Log for TuiLogger {
             let target = record.target();
             let msg = record.args().to_string();
             let line = format!("[{level_color}] {target}: {msg}");
-            let _ = self.tx.send(line);
+            // Drop on full: logging must never block or balloon memory.
+            let _ = self.tx.try_send(line);
         }
     }
 
@@ -68,7 +75,7 @@ impl log::Log for TuiLogger {
 /// Initialize the TUI-aware logger. Returns the receiver end of the channel
 /// that the TUI event loop should drain to populate the log panel.
 pub fn init_tui_logger() -> mpsc::Receiver<String> {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(LOG_CHANNEL_CAPACITY);
     let logger = TuiLogger::new(tx);
     let _ = log::set_boxed_logger(Box::new(logger));
     log::set_max_level(log::LevelFilter::Info);

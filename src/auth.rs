@@ -339,7 +339,19 @@ impl From<serde_json::Error> for BearerTokenError {
 #[derive(Debug, Clone)]
 struct CachedBearerRecords {
     mtime: Option<std::time::SystemTime>,
-    records: Vec<BearerTokenRecord>,
+    records: Arc<Vec<BearerTokenRecord>>,
+}
+
+/// Default minimum interval between persisted `last_used_at` writes.
+pub const DEFAULT_LAST_USED_PERSIST_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(60);
+
+/// In-memory `last_used_at` bookkeeping, flushed to disk at most once per
+/// interval (or on [`BearerTokenStore::flush_last_used`]).
+#[derive(Debug)]
+struct LastUsedState {
+    pending: std::collections::HashMap<String, chrono::DateTime<Utc>>,
+    last_persist: std::time::Instant,
 }
 
 /// Durable bearer-token registry backed by a JSON file.
@@ -378,6 +390,10 @@ pub struct BearerTokenStore {
     lock: Arc<std::sync::Mutex<()>>,
     /// Last-read registry snapshot, shared across clones.
     cache: Arc<std::sync::Mutex<Option<CachedBearerRecords>>>,
+    /// Unpersisted `last_used_at` timestamps, shared across clones.
+    last_used: Arc<std::sync::Mutex<LastUsedState>>,
+    /// Minimum spacing between `last_used_at` disk writes.
+    persist_interval: std::time::Duration,
 }
 
 impl BearerTokenStore {
@@ -391,6 +407,56 @@ impl BearerTokenStore {
             path: mentisdb_dir.as_ref().join(BEARER_TOKEN_REGISTRY_FILENAME),
             lock: Arc::new(std::sync::Mutex::new(())),
             cache: Arc::new(std::sync::Mutex::new(None)),
+            last_used: Arc::new(std::sync::Mutex::new(LastUsedState {
+                pending: std::collections::HashMap::new(),
+                last_persist: std::time::Instant::now(),
+            })),
+            persist_interval: DEFAULT_LAST_USED_PERSIST_INTERVAL,
+        }
+    }
+
+    /// Override how often `last_used_at` is written to disk.
+    ///
+    /// Authorization keeps `last_used_at` in memory and persists it at most
+    /// once per `interval` (default [`DEFAULT_LAST_USED_PERSIST_INTERVAL`]), so
+    /// the hot request path does not rewrite the registry on every call.
+    /// `Duration::ZERO` restores write-on-every-use behaviour.
+    pub fn with_last_used_persist_interval(mut self, interval: std::time::Duration) -> Self {
+        self.persist_interval = interval;
+        self
+    }
+
+    /// Persist any buffered `last_used_at` timestamps now.
+    ///
+    /// Call this on graceful shutdown so the final usage times are not lost.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the registry cannot be read or written.
+    pub fn flush_last_used(&self) -> Result<(), BearerTokenError> {
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let has_pending = !self
+            .last_used
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pending
+            .is_empty();
+        if !has_pending {
+            return Ok(());
+        }
+        let records = self.load_records()?;
+        self.save_records(records.as_ref())
+    }
+
+    /// Overlay buffered `last_used_at` values onto `records` (newest wins).
+    fn overlay_last_used(&self, records: &mut [BearerTokenRecord]) {
+        let state = self.last_used.lock().unwrap_or_else(|e| e.into_inner());
+        for record in records.iter_mut() {
+            if let Some(ts) = state.pending.get(&record.alias) {
+                if record.last_used_at.is_none_or(|existing| existing < *ts) {
+                    record.last_used_at = Some(*ts);
+                }
+            }
         }
     }
 
@@ -439,7 +505,7 @@ impl BearerTokenStore {
         validate_alias(alias)?;
         scope.validate()?;
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut records = self.load_records()?;
+        let mut records = self.load_records()?.as_ref().clone();
         if records.iter().any(|record| record.alias == alias) {
             return Err(BearerTokenError::AliasExists(alias.to_string()));
         }
@@ -468,7 +534,9 @@ impl BearerTokenStore {
     ///
     /// Returns an error when the registry cannot be read or parsed.
     pub fn list(&self) -> Result<Vec<BearerTokenRecord>, BearerTokenError> {
-        self.load_records()
+        let mut records = self.load_records()?.as_ref().clone();
+        self.overlay_last_used(&mut records);
+        Ok(records)
     }
 
     /// Revoke the bearer token identified by `alias`.
@@ -485,7 +553,7 @@ impl BearerTokenStore {
     pub fn revoke(&self, alias: &str) -> Result<BearerTokenRecord, BearerTokenError> {
         validate_alias(alias)?;
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut records = self.load_records()?;
+        let mut records = self.load_records()?.as_ref().clone();
         let now = Utc::now();
         let Some(index) = records.iter().position(|record| record.alias == alias) else {
             return Err(BearerTokenError::AliasNotFound(alias.to_string()));
@@ -526,7 +594,7 @@ impl BearerTokenStore {
     pub fn delete(&self, alias: &str) -> Result<BearerTokenRecord, BearerTokenError> {
         validate_alias(alias)?;
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut records = self.load_records()?;
+        let mut records = self.load_records()?.as_ref().clone();
         let Some(index) = records.iter().position(|record| record.alias == alias) else {
             return Err(BearerTokenError::AliasNotFound(alias.to_string()));
         };
@@ -546,7 +614,7 @@ impl BearerTokenStore {
             return None;
         };
         let token_hash = hash_token(token);
-        records.into_iter().find_map(|record| {
+        records.iter().find_map(|record| {
             if record.is_active()
                 && record
                     .token_hash
@@ -554,7 +622,7 @@ impl BearerTokenStore {
                     .ct_eq(token_hash.as_bytes())
                     .into()
             {
-                Some(record.scope)
+                Some(record.scope.clone())
             } else {
                 None
             }
@@ -606,19 +674,33 @@ impl BearerTokenStore {
         })
     }
 
+    /// Authenticate `token` once and return its scope, recording usage.
+    ///
+    /// Unlike [`BearerTokenStore::active_scope`] this counts as a use of the
+    /// token (buffered `last_used_at`). Request middleware should call it once
+    /// per request and evaluate the returned scope locally instead of calling
+    /// several `authorize_*` methods.
+    pub fn authenticate(&self, token: &str) -> Option<BearerTokenScope> {
+        let mut scope = None;
+        self.authorize_matching(token, |record| {
+            scope = Some(record.scope.clone());
+            true
+        });
+        scope
+    }
+
     fn authorize_matching(
         &self,
         token: &str,
-        matches_scope: impl Fn(&BearerTokenRecord) -> bool,
+        mut matches_scope: impl FnMut(&BearerTokenRecord) -> bool,
     ) -> bool {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let Ok(mut records) = self.load_records() else {
+        let Ok(records) = self.load_records() else {
             return false;
         };
         let token_hash = hash_token(token);
-        let Some(index) = records.iter().position(|record| {
+        let Some(record) = records.iter().find(|record| {
             record.is_active()
-                && matches_scope(record)
                 && record
                     .token_hash
                     .as_bytes()
@@ -627,11 +709,25 @@ impl BearerTokenStore {
         }) else {
             return false;
         };
-        records[index].last_used_at = Some(Utc::now());
-        if let Err(e) = self.save_records(&records) {
-            eprintln!("[mentisdb] failed to persist last_used_at for bearer token: {e}");
+        if !matches_scope(record) {
+            return false;
         }
+        self.note_use(&record.alias, records.as_ref());
         true
+    }
+
+    /// Buffer `last_used_at` for `alias` and persist when the interval elapsed.
+    fn note_use(&self, alias: &str, records: &[BearerTokenRecord]) {
+        let due = {
+            let mut state = self.last_used.lock().unwrap_or_else(|e| e.into_inner());
+            state.pending.insert(alias.to_string(), Utc::now());
+            state.last_persist.elapsed() >= self.persist_interval
+        };
+        if due {
+            if let Err(e) = self.save_records(records) {
+                eprintln!("[mentisdb] failed to persist last_used_at for bearer token: {e}");
+            }
+        }
     }
 
     fn file_mtime(&self) -> Option<std::time::SystemTime> {
@@ -640,7 +736,7 @@ impl BearerTokenStore {
             .ok()
     }
 
-    fn store_cache(&self, records: Vec<BearerTokenRecord>) {
+    fn store_cache(&self, records: Arc<Vec<BearerTokenRecord>>) {
         if let Ok(mut cache) = self.cache.lock() {
             *cache = Some(CachedBearerRecords {
                 mtime: self.file_mtime(),
@@ -649,21 +745,22 @@ impl BearerTokenStore {
         }
     }
 
-    fn load_records(&self) -> Result<Vec<BearerTokenRecord>, BearerTokenError> {
+    fn load_records(&self) -> Result<Arc<Vec<BearerTokenRecord>>, BearerTokenError> {
         let mtime = self.file_mtime();
         if let Ok(cache) = self.cache.lock() {
             if let Some(cached) = cache.as_ref() {
                 if cached.mtime == mtime {
-                    return Ok(cached.records.clone());
+                    return Ok(Arc::clone(&cached.records));
                 }
             }
         }
-        let records = match fs::read_to_string(&self.path) {
+        let records: Vec<BearerTokenRecord> = match fs::read_to_string(&self.path) {
             Ok(content) => serde_json::from_str(&content).map_err(BearerTokenError::from)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
             Err(error) => return Err(BearerTokenError::Io(error)),
         };
-        self.store_cache(records.clone());
+        let records = Arc::new(records);
+        self.store_cache(Arc::clone(&records));
         Ok(records)
     }
 
@@ -672,10 +769,17 @@ impl BearerTokenStore {
             fs::create_dir_all(parent)?;
         }
         let temp_path = self.path.with_extension("json.tmp");
-        let content = serde_json::to_string_pretty(records)?;
+        // Fold buffered usage timestamps into whatever is being written so a
+        // create/revoke/delete never loses them, then reset the buffer.
+        let mut merged = records.to_vec();
+        self.overlay_last_used(&mut merged);
+        let content = serde_json::to_string_pretty(&merged)?;
         fs::write(&temp_path, content)?;
         fs::rename(temp_path, &self.path)?;
-        self.store_cache(records.to_vec());
+        self.store_cache(Arc::new(merged));
+        let mut state = self.last_used.lock().unwrap_or_else(|e| e.into_inner());
+        state.pending.clear();
+        state.last_persist = std::time::Instant::now();
         Ok(())
     }
 }
