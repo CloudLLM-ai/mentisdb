@@ -1963,6 +1963,8 @@ pub struct MentisDbService {
     /// Per-key single-flight locks so a chain is replayed from disk by exactly
     /// one task even when many requests race to open it.
     open_locks: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Chains with a derived-state repair task currently on the blocking pool.
+    repair_inflight: Arc<DashMap<String, ()>>,
     interaction_log: Arc<InteractionLogSink>,
     webhook_manager: WebhookManager,
 }
@@ -2996,6 +2998,7 @@ impl MentisDbService {
             config,
             chains: Arc::new(DashMap::new()),
             open_locks: Arc::new(DashMap::new()),
+            repair_inflight: Arc::new(DashMap::new()),
             webhook_manager,
         })
     }
@@ -3051,7 +3054,7 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(chain_key);
         validate_chain_key_shape(&chain_key)?;
         if let Some(existing) = self.chains.get(&chain_key) {
-            return Ok(Self::repair_if_idle(existing.clone()));
+            return Ok(self.repair_if_idle(&chain_key, existing.clone()));
         }
         if chain_key != self.config.default_chain_key && !self.chain_exists_on_disk(&chain_key) {
             return Err(not_found_error(format!("chain '{chain_key}' not found")));
@@ -3072,7 +3075,7 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(chain_key);
         validate_chain_key_shape(&chain_key)?;
         if let Some(existing) = self.chains.get(&chain_key) {
-            return Ok(Self::repair_if_idle(existing.clone()));
+            return Ok(self.repair_if_idle(&chain_key, existing.clone()));
         }
         self.open_chain_single_flight(chain_key, storage_adapter)
             .await
@@ -3085,14 +3088,50 @@ impl MentisDbService {
     /// Adoption needs `&mut MentisDb`, so without this a chain whose sidecar
     /// was rebuilt in the background would serve no vector results until its
     /// next append or reopen.
-    fn repair_if_idle(existing: Arc<RwLock<MentisDb>>) -> Arc<RwLock<MentisDb>> {
-        if let Ok(mut chain) = existing.try_write() {
-            chain.ensure_implicit_edge_overlay();
-            if chain.has_pending_sidecar_rebuilds() {
-                chain.poll_vector_backend_upgrades();
-            }
+    fn repair_if_idle(
+        &self,
+        chain_key: &str,
+        existing: Arc<RwLock<MentisDb>>,
+    ) -> Arc<RwLock<MentisDb>> {
+        // Detection is a cheap `&self` check under a read lock. The actual
+        // adoption (embedding catch-up, compaction, HNSW build) can take long,
+        // so it runs on the blocking pool, fire-and-forget, one task per chain.
+        let needs_repair = existing
+            .try_read()
+            .map(|chain| chain.needs_background_repair())
+            .unwrap_or(false);
+        if needs_repair
+            && self
+                .repair_inflight
+                .insert(chain_key.to_owned(), ())
+                .is_none()
+        {
+            let inflight = self.repair_inflight.clone();
+            let key = chain_key.to_owned();
+            let handle = existing.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Ok(mut chain) = handle.try_write_owned() {
+                    chain.ensure_implicit_edge_overlay();
+                    if chain.has_pending_sidecar_rebuilds() {
+                        chain.poll_vector_backend_upgrades();
+                    }
+                }
+                inflight.remove(&key);
+            });
         }
         existing
+    }
+
+    /// Return an existing chain handle (opening it from disk if needed).
+    ///
+    /// Exposed for integration tests that observe background derived-state
+    /// adoption; it never creates a chain.
+    #[doc(hidden)]
+    pub async fn existing_chain_handle(
+        &self,
+        chain_key: &str,
+    ) -> Result<Arc<RwLock<MentisDb>>, Box<dyn Error + Send + Sync>> {
+        self.get_chain(Some(chain_key), None).await
     }
 
     /// True when the registry or the storage directory already knows `chain_key`.

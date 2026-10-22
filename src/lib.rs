@@ -4294,6 +4294,16 @@ trait ManagedEmbeddingProvider: Send + Sync {
     ) -> io::Result<Vec<crate::search::VectorDocument>>;
 }
 
+/// True the first time it is called for `chain_key` in this process, so
+/// per-request diagnostics log once per chain instead of on every request.
+fn log_once_per_chain(chain_key: &str) -> bool {
+    static SEEN: std::sync::OnceLock<Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+    SEEN.get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(chain_key.to_owned())
+}
+
 /// Log a failed derived-state step that happened after the canonical write.
 fn log_derived_failure(what: &str, error: &io::Error) {
     eprintln!("[mentisdb] {what} failed after the thought was persisted: {error}");
@@ -7376,6 +7386,48 @@ impl MentisDb {
         !self.pending_sidecar_rebuilds.is_empty()
     }
 
+    /// Cheap `&self` check: has any background sidecar rebuild finished and
+    /// is it waiting to be adopted by [`MentisDb::poll_vector_backend_upgrades`]?
+    pub fn has_finished_sidecar_rebuilds(&self) -> bool {
+        self.pending_sidecar_rebuilds.iter().any(|item| {
+            item.slot
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_some()
+        })
+    }
+
+    /// Cheap `&self` check: is the implicit-edge overlay missing (in memory or
+    /// on disk) while a managed sidecar with a cached index could rebuild it?
+    pub fn implicit_edge_overlay_repair_needed(&self) -> bool {
+        let Some(persistence) = &self.persistence else {
+            return false;
+        };
+        if !self
+            .managed_vector_sidecars
+            .values()
+            .any(|entry| entry.cached_index.is_some())
+        {
+            return false;
+        }
+        self.implicit_edge_overlay.is_none()
+            || !chain_auto_edges_path(
+                &persistence.chain_dir,
+                &persistence.chain_key,
+                persistence.storage_kind,
+            )
+            .exists()
+    }
+
+    /// Whether [`MentisDb::poll_vector_backend_upgrades`] /
+    /// [`MentisDb::ensure_implicit_edge_overlay`] have derived-state work to do.
+    ///
+    /// Services call this under a read lock to decide whether to schedule the
+    /// (potentially slow) repair on a blocking thread.
+    pub fn needs_background_repair(&self) -> bool {
+        self.has_finished_sidecar_rebuilds() || self.implicit_edge_overlay_repair_needed()
+    }
+
     /// Adopt background sidecar rebuilds that have finished.
     fn adopt_finished_sidecar_rebuilds(&mut self) {
         for item in std::mem::take(&mut self.pending_sidecar_rebuilds) {
@@ -8167,7 +8219,9 @@ impl MentisDb {
             .find(|(_, entry)| entry.cached_index.is_some())
             .map(|(metadata, _)| metadata.clone())
         else {
-            if !self.managed_vector_sidecars.is_empty() {
+            if !self.managed_vector_sidecars.is_empty()
+                && log_once_per_chain(&persistence.chain_key)
+            {
                 eprintln!(
                     "[mentisdb] load_or_rebuild_implicit_edge_overlay: \
                      skipped — {} managed sidecar(s) present but none has a cached index",
