@@ -493,7 +493,16 @@ cargo run --bin mentisdb
   the next append or open, instead of failing an append that already committed.
 - **Torn-tail recovery.** If the daemon or machine died mid-write, opening a binary chain
   truncates a partial final record back to the last complete one and saves the dropped
-  bytes beside the chain file as `<chain file>.torn-<unix-millis>` for inspection.
+  bytes beside the chain file as `<chain file>.torn-<unix-millis>` (mode `0600`) for
+  inspection. Only a genuine partial record is truncated: if the bytes after a bad length
+  prefix still decode as a complete record, the corruption is mid-file, so opening fails
+  with an `InvalidData` error and the chain file is left untouched.
+- **Single writer.** MentisDB assumes one writer process per chain directory; torn-tail
+  repair takes no cross-process lock. Do not point two daemons (or a daemon and an embedded
+  `MentisDb` writer) at the same `MENTISDB_DIR`.
+- **Implicit-edge overlay catch-up.** The overlay records how many thoughts it covers and
+  the chain head it was built against; after a crash it replays the missing tail on open
+  (or rebuilds if the head does not match), so no implicit edges are lost.
 - **Atomic registry writes.** The chain registry, agent registry, webhook list and other
   JSON registries are written to a temporary file and renamed into place, so a crash never
   leaves a half-written registry.
