@@ -373,7 +373,7 @@ Once startup completes, it prints:
 - `MENTISDB_DASHBOARD_ALLOWED_HOSTS`
   Comma-separated extra hostnames or IPs the dashboard accepts in the `Host` header (for
   example a public DNS name or the name a reverse proxy forwards). Set it in the environment
-  or the `.env` the daemon loads at startup; it is not editable from the dashboard Settings
+  or a `.env` file (`./.env` or `<MENTISDB_DIR>/.env`); it is not editable from the dashboard Settings
   tab. See "Dashboard API rules" below for the built-in allowlist.
 - `MENTISDB_BEARER_TOKEN_ACCESS`
   Require bearer tokens for MCP requests. Default: `false`. Set `true` for remote
@@ -463,9 +463,10 @@ How the set gets filled:
 Search filtering alone does not invent edges; pair default exclusion with dedup and/or
 good agent discipline on long-running brains.
 
-MentisDB loads environment variables from a `.env` file in the current working directory
-at startup. Existing shell environment variables take precedence over `.env` values. The
-file is silently ignored when absent, so it is safe to commit a template `.env.example`
+MentisDB loads environment variables at startup from a `.env` file in the current working
+directory, then from `<MENTISDB_DIR>/.env` (where the dashboard Settings tab saves its
+changes). Precedence is shell environment > `./.env` > `<MENTISDB_DIR>/.env`; a file never
+overrides a variable that is already set. Missing files are silently ignored, so it is safe to commit a template `.env.example`
 while keeping your actual `.env` in `.gitignore`.
 
 Example — full durability (crash-safe default plus per-commit fsync):
