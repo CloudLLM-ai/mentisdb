@@ -92,8 +92,8 @@ reporter hit OOM at 28.8 GiB). It now peaks at about **1.7 GB**.
 - One FastEmbed model per process, shared by every chain; inference in small bounded
   chunks.
 - Missing or stale sidecars are rebuilt by a single background worker (single-flight per
-  sidecar, bounded queue) and adopted when finished; the chain serves lexical and graph
-  results meanwhile.
+  sidecar: at most one job queued or running) and adopted when finished; the chain
+  serves lexical and graph results meanwhile.
 - Opening a chain never rewrites its persisted vector provider config.
 - Model cache under `<MENTISDB_DIR>`, plus the `MENTISDB_EMBEDDINGS` opt-out.
 
