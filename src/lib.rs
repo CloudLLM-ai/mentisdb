@@ -8109,6 +8109,7 @@ impl MentisDb {
             return;
         };
         overlay.add_thought(thought.id, &new_vector, sidecar);
+        overlay.set_coverage(self.thoughts.len(), &thought.hash);
 
         // The overlay file is rebuildable derived state, so it is persisted
         // every OVERLAY_PERSIST_INTERVAL appends (and on flush/drop) instead
@@ -8191,55 +8192,113 @@ impl MentisDb {
             persistence.storage_kind,
         );
 
-        self.implicit_edge_overlay = match crate::search::ImplicitEdgeOverlay::load_from_path(
-            &overlay_path,
-        ) {
-            Ok(overlay)
-                if overlay.threshold == self.auto_edge_threshold
-                    && overlay.k == self.auto_edge_k =>
-            {
-                Some(overlay)
-            }
-            _ => {
-                if self.thoughts.len() > AUTO_EDGE_MAX_CHAIN_FOR_FULL_BUILD {
-                    let empty = crate::search::ImplicitEdgeOverlay::new(
-                        self.auto_edge_threshold,
-                        self.auto_edge_k,
+        let loaded = crate::search::ImplicitEdgeOverlay::load_from_path(&overlay_path)
+            .ok()
+            .filter(|overlay| {
+                overlay.threshold == self.auto_edge_threshold && overlay.k == self.auto_edge_k
+            })
+            .and_then(|overlay| self.catch_up_overlay_coverage(overlay, &loaded_sidecar));
+        let loaded = loaded.map(|(overlay, caught_up)| {
+            if caught_up {
+                if let Err(e) = overlay.save_to_path(&overlay_path) {
+                    eprintln!(
+                        "[mentisdb] load_or_rebuild_implicit_edge_overlay: failed to save caught-up overlay: {e}"
                     );
-                    if let Err(e) = empty.save_to_path(&overlay_path) {
-                        eprintln!(
-                            "[mentisdb] load_or_rebuild_implicit_edge_overlay: failed to save empty overlay: {e}"
-                        );
-                    }
-                    Some(empty)
-                } else {
-                    let overlay = if let Some(backend) = self
-                        .managed_vector_sidecars
-                        .get(&metadata)
-                        .and_then(|entry| entry.cached_index.as_ref())
-                    {
-                        crate::search::ImplicitEdgeOverlay::build_from_backend(
-                            &loaded_sidecar,
-                            backend,
-                            self.auto_edge_k,
-                            self.auto_edge_threshold,
-                        )
-                    } else {
-                        crate::search::ImplicitEdgeOverlay::build_from_sidecar(
-                            &loaded_sidecar,
-                            self.auto_edge_k,
-                            self.auto_edge_threshold,
-                        )
-                    };
-                    if let Err(e) = overlay.save_to_path(&overlay_path) {
-                        eprintln!(
-                            "[mentisdb] load_or_rebuild_implicit_edge_overlay: failed to save overlay: {e}"
-                        );
-                    }
-                    Some(overlay)
                 }
             }
+            overlay
+        });
+        let head_hash = self
+            .thoughts
+            .last()
+            .map(|thought| thought.hash.clone())
+            .unwrap_or_default();
+        self.implicit_edge_overlay = match loaded {
+            Some(overlay) => Some(overlay),
+            None => {
+                let mut overlay = if self.thoughts.len() > AUTO_EDGE_MAX_CHAIN_FOR_FULL_BUILD {
+                    crate::search::ImplicitEdgeOverlay::new(
+                        self.auto_edge_threshold,
+                        self.auto_edge_k,
+                    )
+                } else if let Some(backend) = self
+                    .managed_vector_sidecars
+                    .get(&metadata)
+                    .and_then(|entry| entry.cached_index.as_ref())
+                {
+                    crate::search::ImplicitEdgeOverlay::build_from_backend(
+                        &loaded_sidecar,
+                        backend,
+                        self.auto_edge_k,
+                        self.auto_edge_threshold,
+                    )
+                } else {
+                    crate::search::ImplicitEdgeOverlay::build_from_sidecar(
+                        &loaded_sidecar,
+                        self.auto_edge_k,
+                        self.auto_edge_threshold,
+                    )
+                };
+                overlay.set_coverage(self.thoughts.len(), &head_hash);
+                if let Err(e) = overlay.save_to_path(&overlay_path) {
+                    eprintln!(
+                        "[mentisdb] load_or_rebuild_implicit_edge_overlay: failed to save overlay: {e}"
+                    );
+                }
+                Some(overlay)
+            }
         };
+    }
+
+    /// Bring a persisted overlay up to the current chain head after a crash.
+    ///
+    /// The overlay file is only written every `OVERLAY_PERSIST_INTERVAL`
+    /// appends, so it can trail the chain. When its recorded head hash still
+    /// matches the chain at the covered position, the missing tail is replayed
+    /// with incremental `add_thought`; otherwise (or when the gap is large)
+    /// `None` asks the caller for a full rebuild. Overlays written before
+    /// coverage tracking carry no marker and are trusted as before.
+    fn catch_up_overlay_coverage(
+        &self,
+        mut overlay: crate::search::ImplicitEdgeOverlay,
+        sidecar: &crate::search::VectorSidecar,
+    ) -> Option<(crate::search::ImplicitEdgeOverlay, bool)> {
+        const MAX_CATCH_UP_THOUGHTS: usize = 2048;
+        let len = self.thoughts.len();
+        let Some(covered) = overlay.covered_thought_count else {
+            return Some((overlay, false));
+        };
+        if covered > len || len - covered > MAX_CATCH_UP_THOUGHTS {
+            return None;
+        }
+        if covered > 0 && self.thoughts[covered - 1].hash != overlay.covered_head_hash {
+            return None;
+        }
+        if covered == len {
+            return Some((overlay, false));
+        }
+        let by_id: HashMap<Uuid, &crate::search::VectorSidecarEntry> = sidecar
+            .entries
+            .iter()
+            .map(|entry| (entry.thought_id, entry))
+            .collect();
+        for (offset, thought) in self.thoughts[covered..].iter().enumerate() {
+            let position = (covered + offset) as u64;
+            let Some(entry) = by_id.get(&thought.id) else {
+                continue;
+            };
+            overlay.add_thought_among(
+                thought.id,
+                &entry.vector,
+                sidecar
+                    .entries
+                    .iter()
+                    .filter(|other| other.thought_index < position),
+            );
+        }
+        let head = self.thoughts.last()?.hash.clone();
+        overlay.set_coverage(len, &head);
+        Some((overlay, true))
     }
 
     /// Ensure the implicit edge overlay is loaded and persisted for this chain.

@@ -31,6 +31,21 @@ pub struct ImplicitEdgeOverlay {
     pub threshold: f32,
     /// K used when this overlay was built.
     pub k: usize,
+    /// Number of chain thoughts this overlay accounts for; `None` when
+    /// unknown (written by versions that predated coverage tracking).
+    #[serde(default)]
+    pub covered_thought_count: Option<usize>,
+    /// Hash of the last covered thought; empty when coverage is unknown.
+    #[serde(default)]
+    pub covered_head_hash: String,
+}
+
+/// Pre-coverage on-disk layout, still readable so old overlays keep loading.
+#[derive(Deserialize)]
+struct LegacyImplicitEdgeOverlay {
+    edges: HashMap<Uuid, Vec<ImplicitNeighbor>>,
+    threshold: f32,
+    k: usize,
 }
 
 impl ImplicitEdgeOverlay {
@@ -40,7 +55,15 @@ impl ImplicitEdgeOverlay {
             edges: HashMap::new(),
             threshold,
             k,
+            covered_thought_count: None,
+            covered_head_hash: String::new(),
         }
+    }
+
+    /// Record the chain prefix (length and head hash) this overlay is current for.
+    pub fn set_coverage(&mut self, thought_count: usize, head_hash: &str) {
+        self.covered_thought_count = Some(thought_count);
+        self.covered_head_hash = head_hash.to_owned();
     }
 
     /// Build from scratch by comparing all N² pairs in the sidecar.
@@ -169,9 +192,22 @@ impl ImplicitEdgeOverlay {
         new_vector: &[f32],
         sidecar: &crate::search::VectorSidecar,
     ) {
+        self.add_thought_among(new_id, new_vector, sidecar.entries.iter());
+    }
+
+    /// Like [`Self::add_thought`] but compares only against `entries`.
+    ///
+    /// Crash catch-up uses this to replay missing thoughts in order, each
+    /// against only the thoughts that preceded it, so no pair is counted twice.
+    pub fn add_thought_among<'a>(
+        &mut self,
+        new_id: Uuid,
+        new_vector: &[f32],
+        entries: impl Iterator<Item = &'a crate::search::VectorSidecarEntry>,
+    ) {
         let mut forward_neighbors: Vec<ImplicitNeighbor> = Vec::new();
 
-        for entry in &sidecar.entries {
+        for entry in entries {
             if entry.thought_id == new_id {
                 continue; // skip self
             }
@@ -207,7 +243,13 @@ impl ImplicitEdgeOverlay {
 
     /// Serialize to path with atomic rename.
     pub fn save_to_path(&self, path: &Path) -> io::Result<()> {
-        let tmp_path = path.with_extension("tmp");
+        // Unique tmp name per write so concurrent savers cannot interleave.
+        static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let tmp_path = path.with_extension(format!(
+            "tmp.{}.{}",
+            std::process::id(),
+            TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         let encoded =
             bincode::serde::encode_to_vec(self, bincode::config::standard()).map_err(|e| {
                 io::Error::new(
@@ -216,20 +258,39 @@ impl ImplicitEdgeOverlay {
                 )
             })?;
         std::fs::write(&tmp_path, encoded)?;
-        std::fs::rename(&tmp_path, path)?;
+        if let Err(error) = std::fs::rename(&tmp_path, path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(error);
+        }
         Ok(())
     }
 
     /// Deserialize from path.
     pub fn load_from_path(path: &Path) -> io::Result<Self> {
         let bytes = std::fs::read(path)?;
-        let (overlay, _) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
-            .map_err(|e| {
+        let decode_error = |e: bincode::error::DecodeError| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Failed to decode implicit edge overlay: {e}"),
             )
-        })?;
+        };
+        let overlay =
+            match bincode::serde::decode_from_slice::<Self, _>(&bytes, bincode::config::standard())
+            {
+                Ok((overlay, _)) => overlay,
+                Err(_) => {
+                    let (legacy, _): (LegacyImplicitEdgeOverlay, usize) =
+                        bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
+                            .map_err(decode_error)?;
+                    Self {
+                        edges: legacy.edges,
+                        threshold: legacy.threshold,
+                        k: legacy.k,
+                        covered_thought_count: None,
+                        covered_head_hash: String::new(),
+                    }
+                }
+            };
         Ok(overlay)
     }
 }
