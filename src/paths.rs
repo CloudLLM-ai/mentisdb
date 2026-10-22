@@ -159,6 +159,34 @@ pub fn default_mentisdb_dir() -> PathBuf {
     PathEnvironment::capture().default_mentisdb_dir()
 }
 
+/// Path of the settings file the dashboard writes: `<MENTISDB_DIR>/.env`.
+///
+/// The daemon loads it at startup after any `.env` in the working
+/// directory, so values saved from the dashboard Settings tab take effect on
+/// restart regardless of where the daemon was launched from.
+pub fn mentisdb_dir_env_file() -> PathBuf {
+    default_mentisdb_dir().join(".env")
+}
+
+/// Load `.env` files into the process environment at daemon startup.
+///
+/// Order (earlier wins, since already-set variables are never overridden):
+/// the real process environment, then `./.env` in the working directory, then
+/// [`mentisdb_dir_env_file`]. The working-directory file is read first so it
+/// may itself set `MENTISDB_DIR`. Missing files are ignored. Returns the files
+/// that were loaded.
+pub fn load_dotenv_files() -> Vec<PathBuf> {
+    let mut loaded = Vec::new();
+    if let Ok(path) = dotenvy::dotenv() {
+        loaded.push(path);
+    }
+    let dir_env = mentisdb_dir_env_file();
+    if !loaded.contains(&dir_env) && dotenvy::from_path(&dir_env).is_ok() {
+        loaded.push(dir_env);
+    }
+    loaded
+}
+
 fn non_empty_var(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .map(PathBuf::from)

@@ -2573,9 +2573,9 @@ async fn run_update_standalone(force: bool) -> ExitCode {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    // Load .env from the current directory if present.
-    // Silently ignored when missing; existing env vars take precedence.
-    let _ = dotenvy::dotenv();
+    // Load ./.env, then <MENTISDB_DIR>/.env (where the dashboard saves
+    // settings). Missing files are ignored; existing env vars take precedence.
+    let _ = mentisdb::paths::load_dotenv_files();
 
     match parse_daemon_args(std::env::args_os().skip(1)) {
         Ok(DaemonArgMode::Help) => {
