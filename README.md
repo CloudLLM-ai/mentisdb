@@ -1172,6 +1172,18 @@ Dashboard capabilities:
 Protect the dashboard with `MENTISDB_DASHBOARD_PIN` whenever the daemon is reachable
 outside localhost.
 
+Dashboard API rules (0.10.9):
+
+- **CSRF protection.** `POST`, `PATCH` and `DELETE` calls under `/dashboard/api/` must come
+  from the dashboard's own origin: an `Origin` (or, without it, `Referer`) header whose
+  host matches the request host. Scripts and CLI clients that send neither header must add
+  `X-MentisDB-Dashboard: 1`; anything else gets `403`.
+- **Chain keys** created from the dashboard (bootstrap, branch target, copy-to target) must
+  match `[A-Za-z0-9_-]` and be at most 128 characters, otherwise `400`.
+- **Paging** is clamped to `per_page` at most 500 and `page` at most 1000.
+- **PIN handling.** `GET` on the settings API never returns the PIN value (only whether one is
+  set). Saving settings with a blank PIN keeps the current PIN.
+
 ---
 
 ## TLS Certificates
