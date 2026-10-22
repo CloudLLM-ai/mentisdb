@@ -4538,6 +4538,11 @@ fn sidecar_rebuild_queue() -> Option<&'static mpsc::Sender<SidecarRebuildJob>> {
         std::sync::OnceLock::new();
     QUEUE
         .get_or_init(|| {
+            // Intentionally unbounded: the queue is bounded in practice by the
+            // per-sidecar single-flight guard (`SidecarRebuildGuard`). At most
+            // one job per (chain, embedding space) is ever queued or running,
+            // so depth is capped by the number of distinct sidecar paths, and a
+            // bounded channel would block the open path behind a long rebuild.
             let (tx, rx) = mpsc::channel::<SidecarRebuildJob>();
             thread::Builder::new()
                 .name("mentisdb-sidecar-rebuild".to_string())
