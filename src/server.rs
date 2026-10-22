@@ -3564,8 +3564,22 @@ impl MentisDbService {
         &self,
         request: FederatedSearchRequest,
     ) -> Result<RankedSearchResponse, Box<dyn Error + Send + Sync>> {
-        use crate::search::ranked::RRF_K;
+        use crate::search::ranked::RRF_SCORE_SCALE;
         use std::collections::BTreeMap;
+
+        type FederatedHit = (
+            String,
+            Value,
+            RankedSearchScore,
+            Option<usize>,
+            usize,
+            Vec<ThoughtRelationKind>,
+            Option<crate::search::GraphExpansionPath>,
+            Vec<String>,
+            Vec<crate::search::lexical::LexicalMatchSource>,
+            Uuid,
+            u64,
+        );
 
         if request.chain_keys.is_empty() {
             return Ok(RankedSearchResponse {
@@ -3668,7 +3682,10 @@ impl MentisDbService {
                 .collect();
             (Vec::new(), arcs)
         };
-        let query_for_task = ranked_query.clone();
+        // Over-fetch per chain so cross-chain UUID dedup cannot shrink the page.
+        let query_for_task = ranked_query
+            .clone()
+            .with_limit(ranked_limit.saturating_mul(chain_arcs.len()));
 
         // Collect all hits with owned data while holding locks
         #[allow(clippy::type_complexity)]
@@ -3722,92 +3739,65 @@ impl MentisDbService {
         .await
         .map_err(|e| std::io::Error::other(format!("federated search task failed: {e}")))?;
 
-        let (mut all_hits, total_candidates, best_backend) = collected;
+        let (all_hits, total_candidates, best_backend) = collected;
 
-        // Deduplicate by UUID
-        let mut seen_ids: BTreeSet<Uuid> = BTreeSet::new();
-        all_hits.retain(
-            |(_chain_key, _thought, _score, _gd, _gsp, _grk, _gp, _mt, _ms, id, _index)| {
-                if !seen_ids.insert(*id) {
-                    return false;
+        // Deduplicate by UUID, keeping the higher-scoring occurrence, before
+        // any truncation to the requested page.
+        let mut positions: BTreeMap<Uuid, usize> = BTreeMap::new();
+        let mut deduped: Vec<FederatedHit> = Vec::with_capacity(all_hits.len());
+        for hit in all_hits {
+            match positions.get(&hit.9).copied() {
+                Some(pos) => {
+                    if hit.2.total.total_cmp(&deduped[pos].2.total).is_gt() {
+                        deduped[pos] = hit;
+                    }
                 }
-                true
-            },
-        );
-
-        // Sort by score descending, then index ascending for tiebreaking
-        all_hits.sort_by(|a, b| {
-            b.2.total
-                .partial_cmp(&a.2.total)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.10.cmp(&b.10))
-        });
-
-        // Apply RRF reranking if enabled
-        if query_enable_reranking && !all_hits.is_empty() {
-            let rerank_k = query_rerank_k.min(all_hits.len());
-
-            let mut by_lexical: Vec<_> = all_hits.iter().enumerate().collect();
-            by_lexical.sort_by(|(_, a), (_, b)| {
-                b.2.lexical
-                    .total_cmp(&a.2.lexical)
-                    .then_with(|| a.10.cmp(&b.10))
-            });
-
-            let mut by_vector: Vec<_> = all_hits.iter().enumerate().collect();
-            by_vector.sort_by(|(_, a), (_, b)| {
-                b.2.vector
-                    .total_cmp(&a.2.vector)
-                    .then_with(|| a.10.cmp(&b.10))
-            });
-
-            let mut by_graph: Vec<_> = all_hits.iter().enumerate().collect();
-            by_graph.sort_by(|(_, a), (_, b)| {
-                let a_g = a.2.graph + a.2.relation + a.2.seed_support;
-                let b_g = b.2.graph + b.2.relation + b.2.seed_support;
-                b_g.total_cmp(&a_g).then_with(|| a.10.cmp(&b.10))
-            });
-
-            let lexical_indices: Vec<u64> = by_lexical
-                .iter()
-                .take(rerank_k)
-                .map(|(_, h)| h.10)
-                .collect();
-            let vector_indices: Vec<u64> =
-                by_vector.iter().take(rerank_k).map(|(_, h)| h.10).collect();
-            let graph_indices: Vec<u64> =
-                by_graph.iter().take(rerank_k).map(|(_, h)| h.10).collect();
-
-            let merged = crate::search::ranked::rrf_merge_three(
-                &lexical_indices,
-                &vector_indices,
-                &graph_indices,
-                RRF_K,
-            );
-            let rrf_scores: BTreeMap<u64, f64> = merged.into_iter().collect();
-
-            for hit in &mut all_hits {
-                if let Some(&rrf) = rrf_scores.get(&hit.10) {
-                    let rrf_f32 = rrf as f32;
-                    hit.2.rrf = rrf_f32;
-                    let additive = hit.2.graph
-                        + hit.2.relation
-                        + hit.2.seed_support
-                        + hit.2.importance
-                        + hit.2.confidence
-                        + hit.2.recency
-                        + hit.2.session_cohesion;
-                    hit.2.total = rrf_f32 + additive;
+                None => {
+                    positions.insert(hit.9, deduped.len());
+                    deduped.push(hit);
                 }
             }
+        }
+        let mut all_hits = deduped;
 
-            // Re-sort after RRF
-            all_hits.sort_by(|a, b| {
-                b.2.total
-                    .partial_cmp(&a.2.total)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| a.10.cmp(&b.10))
-            });
+        // Deterministic order: score desc, then thought index, chain key, id.
+        let hit_order = |a: &FederatedHit, b: &FederatedHit| {
+            b.2.total
+                .total_cmp(&a.2.total)
+                .then_with(|| a.10.cmp(&b.10))
+                .then_with(|| a.0.cmp(&b.0))
+                .then_with(|| a.9.cmp(&b.9))
+        };
+        all_hits.sort_by(hit_order);
+
+        // Cross-chain RRF: scores are keyed by (chain, thought id) because
+        // per-chain thought indices collide, only positive signals form rank
+        // lists, and the fused score is added as a scaled bonus so it stays
+        // commensurate with BM25-scale totals.
+        if query_enable_reranking && !all_hits.is_empty() {
+            let key = |h: &FederatedHit| (h.0.clone(), h.9);
+            let lexical: Vec<((String, Uuid), f32)> =
+                all_hits.iter().map(|h| (key(h), h.2.lexical)).collect();
+            let vector: Vec<((String, Uuid), f32)> =
+                all_hits.iter().map(|h| (key(h), h.2.vector)).collect();
+            let graph: Vec<((String, Uuid), f32)> = all_hits
+                .iter()
+                .map(|h| (key(h), h.2.graph + h.2.relation + h.2.seed_support))
+                .collect();
+            let rrf_scores = crate::search::ranked::rrf_union_scores(
+                &lexical,
+                &vector,
+                &graph,
+                query_rerank_k.max(1),
+            );
+            // Per-chain `query_ranked` may already have added its own RRF
+            // bonus; replace it with the cross-chain one instead of stacking.
+            for hit in &mut all_hits {
+                let fused = rrf_scores.get(&key(hit)).map(|&r| r as f32).unwrap_or(0.0);
+                hit.2.total += RRF_SCORE_SCALE * (fused - hit.2.rrf);
+                hit.2.rrf = fused;
+            }
+            all_hits.sort_by(hit_order);
         }
 
         // Apply offset and limit
