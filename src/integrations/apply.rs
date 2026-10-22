@@ -52,21 +52,18 @@ fn write_string_atomic(path: &Path, content: &str) -> io::Result<()> {
 
     let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let existing_perms = fs::metadata(&target).ok().map(|meta| meta.permissions());
-    if existing_perms.is_some() {
-        let mut backup = target.clone().into_os_string();
-        backup.push(".bak");
-        let backup = PathBuf::from(backup);
-        if !backup.exists() {
-            fs::copy(&target, &backup)?;
-        }
+    if let Some(perms) = existing_perms.as_ref() {
+        write_backup_once(&target, perms)?;
     }
 
+    // Unpredictable sibling name + `create_new` (O_EXCL): a pre-planted file or
+    // symlink at the temp path makes the open fail instead of being followed.
     let mut tmp_name = target.clone().into_os_string();
-    tmp_name.push(format!(".tmp-{}", std::process::id()));
+    tmp_name.push(format!(".tmp-{}", uuid::Uuid::new_v4().simple()));
     let tmp = PathBuf::from(tmp_name);
 
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -90,6 +87,53 @@ fn write_string_atomic(path: &Path, content: &str) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+/// Heuristic: does this config text look like it carries credentials?
+fn looks_like_it_contains_secrets(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "bearer ", "token", "secret", "api_key", "apikey", "password",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+/// Save the original config next to it as `<name>.bak` the first time it is
+/// rewritten. The backup is created with `create_new` (never through an
+/// existing file or symlink) and owner-only permissions on Unix when the
+/// source contains secrets; otherwise it keeps the source permissions.
+fn write_backup_once(target: &Path, source_perms: &fs::Permissions) -> io::Result<()> {
+    use std::io::Write;
+
+    let mut backup = target.as_os_str().to_os_string();
+    backup.push(".bak");
+    let backup = PathBuf::from(backup);
+    let original = fs::read(target)?;
+    let secret = looks_like_it_contains_secrets(&String::from_utf8_lossy(&original));
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(if secret {
+            0o600
+        } else {
+            source_perms.mode() & 0o777
+        });
+    }
+    #[cfg(not(unix))]
+    let _ = (secret, source_perms);
+    match options.open(&backup) {
+        Ok(mut file) => {
+            file.write_all(&original)?;
+            file.sync_all()
+        }
+        // Keep the first backup; an existing path (even a symlink) is untouched.
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 /// Result of applying MentisDB setup to one integration target.
