@@ -246,3 +246,23 @@ async fn futures_join(
     }
     out
 }
+
+/// A skill upload naming an unknown chain is a 404 and must not create the chain.
+#[tokio::test]
+async fn test_skill_upload_to_unknown_chain_does_not_create_it() {
+    let fx = fixture();
+    let app = rest_router(fx.config.clone());
+    let status = post(
+        &app,
+        "/v1/skills/upload",
+        &fx.global,
+        json!({
+            "chain_key": "ghost-skill-chain",
+            "agent_id": "nobody",
+            "content": "---\nschema_version: 1\nname: X\ndescription: d\n---\n# X\n",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(!chain_file(&fx, "ghost-skill-chain").exists());
+}

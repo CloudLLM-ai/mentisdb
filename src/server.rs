@@ -5213,7 +5213,8 @@ impl MentisDbService {
         chain_key: &str,
         agent_id: &str,
     ) -> Result<AgentRecord, Box<dyn Error + Send + Sync>> {
-        let chain = self.get_or_create_chain(Some(chain_key), None).await?;
+        // A skill upload must never create a chain just to fail on the agent.
+        let chain = self.get_chain(Some(chain_key), None).await?;
         let chain = chain.read().await;
         let agent = chain.get_agent(agent_id).cloned().ok_or_else(|| {
             io::Error::new(
