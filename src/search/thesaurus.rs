@@ -96,6 +96,15 @@ pub fn lookup_lemmatized(token: &str) -> Option<&'static [String]> {
     None
 }
 
+/// Weight given to automatic thesaurus matches relative to exact-term matches.
+///
+/// Stemmed synonym keys make inflected query words ("running", "books")
+/// expand, which roughly doubles how often expansion fires. At the old 0.7
+/// the synonym hits competed with literal hits and cost LongMemEval R@5
+/// 66.8 -> 64.4 (multi-session 65.4 -> 59.4); at 0.3 synonyms act as a recall
+/// aid and a tie-breaker (LongMemEval R@5 68.0, LoCoMo R@10 73.7).
+pub const AUTO_SYNONYM_WEIGHT: f32 = 0.3;
+
 /// Expand a query text into a synonym map using the built-in thesaurus.
 ///
 /// Each key is a *normalized* query term: the Porter-stemmed form (plus the

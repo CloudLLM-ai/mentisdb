@@ -245,8 +245,10 @@ pub struct LexicalQuery {
 /// Maximum number of normalized synonym terms added per query term.
 ///
 /// Caps term explosion for headwords with long synonym lists: every extra
-/// term costs a posting-list scan.
-pub const MAX_SYNONYMS_PER_TERM: usize = 5;
+/// term costs a posting-list scan, and a long tail of loosely related words
+/// dilutes the exact-term signal (LongMemEval R@5 and LoCoMo R@10 both
+/// improved when the cap went from 5 to 3).
+pub const MAX_SYNONYMS_PER_TERM: usize = 3;
 
 /// Normalize a synonym map so lookups can be keyed by the normalized
 /// (Porter-stemmed, lemma-expanded) query term.

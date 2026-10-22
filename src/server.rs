@@ -8677,7 +8677,7 @@ fn apply_thesaurus_if_text(mut q: RankedSearchQuery, text: Option<&str>) -> Rank
     if let Some(t) = text.map(str::trim).filter(|s| !s.is_empty()) {
         let syns = thesaurus::expand_text(t);
         if !syns.is_empty() {
-            q = q.with_synonyms(syns, 0.7);
+            q = q.with_synonyms(syns, thesaurus::AUTO_SYNONYM_WEIGHT);
         }
     }
     q

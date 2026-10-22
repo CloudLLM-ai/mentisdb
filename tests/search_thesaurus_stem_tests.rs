@@ -72,7 +72,11 @@ fn synonyms_per_term_are_capped() {
     );
     let query = LexicalQuery::new("debug").with_synonyms(map, 0.7);
     let expanded = query.expanded_terms();
-    assert!(expanded.len() <= 1 + 5, "got {} terms", expanded.len());
+    assert!(
+        expanded.len() <= 1 + mentisdb::search::lexical::MAX_SYNONYMS_PER_TERM,
+        "got {} terms",
+        expanded.len()
+    );
     assert!(expanded.len() > 1);
 }
 
