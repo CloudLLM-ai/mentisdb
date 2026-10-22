@@ -2906,18 +2906,28 @@ impl MentisDbService {
         agent_id: &str,
         input: ThoughtInput,
     ) -> Result<Thought, Box<dyn Error + Send + Sync>> {
-        let thought = {
-            let mut guard = chain.write().await;
+        // The append and the derived-state flush are synchronous disk I/O. Take
+        // owned guards and run them on the blocking pool so async workers are
+        // never stalled behind fsyncs while the chain lock is held.
+        let write_guard = chain.clone().write_owned().await;
+        let agent_id = agent_id.to_string();
+        let thought = tokio::task::spawn_blocking(move || {
+            let mut guard = write_guard;
             guard.defer_next_derived_flush();
-            match guard.append_thought(agent_id, input) {
-                Ok(thought) => thought.clone(),
+            match guard.append_thought(&agent_id, input) {
+                Ok(thought) => Ok(thought.clone()),
                 Err(error) => {
                     guard.cancel_deferred_derived_flush();
-                    return Err(error.into());
+                    Err(error)
                 }
             }
-        };
-        chain.read().await.flush_pending_derived()?;
+        })
+        .await
+        .map_err(|error| format!("append task failed: {error}"))??;
+        let read_guard = chain.clone().read_owned().await;
+        tokio::task::spawn_blocking(move || read_guard.flush_pending_derived())
+            .await
+            .map_err(|error| format!("flush task failed: {error}"))??;
         Ok(thought)
     }
 
@@ -3235,12 +3245,21 @@ impl MentisDbService {
         }
 
         let thought = Self::append_thought_released(&chain, &agent_id, input).await?;
-        let guard = chain.read().await;
+        // Snapshot what the response and log need, then release the chain lock
+        // before doing any interaction-log I/O.
+        let (metadata, thought_value, head_hash) = {
+            let guard = chain.read().await;
+            (
+                InteractionMetadata::from_chain_thought(&guard, &thought),
+                thought_to_json(&guard, &thought),
+                guard.head_hash().map(ToOwned::to_owned),
+            )
+        };
         self.log_interaction(InteractionLogEntry {
             access: "write",
             operation: "append",
             chain_key,
-            metadata: InteractionMetadata::from_chain_thought(&guard, &thought),
+            metadata,
             result_count: Some(1),
             note: None,
         });
@@ -3250,8 +3269,8 @@ impl MentisDbService {
             tokio::task::spawn_blocking(move || cb(tt));
         }
         Ok(AppendThoughtResponse {
-            thought: thought_to_json(&guard, &thought),
-            head_hash: guard.head_hash().map(ToOwned::to_owned),
+            thought: thought_value,
+            head_hash,
         })
     }
 
@@ -4060,9 +4079,12 @@ impl MentisDbService {
             .map(|e| (e.key().clone(), Arc::clone(e.value())))
             .collect();
         for (key, chain) in chains {
-            let guard = chain.read().await;
-            if let Err(e) = guard.flush() {
-                eprintln!("flush failed for chain {key}: {e}");
+            let guard = chain.read_owned().await;
+            let flushed = tokio::task::spawn_blocking(move || guard.flush()).await;
+            match flushed {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => log::error!("flush failed for chain {key}: {e}"),
+                Err(e) => log::error!("flush task failed for chain {key}: {e}"),
             }
         }
         Ok(())
@@ -4153,26 +4175,33 @@ impl MentisDbService {
     ) -> Result<AgentRecordResponse, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_or_create_chain(Some(&chain_key), None).await?;
-        let mut chain = chain.write().await;
         let status = request
             .status
             .as_deref()
             .map(parse_agent_status)
             .transpose()?;
-        let agent = chain.upsert_agent(
-            &request.agent_id,
-            request.display_name.as_deref(),
-            request.agent_owner.as_deref(),
-            request.description.as_deref(),
-            status,
-        )?;
+        // Registry persistence is synchronous disk I/O: run it on the blocking
+        // pool with an owned guard, and log only after the lock is released.
+        let mut guard = chain.write_owned().await;
+        let logged_agent_id = request.agent_id.clone();
+        let agent = tokio::task::spawn_blocking(move || {
+            guard.upsert_agent(
+                &request.agent_id,
+                request.display_name.as_deref(),
+                request.agent_owner.as_deref(),
+                request.description.as_deref(),
+                status,
+            )
+        })
+        .await
+        .map_err(|error| format!("agent upsert task failed: {error}"))??;
         self.log_interaction(InteractionLogEntry {
             access: "write",
             operation: "upsert_agent",
             chain_key: chain_key.clone(),
             metadata: InteractionMetadata::default(),
             result_count: Some(1),
-            note: Some(format!("agent_id={}", request.agent_id)),
+            note: Some(format!("agent_id={}", logged_agent_id)),
         });
         Ok(AgentRecordResponse { chain_key, agent })
     }
@@ -4653,17 +4682,29 @@ impl MentisDbService {
 
         self.ensure_skill_registry_fresh().await?;
 
-        let mut registry = self.skills.write().await;
-        let mut upload = SkillUpload::new(&agent.agent_id, format, &request.content)
-            .with_agent_identity(Some(&agent.display_name), agent.owner.as_deref())
-            .with_signing(
-                request.signing_key_id.clone(),
-                request.skill_signature.clone(),
-            );
-        if let Some(skill_id) = request.skill_id.as_deref() {
-            upload = upload.with_skill_id(skill_id);
-        }
-        let skill = registry.upload_skill(upload)?;
+        let mut registry = self.skills.clone().write_owned().await;
+        // Skill persistence is synchronous disk I/O: run it on the blocking
+        // pool and release the registry lock before logging.
+        let (upload_agent, upload_content) = (agent.clone(), request.content.clone());
+        let (signing_key_id, skill_signature) = (
+            request.signing_key_id.clone(),
+            request.skill_signature.clone(),
+        );
+        let upload_skill_id = request.skill_id.clone();
+        let skill = tokio::task::spawn_blocking(move || {
+            let mut upload = SkillUpload::new(&upload_agent.agent_id, format, &upload_content)
+                .with_agent_identity(
+                    Some(&upload_agent.display_name),
+                    upload_agent.owner.as_deref(),
+                )
+                .with_signing(signing_key_id, skill_signature);
+            if let Some(skill_id) = upload_skill_id.as_deref() {
+                upload = upload.with_skill_id(skill_id);
+            }
+            registry.upload_skill(upload)
+        })
+        .await
+        .map_err(|error| format!("skill upload task failed: {error}"))??;
         self.log_interaction(InteractionLogEntry {
             access: "write",
             operation: "upload_skill",
