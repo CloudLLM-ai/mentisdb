@@ -21,6 +21,39 @@ pub const FASTEMBED_MINILM_DIMENSION: usize = 384;
 /// Version label for the AllMiniLML6V2 embedding space.
 pub const FASTEMBED_MINILM_VERSION: &str = "1";
 
+/// Maximum number of texts sent to the ONNX runtime in a single inference call.
+///
+/// fastembed's default batch of 256 padded to the longest text (up to 512
+/// tokens) allocates gigabytes of activations; 32 keeps peak memory bounded
+/// without changing the produced vectors.
+pub const FASTEMBED_BATCH_SIZE: usize = 32;
+
+/// Embed `inputs` in sequential chunks of at most `chunk_size` texts.
+///
+/// `embed_chunk` is invoked once per chunk and its output is converted and
+/// released before the next chunk runs, so peak memory is bounded by one chunk.
+/// Output order matches input order.
+///
+/// # Errors
+///
+/// Returns the first error produced by `embed_chunk`.
+///
+/// # Panics
+///
+/// Panics if `chunk_size` is zero.
+pub fn embed_in_chunks<E>(
+    inputs: &[EmbeddingInput],
+    chunk_size: usize,
+    mut embed_chunk: impl FnMut(&[&str]) -> Result<Vec<Vec<f32>>, E>,
+) -> Result<Vec<EmbeddingVector>, E> {
+    let mut vectors = Vec::with_capacity(inputs.len());
+    for chunk in inputs.chunks(chunk_size) {
+        let texts: Vec<&str> = chunk.iter().map(|i| i.text.as_str()).collect();
+        vectors.extend(embed_chunk(&texts)?.into_iter().map(EmbeddingVector::new));
+    }
+    Ok(vectors)
+}
+
 /// Opaque string-backed error for `fastembed` failures.
 ///
 /// `fastembed` returns `anyhow::Result`, and `anyhow` is not a direct
@@ -149,14 +182,14 @@ impl EmbeddingProvider for FastEmbedProvider {
     /// Returns `FastEmbedError` when the ONNX runtime fails during inference,
     /// or when the internal mutex is poisoned (a previous call panicked).
     fn embed_batch(&self, inputs: &[EmbeddingInput]) -> Result<Vec<EmbeddingVector>, Self::Error> {
-        let texts: Vec<&str> = inputs.iter().map(|i| i.text.as_str()).collect();
-        let mut model = self
-            .model
-            .lock()
-            .map_err(|e| FastEmbedError(format!("fastembed mutex poisoned: {e}")))?;
-        let embeddings = model
-            .embed(texts, None)
-            .map_err(|e| FastEmbedError(e.to_string()))?;
-        Ok(embeddings.into_iter().map(EmbeddingVector::new).collect())
+        embed_in_chunks(inputs, FASTEMBED_BATCH_SIZE, |texts| {
+            let mut model = self
+                .model
+                .lock()
+                .map_err(|e| FastEmbedError(format!("fastembed mutex poisoned: {e}")))?;
+            model
+                .embed(texts, Some(FASTEMBED_BATCH_SIZE))
+                .map_err(|e| FastEmbedError(e.to_string()))
+        })
     }
 }
