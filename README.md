@@ -114,6 +114,7 @@ volumes:
 | User | non-root `mentisdb` (uid/gid `991`). Bind mounts must be writable by uid 991 (`chown 991:991 ./data`). |
 | Ports | `9471` MCP (HTTP), `9472` REST (HTTP), `9475` dashboard (HTTPS). HTTPS MCP/REST (`9473`/`9474`) are off in the image; set `MENTISDB_HTTPS_MCP_PORT` / `MENTISDB_HTTPS_REST_PORT` to enable them. |
 | Configuration | any variable from [Daemon Configuration](#daemon-configuration), passed with `-e` or `environment:`. |
+| Base image | `debian:trixie-slim` (glibc 2.41). The ONNX Runtime used for local embeddings needs glibc 2.38+; the image is self-contained, so your host's glibc does not matter. |
 | Features | server + local embeddings + LLM extraction; the startup-sound/audio feature is not compiled in. |
 
 **Security notes.** Inside the container the daemon binds `0.0.0.0` (required for

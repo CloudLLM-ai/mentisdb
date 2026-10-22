@@ -1,12 +1,18 @@
 # syntax=docker/dockerfile:1.7
 
 # ---- builder ----------------------------------------------------------------
+# Debian trixie (glibc 2.41, GCC 14) rather than bookworm (glibc 2.36): the
+# prebuilt ONNX Runtime that ort/fastembed 5.x link for local-embeddings is
+# compiled against glibc >= 2.38 / GCC 13 libstdc++ and fails to link on
+# bookworm (`undefined reference to __isoc23_strtol`, `_M_replace_cold`).
+# The runtime stage must match the builder's glibc. The image is self-contained,
+# so the host's glibc does not matter.
 # CI (build.yml / test.yml) uses the `stable` toolchain and Cargo.toml declares
 # no `rust-version`, so track the current stable 1.x line. Cargo.lock pins every
 # crate, so image builds stay reproducible with `--locked`. Several locked
 # crates need rustc >= 1.88 and edition 2024 support.
 ARG RUST_VERSION=1
-FROM rust:${RUST_VERSION}-bookworm AS builder
+FROM rust:${RUST_VERSION}-trixie AS builder
 
 # Features compiled into the image. Mirrors the crate defaults
 # (server + llm-extraction + local-embeddings) minus `startup-sound`, which pulls
@@ -36,15 +42,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && install -D target/release/mentisdb /out/mentisdb
 
 # ---- runtime ----------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
-# libssl3         dynamic OpenSSL used by fastembed's model downloader
+# libssl3t64       dynamic OpenSSL used by fastembed's model downloader
 # libstdc++6/libgomp1  runtime deps of the bundled ONNX Runtime
 # ca-certificates TLS roots (model download, update checks)
 # curl            HEALTHCHECK probe
 # tini            PID 1: reaps zombies and forwards SIGTERM
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libssl3 \
+      libssl3t64 \
       libstdc++6 \
       libgomp1 \
       ca-certificates \
@@ -56,6 +62,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
               --create-home --shell /usr/sbin/nologin mentisdb
 
 COPY --from=builder /out/mentisdb /usr/local/bin/mentisdb
+
+# Build-time sanity checks: every shared library resolves and the binary runs.
+RUN ldd /usr/local/bin/mentisdb && ! ldd /usr/local/bin/mentisdb | grep -q "not found" \
+    && /usr/local/bin/mentisdb --help >/dev/null
 
 # 0.0.0.0 is required for `docker run -p` to reach the daemon, so keep the
 # container private by publishing ports on 127.0.0.1 only (see README) and turn
