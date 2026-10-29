@@ -32,26 +32,26 @@ fmt: ## Format the code using cargo fmt
 	${CARGO_CMD} fmt
 
 # Check for errors without building
-check: ## Run cargo check to analyze the code without compiling
-	${CARGO_CMD} check
-	${CARGO_CMD} check --bin mentisdb
+check: ## Run cargo check --release to analyze the code without compiling
+	${CARGO_CMD} check --release
+	${CARGO_CMD} check --release --bin mentisdb
 
 # Strict linter, fails on warnings and suggests fixes
 clippy: ## Run clippy and fail on warnings
 	${CARGO_CMD} fmt
-	${CARGO_CMD} clippy --all-targets --all-features -- -D warnings
+	${CARGO_CMD} clippy --release --all-targets --all-features -- -D warnings
 
 # Run tests
-test: ## Run all tests using cargo test
-	${CARGO_CMD} test
+test: ## Run all tests using cargo test --release
+	${CARGO_CMD} test --release
 
 # Run benchmarks
 bench: ## Run Criterion benchmarks (thought_chain, skill_registry, http_concurrency)
 	MENTISDB_THOUGHT_SOUNDS=false ${CARGO_CMD} bench 2>&1 | tee /tmp/mentisdb_bench_results.txt
 
 # Generate documentation
-doc: ## Generate project documentation using cargo doc
-	${CARGO_CMD} doc --all-features
+doc: ## Generate project documentation using cargo doc --release
+	${CARGO_CMD} doc --release --all-features
 
 # Publish to crates.io
 publish: ## Publish mentisdb to crates.io
