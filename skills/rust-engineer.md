@@ -5,7 +5,8 @@ description: >
   production code. Use whenever implementing features, fixing bugs, adding
   APIs, or reviewing Rust changes in this repository. For shared-state and
   lock design, also load rust-concurrency-patterns. For Criterion benches,
-  also load rust-criterion-benchmarking. Triggers: rust code, bug fix,
+  also load rust-criterion-benchmarking. For parsers and untrusted input,
+  also load rust-fuzzing. Triggers: rust code, bug fix,
   implement, refactor, clippy, add test, public API, review rust.
 triggers:
   - rust engineer
@@ -29,8 +30,9 @@ It encodes the house style observed in `src/` and the bar in `AGENTS.md`.
 |-------|------|
 | [`rust-concurrency-patterns.md`](rust-concurrency-patterns.md) | Shared mutable state, DashMap/RwLock, lock contention, write batching, WAL, async lock scope |
 | [`rust-criterion-benchmarking.md`](rust-criterion-benchmarking.md) | Writing or interpreting `cargo bench` / Criterion runs, throughput vs latency, baselines |
+| [`rust-fuzzing.md`](rust-fuzzing.md) | Chain/thought decoding, `.mentis` import, REST/MCP bodies, query and search parsers, auth tokens: cargo-fuzz targets, invariants, findings into `tests/` |
 
-Do not re-derive concurrency or bench conventions from memory — open the
+Do not re-derive concurrency, bench, or fuzzing conventions from memory — open the
 companion skill and follow it.
 
 ## Non-negotiables
@@ -128,6 +130,20 @@ Summary only — open `rust-criterion-benchmarking.md` for setup and gotchas.
 4. Compare **absolute medians** across meaningful runs; Criterion “regressed” labels drift with load.
 5. HTTP load tests are custom Tokio harnesses, not pure Criterion micro-benches.
 
+## Fuzzing quick rules (full skill: companion)
+
+Summary only — open `rust-fuzzing.md` for layout, harness rules and CI.
+
+1. Every trust boundary has a target under `fuzz/fuzz_targets/`: on-disk
+   chain and `.mentis` decoding, REST/MCP request bodies in `server.rs`,
+   search/query parsing, token and scope parsing in `auth.rs`.
+2. Each target asserts an invariant (round-trip, hash-chain integrity
+   preserved or a typed error, bounds), not just "no panic".
+3. Every crash is minimized into a named stable regression test under
+   `tests/`, and the input goes into `fuzz/corpus/<target>/`.
+4. `fuzz/` is its own nightly-only package with its own `[workspace]`, so
+   the stable gates and `cargo publish` never see it.
+
 ## Documentation style
 
 Match existing modules (`src/auth.rs`, `src/lib.rs`, `src/webhooks.rs`):
@@ -172,6 +188,7 @@ When changing code:
 | 6 | Add or update tests under `tests/` for the behavior change |
 | 7 | Run `make clippy` and relevant `cargo test` filters |
 | 8 | If hot-path performance changed, add or update a Criterion bench |
+| 8b | If the change parses external input (files, wire bodies, queries), add or extend a fuzz target (`rust-fuzzing`) |
 | 9 | Update rustdoc if the public contract changed |
 | 10 | Update `changelog.txt` under the **top** version block; re-sort that block by impact (most important first) |
 
@@ -229,6 +246,9 @@ When a fix, feature, test, or other shippable change is complete:
 - Drive-by refactors unrelated to the task
 - `#[allow(dead_code)]` or `#[allow(clippy::…)]` without a written reason
 - Claiming a performance win without a bench or load number
+- A new parser or decoder of untrusted input (chain files, `.mentis`
+  imports, request bodies) with no fuzz target, or a fuzz finding fixed
+  without a regression test in `tests/`
 - Shipping a fix/feature/test without a `changelog.txt` entry under the top
   version
 - Appending changelog bullets in random or pure chronological order instead of
@@ -267,3 +287,6 @@ When a fix, feature, test, or other shippable change is complete:
   single public API over cross-crate duplication, deterministic event-order
   test assertions, serialized process-global test state, binary-matrix
   reinstall on shared-lib changes, no hardcoded secrets in ops scripts.
+- **2026-10-30** — Fuzzing: companion `rust-fuzzing` (shared with
+  mentischat, cloudllm and DiarioBitcoin), quick rules, checklist step 8b
+  and an anti-pattern.

@@ -35,6 +35,11 @@ phrase, load the full skill before proceeding.
 - **`rust-criterion-benchmarking.md`** — Criterion bench structure, throughput
   groups, baselines, `tee` capture, gotchas. Triggers: "benchmark",
   "cargo bench", "criterion", "throughput", "latency", "performance measurement".
+- **`rust-fuzzing.md`** — coverage-guided fuzzing with cargo-fuzz and
+  `arbitrary`: targets at every trust boundary, invariants beyond "no
+  panic", model-based targets, findings minimized into stable regression
+  tests, a nightly-only `fuzz/` package kept out of the stable gates.
+  Triggers: "fuzz", "cargo fuzz", "fuzz target", "corpus", "untrusted input".
 - **`engineering-pipeline.md`** — release engineering pipeline (Phases 0-6):
   gates, benchmarks, review, docs, then publish to crates.io, GitHub release
   binaries and the ghcr.io Docker image, with post-release verification.
