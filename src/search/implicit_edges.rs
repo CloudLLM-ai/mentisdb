@@ -274,23 +274,24 @@ impl ImplicitEdgeOverlay {
                 format!("Failed to decode implicit edge overlay: {e}"),
             )
         };
-        let overlay =
-            match bincode::serde::decode_from_slice::<Self, _>(&bytes, bincode::config::standard())
-            {
-                Ok((overlay, _)) => overlay,
-                Err(_) => {
-                    let (legacy, _): (LegacyImplicitEdgeOverlay, usize) =
-                        bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
-                            .map_err(decode_error)?;
-                    Self {
-                        edges: legacy.edges,
-                        threshold: legacy.threshold,
-                        k: legacy.k,
-                        covered_thought_count: None,
-                        covered_head_hash: String::new(),
-                    }
+        let overlay = match bincode::serde::decode_from_slice::<Self, _>(
+            &bytes,
+            crate::decode_limits::file_config(),
+        ) {
+            Ok((overlay, _)) => overlay,
+            Err(_) => {
+                let (legacy, _): (LegacyImplicitEdgeOverlay, usize) =
+                    bincode::serde::decode_from_slice(&bytes, crate::decode_limits::file_config())
+                        .map_err(decode_error)?;
+                Self {
+                    edges: legacy.edges,
+                    threshold: legacy.threshold,
+                    k: legacy.k,
+                    covered_thought_count: None,
+                    covered_head_hash: String::new(),
                 }
-            };
+            }
+        };
         Ok(overlay)
     }
 }

@@ -306,6 +306,7 @@ pub mod backup;
 pub mod cli;
 #[cfg(feature = "server")]
 pub(crate) mod dashboard;
+pub(crate) mod decode_limits;
 pub mod integrations;
 #[cfg(feature = "llm-extraction")]
 pub mod llm;
@@ -11923,15 +11924,16 @@ where
 {
     let mut thoughts = Vec::new();
     while let Some(payload) = read_next_binary_payload(reader)? {
-        let (thought, _): (T, usize) =
-            bincode::serde::decode_from_slice(&payload, bincode::config::standard()).map_err(
-                |e| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("Failed to deserialize thought: {e}"),
-                    )
-                },
-            )?;
+        let (thought, _): (T, usize) = bincode::serde::decode_from_slice(
+            &payload,
+            crate::decode_limits::thought_record_config(),
+        )
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to deserialize thought: {e}"),
+            )
+        })?;
         thoughts.push(thought);
     }
     Ok(thoughts)
@@ -12593,18 +12595,19 @@ fn chain_storage_file_is_healthy(path: &Path, storage_kind: StorageAdapterKind) 
 
 fn deserialize_binary_thought_payload(payload: &[u8]) -> io::Result<Thought> {
     let (schema_version, _): (u32, usize) =
-        bincode::decode_from_slice(payload, bincode::config::standard()).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Failed to decode schema version from thought: {error}"),
-            )
-        })?;
+        bincode::decode_from_slice(payload, crate::decode_limits::thought_record_config())
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Failed to decode schema version from thought: {error}"),
+                )
+            })?;
 
     match schema_version {
         v if v >= MENTISDB_CURRENT_VERSION => {
             match bincode::serde::decode_from_slice::<Thought, _>(
                 payload,
-                bincode::config::standard(),
+                crate::decode_limits::thought_record_config(),
             ) {
                 Ok((mut thought, _)) => {
                     thought.schema_version = MENTISDB_CURRENT_VERSION;
@@ -12612,7 +12615,7 @@ fn deserialize_binary_thought_payload(payload: &[u8]) -> io::Result<Thought> {
                 }
                 Err(_) => {
                     let (legacy, _): (LegacyThoughtV2, usize) =
-                        bincode::serde::decode_from_slice(payload, bincode::config::standard())
+                        bincode::serde::decode_from_slice(payload, crate::decode_limits::thought_record_config())
                             .map_err(|error| {
                                 io::Error::new(
                                     io::ErrorKind::InvalidData,
@@ -12647,7 +12650,7 @@ fn deserialize_binary_thought_payload(payload: &[u8]) -> io::Result<Thought> {
         }
         0 | 1 => {
             let (legacy, _): (LegacyThoughtV0, usize) =
-                bincode::serde::decode_from_slice(payload, bincode::config::standard())
+                bincode::serde::decode_from_slice(payload, crate::decode_limits::thought_record_config())
                     .map_err(|error| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -12684,7 +12687,7 @@ fn deserialize_binary_thought_payload(payload: &[u8]) -> io::Result<Thought> {
         }
         2 => {
             let (legacy, _): (LegacyThoughtV1, usize) =
-                bincode::serde::decode_from_slice(payload, bincode::config::standard())
+                bincode::serde::decode_from_slice(payload, crate::decode_limits::thought_record_config())
                     .map_err(|error| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -12774,12 +12777,13 @@ fn peek_first_schema_version(reader: &mut impl Read) -> io::Result<u32> {
 
     // Decode the varint schema_version from the start of the payload.
     let (schema_version, _bytes_read): (u32, usize) =
-        bincode::decode_from_slice(&payload, bincode::config::standard()).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Failed to decode schema version from first thought: {e}"),
-            )
-        })?;
+        bincode::decode_from_slice(&payload, crate::decode_limits::thought_record_config())
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Failed to decode schema version from first thought: {e}"),
+                )
+            })?;
 
     Ok(schema_version)
 }

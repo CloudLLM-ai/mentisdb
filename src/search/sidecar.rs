@@ -629,14 +629,13 @@ fn replay_sidecar_wal(sidecar: &mut VectorSidecar, wal_path: &Path) -> io::Resul
         let mut payload = vec![0_u8; len];
         file.read_exact(&mut payload)?;
         let (record, _): (VectorSidecarWalRecord, _) =
-            bincode::serde::decode_from_slice(&payload, bincode::config::standard()).map_err(
-                |error| {
+            bincode::serde::decode_from_slice(&payload, crate::decode_limits::file_config())
+                .map_err(|error| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("Failed to decode sidecar WAL record: {error}"),
                     )
-                },
-            )?;
+                })?;
         if record.prev_digest_hex != sidecar.integrity.digest_hex {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

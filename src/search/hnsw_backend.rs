@@ -465,7 +465,7 @@ impl HnswBackend {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
         let backend: Self =
-            bincode::serde::decode_from_reader(&mut reader, bincode::config::standard())
+            bincode::serde::decode_from_reader(&mut reader, crate::decode_limits::file_config())
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error}")))?;
         if &backend.metadata != metadata {
             return Err(io::Error::new(

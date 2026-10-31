@@ -931,14 +931,14 @@ fn decode_persisted_skill_registry(
 ) -> Result<(PersistedSkillRegistry, bool), bincode::error::DecodeError> {
     match bincode::serde::decode_from_slice::<PersistedSkillRegistry, _>(
         bytes,
-        bincode::config::standard(),
+        crate::decode_limits::file_config(),
     ) {
         Ok((registry, _)) => Ok((registry, false)),
         Err(current_error) => {
             let (legacy, _) = bincode::serde::decode_from_slice::<
                 PersistedSkillRegistryV2PreSchema,
                 _,
-            >(bytes, bincode::config::standard())
+            >(bytes, crate::decode_limits::file_config())
             .map_err(|_| current_error)?;
             let skills = legacy
                 .skills
@@ -1264,7 +1264,7 @@ impl SkillRegistry {
             .map_err(|error| {
                 if bincode::serde::decode_from_slice::<PersistedSkillRegistryV1, _>(
                     &bytes,
-                    bincode::config::standard(),
+                    crate::decode_limits::file_config(),
                 )
                 .is_ok()
                 {
@@ -2286,12 +2286,14 @@ pub fn migrate_skill_registry<P: AsRef<Path>>(
 
     // Fall back to V1 shape.
     let (v1, _): (PersistedSkillRegistryV1, _) =
-        bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("skill registry is neither V1 nor current version: {e}"),
-            )
-        })?;
+        bincode::serde::decode_from_slice(&bytes, crate::decode_limits::file_config()).map_err(
+            |e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("skill registry is neither V1 nor current version: {e}"),
+                )
+            },
+        )?;
 
     let mut skills_migrated = 0usize;
     let mut versions_migrated = 0usize;

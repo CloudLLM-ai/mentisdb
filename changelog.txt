@@ -84,6 +84,15 @@ UNRELEASED
     readable (the version is recorded in the 64/65-byte stored signature) but are
     not accepted on restricted chains. Signed thoughts are committed exactly as
     signed (no automatic relations, `valid_at` or dedup edges).
+  - fix(storage): a forged length prefix inside a chain record (restored
+    backup, imported or copied `.tcbin`) or inside a persisted HNSW graph made
+    bincode attempt a `String`/`Vec<u8>` allocation of the claimed size and
+    abort the whole process (`memory allocation of 1125899906842624 bytes
+    failed`), a one-file denial of service for the daemon. Every bincode decode
+    of untrusted bytes (thought records, skill registries, sidecar WAL,
+    implicit-edge overlay, HNSW graphs) now runs under a decode budget
+    (64 MiB per thought record, 1 GiB per derived file) and fails with
+    `InvalidData` instead. The wire format is unchanged.
   - fix(storage): an append against a missing or stale vector sidecar embedded
     the whole chain synchronously under the chain's write lock (a failed embed
     made the very next append do it), contradicting the "opening a chain never
