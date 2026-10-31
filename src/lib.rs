@@ -312,6 +312,7 @@ pub mod paths;
 pub mod search;
 #[cfg(feature = "server")]
 pub mod server;
+pub mod signing;
 mod skills;
 #[cfg(feature = "server")]
 pub mod tui;

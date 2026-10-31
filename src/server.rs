@@ -4778,8 +4778,12 @@ impl MentisDbService {
                         agent.agent_id
                     ))
                 })?;
-            verify_ed25519_signature(&key.public_key_bytes, request.content.as_bytes(), sig_bytes)
-                .map_err(permission_denied_error)?;
+            crate::signing::verify_ed25519_signature(
+                &key.public_key_bytes,
+                request.content.as_bytes(),
+                sig_bytes,
+            )
+            .map_err(|error| permission_denied_error(error.to_string()))?;
         }
         // --- End signature verification ---
 
@@ -7726,52 +7730,6 @@ fn service_call<T: Serialize>(
         let (status, message) = classify_service_error(error.as_ref());
         (status, Json(json!({ "error": message })))
     })
-}
-
-/// Verifies an Ed25519 signature over `message` using the provided raw public key bytes.
-///
-/// # Errors
-///
-/// Returns an error string if:
-/// - `public_key_bytes` is not exactly 32 bytes or contains an invalid key
-/// - `signature_bytes` is not exactly 64 bytes
-/// - The signature does not verify against `message` under the provided key
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// // A correct signature verifies without error
-/// let result = verify_ed25519_signature(&pub_key_bytes, b"hello", &sig_bytes);
-/// assert!(result.is_ok());
-///
-/// // A tampered message causes verification failure
-/// let result = verify_ed25519_signature(&pub_key_bytes, b"tampered", &sig_bytes);
-/// assert!(result.is_err());
-/// ```
-fn verify_ed25519_signature(
-    public_key_bytes: &[u8],
-    message: &[u8],
-    signature_bytes: &[u8],
-) -> Result<(), String> {
-    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-    let key_arr: [u8; 32] = public_key_bytes.try_into().map_err(|_| {
-        format!(
-            "invalid Ed25519 public key length: expected 32 bytes, got {}",
-            public_key_bytes.len()
-        )
-    })?;
-    let verifying_key = VerifyingKey::from_bytes(&key_arr)
-        .map_err(|e| format!("invalid Ed25519 public key: {e}"))?;
-    let sig_arr: [u8; 64] = signature_bytes.try_into().map_err(|_| {
-        format!(
-            "invalid Ed25519 signature length: expected 64 bytes, got {}",
-            signature_bytes.len()
-        )
-    })?;
-    let signature = Signature::from_bytes(&sig_arr);
-    verifying_key
-        .verify(message, &signature)
-        .map_err(|_| "Ed25519 signature verification failed".to_string())
 }
 
 fn mcp_tool_metadata() -> Vec<ToolMetadata> {
