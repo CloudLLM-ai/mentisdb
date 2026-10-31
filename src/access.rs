@@ -566,7 +566,7 @@ impl PolicyRecord {
 /// assert_eq!(policy.mode, AccessMode::Open);
 /// assert!(policy.seq.is_none() && policy.keys.is_empty());
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AccessPolicy {
     /// Current mode.
     pub mode: AccessMode,

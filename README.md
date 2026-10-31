@@ -456,7 +456,7 @@ dashboard action to its command.
 |---|---|
 | `thought` | `append`, `retro`, `get`, `genesis`, `traverse`, `recent`, `candidates` |
 | `search` | ranked (default), `lexical`, `filter`, `federated`, `bundles` |
-| `chain` | `list`, `head`, `bootstrap`, `branch`, `merge`, `info`, `delete` |
+| `chain` | `list`, `head`, `bootstrap`, `branch`, `merge`, `info`, `delete`, `access show\|set\|allow\|deny\|verify` |
 | `agent` | `list`, `get`, `registry`, `upsert`, `describe`, `alias`, `key add`, `key revoke`, `disable`, `activate`, `copy` |
 | `entity-type` | `list`, `upsert` |
 | `memory` | `export`, `import`, `extract` (MEMORY.md style Markdown) |
@@ -464,7 +464,7 @@ dashboard action to its command.
 | `webhook` | `list`, `register`, `delete` |
 | `vectors` | `enable`, `disable`, `sync`, `rebuild` |
 | `daemon` | `health`, `version`, `flush`, `restart`, `settings list`, `settings set` |
-| local | `setup`, `wizard`, `add`, `backup`, `restore`, `bearertoken`, `cert` |
+| local | `setup`, `wizard`, `add`, `backup`, `restore`, `bearertoken`, `cert`, `key generate\|show` |
 
 ```bash
 mentisdb chain bootstrap "Project Atlas memory" --chain atlas

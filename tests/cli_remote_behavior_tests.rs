@@ -650,3 +650,344 @@ async fn test_dashboard_chain_and_agent_commands() {
         .iter()
         .any(|s| s["name"] == "MENTISDB_DIR"));
 }
+
+fn write_seed(seed_byte: &str) -> String {
+    let file = unique_dir().with_extension("key");
+    std::fs::write(&file, format!("{}\n", seed_byte.repeat(32))).unwrap();
+    file.to_str().unwrap().to_string()
+}
+
+fn public_hex(seed_byte: u8) -> String {
+    mentisdb::signing::to_hex(
+        &ed25519_dalek::SigningKey::from_bytes(&[seed_byte; 32])
+            .verifying_key()
+            .to_bytes(),
+    )
+}
+
+/// Full signed-chain workflow through the CLI: register keys, lock a chain to an
+/// allowlist, sign appends locally, grow and shrink the allowed set, verify.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_chain_access_workflow_through_the_cli() {
+    let d = start(None).await;
+    let (admin_key, friend_key) = (write_seed("01"), write_seed("02"));
+    for agent in ["admin", "friend"] {
+        run(&d, &["agent", "upsert", agent, "--chain", "vault"])
+            .await
+            .json();
+    }
+    run(
+        &d,
+        &[
+            "agent",
+            "key",
+            "add",
+            "admin",
+            "--key-id",
+            "a1",
+            "--chain",
+            "vault",
+            "--private-key-file",
+            &admin_key,
+        ],
+    )
+    .await
+    .json();
+    run(
+        &d,
+        &[
+            "agent",
+            "key",
+            "add",
+            "friend",
+            "--key-id",
+            "f1",
+            "--chain",
+            "vault",
+            "--private-key-file",
+            &friend_key,
+        ],
+    )
+    .await
+    .json();
+
+    // Without a policy the chain is open.
+    let shown = run(&d, &["chain", "access", "show", "--chain", "vault"])
+        .await
+        .json();
+    assert_eq!(shown["policy"]["mode"], "open");
+    // allow/deny need an existing policy.
+    let early = run(
+        &d,
+        &[
+            "chain",
+            "access",
+            "allow",
+            "friend",
+            "f1",
+            &public_hex(2),
+            "--chain",
+            "vault",
+            "--agent",
+            "admin",
+            "--signing-key-id",
+            "a1",
+            "--private-key-file",
+            &admin_key,
+        ],
+    )
+    .await;
+    assert!(
+        !early.ok && early.err.contains("no access policy yet"),
+        "{}",
+        early.err
+    );
+
+    // Bootstrap: the signer becomes the first governor.
+    let set = run(
+        &d,
+        &[
+            "chain",
+            "access",
+            "set",
+            "allowlist",
+            "--chain",
+            "vault",
+            "--agent",
+            "admin",
+            "--signing-key-id",
+            "a1",
+            "--private-key-file",
+            &admin_key,
+        ],
+    )
+    .await
+    .json();
+    assert_eq!(set["policy"]["mode"], "allowlist");
+    assert_eq!(set["policy"]["keys"][0]["key_id"], "a1");
+
+    // Unsigned appends are refused; the signed one lands.
+    let refused = run(
+        &d,
+        &[
+            "thought", "append", "no key", "--chain", "vault", "--agent", "admin",
+        ],
+    )
+    .await;
+    assert!(
+        !refused.ok && refused.err.contains("signature"),
+        "{}",
+        refused.err
+    );
+    let signed = run(
+        &d,
+        &[
+            "thought",
+            "append",
+            "signed note",
+            "--chain",
+            "vault",
+            "--agent",
+            "admin",
+            "--signing-key-id",
+            "a1",
+            "--private-key-file",
+            &admin_key,
+            "--tag",
+            "x",
+            "--importance",
+            "0.8",
+            "--scope",
+            "user",
+        ],
+    )
+    .await
+    .json();
+    assert_eq!(signed["thought"]["content"], "signed note");
+
+    // The friend is registered but not allowed yet.
+    let denied = run(
+        &d,
+        &[
+            "thought",
+            "append",
+            "hi",
+            "--chain",
+            "vault",
+            "--agent",
+            "friend",
+            "--signing-key-id",
+            "f1",
+            "--private-key-file",
+            &friend_key,
+        ],
+    )
+    .await;
+    assert!(
+        !denied.ok && denied.err.contains("allowed key set"),
+        "{}",
+        denied.err
+    );
+    let allowed = run(
+        &d,
+        &[
+            "chain",
+            "access",
+            "allow",
+            "friend",
+            "f1",
+            &public_hex(2),
+            "--chain",
+            "vault",
+            "--agent",
+            "admin",
+            "--signing-key-id",
+            "a1",
+            "--private-key-file",
+            &admin_key,
+        ],
+    )
+    .await
+    .json();
+    assert_eq!(allowed["policy"]["keys"].as_array().unwrap().len(), 2);
+    assert_eq!(allowed["policy"]["seq"], 1);
+    run(
+        &d,
+        &[
+            "thought",
+            "retro",
+            "friend learned",
+            "--chain",
+            "vault",
+            "--agent",
+            "friend",
+            "--signing-key-id",
+            "f1",
+            "--private-key-file",
+            &friend_key,
+        ],
+    )
+    .await
+    .json();
+
+    // Removing the friend locks them out again.
+    let removed = run(
+        &d,
+        &[
+            "chain",
+            "access",
+            "deny",
+            "friend",
+            "f1",
+            "--chain",
+            "vault",
+            "--agent",
+            "admin",
+            "--signing-key-id",
+            "a1",
+            "--private-key-file",
+            &admin_key,
+        ],
+    )
+    .await
+    .json();
+    assert_eq!(removed["policy"]["keys"].as_array().unwrap().len(), 1);
+    let again = run(
+        &d,
+        &[
+            "thought",
+            "append",
+            "hi again",
+            "--chain",
+            "vault",
+            "--agent",
+            "friend",
+            "--signing-key-id",
+            "f1",
+            "--private-key-file",
+            &friend_key,
+        ],
+    )
+    .await;
+    assert!(!again.ok);
+    // A non-governor cannot change the policy.
+    let hijack = run(
+        &d,
+        &[
+            "chain",
+            "access",
+            "set",
+            "open",
+            "--chain",
+            "vault",
+            "--agent",
+            "friend",
+            "--signing-key-id",
+            "f1",
+            "--private-key-file",
+            &friend_key,
+        ],
+    )
+    .await;
+    assert!(
+        !hijack.ok && hijack.err.contains("not a governor"),
+        "{}",
+        hijack.err
+    );
+
+    // Every signature in the chain re-verifies.
+    let report = run(&d, &["chain", "access", "verify", "--chain", "vault"])
+        .await
+        .json();
+    assert_eq!(report["invalid"], 0);
+    assert_eq!(report["policy"]["seq"], 2);
+    assert!(report["valid"].as_u64().unwrap() >= 5, "{report}");
+}
+
+/// Signing flags are validated before anything is sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_signing_commands_check_their_inputs() {
+    let d = start(None).await;
+    let key = write_seed("03");
+    let no_chain = run(
+        &d,
+        &[
+            "thought",
+            "append",
+            "x",
+            "--agent",
+            "a",
+            "--signing-key-id",
+            "k",
+            "--private-key-file",
+            &key,
+        ],
+    )
+    .await;
+    assert!(
+        !no_chain.ok && no_chain.err.contains("--chain"),
+        "{}",
+        no_chain.err
+    );
+    let no_key = run(
+        &d,
+        &[
+            "chain",
+            "access",
+            "set",
+            "signed",
+            "--chain",
+            "c",
+            "--agent",
+            "a",
+            "--signing-key-id",
+            "k",
+        ],
+    )
+    .await;
+    assert!(
+        !no_key.ok && no_key.err.contains("--private-key-file"),
+        "{}",
+        no_key.err
+    );
+}

@@ -93,6 +93,12 @@ pub enum Kind {
 pub enum SignWith {
     /// A key-registration proof of possession for `agent key add`.
     KeyRegistration,
+    /// A v2 thought signature for `thought append` / `thought retro` when a key
+    /// file is given: the CLI fetches the chain head and signs the thought.
+    Thought,
+    /// A signed access-policy record for `chain access set|allow|deny`: the CLI
+    /// fetches the current policy and head, builds the next record and signs it.
+    AccessPolicy,
 }
 
 /// An Ed25519 seed held in memory; its `Debug` output is redacted.
@@ -299,6 +305,8 @@ pub struct Command {
     pub render: Render,
     /// Local signing the CLI performs before sending, if any.
     pub sign: Option<SignWith>,
+    /// Exit non-zero when the reply reports invalid signatures or rejected records.
+    pub fail_on_invalid: bool,
 }
 
 /// A fully parsed remote command, ready to execute.
@@ -328,6 +336,11 @@ pub struct RemoteInvocation {
     pub secret: Option<Secret>,
     /// Local signing to perform before sending.
     pub sign: Option<SignWith>,
+    /// Arguments the CLI uses itself and never sends (for example the key set to
+    /// write into an access-policy record).
+    pub local: Map<String, Value>,
+    /// Exit non-zero when the reply reports invalid signatures or rejected records.
+    pub fail_on_invalid: bool,
 }
 
 /// Result of resolving `argv` against the catalog.
@@ -464,6 +477,7 @@ struct Collected {
     query: Vec<(&'static str, String)>,
     stdin_field: Option<String>,
     secret: Option<Secret>,
+    local: Map<String, Value>,
 }
 
 #[derive(Default)]
@@ -501,6 +515,8 @@ fn build(command: &Command, rest: &[String]) -> Result<RemoteInvocation, String>
         stdin_field: collected.stdin_field,
         secret: collected.secret,
         sign: command.sign,
+        local: collected.local,
+        fail_on_invalid: command.fail_on_invalid,
     };
     check_signing_inputs(command, &invocation)?;
     Ok(invocation)
@@ -527,6 +543,30 @@ fn check_signing_inputs(command: &Command, invocation: &RemoteInvocation) -> Res
         (Some(SignWith::KeyRegistration), Some(_)) if !has_chain(invocation) => Err(format!(
             "'mentisdb {name}' signs locally and needs --chain so the proof names the chain"
         )),
+        (Some(SignWith::AccessPolicy), None) => Err(format!(
+            "'mentisdb {name}' needs --private-key-file: policy changes are signed locally"
+        )),
+        (Some(SignWith::AccessPolicy | SignWith::Thought), Some(_)) => {
+            let body = invocation.body.as_ref();
+            let has = |field: &str| body.is_some_and(|b| b.get(field).is_some());
+            let missing: Vec<&str> = [
+                ("chain_key", "--chain"),
+                ("agent_id", "--agent"),
+                ("signing_key_id", "--signing-key-id"),
+            ]
+            .into_iter()
+            .filter(|(field, _)| !has(field))
+            .map(|(_, flag)| flag)
+            .collect();
+            if missing.is_empty() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "'mentisdb {name}' signs locally and needs {} so the signature names them",
+                    missing.join(", ")
+                ))
+            }
+        }
         _ => Ok(()),
     }
 }
@@ -652,6 +692,7 @@ fn collect(
         query: Vec::new(),
         stdin_field: None,
         secret: None,
+        local: Map::new(),
     };
     for (field, value) in &command.fixed {
         collected
@@ -716,6 +757,10 @@ fn apply(collected: &mut Collected, flag: &Flag, raw: Option<&str>) -> Result<()
         return Ok(());
     }
     if matches!(flag.place, Place::Local) {
+        if !flag.field.is_empty() {
+            let value = convert(flag.kind, raw).map_err(|why| format!("{label}: {why}"))?;
+            store(&mut collected.local, flag, value);
+        }
         return Ok(());
     }
     if raw == Some("-") && matches!(flag.kind, Kind::Text | Kind::FileText) && !flag.repeat {

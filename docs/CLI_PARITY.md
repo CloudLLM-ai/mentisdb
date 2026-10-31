@@ -69,6 +69,9 @@ Markdown, skill content, the recent-context prompt) print the raw text, and
 | `mentisdb_register_webhook` | `POST /v1/webhooks` | `webhook register` |
 | `mentisdb_delete_webhook` | `DELETE /v1/webhooks/{id}` | `webhook delete` |
 | `mentisdb_extract_memories` | `POST /v1/extract-memories` | `memory extract` |
+| `mentisdb_get_access_policy` | `POST /v1/access/policy` | `chain access show` |
+| `mentisdb_set_access_policy` | `POST /v1/access/policy/set` | `chain access set`, `chain access allow`, `chain access deny` |
+| `mentisdb_verify_signatures` | `POST /v1/access/verify` | `chain access verify` |
 
 ## REST routes with no MCP tool
 
@@ -110,11 +113,14 @@ Markdown, skill content, the recent-context prompt) print the raw text, and
 ## CLI-only commands
 
 `setup`, `wizard` (agent integrations), `backup`, `restore`, `cert`,
-`bearertoken`, `add` (quick thought append), `agents` (alias of `agent list`).
+`bearertoken`, `key generate` and `key show` (Ed25519 seed files for signing), `add` (quick thought append), `agents` (alias of `agent list`).
 
-## Reserved for the access-policy track
+## Chain access control
 
-The command grammar is `<group> <subcommand...>` with the subcommand path
-resolved by longest match, so `chain access show`, `chain access set` and
-`chain access key add|revoke` slot into the `chain` group without touching the
-parser.
+`chain access show|set|allow|deny|verify` manage a chain's write policy (design:
+[CHAIN_ACCESS.md](CHAIN_ACCESS.md)). `set`, `allow` and `deny` sign the policy
+record locally with `--private-key-file` (they fetch the current policy and head,
+build the next record and submit it with a global token); `thought append`/`retro`
+accept the same flag to sign a thought for a chain that requires signatures, and
+`agent key add --private-key-file` signs the proof of possession. The dashboard
+shows the policy read only because changes need a private-key signature.

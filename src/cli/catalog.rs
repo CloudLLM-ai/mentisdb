@@ -29,6 +29,7 @@ const SKILL_FORMATS: &[&str] = &["markdown", "json"];
 const SKILL_STATUSES: &[&str] = &["active", "deprecated", "revoked"];
 /// `mentisdb agents` is the historical spelling of `agent list`.
 const AGENTS_ALIAS: &[&[&str]] = &[&["agents"]];
+const ACCESS_MODES: &[&str] = &["open", "signed", "allowlist"];
 const VECTOR_PROVIDERS: &[&str] = &["local-text-v1", "fastembed-minilm"];
 
 /// One line per command group, in display order.
@@ -78,6 +79,7 @@ fn cmd(
         route,
         render: Render::Json,
         sign: None,
+        fail_on_invalid: false,
     }
 }
 
@@ -163,6 +165,11 @@ impl Command {
 
     fn signed(mut self, sign: super::remote::SignWith) -> Self {
         self.sign = Some(sign);
+        self
+    }
+
+    fn failing_on_invalid(mut self) -> Self {
+        self.fail_on_invalid = true;
         self
     }
 
@@ -440,6 +447,16 @@ fn signature_flags(key_help: &'static str) -> Vec<Flag> {
     ]
 }
 
+fn sign_key_file() -> Flag {
+    Flag::opt(
+        "private-key-file",
+        "",
+        Kind::SecretKeyFile,
+        "FILE",
+        "Sign the thought locally with this seed file (needs --chain, --agent and --signing-key-id); the CLI fetches the chain head and signs the v2 payload.",
+    )
+}
+
 fn content(help: &'static str) -> Flag {
     Flag::pos("content", "content", Kind::Text, help).req()
 }
@@ -471,6 +488,54 @@ pub fn commands() -> Vec<Command> {
         daemon_commands(),
     ]
     .concat()
+}
+
+/// A `chain access` command that builds, signs and submits a policy record.
+fn access_command(
+    path: &'static [&'static str],
+    summary: &'static str,
+    about: &'static str,
+    extra: Vec<Flag>,
+) -> Command {
+    let mut params = extra;
+    params.extend([
+        Flag::opt(
+            "chain",
+            "chain_key",
+            Kind::Text,
+            "KEY",
+            "Chain whose policy changes.",
+        )
+        .short('c')
+        .req(),
+        Flag::opt(
+            "agent",
+            "agent_id",
+            Kind::Text,
+            "ID",
+            "Agent id of the signer.",
+        )
+        .req(),
+        Flag::opt(
+            "signing-key-id",
+            "signing_key_id",
+            Kind::Text,
+            "KEY_ID",
+            "Key id of the signer.",
+        )
+        .req(),
+        Flag::opt(
+            "private-key-file",
+            "",
+            Kind::SecretKeyFile,
+            "FILE",
+            "Seed file of the signing key; it never leaves this machine.",
+        )
+        .req(),
+    ]);
+    rest_post(path, summary, about, "/v1/access/policy/set")
+        .signed(super::remote::SignWith::AccessPolicy)
+        .with(params)
 }
 
 fn thought_commands() -> Vec<Command> {
@@ -553,6 +618,7 @@ fn thought_commands() -> Vec<Command> {
     append_params.extend(signature_flags(
         "Registered agent key id that signed the thought.",
     ));
+    append_params.push(sign_key_file());
 
     let mut retro_params = vec![
         content("What went wrong and the lesson. Use - for standard input."),
@@ -603,6 +669,7 @@ fn thought_commands() -> Vec<Command> {
     retro_params.extend(signature_flags(
         "Registered agent key id that signed the thought.",
     ));
+    retro_params.push(sign_key_file());
 
     let mut traverse_params = vec![
         chain(),
@@ -739,11 +806,13 @@ fn thought_commands() -> Vec<Command> {
         rest_post(
             &["thought", "append"],
             "Append a thought",
-            "Appends one durable thought to a chain. The text may come from the argument or from standard input (-). Signed chains need --signing-key-id and --signature-hex.",
+            "Appends one durable thought to a chain. The text may come from the argument or from standard input (-). A chain with a signed or allowlist access policy needs every thought signed: pass --private-key-file with --chain, --agent and --signing-key-id and the CLI signs it locally against the current chain head (see 'mentisdb chain access --help'). A signature, when present, is always verified and a bad one is refused.",
             "/v1/thoughts",
         )
+        .signed(super::remote::SignWith::Thought)
         .with(append_params)
         .example("mentisdb thought append \"Use UTC everywhere\" --type Decision --tag time --importance 0.9")
+        .example("mentisdb thought append \"Signed note\" --chain vault --agent builder --signing-key-id builder-202610 --private-key-file ~/.mentisdb/builder.key")
         .example("echo \"deploy finished\" | mentisdb thought append - --type Summary --role Checkpoint"),
         rest_post(
             &["thought", "retro"],
@@ -751,6 +820,7 @@ fn thought_commands() -> Vec<Command> {
             "Appends a lesson learned after a mistake or a hard fight with a problem. Retrospectives are retrieved ahead of ordinary memories.",
             "/v1/retrospectives",
         )
+        .signed(super::remote::SignWith::Thought)
         .with(retro_params)
         .example("mentisdb thought retro \"Migrations must run before the seed step\" --tag deploy"),
         rest_post(
@@ -1016,6 +1086,55 @@ fn chain_commands() -> Vec<Command> {
             confirm("Confirm that the source chain is deleted after the merge."),
         ])
         .example("mentisdb chain merge --from scratch --into main --yes"),
+        rest_post(
+            &["chain", "access", "show"],
+            "Show who may write to a chain",
+            "Shows the chain's access policy: mode (open, signed or allowlist), the governor/allow key set and its Merkle root, the genesis and head policy record hashes, and any policy records that were rejected on replay. Chains without a policy record are open.",
+            "/v1/access/policy",
+        )
+        .with(vec![chain()])
+        .example("mentisdb chain access show --chain vault"),
+        rest_post(
+            &["chain", "access", "verify"],
+            "Re-verify every signature in a chain",
+            "Re-checks every stored thought signature (v1 and v2) and replays the governance records. Prints per-thought status and totals, and exits non-zero when any signature fails or any policy record was rejected. Unsigned thoughts are reported, not failed.",
+            "/v1/access/verify",
+        )
+        .failing_on_invalid()
+        .with(vec![chain()])
+        .example("mentisdb chain access verify --chain vault --json"),
+        access_command(
+            &["chain", "access", "set"],
+            "Set a chain's write policy (open, signed, allowlist)",
+            "Writes a signed policy record to the chain. The first record bootstraps governance: it is signed by your key and lists it as the first governor (add more with --key, or later with 'allow'). Later records must be signed by a key already in the policy. The CLI reads the current policy and head, builds the next record, signs it with --private-key-file and submits it; a global token is required. Run 'mentisdb key generate' first, register the key with 'agent key add', then set the policy. If the head moves between fetching and submitting, run the command again.",
+            vec![
+                Flag::pos("mode", "mode", Kind::Choice(ACCESS_MODES), "open, signed or allowlist.").req().local(),
+                Flag::opt("key", "key", Kind::Text, "AGENT:KEY_ID:PUBKEY_HEX", "Replace the governor/allow key set with these entries; repeatable. Default: keep the current set (the signer's own key on a chain without a policy).").many().local(),
+            ],
+        )
+        .example("mentisdb chain access set allowlist --chain vault --agent admin --signing-key-id admin-202610 --private-key-file admin.key")
+        .example("mentisdb chain access set signed --chain vault --agent admin --signing-key-id admin-202610 --private-key-file admin.key --key admin:admin-202610:9f86d081..."),
+        access_command(
+            &["chain", "access", "allow"],
+            "Add a key to a chain's allowed set",
+            "Adds (or replaces) one key in the chain's governor/allow set and signs the new record. The mode stays as it is. The chain must already have a policy.",
+            vec![
+                Flag::pos("agent-id", "agent_id", Kind::Text, "Agent that owns the key.").req().local(),
+                Flag::pos("key-id", "allow_key_id", Kind::Text, "Key id to add.").req().local(),
+                Flag::pos("public-key-hex", "public_key_hex", Kind::Text, "Ed25519 public key, 64 hex characters.").req().local(),
+            ],
+        )
+        .example("mentisdb chain access allow builder builder-202610 9f86d081... --chain vault --agent admin --signing-key-id admin-202610 --private-key-file admin.key"),
+        access_command(
+            &["chain", "access", "deny"],
+            "Remove a key from a chain's allowed set",
+            "Removes one key from the chain's governor/allow set and signs the new record. The mode stays as it is. The chain must already have a policy, and the set may not become empty in signed or allowlist mode.",
+            vec![
+                Flag::pos("agent-id", "agent_id", Kind::Text, "Agent that owns the key.").req().local(),
+                Flag::pos("key-id", "allow_key_id", Kind::Text, "Key id to remove.").req().local(),
+            ],
+        )
+        .example("mentisdb chain access deny builder builder-202610 --chain vault --agent admin --signing-key-id admin-202610 --private-key-file admin.key"),
         dash_get(
             &["chain", "info"],
             "Show a chain's detail and vector sidecar status",

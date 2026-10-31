@@ -1,4 +1,41 @@
 UNRELEASED
+  - fix(security): agent public keys were accepted without validation or proof.
+    `add_agent_key` took any bytes (even four) and any key a caller named, so a
+    client could squat someone else's key. It now requires a 32-byte on-curve,
+    non-weak Ed25519 key and a proof-of-possession signature (domain
+    `mentisdb/key-registration/v1`: chain, agent, key id, key, timestamp within
+    10 minutes). REST, MCP and the dashboard take the key and proof as byte
+    arrays or hex (`public_key_hex`, `registered_at_unix_secs`,
+    `registration_signature_hex`). BREAKING for clients that registered keys
+    without a proof; `MentisDb::add_agent_key` gained a `&KeyRegistrationProof`.
+  - fix(security): thought signatures were stored but never verified. A thought
+    that carries a signature must now verify against an active, unrevoked key of
+    its agent or the append is refused (typed `AccessError`, HTTP 403), on every
+    chain. A new v2 payload (`mentisdb/thought/v2`, see docs/CHAIN_ACCESS.md)
+    covers every semantic field including entity type, scope and relation
+    validity and is bound to the chain key and head hash, so a signed thought
+    cannot be replayed onto another chain or position; v1 signatures stay
+    readable (the version is recorded in the 64/65-byte stored signature) but are
+    not accepted on restricted chains. Signed thoughts are committed exactly as
+    signed (no automatic relations, `valid_at` or dedup edges).
+  - feat(access): per-chain write access control. Policies `open` (default),
+    `signed` and `allowlist` are stored as signed `AccessPolicy` governance
+    thoughts in the chain (hash-chained, auditable) with a Merkle commitment to
+    the key set, replayed on open; changes need a current governor's signature,
+    and the first record bootstraps governance with a global token. New library
+    API `MentisDb::{access_policy, set_access_policy, verify_signatures}`,
+    module `mentisdb::access`, module `mentisdb::signing` (one documented
+    `verify_ed25519_signature`, key validation, payload builders, Merkle root),
+    thought type `AccessPolicy` (reserved), MCP tools `mentisdb_get_access_policy`,
+    `mentisdb_set_access_policy`, `mentisdb_verify_signatures`, REST routes
+    `/v1/access/{policy,policy/set,verify}`, and a read-only policy panel in the
+    dashboard. Design, threat model and formats: docs/CHAIN_ACCESS.md.
+  - feat(cli): `mentisdb chain access show|set|allow|deny|verify`,
+    `mentisdb key generate|show`, `--private-key-file` on `agent key add`,
+    `thought append` and `thought retro` (signing happens locally; the seed is
+    never sent). `chain access verify` exits non-zero when any signature fails.
+  - fix(dashboard): bootstrap, import, copy and merge report access-control
+    refusals as 403/400 with the reason instead of a generic 500.
   - fix(rest): `rest_router`, the public way to embed the REST API, answered
     404 for `/v1/chains/merge` and `/v1/vectors/rebuild` because it kept its
     own copy of the route table; it now shares the daemon's. `mentisdb agents`
