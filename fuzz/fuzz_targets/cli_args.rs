@@ -2,7 +2,6 @@
 //! Fuzzes the CLI argument parser: whatever the shell hands `mentisdb`, parsing
 //! either fails with a message or yields a well-formed request, and never panics.
 
-use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use mentisdb::cli::{parse_args, remote::HttpMethod, CliCommand};
 
@@ -13,16 +12,13 @@ const WORDS: &[&str] = &[
     "--public-key-hex", "--yes", "--json", "--url", "--", "-", "=", "--help", "help",
 ];
 
-#[derive(Arbitrary, Debug)]
-enum Token {
-    Known(u8),
-    Free(String),
-}
-
-fuzz_target!(|tokens: Vec<Token>| {
-    let args = tokens.iter().take(24).map(|t| match t {
-        Token::Known(i) => WORDS[*i as usize % WORDS.len()].to_string(),
-        Token::Free(s) => s.chars().take(64).collect(),
+/// Input encoding: the argument list, NUL-separated. A piece that is a single
+/// byte `1..=WORDS.len()` stands for that command word, so short inputs reach
+/// real command paths; any other piece is the argument itself (lossy UTF-8).
+fuzz_target!(|data: &[u8]| {
+    let args = data.split(|b| *b == 0).take(24).map(|piece| match piece {
+        [b] if (1..=WORDS.len()).contains(&usize::from(*b)) => WORDS[usize::from(*b) - 1].to_string(),
+        other => String::from_utf8_lossy(other).chars().take(64).collect(),
     });
     let argv = std::iter::once("mentisdb".to_string()).chain(args);
     if let Ok(CliCommand::Remote(invocation)) = parse_args(argv) {

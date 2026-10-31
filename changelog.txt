@@ -1,4 +1,8 @@
 UNRELEASED
+  - fix(cli): `--url` and `--dashboard-url` accepted values that are not
+    absolute http(s) URLs (`mentisdb search q --url thought` built the request
+    URL `thought/v1/ranked-search`); they are now validated at parse time with a
+    clear message. Found by the new `cli_args` fuzz target.
   - fix(security): agent public keys were accepted without validation or proof.
     `add_agent_key` took any bytes (even four) and any key a caller named, so a
     client could squat someone else's key. It now requires a 32-byte on-curve,
