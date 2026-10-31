@@ -1618,6 +1618,12 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
             post(rest_traverse_thoughts_handler),
         )
         .route("/v1/head", post(rest_head_handler))
+        .route("/v1/access/policy", post(rest_access_policy_handler))
+        .route(
+            "/v1/access/policy/set",
+            post(rest_set_access_policy_handler),
+        )
+        .route("/v1/access/verify", post(rest_verify_signatures_handler))
         .route("/v1/chains", get(rest_list_chains_handler))
         .route("/v1/chains/branch", post(rest_branch_handler))
         .route("/v1/agents", post(rest_list_agents_handler))
@@ -2438,6 +2444,14 @@ pub const OPERATION_AUTH_TABLE: &[OperationAuthRule] = &[
         OperationAuth::AnyToken,
         OperationAuth::AnyToken,
     ),
+    // Changing who may write is operator-level: never a chain-scoped token.
+    rule(
+        "/v1/access/policy/set",
+        "",
+        "mentisdb_set_access_policy",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
     rule(
         "/mentisdb_skill_md",
         "",
@@ -2610,6 +2624,9 @@ fn default_chain_mcp_tool(tool_name: &str) -> bool {
             | "mentisdb_revoke_skill"
             | "mentisdb_delete_skill"
             | "mentisdb_head"
+            | "mentisdb_get_access_policy"
+            | "mentisdb_set_access_policy"
+            | "mentisdb_verify_signatures"
             | "mentisdb_extract_memories"
     )
 }
@@ -2812,6 +2829,21 @@ impl ToolProtocol for MentisDbMcpProtocol {
             }
             "mentisdb_head" => {
                 parse_and_call(parameters, |request| self.service.head(request)).await
+            }
+            "mentisdb_get_access_policy" => {
+                parse_and_call(parameters, |request| self.service.access_policy(request)).await
+            }
+            "mentisdb_set_access_policy" => {
+                parse_and_call(parameters, |request| {
+                    self.service.set_access_policy(request)
+                })
+                .await
+            }
+            "mentisdb_verify_signatures" => {
+                parse_and_call(parameters, |request| {
+                    self.service.verify_signatures(request)
+                })
+                .await
             }
             "mentisdb_merge_chains" => {
                 parse_and_call(parameters, |request| self.service.merge_chains(request)).await
@@ -3342,7 +3374,11 @@ impl MentisDbService {
         if let Some(signing_key_id) = request.signing_key_id {
             input = input.with_signing_key_id(signing_key_id);
         }
-        if let Some(thought_signature) = request.thought_signature {
+        if let Some(thought_signature) = resolve_optional_bytes(
+            request.thought_signature,
+            request.thought_signature_hex.as_deref(),
+            "thought_signature",
+        )? {
             input = input.with_thought_signature(thought_signature);
         }
         if let Some(confidence) = request.confidence {
@@ -3423,7 +3459,11 @@ impl MentisDbService {
         if let Some(signing_key_id) = request.signing_key_id {
             input = input.with_signing_key_id(signing_key_id);
         }
-        if let Some(thought_signature) = request.thought_signature {
+        if let Some(thought_signature) = resolve_optional_bytes(
+            request.thought_signature,
+            request.thought_signature_hex.as_deref(),
+            "thought_signature",
+        )? {
             input = input.with_thought_signature(thought_signature);
         }
         if let Some(confidence) = request.confidence {
@@ -5117,6 +5157,85 @@ impl MentisDbService {
         })
     }
 
+    async fn access_policy(
+        &self,
+        request: AccessPolicyRequest,
+    ) -> Result<Value, Box<dyn Error + Send + Sync>> {
+        let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
+        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let chain = chain.read().await;
+        self.log_interaction(InteractionLogEntry {
+            access: "read",
+            operation: "access_policy",
+            chain_key: chain_key.clone(),
+            metadata: InteractionMetadata::default(),
+            result_count: Some(chain.access_policy().keys.len()),
+            note: None,
+        });
+        Ok(json!({ "chain_key": chain_key, "policy": chain.access_policy() }))
+    }
+
+    async fn set_access_policy(
+        &self,
+        request: SetAccessPolicyRequest,
+    ) -> Result<Value, Box<dyn Error + Send + Sync>> {
+        let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
+        let signature = crate::access::bytes_from_array_or_hex(
+            request.signature,
+            request.signature_hex.as_deref(),
+            "signature",
+        )
+        .map_err(client_input_error)?;
+        let signature: [u8; crate::signing::SIGNATURE_LEN] = signature
+            .try_into()
+            .map_err(|_| client_input_error("signature must be 64 bytes"))?;
+        let chain = self.get_or_create_chain(Some(&chain_key), None).await?;
+        let mut chain = chain.write().await;
+        let thought = chain
+            .set_access_policy(
+                &request.agent_id,
+                &request.record,
+                &request.signing_key_id,
+                crate::signing::StoredSignature::encode_v2(&signature),
+            )?
+            .clone();
+        self.log_interaction(InteractionLogEntry {
+            access: "write",
+            operation: "set_access_policy",
+            chain_key: chain_key.clone(),
+            metadata: InteractionMetadata::from_chain_thought(&chain, &thought),
+            result_count: Some(1),
+            note: Some(format!(
+                "mode={} seq={}",
+                request.record.mode, request.record.seq
+            )),
+        });
+        Ok(json!({
+            "chain_key": chain_key,
+            "thought": thought_to_json(&chain, &thought),
+            "policy": chain.access_policy(),
+        }))
+    }
+
+    async fn verify_signatures(
+        &self,
+        request: AccessPolicyRequest,
+    ) -> Result<Value, Box<dyn Error + Send + Sync>> {
+        let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
+        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let chain = chain.read().await;
+        let report = chain.verify_signatures();
+        self.log_interaction(InteractionLogEntry {
+            access: "read",
+            operation: "verify_signatures",
+            chain_key,
+            metadata: InteractionMetadata::default(),
+            result_count: Some(report.checks.len()),
+            note: Some(format!("invalid={}", report.invalid)),
+        });
+        Ok(serde_json::to_value(report)?)
+    }
+
     fn open_skill_registry(&self) -> Result<SkillRegistry, Box<dyn Error + Send + Sync>> {
         Ok(SkillRegistry::open(&self.config.chain_dir)?)
     }
@@ -5599,6 +5718,8 @@ struct AppendThoughtRequest {
     agent_owner: Option<String>,
     signing_key_id: Option<String>,
     thought_signature: Option<Vec<u8>>,
+    /// Alternative to `thought_signature`: the stored-form signature as hex.
+    thought_signature_hex: Option<String>,
     thought_type: String,
     content: String,
     role: Option<String>,
@@ -5628,6 +5749,7 @@ struct AppendRetrospectiveRequest {
     agent_owner: Option<String>,
     signing_key_id: Option<String>,
     thought_signature: Option<Vec<u8>>,
+    thought_signature_hex: Option<String>,
     thought_type: Option<String>,
     content: String,
     importance: Option<f32>,
@@ -6410,6 +6532,25 @@ struct ImportMarkdownResponse {
 #[derive(Debug, Serialize)]
 struct SkillMarkdownResponse {
     markdown: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AccessPolicyRequest {
+    chain_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetAccessPolicyRequest {
+    chain_key: Option<String>,
+    /// Agent that signed the record.
+    agent_id: String,
+    /// Key id of the signer.
+    signing_key_id: String,
+    /// Raw 64-byte Ed25519 signature over the v2 thought payload of the record.
+    signature: Option<Vec<u8>>,
+    signature_hex: Option<String>,
+    /// The policy record to commit.
+    record: crate::access::PolicyRecord,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -7600,6 +7741,27 @@ async fn rest_head_handler(
     service_call(service.head(request).await)
 }
 
+async fn rest_access_policy_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<AccessPolicyRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    service_call(service.access_policy(request).await)
+}
+
+async fn rest_set_access_policy_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<SetAccessPolicyRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    service_call(service.set_access_policy(request).await)
+}
+
+async fn rest_verify_signatures_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<AccessPolicyRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    service_call(service.verify_signatures(request).await)
+}
+
 async fn parse_and_call<T, O, F, Fut>(
     parameters: Value,
     f: F,
@@ -7726,6 +7888,20 @@ fn client_input_error<E: std::fmt::Display>(error: E) -> Box<dyn Error + Send + 
 }
 
 /// Builds a `PermissionDenied` error (HTTP 403).
+/// Resolve an optional byte string given as an integer array or as hex.
+fn resolve_optional_bytes(
+    array: Option<Vec<u8>>,
+    hex: Option<&str>,
+    field: &str,
+) -> Result<Option<Vec<u8>>, Box<dyn Error + Send + Sync>> {
+    if array.is_none() && hex.is_none() {
+        return Ok(None);
+    }
+    crate::access::bytes_from_array_or_hex(array, hex, field)
+        .map(Some)
+        .map_err(client_input_error)
+}
+
 fn permission_denied_error(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
     Box::new(io::Error::new(
         io::ErrorKind::PermissionDenied,
@@ -7817,8 +7993,9 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("tags", ToolParameterType::Array).with_description("Optional tags.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("concepts", ToolParameterType::Array).with_description("Optional semantic concepts.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("refs", ToolParameterType::Array).with_description("Optional referenced thought indices.").with_items(ToolParameterType::Integer))
-        .with_parameter(ToolParameter::new("signing_key_id", ToolParameterType::String).with_description("Optional key id used to verify the detached thought signature."))
-        .with_parameter(ToolParameter::new("thought_signature", ToolParameterType::Array).with_description("Optional detached signature bytes for the signable thought payload.").with_items(ToolParameterType::Integer))
+        .with_parameter(ToolParameter::new("signing_key_id", ToolParameterType::String).with_description("Key id of the agent's registered key that signed the thought. Required when a signature is given; signatures are verified and bad ones are refused. Chains with a signed or allowlist policy require it."))
+        .with_parameter(ToolParameter::new("thought_signature", ToolParameterType::Array).with_description("Optional detached signature bytes. 64 bytes is a legacy v1 signature; 65 bytes (0x02 then 64) is a v2 signature over the mentisdb/thought/v2 payload, which binds chain, agent, head hash and every field. Give this or thought_signature_hex.").with_items(ToolParameterType::Integer))
+        .with_parameter(ToolParameter::new("thought_signature_hex", ToolParameterType::String).with_description("Same as thought_signature, as hex."))
         .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label for categorizing the thought.")),
         ToolMetadata::new(
             "mentisdb_append_retrospective",
@@ -7836,8 +8013,9 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("tags", ToolParameterType::Array).with_description("Optional tags.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("concepts", ToolParameterType::Array).with_description("Optional semantic concepts.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("refs", ToolParameterType::Array).with_description("Optional referenced thought indices, such as the mistake, correction, or earlier checkpoint that motivated the lesson.").with_items(ToolParameterType::Integer))
-        .with_parameter(ToolParameter::new("signing_key_id", ToolParameterType::String).with_description("Optional key id used to verify the detached thought signature."))
-        .with_parameter(ToolParameter::new("thought_signature", ToolParameterType::Array).with_description("Optional detached signature bytes for the signable thought payload.").with_items(ToolParameterType::Integer)),
+        .with_parameter(ToolParameter::new("signing_key_id", ToolParameterType::String).with_description("Key id of the agent's registered key that signed the thought. Required when a signature is given; signatures are verified and bad ones are refused. Chains with a signed or allowlist policy require it."))
+        .with_parameter(ToolParameter::new("thought_signature", ToolParameterType::Array).with_description("Optional detached signature bytes. 64 bytes is a legacy v1 signature; 65 bytes (0x02 then 64) is a v2 signature over the mentisdb/thought/v2 payload, which binds chain, agent, head hash and every field. Give this or thought_signature_hex.").with_items(ToolParameterType::Integer))
+        .with_parameter(ToolParameter::new("thought_signature_hex", ToolParameterType::String).with_description("Same as thought_signature, as hex.")),
         ToolMetadata::new(
             "mentisdb_search",
             "Search durable memories by text, type, role, tags, concepts, and importance.",
@@ -8191,6 +8369,26 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         ToolMetadata::new(
             "mentisdb_head",
             "Return head metadata for a MentisDb including chain length, latest thought at the tip, and head hash.",
+        )
+        .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key.")),
+        ToolMetadata::new(
+            "mentisdb_get_access_policy",
+            "Return the chain's write-access policy: mode (open, signed or allowlist), the governor/allow key set with its Merkle root, the genesis and head policy record hashes, and any rejected policy records. See docs/CHAIN_ACCESS.md.",
+        )
+        .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key.")),
+        ToolMetadata::new(
+            "mentisdb_set_access_policy",
+            "Commit a signed access-policy record (mode open, signed or allowlist plus the governor/allow key set) to the chain. Requires a global token. The signature is made over the mentisdb/thought/v2 payload of the governance thought at the current chain head (fetch it with mentisdb_head), so sign again if the head moved. The first record must be signed by a key it lists; later records by a key of the current policy. See docs/CHAIN_ACCESS.md.",
+        )
+        .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
+        .with_parameter(ToolParameter::new("agent_id", ToolParameterType::String).with_description("Agent id of the signer.").required())
+        .with_parameter(ToolParameter::new("signing_key_id", ToolParameterType::String).with_description("Key id of the signer.").required())
+        .with_parameter(ToolParameter::new("signature", ToolParameterType::Array).with_description("Raw 64-byte signature as integers. Give this or signature_hex.").with_items(ToolParameterType::Integer))
+        .with_parameter(ToolParameter::new("signature_hex", ToolParameterType::String).with_description("Raw 64-byte signature as 128 hex characters. Give this or signature."))
+        .with_parameter(ToolParameter::new("record", ToolParameterType::Object).with_description("The policy record: {format, seq, mode, keys:[{agent_id,key_id,public_key}], keys_root, prev_policy}, in canonical field order.").required()),
+        ToolMetadata::new(
+            "mentisdb_verify_signatures",
+            "Re-verify every signature stored in a chain and replay its governance records. Returns per-thought status (valid, unsigned, invalid), the signature version used, totals, and the policy in force.",
         )
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key.")),
         ToolMetadata::new(
