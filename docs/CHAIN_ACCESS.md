@@ -243,3 +243,23 @@ stays on record and keeps controlling later changes.
 * Adding the `AccessPolicy` thought type changes nothing for old readers until
   a policy record is written; a chain that has one cannot be read by a
   MentisDB version that predates the type.
+
+## Cost of verification on append
+
+`cargo bench --bench access_policy` (aarch64 macOS, release build, buffered writes
+so the number is CPU cost, not fsync): an unsigned append to an `Open` chain takes
+about 55 µs; a signed append to an `Open`, `Signed` or `Allowlist` chain takes about
+75-80 µs, i.e. roughly 22-25 µs more, almost all of it the single strict Ed25519
+verification (about 25 µs). The v2 payload rebuild costs about 165 ns and the
+allowlist membership check a few hundred ns. Unsigned appends on `Open` chains
+pay only a constant-time mode check, so existing deployments see no change. With
+durable (fsync) writes the verification is small next to the disk flush.
+
+## Fuzzing
+
+`fuzz/` holds cargo-fuzz targets for the formats above: `policy_record` (parsing is
+a typed accept or reject, accepted records are canonical and rebuildable),
+`signature_envelope` (stored-signature shapes, key validation, hex, and "never
+verifies with a key validation rejects"), `thought_payload_v2` (deterministic,
+domain-prefixed, and distinct chain/agent/head triples never collide) and
+`cli_args`. Run one with `cd fuzz && cargo +nightly fuzz run policy_record`.

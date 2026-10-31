@@ -25,3 +25,24 @@ path = "fuzz_targets/cli_args.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "policy_record"
+path = "fuzz_targets/policy_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signature_envelope"
+path = "fuzz_targets/signature_envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "thought_payload_v2"
+path = "fuzz_targets/thought_payload_v2.rs"
+test = false
+doc = false
+bench = false

@@ -178,6 +178,11 @@ pub fn from_hex(text: &str) -> Result<Vec<u8>, SigningError> {
 /// assert_eq!(validate_public_key(&identity), Err(SigningError::PublicKeyWeak));
 /// ```
 pub fn validate_public_key(bytes: &[u8]) -> Result<[u8; PUBLIC_KEY_LEN], SigningError> {
+    parse_public_key(bytes).map(|key| key.to_bytes())
+}
+
+/// Decode and validate a public key once, for callers that go on to verify.
+fn parse_public_key(bytes: &[u8]) -> Result<VerifyingKey, SigningError> {
     let array: [u8; PUBLIC_KEY_LEN] = bytes
         .try_into()
         .map_err(|_| SigningError::PublicKeyLength(bytes.len()))?;
@@ -185,7 +190,7 @@ pub fn validate_public_key(bytes: &[u8]) -> Result<[u8; PUBLIC_KEY_LEN], Signing
     if key.is_weak() {
         return Err(SigningError::PublicKeyWeak);
     }
-    Ok(array)
+    Ok(key)
 }
 
 /// Verify a detached Ed25519 `signature` over `message` with `public_key_bytes`.
@@ -217,9 +222,7 @@ pub fn verify_ed25519_signature(
     message: &[u8],
     signature_bytes: &[u8],
 ) -> Result<(), SigningError> {
-    let key_bytes = validate_public_key(public_key_bytes)?;
-    let key =
-        VerifyingKey::from_bytes(&key_bytes).map_err(|_| SigningError::PublicKeyNotOnCurve)?;
+    let key = parse_public_key(public_key_bytes)?;
     let sig: [u8; SIGNATURE_LEN] = signature_bytes
         .try_into()
         .map_err(|_| SigningError::SignatureLength(signature_bytes.len()))?;

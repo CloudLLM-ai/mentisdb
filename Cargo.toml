@@ -106,6 +106,10 @@ name = "thought_chain"
 harness = false
 
 [[bench]]
+name = "access_policy"
+harness = false
+
+[[bench]]
 name = "skill_registry"
 harness = false
 
