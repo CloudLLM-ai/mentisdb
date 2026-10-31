@@ -138,6 +138,24 @@ UNRELEASED
     about past preferences, decisions and constraints, or when the user says
     "again" / "remember" / "last time". `initialize` instructions, the
     bootstrap tool description, README, WHITEPAPER 8.4 and CLI_PARITY follow.
+  - fix(storage): registry files claimed to be written through a synced temp
+    file but were only flushed, so after a power loss the rename could land
+    before the data and leave a zero-length registry. `MENTISDB_FSYNC=1` now
+    syncs the temp file before the rename (default unchanged: a sync per
+    registry per append costs milliseconds on macOS).
+  - perf(storage): a managed vector sidecar compacted its snapshot every 32
+    appends, and each compaction serialized and hashed the whole corpus three
+    times (about 200 ms per pass at 10 000 thoughts x 384 dimensions, inside the
+    chain write lock, plus a full-corpus JSON copy in memory), so append cost
+    grew with the chain. The compaction threshold now scales with the corpus
+    (`search::wal_compact_threshold`, 1/16 of the entries, at least 32), the
+    integrity digest is streamed into SHA-256 instead of buffered (digest
+    unchanged, pinned by a test), and the flush no longer recomputes the digest
+    the append already rebased onto. Append with a 3 000 thought sidecar: 4.6 ms
+    to 2.1 ms (`append_sidecar/local_sidecar_3000_base`).
+  - perf(storage): with `auto_flush` (the default) every append rewrote and
+    renamed the entity-type registry even for thoughts without an entity type;
+    it is now persisted only when a thought names one.
   - perf(storage): automatic dedup re-tokenized (stemming and lemma expansion)
     the last 64 thoughts on every append, about 0.49 ms of pure repeated work
     per append at 40 words per thought. A self-validating sliding window now

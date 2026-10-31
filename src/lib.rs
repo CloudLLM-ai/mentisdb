@@ -6020,7 +6020,12 @@ impl MentisDb {
         ) {
             log_derived_failure("agent registry persist", &error);
         }
-        self.mark_entity_type_registry_dirty();
+        // Only a thought that names an entity type changes the registry; with
+        // `auto_flush` the unconditional mark rewrote and renamed the file on
+        // every append of every chain, typed or not.
+        if last_thought.entity_type.is_some() {
+            self.mark_entity_type_registry_dirty();
+        }
         if let Err(error) =
             self.maybe_flush_entity_type_registry(self.auto_flush || self.thoughts.len() == 1)
         {
@@ -6084,8 +6089,11 @@ impl MentisDb {
             for (path, record) in wals.by_ref() {
                 crate::search::append_sidecar_wal_record(&path, &record)?;
             }
-            for (path, mut sidecar) in compacts.by_ref() {
-                sidecar.compact_to_path(&path)?;
+            for (path, sidecar) in compacts.by_ref() {
+                // Queued snapshots were rebased onto their full-corpus digest
+                // when scheduled; recomputing it here would serialize and hash
+                // the whole corpus a second time.
+                sidecar.save_to_path(&path)?;
             }
             if let Some((path, snapshot)) = overlay.take() {
                 snapshot.save_to_path(&path)?;
@@ -9122,7 +9130,7 @@ impl MentisDb {
 
     /// Queue one WAL record for the last append, scheduling a snapshot
     /// compaction when the WAL reaches
-    /// [`crate::search::VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD`].
+    /// [`crate::search::wal_compact_threshold`].
     ///
     /// When a compaction is scheduled, `sidecar` is rebased onto the
     /// full-corpus snapshot digest that compaction will persist. The queued
@@ -9142,7 +9150,7 @@ impl MentisDb {
             .get(metadata)
             .map(|entry| entry.wal_uncompacted.saturating_add(1))
             .unwrap_or(1);
-        let compact = next >= crate::search::VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD;
+        let compact = next >= crate::search::wal_compact_threshold(sidecar.entries.len());
         if compact {
             sidecar.refresh_snapshot_integrity()?;
         }
@@ -11063,6 +11071,13 @@ fn write_json_atomic<T: Serialize>(
         serialized
             .map_err(|error| io::Error::other(format!("Failed to serialize {what}: {error}")))?;
         writer.flush()?;
+        if fsync_on_commit() {
+            // Without this the rename can reach disk before the data, leaving a
+            // zero-length registry after a power loss. Gated like the chain's
+            // group-commit sync (`MENTISDB_FSYNC=1`): a sync per registry per
+            // append is milliseconds on macOS.
+            writer.get_ref().sync_all()?;
+        }
         drop(writer);
         fs::rename(&temp_path, path)
     })();

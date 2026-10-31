@@ -10,7 +10,9 @@
 //! appends write one integrity-chained record to a sibling WAL
 //! (`<snapshot>.json.wal`, magic `MDBVWAL1`). [`VectorSidecar::load_from_path`]
 //! verifies the snapshot digest, then replays the WAL. After
-//! [`VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD`] records (32),
+//! [`wal_compact_threshold`] records (at least
+//! [`VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD`], growing with the corpus so the
+//! amortized cost per append stays constant),
 //! [`VectorSidecar::compact_to_path`] rewrites the JSON snapshot and deletes
 //! the WAL. Binaries that only understand the JSON snapshot see a stale
 //! sidecar when a WAL is pending and rebuild from the chain.
@@ -35,6 +37,31 @@ use uuid::Uuid;
 pub const VECTOR_SIDECAR_SCHEMA_VERSION: u32 = 1;
 /// Compact the JSON snapshot after this many incremental WAL records.
 pub const VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD: usize = 32;
+/// A compaction rewrites and rehashes the whole corpus, so for large sidecars
+/// it runs once the WAL holds this fraction (1/N) of the entries.
+const WAL_COMPACT_CORPUS_DIVISOR: usize = 16;
+
+/// Number of pending WAL records at which a sidecar holding `entry_count`
+/// entries should be compacted.
+///
+/// A fixed threshold made every 32nd append re-serialize and re-hash the
+/// entire corpus (about 200 ms at 10 000 thoughts of 384 dimensions, inside
+/// the chain's write lock), so the per-append cost grew linearly with the
+/// chain. Scaling the threshold with the corpus keeps the amortized cost
+/// constant; the WAL stays small (records are binary) and replays quickly.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::search::{wal_compact_threshold, VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD};
+///
+/// assert_eq!(wal_compact_threshold(0), VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD);
+/// assert_eq!(wal_compact_threshold(500), VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD);
+/// assert_eq!(wal_compact_threshold(16_000), 1_000);
+/// ```
+pub fn wal_compact_threshold(entry_count: usize) -> usize {
+    (entry_count / WAL_COMPACT_CORPUS_DIVISOR).max(VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD)
+}
 const WAL_MAGIC: &[u8; 8] = b"MDBVWAL1";
 
 /// One persisted vector row for a committed thought.
@@ -477,13 +504,15 @@ impl VectorSidecar {
             generated_at: self.generated_at,
             entries: &self.entries,
         };
-        let serialized = serde_json::to_vec(&payload).map_err(|error| {
+        // Stream the canonical JSON straight into the hasher: materializing it
+        // first allocated the whole corpus (hundreds of MiB for a large chain).
+        let mut hasher = HashingWriter(Sha256::new());
+        serde_json::to_writer(&mut hasher, &payload).map_err(|error| {
             io::Error::other(format!(
                 "Failed to serialize vector sidecar integrity payload: {error}"
             ))
         })?;
-        let mut hasher = Sha256::new();
-        hasher.update(serialized);
+        let hasher = hasher.0;
         Ok(VectorSidecarIntegrity::sha256(
             self.entries.len(),
             hasher
@@ -492,6 +521,20 @@ impl VectorSidecar {
                 .map(|b| format!("{b:02x}"))
                 .collect::<String>(),
         ))
+    }
+}
+
+/// `io::Write` adapter that feeds every byte written into a SHA-256 hasher.
+struct HashingWriter(Sha256);
+
+impl Write for HashingWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 

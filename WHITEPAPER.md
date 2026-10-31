@@ -395,7 +395,7 @@ It's rebuildable from the vector sidecar and is not part of the hash chain.
 ### 4.4 Crash Recovery and Derived-State Invariants
 
 The canonical log is the only source of truth; everything else must be either atomically
-replaced or rebuildable from it. Since 0.10.9 four rules make that hold under crashes and
+replaced or rebuildable from it. Since 0.10.9 these rules make that hold under crashes and
 concurrent load:
 
 - **Torn-tail repair is narrow.** Only a strict partial *final* record (a short length
@@ -407,7 +407,7 @@ concurrent load:
 - **Durable commits.** A strict-mode append returns after its group commit is written to
   the OS (process-crash safe). `MENTISDB_FSYNC=1` adds one `fsync` per group commit for
   power-loss safety; explicit flush, shutdown and drop always sync. Registry JSON files
-  are written to a synced temp file and renamed.
+  are written to a temp file (synced when `MENTISDB_FSYNC=1`) and renamed.
 - **Overlay coverage metadata.** The implicit-edge overlay records the thought count and
   head hash it covers. On load, a matching prefix is caught up by replaying only the
   missing tail; a mismatch triggers a full rebuild. A crash between overlay saves
@@ -417,7 +417,14 @@ concurrent load:
   worker (concurrency 1, at most one pending job per sidecar), built in bounded batches
   with a shared model, and adopted by the read path once finished, catching up thoughts
   appended in the meantime. Until adoption, ranked search serves lexical and graph
-  signals only.
+  signals only. An append against a stale or incomplete sidecar (for example after a
+  failed embed) queues the same background rebuild instead of embedding the chain
+  under the write lock, and a sidecar whose entry count differs from its thought
+  count is stale even when the count and head hash match.
+- **Bounded decoding.** Every bincode decode of untrusted bytes (thought records,
+  registries, WAL, overlay, HNSW graphs) runs under a decode budget, so a forged
+  length prefix yields `InvalidData` instead of an allocation that aborts the process.
+  A torn tail is recognized by a 64-digit hex hash, not by "decodes as a legacy record".
 
 ---
 

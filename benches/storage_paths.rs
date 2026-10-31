@@ -105,7 +105,24 @@ fn populate(chain: &mut MentisDb, count: usize) {
     }
 }
 
+/// Whether the command line filter (if any) selects benchmarks whose name
+/// contains `group`. Fixtures are built eagerly, so a filtered run must skip
+/// the expensive ones it will not measure.
+fn selected(group: &str) -> bool {
+    let filters: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|arg| !arg.starts_with('-'))
+        .collect();
+    filters.is_empty()
+        || filters
+            .iter()
+            .any(|f| group.contains(f.as_str()) || f.contains(group))
+}
+
 fn bench_lexical_scan(c: &mut Criterion) {
+    if !selected("lexical_scan") {
+        return;
+    }
     let (mut chain, _dir) = temp_chain("lexical");
     populate(&mut chain, 100_000);
     let index = LexicalIndex::build(chain.thoughts());
@@ -125,6 +142,9 @@ fn bench_lexical_scan(c: &mut Criterion) {
 }
 
 fn bench_append_dedup(c: &mut Criterion) {
+    if !selected("append_dedup") {
+        return;
+    }
     let mut group = c.benchmark_group("append_dedup");
     group.sample_size(30);
     for (label, threshold) in [("off", None), ("on_window64", Some(0.95_f32))] {
@@ -164,16 +184,23 @@ fn bench_dedup_tokenization(c: &mut Criterion) {
 }
 
 fn bench_append_sidecar(c: &mut Criterion) {
+    if !selected("append_sidecar") {
+        return;
+    }
     let mut group = c.benchmark_group("append_sidecar");
     group.sample_size(30);
-    for (label, managed) in [("no_sidecar", false), ("local_sidecar", true)] {
+    for (label, managed, base) in [
+        ("no_sidecar", false, 200),
+        ("local_sidecar", true, 200),
+        ("local_sidecar_3000_base", true, 3_000),
+    ] {
         let (mut chain, _dir) = temp_chain(label);
         if managed {
             chain
                 .manage_vector_sidecar(LocalTextEmbeddingProvider::new())
                 .expect("manage sidecar");
         }
-        populate(&mut chain, 200);
+        populate(&mut chain, base);
         let mut n = 2_000_000_u64;
         group.bench_function(label, |b| {
             b.iter(|| {
@@ -190,11 +217,55 @@ fn bench_append_sidecar(c: &mut Criterion) {
     group.finish();
 }
 
+/// One snapshot compaction of a managed vector sidecar: a full-corpus JSON
+/// serialization plus SHA-256 plus the snapshot write. The append path pays it
+/// every `VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD` appends.
+fn bench_sidecar_compaction(c: &mut Criterion) {
+    use mentisdb::search::{EmbeddingMetadata, VectorSidecar, VectorSidecarEntry};
+    if !selected("sidecar_compaction") {
+        return;
+    }
+    let mut group = c.benchmark_group("sidecar_compaction");
+    group.sample_size(10);
+    for count in [2_000_usize, 10_000] {
+        let metadata = EmbeddingMetadata::new("bench", 384, "v1");
+        let entries: Vec<VectorSidecarEntry> = (0..count)
+            .map(|i| {
+                let vector = (0..384)
+                    .map(|d| ((i * 31 + d * 17) % 1000) as f32 / 997.0 - 0.5)
+                    .collect();
+                VectorSidecarEntry::new(
+                    uuid::Uuid::from_u128(i as u128 + 1),
+                    i as u64,
+                    format!("h{i}"),
+                    vector,
+                )
+            })
+            .collect();
+        let mut sidecar = VectorSidecar::build(
+            "bench",
+            metadata,
+            count,
+            Some(format!("h{}", count - 1)),
+            chrono::Utc::now(),
+            entries,
+        )
+        .expect("sidecar");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sidecar.json");
+        group.bench_function(format!("compact_{count}x384"), |b| {
+            b.iter(|| sidecar.compact_to_path(black_box(&path)).expect("compact"))
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_lexical_scan,
     bench_append_dedup,
     bench_dedup_tokenization,
-    bench_append_sidecar
+    bench_append_sidecar,
+    bench_sidecar_compaction
 );
 criterion_main!(benches);
