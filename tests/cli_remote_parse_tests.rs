@@ -439,3 +439,24 @@ fn test_flag_names_are_unique_per_command() {
         );
     }
 }
+
+/// Regression (found by the `cli_args` fuzz target): `search q --url thought`
+/// was accepted and produced the request URL `thought/v1/ranked-search`. A base
+/// URL must be an absolute http(s) URL, and an invalid one is refused before any
+/// request is built.
+#[test]
+fn test_connection_urls_must_be_absolute_http_urls() {
+    for bad in ["thought", "127.0.0.1:9472", "ftp://h/", "http://", ""] {
+        let error = rejection(&["search", "q", "--url", bad]);
+        assert!(
+            error.contains("--url") && error.contains("http"),
+            "{bad}: {error}"
+        );
+    }
+    let error = rejection(&["chain", "info", "c", "--dashboard-url", "nope"]);
+    assert!(error.contains("--dashboard-url"), "{error}");
+    assert_eq!(
+        invocation(&["chain", "list", "--url", "https://h:1/base/"]).url,
+        "https://h:1/base/v1/chains"
+    );
+}

@@ -485,8 +485,11 @@ fn split_args<'a>(
         match key.as_str() {
             "--json" => common.json = true,
             "--insecure" => common.insecure = true,
-            "--url" => common.url = Some(take_value("--url")?),
-            "--dashboard-url" => common.dashboard_url = Some(take_value("--dashboard-url")?),
+            "--url" => common.url = Some(base_url("--url", take_value("--url")?)?),
+            "--dashboard-url" => {
+                common.dashboard_url =
+                    Some(base_url("--dashboard-url", take_value("--dashboard-url")?)?)
+            }
             "--token" | "--pin" => common.credential = Some(take_value(&key)?),
             _ => {
                 let flag = find_flag(command, &key).ok_or_else(|| {
@@ -507,6 +510,19 @@ fn split_args<'a>(
         }
     }
     Ok((common, positionals, named))
+}
+
+/// Accept `value` only when it is an absolute `http(s)` URL with a host.
+fn base_url(flag: &str, value: String) -> Result<String, String> {
+    let valid = url::Url::parse(&value)
+        .is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some());
+    if valid {
+        Ok(value)
+    } else {
+        Err(format!(
+            "{flag} must be an absolute http:// or https:// URL, got '{value}'"
+        ))
+    }
 }
 
 /// Split `--name=value` into its parts; `None` when `arg` is not a flag.
