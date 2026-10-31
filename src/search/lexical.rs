@@ -232,6 +232,10 @@ pub struct LexicalQuery {
     pub scoring: LexicalScoringConfig,
     /// Per-field document-frequency cutoffs for stop-word suppression.
     pub df_cutoffs: Bm25DfCutoffs,
+    /// Which document frequency the cutoffs are compared against.
+    ///
+    /// Defaults to [`DfScope::Global`].
+    pub df_scope: DfScope,
     /// Optional synonym expansion map: each original term maps to a list of
     /// synonyms that should also be searched with reduced weight.
     pub synonyms: std::collections::HashMap<String, Vec<String>>,
@@ -295,6 +299,7 @@ impl LexicalQuery {
             limit: None,
             scoring: LexicalScoringConfig::default(),
             df_cutoffs: Bm25DfCutoffs::default(),
+            df_scope: DfScope::default(),
             synonyms: std::collections::HashMap::new(),
             synonym_weight: 0.7,
             normalized_synonyms: None,
@@ -322,6 +327,21 @@ impl LexicalQuery {
     /// Replace the scoring configuration used for this query.
     pub fn with_scoring(mut self, scoring: LexicalScoringConfig) -> Self {
         self.scoring = scoring;
+        self
+    }
+
+    /// Choose which document frequency the cutoffs are compared against.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use mentisdb::search::lexical::{DfScope, LexicalQuery};
+    ///
+    /// let query = LexicalQuery::new("rollback").with_df_scope(DfScope::PerField);
+    /// assert_eq!(query.df_scope, DfScope::PerField);
+    /// ```
+    pub fn with_df_scope(mut self, scope: DfScope) -> Self {
+        self.df_scope = scope;
         self
     }
 
@@ -376,14 +396,140 @@ impl LexicalQuery {
     }
 }
 
-/// Per-field BM25 document-frequency cutoffs.
+/// How a term's document frequency is measured when it is checked against a
+/// field's cutoff in [`Bm25DfCutoffs`].
 ///
-/// Terms whose **global** document frequency (across all fields) exceeds
-/// `cutoff_ratio * N` are skipped for that field only. Using global DF
-/// preserves the original stop-word suppression behavior: a term that
-/// appears in many documents (in any field) is too common to be
-/// discriminative for low-cutoff fields like content, but may still
-/// contribute to higher-cutoff fields like agent-id or agent-registry.
+/// The default, [`DfScope::Global`], is what shipped through 0.10.10 and what
+/// every published benchmark number was produced with. [`DfScope::PerField`]
+/// is the behaviour `WHITEPAPER.md` section 6.3 describes. It is opt-in because
+/// it changes which terms score and therefore needs a LoCoMo/LongMemEval run
+/// before it can become the default.
+///
+/// # Examples
+///
+/// ```rust
+/// use mentisdb::search::lexical::DfScope;
+///
+/// assert_eq!(DfScope::default(), DfScope::Global);
+/// assert_eq!("field".parse::<DfScope>().unwrap(), DfScope::PerField);
+/// assert_eq!(DfScope::PerField.to_string(), "field");
+/// assert!("bogus".parse::<DfScope>().is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum DfScope {
+    /// One document frequency per term: the number of thoughts that contain the
+    /// term in **any** indexed field (content, tags, concepts, agent id, agent
+    /// registry text). Every field's cutoff is compared against that single
+    /// ratio.
+    ///
+    /// Side effect: agent id and agent registry text are attached to every
+    /// thought of an agent, so a word that appears in an agent's display name,
+    /// description or owner (a project or person name, "developer", "owner")
+    /// counts as present in all of that agent's thoughts. Such a word can be
+    /// gated out of `content` even though it occurs in only a few percent of
+    /// the chain's content.
+    #[default]
+    Global,
+    /// One document frequency per field: the number of thoughts whose *own*
+    /// field contains the term. A word that is rare in content stays scoring in
+    /// content no matter how many agents mention it in their registry text.
+    PerField,
+}
+
+/// Error returned when a string is not a valid [`DfScope`] name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseDfScopeError(pub String);
+
+impl std::fmt::Display for ParseDfScopeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown DF scope {:?} (expected \"global\" or \"field\")",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for ParseDfScopeError {}
+
+impl std::fmt::Display for DfScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Global => "global",
+            Self::PerField => "field",
+        })
+    }
+}
+
+impl std::str::FromStr for DfScope {
+    type Err = ParseDfScopeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "global" => Ok(Self::Global),
+            "field" | "per-field" | "per_field" | "perfield" => Ok(Self::PerField),
+            other => Err(ParseDfScopeError(other.to_owned())),
+        }
+    }
+}
+
+impl DfScope {
+    /// Name of the environment variable read by [`DfScope::from_env`].
+    pub const ENV_VAR: &'static str = "MENTISDB_DF_SCOPE";
+
+    /// Read `MENTISDB_DF_SCOPE` (`global` or `field`) once per process.
+    ///
+    /// An unset, empty or unrecognised value yields [`DfScope::Global`], the
+    /// historical behaviour. This is what [`RankedSearchQuery`](crate::RankedSearchQuery)
+    /// uses as its default, so a benchmark harness can compare both scopes
+    /// without code changes.
+    pub fn from_env() -> Self {
+        static SCOPE: std::sync::OnceLock<DfScope> = std::sync::OnceLock::new();
+        *SCOPE.get_or_init(|| {
+            std::env::var(Self::ENV_VAR)
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_default()
+        })
+    }
+}
+
+/// Per-field BM25 document-frequency cutoffs: the hard "stop-word" gate.
+///
+/// For every query term and every field, the term is **skipped for that field**
+/// when `document_frequency / document_count > cutoff` (strictly greater than).
+/// A skipped term contributes nothing from that field; it can still score
+/// through a field whose cutoff it respects. The gate is a hard cliff, not a
+/// down-weight: a term at 29% of the chain scores at full IDF-weighted strength
+/// in `content`, and at 31% it scores zero there.
+///
+/// Further rules, all in [`LexicalIndex::scan`]:
+///
+/// * Gating is disabled entirely for chains of fewer than 20 thoughts, where a
+///   percentage of the chain is meaningless.
+/// * `document_count` is every committed thought of the chain, including
+///   invalidated ones and including thoughts excluded by the query's filters.
+/// * The IDF that weights a surviving term always uses the global document
+///   frequency, whatever the [`DfScope`].
+/// * Synonym terms are gated exactly like original terms.
+/// * Which document frequency is compared against the cutoff depends on
+///   [`DfScope`]: the default [`DfScope::Global`] counts a thought if the term
+///   appears in *any* field, [`DfScope::PerField`] counts it per field.
+///
+/// MentisDB has no stop-word list; this gate is the only thing that silences
+/// "the", "with" or "from". It also silences any real term that appears in more
+/// than 30% of a chain, which in a single-project chain can include the
+/// project's own vocabulary.
+///
+/// # Examples
+///
+/// ```rust
+/// use mentisdb::search::lexical::{Bm25DfCutoffs, LexicalField};
+///
+/// let cutoffs = Bm25DfCutoffs::default();
+/// assert_eq!(cutoffs.for_field(LexicalField::Content), 0.30);
+/// assert_eq!(cutoffs.for_field(LexicalField::AgentId), 0.70);
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bm25DfCutoffs {
     /// DF cutoff ratio for content matches.
@@ -907,8 +1053,22 @@ impl LexicalIndex {
             };
             let global_df = postings.len() as f32;
             let global_df_ratio = global_df / doc_count;
-            let field_allowed: [bool; 5] =
-                std::array::from_fn(|i| doc_count < 20.0 || global_df_ratio <= cutoff_ratios[i]);
+            let field_allowed: [bool; 5] = match query.df_scope {
+                DfScope::Global => {
+                    std::array::from_fn(|i| doc_count < 20.0 || global_df_ratio <= cutoff_ratios[i])
+                }
+                DfScope::PerField => {
+                    let mut field_df = [0_u32; 5];
+                    for posting in postings {
+                        for (i, field) in LEXICAL_FIELDS.iter().enumerate() {
+                            field_df[i] += u32::from(posting.term_frequency(*field) > 0);
+                        }
+                    }
+                    std::array::from_fn(|i| {
+                        doc_count < 20.0 || field_df[i] as f32 / doc_count <= cutoff_ratios[i]
+                    })
+                }
+            };
             if !field_allowed.iter().any(|allowed| *allowed) {
                 continue;
             }

@@ -100,6 +100,8 @@ tempfile = "3"
 tower = { version = "0.5.3", features = ["util"] }
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
 x509-parser = "0.18"
+# Token counting for `examples/recall_audit.rs` (same crate and features fastembed uses).
+tokenizers = { version = "0.22.2", default-features = false, features = ["onig"] }
 
 [[bench]]
 name = "thought_chain"
@@ -140,6 +142,10 @@ harness = false
 [[bench]]
 name = "storage_paths"
 harness = false
+
+[[example]]
+name = "recall_audit"
+required-features = ["local-embeddings"]
 
 [[bin]]
 name = "mentisdb"

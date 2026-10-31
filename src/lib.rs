@@ -3554,6 +3554,16 @@ pub struct RankedSearchQuery {
     ///
     /// Defaults to 0.5. Must be non-negative.
     pub synonym_weight: f32,
+    /// Which document frequency the lexical stop-word gate compares against.
+    ///
+    /// Defaults to [`DfScope::from_env`] (`MENTISDB_DF_SCOPE`), which is
+    /// [`DfScope::Global`] unless the operator opts in. See
+    /// [`Bm25DfCutoffs`](crate::search::lexical::Bm25DfCutoffs) for what the
+    /// gate does.
+    pub df_scope: crate::search::lexical::DfScope,
+    /// Override the lexical gate's per-field cutoffs; `None` keeps the
+    /// defaults (30% for content, tags and concepts).
+    pub df_cutoffs: Option<crate::search::lexical::Bm25DfCutoffs>,
 }
 
 impl RankedSearchQuery {
@@ -3673,6 +3683,41 @@ impl RankedSearchQuery {
         self
     }
 
+    /// Choose how the lexical stop-word gate measures document frequency.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use mentisdb::RankedSearchQuery;
+    /// use mentisdb::search::lexical::DfScope;
+    ///
+    /// let query = RankedSearchQuery::new().with_df_scope(DfScope::PerField);
+    /// assert_eq!(query.df_scope, DfScope::PerField);
+    /// ```
+    pub fn with_df_scope(mut self, scope: crate::search::lexical::DfScope) -> Self {
+        self.df_scope = scope;
+        self
+    }
+
+    /// Override the lexical gate's per-field cutoffs for this query.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use mentisdb::RankedSearchQuery;
+    /// use mentisdb::search::lexical::Bm25DfCutoffs;
+    ///
+    /// let query = RankedSearchQuery::new().with_df_cutoffs(Bm25DfCutoffs {
+    ///     content: 0.5,
+    ///     ..Bm25DfCutoffs::default()
+    /// });
+    /// assert_eq!(query.df_cutoffs.unwrap().content, 0.5);
+    /// ```
+    pub fn with_df_cutoffs(mut self, cutoffs: crate::search::lexical::Bm25DfCutoffs) -> Self {
+        self.df_cutoffs = Some(cutoffs);
+        self
+    }
+
     /// Enable synonym expansion with a custom map and weight.
     pub fn with_synonyms(
         mut self,
@@ -3702,6 +3747,8 @@ impl Default for RankedSearchQuery {
             llm_rerank_top_k: 20,
             synonyms: std::collections::HashMap::new(),
             synonym_weight: 0.7,
+            df_scope: crate::search::lexical::DfScope::from_env(),
+            df_cutoffs: None,
         }
     }
 }
@@ -5876,6 +5923,9 @@ impl MentisDb {
         // Automatic dedup: if dedup_threshold is set, check the new content
         // against recent thoughts. If similarity exceeds the threshold, auto-add
         // a Supersedes relation pointing to the most similar prior thought.
+        // A prior thought the author rated more important than this one is
+        // never a candidate: superseding it would hide the higher-value record
+        // behind a near-copy that was filed as less important.
         if let Some(threshold) = self.dedup_threshold.filter(|_| !signed) {
             let new_tokens: HashSet<String> =
                 search::lexical::normalize_lexical_tokens(&input.content, true)
@@ -5887,7 +5937,11 @@ impl MentisDb {
                     .sync(&self.thoughts, self.dedup_scan_window);
                 let mut best_similarity = 0.0_f32;
                 let mut best_target_id = None;
+                let new_importance = input.importance.clamp(0.0, 1.0);
                 for (offset, prior_tokens) in self.dedup_tokens.sets.iter().enumerate() {
+                    if self.thoughts[scan_start + offset].importance > new_importance {
+                        continue;
+                    }
                     if prior_tokens.is_empty() {
                         continue;
                     }
@@ -7198,14 +7252,8 @@ impl MentisDb {
             .as_deref()
             .map(str::trim)
             .filter(|text| !text.is_empty());
-        let lexical_scan = ranked_text.map(|text| {
-            self.rank_candidates_lexically(
-                &candidates,
-                text,
-                &request.synonyms,
-                request.synonym_weight,
-            )
-        });
+        let lexical_scan =
+            ranked_text.map(|text| self.rank_candidates_lexically(&candidates, text, request));
         let vector_scores = ranked_text
             .map(|text| self.rank_candidates_semantically(&candidates, text))
             .unwrap_or_default();
@@ -7319,12 +7367,7 @@ impl MentisDb {
             };
         };
 
-        let lexical_scores = self.rank_candidates_lexically(
-            &candidates,
-            ranked_text,
-            &request.synonyms,
-            request.synonym_weight,
-        );
+        let lexical_scores = self.rank_candidates_lexically(&candidates, ranked_text, request);
         let seeds = self.context_bundle_seeds(&lexical_scores, request.limit);
         if seeds.is_empty() {
             return crate::search::ContextBundleResult {
@@ -9425,13 +9468,15 @@ impl MentisDb {
         &self,
         candidates: &[&Thought],
         text: &str,
-        synonyms: &std::collections::HashMap<String, Vec<String>>,
-        synonym_weight: f32,
+        request: &RankedSearchQuery,
     ) -> crate::search::lexical::LexicalScan {
         use crate::search::lexical::{LexicalCandidates, LexicalQuery};
-        let mut query = LexicalQuery::new(text);
-        if !synonyms.is_empty() {
-            query = query.with_synonyms(synonyms.clone(), synonym_weight);
+        let mut query = LexicalQuery::new(text).with_df_scope(request.df_scope);
+        if let Some(cutoffs) = &request.df_cutoffs {
+            query = query.with_df_cutoffs(cutoffs.clone());
+        }
+        if !request.synonyms.is_empty() {
+            query = query.with_synonyms(request.synonyms.clone(), request.synonym_weight);
         }
         if candidates.len() == self.thoughts.len() {
             // Candidates cover the whole chain: skip building a position list.
@@ -9757,6 +9802,35 @@ impl MentisDb {
         }
 
         (thought.index as f32 / newest_index as f32) * 0.05
+    }
+
+    /// Return the exact text that is embedded for `thought` in a vector sidecar.
+    ///
+    /// The text is the thought content followed by its `Concepts:` and `Tags:`
+    /// lines and, when the author is a registered agent, that agent's
+    /// `Agent:`/`Aliases:`/`Owner:`/`Description:` lines. It is exposed so that
+    /// diagnostic tools (see `examples/recall_audit.rs`) can measure how much of
+    /// a thought survives the embedding model's input window without
+    /// re-implementing the layout.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use mentisdb::{MentisDb, ThoughtInput, ThoughtType};
+    ///
+    /// # fn main() -> std::io::Result<()> {
+    /// let dir = std::env::temp_dir().join(format!("mentisdb-embtext-{}", std::process::id()));
+    /// let mut chain = MentisDb::open_with_key(&dir, "embedding-text-doc")?;
+    /// let thought = chain
+    ///     .append_thought("agent-1", ThoughtInput::new(ThoughtType::Finding, "the cache is cold"))?
+    ///     .clone();
+    /// assert!(chain.embedding_text(&thought).starts_with("the cache is cold"));
+    /// # let _ = std::fs::remove_dir_all(&dir);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn embedding_text(&self, thought: &Thought) -> String {
+        self.thought_embedding_text(thought)
     }
 
     fn thought_embedding_text(&self, thought: &Thought) -> String {

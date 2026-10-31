@@ -553,6 +553,7 @@ impl MentisDbServiceConfig {
 /// | `MENTISDB_AUTO_FLUSH` | `true` | Set `false` for batched binary writes (higher throughput, reduced durability). |
 /// | `MENTISDB_DEDUP_THRESHOLD` | *(none)* | Jaccard threshold for auto-dedup on append (0.0–1.0). Disabled when unset. |
 /// | `MENTISDB_DEDUP_SCAN_WINDOW` | `64` | Number of recent thoughts to scan for dedup. |
+/// | `MENTISDB_DF_SCOPE` | `global` | Lexical stop-word gate document frequency: `global` (any field) or `field` (per field). |
 /// | `MENTISDB_BEARER_TOKEN_ACCESS` | `false` | Require a valid MentisDB bearer token for MCP HTTP/HTTPS access. |
 /// | `MENTISDB_BIND_HOST` | `127.0.0.1` | IP address for all server sockets. |
 /// | `MENTISDB_MCP_PORT` | `9471` | Port for the HTTP MCP server. |
