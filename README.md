@@ -556,6 +556,11 @@ and `cert` work on the data directory directly and do not need the daemon.
   `local-text` (built-in hashing embeddings, never loads ONNX) or `fastembed`. Unset
   means FastEmbed when the `local-embeddings` feature is compiled in, `local-text`
   otherwise. Unknown values are logged and treated as unset.
+- `MENTISDB_DF_SCOPE`
+  How the lexical stop-word gate measures a term's document frequency: `global`
+  (default, what every published benchmark used: a thought counts if the term is in
+  *any* field, including agent registry text) or `field` (each field's own count).
+  Experimental; see `WHITEPAPER.md` section 6.3.
 - `FASTEMBED_CACHE_DIR`
   Where the FastEmbed ONNX model is cached. Default: `<MENTISDB_DIR>/.fastembed_cache`.
 - `MENTISDB_UPDATE_CHECK`

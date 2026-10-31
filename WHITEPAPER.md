@@ -502,11 +502,11 @@ Ranked search selects a backend based on what signals are available:
 | Text + graph + vectors | HybridGraph (full pipeline) |
 | No text | Heuristic (importance/recency scoring) |
 
-### 6.3 BM25 with Per-Field DF Gating
+### 6.3 BM25 with Document-Frequency Gating
 
 The lexical score uses BM25 — the standard ranking function from information retrieval —
 applied across five fields: content, tags, concepts, agent_id, and agent_registry. Each
-field has its own weight and document-frequency gate.
+field has its own weight and its own document-frequency cutoff.
 
 ```rust
 // Simplified: BM25 score for a single term in a single field
@@ -514,7 +514,7 @@ fn bm25_field_score(
     term_freq: f64,      // how many times the term appears in this field
     doc_field_len: f64,  // length of this field in the document
     avg_field_len: f64,  // average field length across the corpus
-    doc_freq: usize,     // how many documents contain this term in this field
+    doc_freq: usize,     // how many documents contain this term (any field)
     corpus_size: usize,  // total number of documents
 ) -> f64 {
     let k1 = 1.2;
@@ -533,9 +533,11 @@ fn bm25_field_score(
 }
 ```
 
-**Per-field DF gating** prevents common terms from dominating. If a term appears in more
-than 30% of documents (in the content field), it's filtered out of that field's scoring —
-it's too common to be a useful signal. Each field has its own cutoff:
+**DF gating** is the only stop-word mechanism: MentisDB has no stop-word list. For each query
+term and each field, the term is skipped for that field when
+`document_frequency / document_count > cutoff` (strictly greater). It is a hard cliff, not a
+down-weight: a term at 29% of the chain scores at full strength in `content`, at 31% it scores
+zero there. A skipped term can still score through a field whose cutoff it respects.
 
 | Field | DF cutoff | Weight |
 |-------|-----------|--------|
@@ -545,8 +547,27 @@ it's too common to be a useful signal. Each field has its own cutoff:
 | agent_id | 70% | 1.5 |
 | agent_registry | 60% | 1.1 |
 
-A term that's too common in one field can still contribute through another field whose
-cutoff it respects.
+Details that matter in practice:
+
+* **The document frequency is global, not per field.** Through 0.10.10 (and in every
+  published benchmark) `document_frequency` is the number of thoughts that contain the term in
+  *any* of the five fields, and that single ratio is compared against each field's cutoff. An
+  earlier version of this paper described per-field document frequencies; that is not what the
+  code did. Because agent id and agent registry text (display name, owner, description,
+  aliases) are attached to every thought of an agent, a word that appears in an agent's
+  description counts as present in all of that agent's thoughts. On a real 750-thought project
+  chain, words such as `project`, `apollo`, `native` and `developer` occur in 2-9% of the
+  content but were gated out of it because of registry text alone.
+* **Per-field gating is available as an opt-in.** `DfScope::PerField` (query field
+  `df_scope`, environment `MENTISDB_DF_SCOPE=field`) counts each field's own occurrences. It is
+  off by default because it changes which terms score and has not been run through the
+  LoCoMo/LongMemEval benchmarks. On the three real chains audited with
+  `examples/recall_audit.rs` it moved self-recall by at most a few points in either direction.
+* Gating is disabled for chains of fewer than 20 thoughts.
+* The denominator is every committed thought, including invalidated ones and ones excluded by
+  the query's filters.
+* The IDF of a surviving term always uses the global document frequency, in both scopes.
+* Synonym terms are gated like original terms.
 
 Text normalization applies Porter stemming (e.g., "running" → "run") plus an irregular
 verb lemma table (~170 entries: "went" → "go", "saw" → "see") since stemming can't
@@ -894,7 +915,7 @@ near-duplicates using Jaccard similarity over normalized token sets:
 fn check_dedup(
     new_thought: &Thought,
     recent_thoughts: &[&Thought], // last N thoughts
-    threshold: f64,                // default 0.85
+    threshold: f64,                // suggested 0.85; dedup is off unless configured
 ) -> Option<Uuid> {
     let new_tokens = normalize_tokens(&new_thought.content); // stemmed + lemma-expanded
     if new_tokens.is_empty() {
@@ -936,9 +957,15 @@ retrieval. The original thought is retained for audit — no content is deleted.
 ### 7.2 Configuration
 
 ```bash
-MENTISDB_DEDUP_THRESHOLD=0.85    # Jaccard threshold (0.0–1.0)
+MENTISDB_DEDUP_THRESHOLD=0.85    # Jaccard threshold (0.0–1.0); auto-dedup is OFF when unset
 MENTISDB_DEDUP_SCAN_WINDOW=64    # how many recent thoughts to scan
 ```
+
+Auto-dedup is **disabled unless `MENTISDB_DEDUP_THRESHOLD` is set**; 0.85 is the suggested
+value, not a default. The scan only looks at the last `MENTISDB_DEDUP_SCAN_WINDOW` thoughts, so
+a thought re-recorded hundreds of thoughts later is never caught. A prior thought that the
+author rated more *important* than the new one is never a candidate: dedup does not retire a
+higher-value record behind a near-copy filed as less important.
 
 ---
 

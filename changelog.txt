@@ -61,6 +61,27 @@ UNRELEASED
     token scoped to one chain could search the default chain with
     `{"chain_keys": ["", "mine"]}`. Entries are now trimmed and validated
     (blank, oversized or control-character keys are a 400) and de-duplicated.
+  - fix(dedup): automatic dedup could retire a thought the author rated more
+    important than the new one (a throwaway near-copy superseding a critical
+    Constraint/Decision, which then vanished from search). A prior thought with
+    higher importance than the incoming one is no longer a supersession
+    candidate. Dedup stays off unless `MENTISDB_DEDUP_THRESHOLD` is set; the
+    whitepaper wrongly called 0.85 a default.
+  - feat(search): `DfScope` / `MENTISDB_DF_SCOPE` / `RankedSearchQuery::df_scope`
+    choose how the lexical stop-word gate measures document frequency. The
+    shipped `global` scope counts a thought as containing a term if it is in ANY
+    field, so words in an agent's registry text (project name, "developer",
+    "owner") were gated out of `content` on real chains although they occur in 2-9%
+    of it. `field` counts per field as the whitepaper claimed. Default unchanged
+    (`global`); needs a LoCoMo/LongMemEval run before it can become the default.
+    `RankedSearchQuery::df_cutoffs` overrides the cutoffs per query.
+  - docs(search): `Bm25DfCutoffs` rustdoc and WHITEPAPER 6.3/7.2 now state exactly
+    what the gate does (hard cliff, global DF, off below 20 thoughts, IDF always
+    global, no stop-word list) and that auto-dedup is off by default.
+  - test(search): `examples/recall_audit.rs`, an empirical recall audit for a
+    chain copy (age-decile self-recall lexical vs hybrid vs RRF, near-duplicate
+    clusters, supersession quality, vector coverage, embedding-window overflow,
+    DF gating, embedding dilution). New `MentisDb::embedding_text`.
   - fix(cli): `--url` and `--dashboard-url` accepted values that are not
     absolute http(s) URLs (`mentisdb search q --url thought` built the request
     URL `thought/v1/ranked-search`); they are now validated at parse time with a
