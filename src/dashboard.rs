@@ -680,6 +680,22 @@ fn internal_error(err: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
     )
 }
 
+/// Map an I/O error from a chain write: access-control refusals become their
+/// client status (403/400) with the reason, everything else stays a generic 500.
+fn write_error(error: std::io::Error) -> (StatusCode, Json<Value>) {
+    match crate::access::AccessError::from_io(&error) {
+        Some(access) => (
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            Json(json!({ "error": access.to_string() })),
+        ),
+        None => internal_error(error),
+    }
+}
+
 /// Build a `404 Not Found` JSON response.
 fn not_found(msg: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
     (
@@ -1431,6 +1447,7 @@ async fn api_chain_detail(
         "agent_count": chain.agent_registry().agents.len(),
         "head_hash": chain.head_hash().map(ToString::to_string),
         "vector_sidecars": vector_sidecars,
+        "access_policy": chain.access_policy(),
     })))
 }
 
@@ -1572,9 +1589,7 @@ async fn api_bootstrap_chain(
             .with_importance(body.importance.unwrap_or(1.0))
             .with_tags(body.tags.clone().unwrap_or_default())
             .with_concepts(body.concepts.clone().unwrap_or_default());
-        chain
-            .append_thought(agent_id, input)
-            .map_err(internal_error)?;
+        chain.append_thought(agent_id, input).map_err(write_error)?;
         true
     } else {
         false
@@ -2208,17 +2223,7 @@ async fn api_add_agent_key(
 
     let agent = chain
         .add_agent_key(&agent_id, &body.key_id, algorithm, public_key, &proof)
-        .map_err(|e| match crate::access::AccessError::from_io(&e) {
-            Some(access) => (
-                if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    StatusCode::FORBIDDEN
-                } else {
-                    StatusCode::BAD_REQUEST
-                },
-                Json(json!({ "error": access.to_string() })),
-            ),
-            None => internal_error(e),
-        })?;
+        .map_err(write_error)?;
 
     Ok(Json(serde_json::to_value(agent).map_err(internal_error)?))
 }
@@ -2537,7 +2542,7 @@ async fn api_import_markdown(
     let default_agent_id = body.default_agent_id.as_deref().unwrap_or("default");
     let imported = chain
         .import_from_memory_markdown(&body.markdown, default_agent_id)
-        .map_err(internal_error)?;
+        .map_err(write_error)?;
     let count = imported.len();
     Ok(Json(json!({ "imported": imported, "count": count })))
 }
@@ -2700,7 +2705,7 @@ async fn api_copy_agent_to_chain(
     for input in agent_thoughts {
         dst_chain
             .append_thought(&agent_id, input)
-            .map_err(|e| internal_error(format!("append thought: {e}")))?;
+            .map_err(write_error)?;
         copied += 1;
     }
 
@@ -2873,8 +2878,7 @@ async fn api_merge_chains(
     {
         let mut tgt = target_arc.write().await;
         for (agent_id, input) in remapped_thoughts {
-            tgt.append_thought(&agent_id, input)
-                .map_err(|e| internal_error(format!("append thought to target chain: {e}")))?;
+            tgt.append_thought(&agent_id, input).map_err(write_error)?;
             thoughts_copied += 1;
         }
     }

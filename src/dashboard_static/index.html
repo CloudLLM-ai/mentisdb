@@ -2172,6 +2172,34 @@
     return '<span class="badge badge-gray">Unknown</span>';
   }
 
+  // Read-only view of the chain's write-access policy (docs/CHAIN_ACCESS.md).
+  // Changing it needs a private-key signature, so it goes through the CLI/API.
+  function loadAccessPanel(chainKey) {
+    const panel = document.getElementById('ex-access-card');
+    if (!panel) return;
+    panel.innerHTML = '<div class="card-title">Write Access</div><div class="empty-state">Loading access policy…</div>';
+    api(`/dashboard/api/chains/${encodeURIComponent(chainKey)}`)
+      .then(data => {
+        const policy = data.access_policy || {};
+        const keys = Array.isArray(policy.keys) ? policy.keys : [];
+        const mode = policy.mode || 'open';
+        const badge = mode === 'open' ? 'badge-gray' : (mode === 'signed' ? 'badge-blue' : 'badge-green');
+        const bad = Array.isArray(policy.invalid_records) ? policy.invalid_records.length : 0;
+        panel.innerHTML = `
+          <div class="card-title">Write Access</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+            <span class="badge ${badge}">${esc(mode)}</span>
+            <span style="color:#8b949e">${policy.seq === null || policy.seq === undefined ? 'no policy record (open by default)' : 'record #' + esc(String(policy.seq))}</span>
+            ${bad ? `<span class="badge badge-red">${esc(String(bad))} rejected record(s)</span>` : ''}
+          </div>
+          ${policy.keys_root ? `<div class="mono" style="font-size:0.8rem;color:#8b949e;word-break:break-all">keys root ${esc(policy.keys_root)}</div>` : ''}
+          ${policy.genesis_hash ? `<div class="mono" style="font-size:0.8rem;color:#8b949e;word-break:break-all">genesis ${esc(policy.genesis_hash)}</div>` : ''}
+          ${keys.length ? `<table style="margin-top:10px"><thead><tr><th>Agent</th><th>Key id</th><th>Public key</th></tr></thead><tbody>${keys.map(k => `<tr><td>${esc(k.agent_id)}</td><td>${esc(k.key_id)}</td><td class="mono" style="word-break:break-all">${esc(k.public_key)}</td></tr>`).join('')}</tbody></table>` : ''}
+          <p style="color:#8b949e;margin:10px 0 0 0;font-size:0.85rem">Read only. Change it with <span class="mono">mentisdb chain access set</span>.</p>`;
+      })
+      .catch(err => { panel.innerHTML = `<div class="card-title">Write Access</div><div class="empty-state">${esc(err.message)}</div>`; });
+  }
+
   function loadVectorPanel(chainKey) {
     const panel = document.getElementById('ex-vector-card');
     if (!panel) return;
@@ -2304,6 +2332,7 @@
         <h1 title="Currently viewing this chain's thoughts and search indices">Chain: <span class="mono" style="color:#58a6ff;font-size:1.4rem">${esc(chainKey)}</span></h1>
         <button class="btn btn-secondary btn-sm" id="ex-import-md-btn" title="Import thoughts from a MEMORY.md file into this chain">📥 Import MEMORY.md</button>
       </div>
+      <div class="card" id="ex-access-card" style="margin-bottom:16px"></div>
       <div class="card" id="ex-vector-card" style="margin-bottom:16px"></div>
       <div class="filter-bar">
         <div class="filter-item">
@@ -2467,7 +2496,7 @@
       EX.page = 1; exUpdateLabel(); exRenderSel(); loadThoughts();
     });
 
-    exUpdateLabel(); exRenderSel(); populateExplorerSearchAgents(); updateExplorerOrderUi(); loadVectorPanel(chainKey); loadThoughts();
+    exUpdateLabel(); exRenderSel(); populateExplorerSearchAgents(); updateExplorerOrderUi(); loadVectorPanel(chainKey); loadAccessPanel(chainKey); loadThoughts();
 
     document.getElementById('ex-import-md-btn').addEventListener('click', () => {
       openImportMarkdownModal(chainKey);

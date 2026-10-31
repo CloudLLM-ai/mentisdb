@@ -257,3 +257,72 @@ async fn test_mcp_exposes_access_tools() {
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
 }
+
+/// Merging into a chain whose policy needs signatures fails before anything is
+/// copied, and the source chain is kept (merge cannot sign on anyone's behalf).
+#[tokio::test]
+async fn test_merge_into_a_restricted_chain_keeps_the_source() {
+    let router = rest_router(config("merge"));
+    let admin = secret(1);
+    register(&router, "locked", "admin", "a1", &admin).await;
+    let record = PolicyRecord::new(
+        0,
+        AccessMode::Signed,
+        vec![AllowedKey::new(
+            "admin",
+            "a1",
+            &admin.verifying_key().to_bytes(),
+        )],
+        "",
+    )
+    .unwrap();
+    let prev = head(&router, "locked").await;
+    let payload = thought_payload_v2("locked", "admin", &prev, &policy_thought_input(&record));
+    let (status, body) = post(
+        &router,
+        "/v1/access/policy/set",
+        json!({
+            "chain_key": "locked", "agent_id": "admin", "signing_key_id": "a1",
+            "signature_hex": to_hex(&admin.sign(&payload).to_bytes()), "record": record,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = post(&router, "/v1/thoughts", json!({"chain_key": "src", "agent_id": "bot", "thought_type": "Insight", "content": "keep me"})).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = post(
+        &router,
+        "/v1/chains/merge",
+        json!({"source_chain_key": "src", "target_chain_key": "locked"}),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    let (_, chains) = post_get(&router, "/v1/chains").await;
+    assert!(
+        chains["chain_keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|k| k == "src"),
+        "the source chain must survive"
+    );
+    let (_, shown) = post(&router, "/v1/head", json!({"chain_key": "locked"})).await;
+    assert_eq!(shown["thought_count"], 1, "only the policy record");
+}
+
+async fn post_get(router: &Router, uri: &str) -> (StatusCode, Value) {
+    let response = router
+        .clone()
+        .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
