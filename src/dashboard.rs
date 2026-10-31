@@ -445,13 +445,32 @@ async fn pin_auth_middleware(
     // No more borrows of `request` from here on.
 
     // ── Check Authorization: Bearer <pin> header ──────────────────────────
+    // The bearer path is a PIN oracle just like the login form, so it shares
+    // the login form's per-IP failure limiter: without it a client could try
+    // every PIN at wire speed against any dashboard route.
     let mut bearer_valid = false;
-    if let Some(auth_str) = auth_header.as_deref() {
-        if let Some(provided) = auth_str.strip_prefix("Bearer ") {
-            // Constant-time comparison to prevent timing attacks.
-            if subtle::ConstantTimeEq::ct_eq(provided.as_bytes(), required_pin.as_bytes()).into() {
-                bearer_valid = true;
-            }
+    if let Some(provided) = auth_header
+        .as_deref()
+        .and_then(|value| value.strip_prefix("Bearer "))
+    {
+        let ip_key = client_ip_key(
+            request
+                .extensions()
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>(),
+        );
+        if pin_attempts_exhausted(&ip_key) {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many failed attempts. Try again later.",
+            )
+                .into_response();
+        }
+        // Constant-time comparison to prevent timing attacks.
+        if subtle::ConstantTimeEq::ct_eq(provided.as_bytes(), required_pin.as_bytes()).into() {
+            bearer_valid = true;
+            clear_pin_failures(&ip_key);
+        } else {
+            record_pin_failure(&ip_key);
         }
     }
 
@@ -563,6 +582,59 @@ struct LoginForm {
 /// (detected via `X-Forwarded-Proto`), so logins performed through a
 /// TLS-terminating reverse proxy that talks plain HTTP to the daemon still
 /// persist the cookie successfully.
+/// Limiter key for a request: the peer IP, or `"unknown"` for in-process callers.
+///
+/// `X-Forwarded-For` is deliberately ignored (spoofable); behind a reverse
+/// proxy every client shares the proxy's address.
+fn client_ip_key(
+    connect_info: Option<&axum::extract::ConnectInfo<std::net::SocketAddr>>,
+) -> String {
+    connect_info
+        .map(|axum::extract::ConnectInfo(addr)| addr.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// True while `ip_key` has used up its failed-PIN budget
+/// ([`RATE_LIMIT_MAX_ATTEMPTS`] within [`RATE_LIMIT_WINDOW_SECS`]).
+///
+/// Expired entries are dropped as a side effect.
+fn pin_attempts_exhausted(ip_key: &str) -> bool {
+    let now = Instant::now();
+    let mut map = RATE_LIMIT_MAP.lock().unwrap_or_else(|e| e.into_inner());
+    match map.get(ip_key).copied() {
+        Some((count, first_attempt)) => {
+            if now.duration_since(first_attempt).as_secs() >= RATE_LIMIT_WINDOW_SECS {
+                map.remove(ip_key);
+                false
+            } else {
+                count >= RATE_LIMIT_MAX_ATTEMPTS
+            }
+        }
+        None => false,
+    }
+}
+
+/// Counts one failed PIN attempt for `ip_key`.
+fn record_pin_failure(ip_key: &str) {
+    let now = Instant::now();
+    let mut map = RATE_LIMIT_MAP.lock().unwrap_or_else(|e| e.into_inner());
+    // Bound memory: drop expired entries once the table grows large.
+    if map.len() >= 10_000 {
+        map.retain(|_, (_, first)| now.duration_since(*first).as_secs() < RATE_LIMIT_WINDOW_SECS);
+    }
+    let entry = map.entry(ip_key.to_string()).or_insert_with(|| (0, now));
+    entry.0 += 1;
+    entry.1 = now;
+}
+
+/// Forgets the failed attempts of `ip_key` after a correct PIN.
+fn clear_pin_failures(ip_key: &str) {
+    RATE_LIMIT_MAP
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(ip_key);
+}
+
 /// On failure redirects back to `/dashboard/login?error=1`.
 ///
 /// Rate limiting is applied per source IP. Since the dashboard binds to localhost by
@@ -577,34 +649,20 @@ async fn handle_login(
     // Key the brute-force limiter per client IP so one attacker cannot lock the
     // owner out. `X-Forwarded-For` is deliberately ignored (spoofable); behind a
     // reverse proxy all clients share the proxy's address.
-    let ip_key_owned = connect_info
-        .map(|axum::Extension(axum::extract::ConnectInfo(addr))| addr.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    let ip_key_owned = client_ip_key(
+        connect_info
+            .as_ref()
+            .map(|axum::Extension(connect_info)| connect_info),
+    );
     let ip_key = ip_key_owned.as_str();
 
     // Check rate limit before PIN comparison.
-    {
-        let now = Instant::now();
-        let map = RATE_LIMIT_MAP.lock().unwrap();
-        if let Some(&(count, first_attempt)) = map.get(ip_key) {
-            let elapsed = now.duration_since(first_attempt);
-            if count >= RATE_LIMIT_MAX_ATTEMPTS && elapsed.as_secs() < RATE_LIMIT_WINDOW_SECS {
-                return (
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "Too many failed attempts. Try again later.",
-                )
-                    .into_response();
-            }
-        }
-        // Expire old entries outside the lock scope to avoid holding the lock too long.
-        drop(map);
-        let mut map = RATE_LIMIT_MAP.lock().unwrap();
-        if let Some(&(_count, first_attempt)) = map.get(ip_key) {
-            let elapsed = now.duration_since(first_attempt);
-            if elapsed.as_secs() >= RATE_LIMIT_WINDOW_SECS {
-                map.remove(ip_key);
-            }
-        }
+    if pin_attempts_exhausted(ip_key) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many failed attempts. Try again later.",
+        )
+            .into_response();
     }
 
     let pin_matches = state
@@ -616,7 +674,7 @@ async fn handle_login(
         .unwrap_or(true); // No PIN configured → any submission succeeds.
 
     if pin_matches {
-        RATE_LIMIT_MAP.lock().unwrap().remove(ip_key);
+        clear_pin_failures(ip_key);
         // Issue a random session token so the PIN itself is never stored in
         // the browser cookie.
         let session_token = Uuid::new_v4().to_string();
@@ -651,17 +709,7 @@ async fn handle_login(
         )
             .into_response()
     } else {
-        let now = Instant::now();
-        let mut map = RATE_LIMIT_MAP.lock().unwrap();
-        // Bound memory: drop expired entries once the table grows large.
-        if map.len() >= 10_000 {
-            map.retain(|_, (_, first)| {
-                now.duration_since(*first).as_secs() < RATE_LIMIT_WINDOW_SECS
-            });
-        }
-        let entry = map.entry(ip_key.to_string()).or_insert_with(|| (0, now));
-        entry.0 += 1;
-        entry.1 = now;
+        record_pin_failure(ip_key);
         Redirect::to("/dashboard/login?error=1").into_response()
     }
 }
@@ -2613,7 +2661,7 @@ async fn api_copy_agent_to_chain(
         let inputs = src_chain
             .thoughts()
             .iter()
-            .filter(|t| t.agent_id == agent_id)
+            .filter(|t| t.agent_id == agent_id && t.thought_type != ThoughtType::AccessPolicy)
             .enumerate()
             .map(|(i, t)| {
                 let mut input = ThoughtInput::new(t.thought_type, t.content.clone());
@@ -2686,6 +2734,14 @@ async fn api_copy_agent_to_chain(
                      copying would create a diverged history"
                 )
             })),
+        ));
+    }
+
+    // Copied thoughts are re-appended unsigned; a signed or allowlist target
+    // would refuse them one by one after the agent record was already written.
+    if dst_chain.access_policy().mode != crate::access::AccessMode::Open {
+        return Err(write_error(
+            crate::access::AccessError::SignatureRequired.into_io(),
         ));
     }
 
@@ -2772,6 +2828,14 @@ async fn api_merge_chains(
         )
     })?;
 
+    // Merged thoughts are re-appended unsigned, which a signed or allowlist
+    // target refuses thought by thought; refuse up front instead.
+    if target_arc.read().await.access_policy().mode != crate::access::AccessMode::Open {
+        return Err(write_error(
+            crate::access::AccessError::SignatureRequired.into_io(),
+        ));
+    }
+
     // Open the source chain (read-only traversal to collect agents).
     let source_arc = get_or_open_chain(&state, source_key).await?;
 
@@ -2856,6 +2920,10 @@ async fn api_merge_chains(
         let src = source_arc.read().await;
         src.thoughts()
             .iter()
+            // Governance records are bound to the source chain's key and head;
+            // `append_thought` refuses the reserved type, which would abort the
+            // merge half-way.
+            .filter(|t| t.thought_type != ThoughtType::AccessPolicy)
             .map(|t| {
                 let mapped_id = agent_remap
                     .get(&t.agent_id)

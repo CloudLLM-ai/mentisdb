@@ -1007,6 +1007,17 @@ fn import_chain_from_staging(
 
     match classify_chain_relationship(local_chain.thoughts(), backup_chain.thoughts()) {
         ChainRelationship::Identical | ChainRelationship::LocalExtendsBackup => Ok(()),
+        // The suffix is spliced in as raw records, bypassing the write policy
+        // `append_thought` enforces. On a signed or allowlist chain that would
+        // let a backup add unsigned or unauthorized thoughts, so such a chain
+        // takes the backup as a separate, renamed chain instead.
+        ChainRelationship::BackupExtendsLocal { .. }
+            if local_chain.access_policy().mode != crate::access::AccessMode::Open =>
+        {
+            let renamed_key = next_import_chain_key(target_dir, chain_key)?;
+            copy_chain_bundle(staging_dir, target_dir, relative_path, &renamed_key, false)?;
+            normalize_imported_chain(target_dir, &renamed_key, chain_key, backup_registry)
+        }
         ChainRelationship::BackupExtendsLocal { suffix_start } => append_verified_suffix(
             target_dir,
             chain_key,

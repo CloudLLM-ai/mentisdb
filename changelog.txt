@@ -1,4 +1,24 @@
 UNRELEASED
+  - fix(security): the dashboard PIN could be guessed without limit through
+    `Authorization: Bearer <pin>` on any dashboard route (only the login form
+    was rate limited). The bearer path now shares the login form's per-IP
+    failed-attempt limiter (5 failures per 5 minutes, then 429, even for the
+    right PIN).
+  - fix(security): DNS rebinding and cross-site browser requests could drive
+    the REST and MCP listeners while bearer enforcement is off (the default).
+    A request carrying `Origin` or `Sec-Fetch-Site` (i.e. from a browser) must
+    now name an allowed host (loopback, `MENTISDB_BIND_HOST`,
+    `MENTISDB_DASHBOARD_ALLOWED_HOSTS`); programmatic clients are unaffected.
+  - fix(security): restoring a backup that extends a signed or allowlist chain
+    spliced the new records in raw, bypassing the write policy, so a crafted
+    backup could add unsigned thoughts. Such a chain now keeps its history and
+    the backup is imported as a separate renamed chain. BEHAVIOUR CHANGE: a
+    newer backup no longer fast-forwards a governed chain.
+  - fix(access): merging chains (REST/MCP and dashboard) and copying an agent
+    (dashboard) aborted half-way when the source held `AccessPolicy` records
+    (the reserved type is refused on append), leaving a partial copy. Those
+    records are skipped, and merging or copying into a signed/allowlist target
+    is refused up front with 403 instead of failing thought by thought.
   - fix(security): chain-scoped bearer tokens could read any chain through a
     decoy field. A request that named `target_chain_key`, `source_chain_key`,
     `branch_chain_key`, `chain_key_filter` or `chain_keys` instead of

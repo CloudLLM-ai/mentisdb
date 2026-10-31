@@ -1658,8 +1658,12 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         .route("/v1/extract-memories", post(rest_extract_memories_handler))
         .with_state(service.clone())
         .layer(middleware::from_fn_with_state(
-            service,
+            service.clone(),
             rest_bearer_auth_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            service,
+            browser_guard_middleware,
         ))
 }
 
@@ -1720,8 +1724,12 @@ pub fn mcp_router(config: MentisDbServiceConfig) -> Router {
         .route("/tools/execute", post(mcp_execute_handler))
         .with_state(service.clone())
         .layer(middleware::from_fn_with_state(
-            service,
+            service.clone(),
             inject_single_chain_bearer_scope_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            service,
+            browser_guard_middleware,
         ))
 }
 
@@ -2661,6 +2669,10 @@ fn standard_and_legacy_mcp_router(
     .layer(middleware::from_fn_with_state(
         service.clone(),
         inject_single_chain_bearer_scope_middleware,
+    ))
+    .layer(middleware::from_fn_with_state(
+        service.clone(),
+        browser_guard_middleware,
     ));
     standard_mcp_only_router(
         service,
@@ -2698,8 +2710,12 @@ fn standard_mcp_only_router(
             sse_broadcaster,
         ))
         .layer(middleware::from_fn_with_state(
-            service,
+            service.clone(),
             inject_single_chain_bearer_scope_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            service,
+            browser_guard_middleware,
         ))
 }
 
@@ -5558,6 +5574,14 @@ impl MentisDbService {
 
         let source_arc = self.get_chain(Some(source_key), None).await?;
 
+        // Merged thoughts are re-appended unsigned, which a signed or allowlist
+        // target refuses thought by thought; refuse up front instead.
+        if target_arc.read().await.access_policy().mode != crate::access::AccessMode::Open {
+            return Err(Box::new(
+                crate::access::AccessError::SignatureRequired.into_io(),
+            ));
+        }
+
         // Collect agent thought counts on the target chain for tie-breaking.
         let target_agent_thought_counts: std::collections::HashMap<String, u64> = {
             let tgt = target_arc.read().await;
@@ -5626,6 +5650,10 @@ impl MentisDbService {
             let src = source_arc.read().await;
             src.thoughts()
                 .iter()
+                // Governance records are bound to the source chain's key and
+                // head; `append_thought` refuses the reserved type, which would
+                // abort the merge half-way.
+                .filter(|t| t.thought_type != ThoughtType::AccessPolicy)
                 .map(|t| {
                     let mapped_id = agent_remap
                         .get(&t.agent_id)
@@ -7216,6 +7244,65 @@ fn bearer_token_required_response(route: &str) -> (StatusCode, Json<Value>) {
         "route": route,
     });
     (StatusCode::UNAUTHORIZED, Json(body))
+}
+
+/// Whether an `Origin` header value names one of this daemon's own hosts.
+///
+/// `null` (sandboxed frames, `data:` pages), values with userinfo and anything
+/// that is not `scheme://authority` are refused.
+fn origin_names_own_host(origin: &str) -> bool {
+    let Some((_, rest)) = origin.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    !authority.contains('@') && crate::dashboard::dashboard_host_allowed(authority)
+}
+
+/// Blocks DNS-rebinding and cross-site browser requests to the REST and MCP
+/// listeners while bearer enforcement is off.
+///
+/// With `MENTISDB_BEARER_TOKEN_ACCESS` unset these listeners trust whoever can
+/// reach them, so a web page that rebinds its hostname to `127.0.0.1` could
+/// read and write every chain as "same-origin". A rebinding page still sends
+/// its own name in `Host` and `Origin`. Browsers also attach `Sec-Fetch-Site`,
+/// which scripts cannot set, so a request that carries `Origin` or
+/// `Sec-Fetch-Site` is browser-driven and must name an allowed host (the
+/// dashboard's allowlist: loopback, `MENTISDB_BIND_HOST`,
+/// `MENTISDB_DASHBOARD_ALLOWED_HOSTS`). Programmatic clients (the CLI, MCP
+/// agents, `curl`) send neither header and are unaffected. With bearer
+/// enforcement on, a page cannot authenticate, so the check is skipped.
+async fn browser_guard_middleware(
+    State(service): State<Arc<MentisDbService>>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    if service.config.bearer_token_access.load(Ordering::Relaxed) {
+        return next.run(request).await;
+    }
+    let headers = request.headers();
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok());
+    let from_browser = origin.is_some() || headers.contains_key("sec-fetch-site");
+    if from_browser {
+        let host_ok = headers
+            .get(axum::http::header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .or_else(|| request.uri().authority().map(|a| a.as_str().to_string()))
+            .is_some_and(|host| crate::dashboard::dashboard_host_allowed(&host));
+        let origin_ok = origin.is_none_or(origin_names_own_host);
+        if !host_ok || !origin_ok {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "browser request from a foreign host rejected; enable bearer tokens or list the host in MENTISDB_DASHBOARD_ALLOWED_HOSTS"
+                })),
+            )
+                .into_response();
+        }
+    }
+    next.run(request).await
 }
 
 /// Axum middleware that enforces `MENTISDB_BEARER_TOKEN_ACCESS=true` for REST
