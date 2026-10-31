@@ -1,0 +1,27 @@
+[package]
+name = "mentisdb-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+mentisdb = { path = "..", default-features = false, features = ["server"] }
+
+# Its own workspace keeps the fuzz crate out of the parent's builds, clippy
+# runs and published tarball.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "cli_args"
+path = "fuzz_targets/cli_args.rs"
+test = false
+doc = false
+bench = false
