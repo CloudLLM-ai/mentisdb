@@ -343,7 +343,8 @@ impl Payload {
         self
     }
     fn time(&mut self, value: &DateTime<Utc>) -> &mut Self {
-        self.i64(value.timestamp_micros())
+        self.i64(value.timestamp())
+            .u32(value.timestamp_subsec_nanos())
     }
     fn relations(&mut self, relations: &[ThoughtRelation]) -> &mut Self {
         self.u32(relations.len() as u32);

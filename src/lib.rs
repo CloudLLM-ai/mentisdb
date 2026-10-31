@@ -1897,6 +1897,13 @@ pub enum ThoughtType {
     /// memories. `LLMExtracted` is used when the pipeline itself needs
     /// to be recorded as the source of the memory.
     LLMExtracted,
+    /// A signed access-policy governance record (see [`access`]).
+    ///
+    /// Reserved: it cannot be appended through [`MentisDb::append_thought`];
+    /// only [`MentisDb::set_access_policy`] writes it, after verifying the
+    /// signature and the signer's authority. Chains containing it cannot be
+    /// read by MentisDB versions that predate this variant.
+    AccessPolicy,
 }
 
 /// Error returned when a string cannot be parsed as a [`ThoughtType`].
@@ -1938,7 +1945,7 @@ impl ThoughtType {
     ///
     /// Useful for validating user input, generating help text, or building
     /// filter UIs without hard-coding the variant list.
-    pub const ALL: [ThoughtType; 31] = [
+    pub const ALL: [ThoughtType; 32] = [
         ThoughtType::PreferenceUpdate,
         ThoughtType::UserTrait,
         ThoughtType::RelationshipUpdate,
@@ -1970,6 +1977,7 @@ impl ThoughtType {
         ThoughtType::Reframe,
         ThoughtType::Goal,
         ThoughtType::LLMExtracted,
+        ThoughtType::AccessPolicy,
     ];
 
     /// Canonical PascalCase name for this thought type.
@@ -2023,6 +2031,7 @@ impl ThoughtType {
             ThoughtType::Reframe => "Reframe",
             ThoughtType::Goal => "Goal",
             ThoughtType::LLMExtracted => "LLMExtracted",
+            ThoughtType::AccessPolicy => "AccessPolicy",
         }
     }
 }
@@ -2081,6 +2090,7 @@ impl std::str::FromStr for ThoughtType {
             "reframe" => ThoughtType::Reframe,
             "goal" => ThoughtType::Goal,
             "llmextracted" => ThoughtType::LLMExtracted,
+            "accesspolicy" => ThoughtType::AccessPolicy,
             _ => {
                 return Err(ParseThoughtTypeError {
                     input: input.to_string(),
@@ -5050,6 +5060,8 @@ pub struct MentisDb {
     /// inspects only the edges aimed at one thought instead of scanning the
     /// whole chain. Built at open and updated on append.
     invalidating_edges: HashMap<Uuid, Vec<InvalidatingEdge>>,
+    /// Access policy derived from the chain's governance records.
+    access_policy: access::AccessPolicy,
     /// Optional deduplication threshold for automatic `Supersedes` relations.
     ///
     /// When set, each new thought's content is compared against recent thoughts
@@ -5206,6 +5218,7 @@ impl MentisDb {
             pending_chain_registration_updates: 0,
             invalidated_thought_ids: HashSet::new(),
             invalidating_edges: HashMap::new(),
+            access_policy: access::AccessPolicy::default(),
             dedup_threshold: None,
             dedup_scan_window: 64,
             implicit_edge_overlay: None,
@@ -5237,6 +5250,8 @@ impl MentisDb {
                 thought,
             );
         }
+
+        chain.access_policy = access::AccessPolicy::replay(chain.chain_key(), &chain.thoughts);
 
         if !chain.verify_integrity() {
             if chain.verify_integrity_legacy() {
@@ -5602,38 +5617,136 @@ impl MentisDb {
     ///     ThoughtInput::new(ThoughtType::Decision, "Use MentisDB as source of truth")
     /// )?;
     /// ```
-    pub fn append_thought(
+    ///
+    /// # Access control
+    ///
+    /// A thought carrying a `thought_signature` must verify against an active key
+    /// of `agent_id` (v1 or v2, see [`signing`]); the chain's [`access::AccessPolicy`]
+    /// may additionally require signatures or an allowed key. A signed thought is
+    /// committed exactly as signed (no automatic relations, `valid_at` or dedup
+    /// edges). The reserved [`ThoughtType::AccessPolicy`] is refused here; use
+    /// [`MentisDb::set_access_policy`].
+    ///
+    /// # Errors
+    ///
+    /// [`access::AccessError`] wrapped in `io::Error` (recover it with
+    /// [`access::AccessError::from_io`]) when access control refuses the write;
+    /// other `io::Error`s for invalid references or storage failures.
+    pub fn append_thought(&mut self, agent_id: &str, input: ThoughtInput) -> io::Result<&Thought> {
+        self.append_thought_inner(agent_id, input, false)
+    }
+
+    /// Check the access rules for appending `input` as `agent_id` at the current head.
+    fn check_append_access(
+        &self,
+        agent_id: &str,
+        input: &ThoughtInput,
+    ) -> Result<(), access::AccessError> {
+        use access::AccessError;
+        use signing::{SignatureVersion, StoredSignature};
+        if input.thought_type == ThoughtType::AccessPolicy {
+            return Err(AccessError::ReservedThoughtType);
+        }
+        let mode = self.access_policy.mode;
+        let Some(raw) = input.thought_signature.as_deref() else {
+            return match mode {
+                access::AccessMode::Open => Ok(()),
+                _ => Err(AccessError::SignatureRequired),
+            };
+        };
+        let key_id = input
+            .signing_key_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .ok_or(AccessError::MissingSigningKeyId)?;
+        let stored = StoredSignature::parse(raw).map_err(AccessError::UnsupportedSignature)?;
+        if stored.version == SignatureVersion::V1 && mode != access::AccessMode::Open {
+            return Err(AccessError::SignatureVersionNotAllowed(
+                SignatureVersion::V1,
+            ));
+        }
+        let agent = self
+            .agent_registry
+            .agents
+            .get(agent_id)
+            .ok_or_else(|| AccessError::UnknownAgent(agent_id.to_string()))?;
+        let key = agent
+            .public_keys
+            .iter()
+            .find(|k| k.key_id == key_id)
+            .ok_or_else(|| AccessError::UnknownKey {
+                agent_id: agent_id.to_string(),
+                key_id: key_id.to_string(),
+            })?;
+        if key.revoked_at.is_some() {
+            return Err(AccessError::KeyRevoked {
+                agent_id: agent_id.to_string(),
+                key_id: key_id.to_string(),
+            });
+        }
+        let payload = match stored.version {
+            SignatureVersion::V1 => signable_thought_payload(agent_id, input),
+            SignatureVersion::V2 => {
+                let prev = self.thoughts.last().map(|t| t.hash.as_str()).unwrap_or("");
+                signing::thought_payload_v2(self.chain_key(), agent_id, prev, input)
+            }
+        };
+        signing::verify_ed25519_signature(&key.public_key_bytes, &payload, &stored.signature)
+            .map_err(AccessError::BadSignature)?;
+        if mode == access::AccessMode::Allowlist
+            && !self
+                .access_policy
+                .contains(agent_id, key_id, &key.public_key_bytes)
+        {
+            return Err(AccessError::KeyNotAllowed {
+                agent_id: agent_id.to_string(),
+                key_id: key_id.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn append_thought_inner(
         &mut self,
         agent_id: &str,
         mut input: ThoughtInput,
+        governance: bool,
     ) -> io::Result<&Thought> {
+        if !governance {
+            self.check_append_access(agent_id, &input)
+                .map_err(access::AccessError::into_io)?;
+        }
         validate_refs(&self.thoughts, &input.refs)?;
+        let signed = input.thought_signature.is_some();
 
         let mut relations = input.relations.clone();
         let now = Utc::now();
-        for &reference_index in &input.refs {
-            if let Some(target) = self.thoughts.get(reference_index as usize) {
-                relations.push(ThoughtRelation {
-                    kind: ThoughtRelationKind::References,
-                    target_id: target.id,
-                    chain_key: None,
-                    valid_at: Some(now),
-                    invalid_at: None,
-                });
+        if !signed {
+            for &reference_index in &input.refs {
+                if let Some(target) = self.thoughts.get(reference_index as usize) {
+                    relations.push(ThoughtRelation {
+                        kind: ThoughtRelationKind::References,
+                        target_id: target.id,
+                        chain_key: None,
+                        valid_at: Some(now),
+                        invalid_at: None,
+                    });
+                }
             }
-        }
-        // Set valid_at on any caller-supplied relations that don't already have one.
-        for relation in &mut relations {
-            if relation.valid_at.is_none() {
-                relation.valid_at = Some(now);
+            // Set valid_at on any caller-supplied relations that don't already have one.
+            for relation in &mut relations {
+                if relation.valid_at.is_none() {
+                    relation.valid_at = Some(now);
+                }
             }
+            dedupe_relations(&mut relations);
         }
-        dedupe_relations(&mut relations);
 
         // Automatic dedup: if dedup_threshold is set, check the new content
         // against recent thoughts. If similarity exceeds the threshold, auto-add
         // a Supersedes relation pointing to the most similar prior thought.
-        if let Some(threshold) = self.dedup_threshold {
+        if let Some(threshold) = self.dedup_threshold.filter(|_| !signed) {
             let new_tokens: HashSet<String> =
                 search::lexical::normalize_lexical_tokens(&input.content, true)
                     .into_iter()
@@ -6291,6 +6404,247 @@ impl MentisDb {
         let updated = record.clone();
         self.persist_registries()?;
         Ok(updated)
+    }
+
+    /// The access policy in force on this chain, derived from its governance records.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::access::AccessMode;
+    /// use mentisdb::{MentisDb, StorageAdapterKind};
+    ///
+    /// let dir = std::env::temp_dir().join(format!("mentisdb_doc_policy_{}", std::process::id()));
+    /// let chain = MentisDb::open_with_key_and_storage_kind(&dir, "doc", StorageAdapterKind::Binary).unwrap();
+    /// assert_eq!(chain.access_policy().mode, AccessMode::Open);
+    /// # let _ = std::fs::remove_dir_all(&dir);
+    /// ```
+    pub fn access_policy(&self) -> &access::AccessPolicy {
+        &self.access_policy
+    }
+
+    /// Commit a signed access-policy record to the chain and apply it.
+    ///
+    /// `record` is the new policy, `agent_id` / `signing_key_id` name the signer
+    /// and `signature` is the stored-form v2 signature (see
+    /// [`signing::StoredSignature::encode_v2`]) over
+    /// [`signing::thought_payload_v2`] of [`access::policy_thought_input`] at the
+    /// current head. The first record (`seq` 0) bootstraps governance and must
+    /// be signed by a key listed in the record itself; later records must be
+    /// signed by a key of the current policy. Callers of this method are the
+    /// operator: REST and MCP only expose it with a global token.
+    ///
+    /// # Errors
+    ///
+    /// [`access::AccessError`] wrapped in `io::Error` when the record is
+    /// invalid, out of sequence, signed by a non-governor or badly signed (a
+    /// stale head makes the signature fail: sign against the current head).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ed25519_dalek::{Signer, SigningKey};
+    /// use mentisdb::access::{policy_thought_input, AccessMode, AllowedKey, PolicyRecord};
+    /// use mentisdb::signing::{thought_payload_v2, StoredSignature};
+    /// use mentisdb::{MentisDb, StorageAdapterKind, ThoughtType};
+    ///
+    /// let dir = std::env::temp_dir().join(format!("mentisdb_doc_setpolicy_{}", std::process::id()));
+    /// let mut chain = MentisDb::open_with_key_and_storage_kind(&dir, "doc", StorageAdapterKind::Binary).unwrap();
+    /// chain.append("alice", ThoughtType::Insight, "first").unwrap();
+    ///
+    /// let secret = SigningKey::from_bytes(&[1u8; 32]);
+    /// let public = secret.verifying_key().to_bytes();
+    /// let record = PolicyRecord::new(0, AccessMode::Allowlist,
+    ///     vec![AllowedKey::new("alice", "k1", &public)], "").unwrap();
+    /// let head = chain.thoughts().last().unwrap().hash.clone();
+    /// let payload = thought_payload_v2("doc", "alice", &head, &policy_thought_input(&record));
+    /// let signature = StoredSignature::encode_v2(&secret.sign(&payload).to_bytes());
+    /// chain.set_access_policy("alice", &record, "k1", signature).unwrap();
+    /// assert_eq!(chain.access_policy().mode, AccessMode::Allowlist);
+    /// // Unsigned writes are now refused.
+    /// assert!(chain.append("bob", ThoughtType::Insight, "nope").is_err());
+    /// # let _ = std::fs::remove_dir_all(&dir);
+    /// ```
+    pub fn set_access_policy(
+        &mut self,
+        agent_id: &str,
+        record: &access::PolicyRecord,
+        signing_key_id: &str,
+        signature: Vec<u8>,
+    ) -> io::Result<&Thought> {
+        let key_id = signing_key_id.trim().to_string();
+        let mut input = access::policy_thought_input(record);
+        input.signing_key_id = Some(key_id.clone());
+        input.thought_signature = Some(signature.clone());
+        let prev = self.thoughts.last().map(|t| t.hash.as_str()).unwrap_or("");
+        let payload = signing::thought_payload_v2(self.chain_key(), agent_id, prev, &input);
+        self.access_policy
+            .check_record(record, agent_id, &key_id, &signature, &payload)
+            .map_err(access::AccessError::into_io)?;
+        let hash = self
+            .append_thought_inner(agent_id, input, true)?
+            .hash
+            .clone();
+        self.access_policy.commit_record(record.clone(), &hash);
+        Ok(self.thoughts.last().expect("just appended"))
+    }
+
+    /// Re-verify every signature stored in the chain and replay its governance records.
+    ///
+    /// Revoked keys still verify what they signed before revocation. v1
+    /// signatures cannot see edits the chain made at commit time (automatic
+    /// relations, `valid_at`), so a v1 signature that no longer matches is
+    /// reported as invalid with that caveat.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::{MentisDb, StorageAdapterKind, ThoughtType};
+    ///
+    /// let dir = std::env::temp_dir().join(format!("mentisdb_doc_verify_{}", std::process::id()));
+    /// let mut chain = MentisDb::open_with_key_and_storage_kind(&dir, "doc", StorageAdapterKind::Binary).unwrap();
+    /// chain.append("alice", ThoughtType::Insight, "unsigned").unwrap();
+    /// let report = chain.verify_signatures();
+    /// assert_eq!((report.signed, report.unsigned, report.invalid), (0, 1, 0));
+    /// assert!(report.is_clean());
+    /// # let _ = std::fs::remove_dir_all(&dir);
+    /// ```
+    pub fn verify_signatures(&self) -> access::SignatureReport {
+        use access::{SignatureCheck, SignatureStatus};
+        let policy = access::AccessPolicy::replay(self.chain_key(), &self.thoughts);
+        let checks: Vec<SignatureCheck> = self
+            .thoughts
+            .iter()
+            .map(|thought| {
+                let (version, status) = self.verify_stored_signature(thought, &policy);
+                SignatureCheck {
+                    index: thought.index,
+                    thought_id: thought.id,
+                    agent_id: thought.agent_id.clone(),
+                    key_id: thought.signing_key_id.clone(),
+                    version,
+                    status,
+                }
+            })
+            .collect();
+        let count =
+            |f: fn(&SignatureStatus) -> bool| checks.iter().filter(|c| f(&c.status)).count();
+        let valid = count(|s| matches!(s, SignatureStatus::Valid));
+        let unsigned = count(|s| matches!(s, SignatureStatus::Unsigned));
+        let invalid = count(|s| matches!(s, SignatureStatus::Invalid(_)));
+        access::SignatureReport {
+            chain_key: self.chain_key().to_string(),
+            policy,
+            signed: valid + invalid,
+            valid,
+            unsigned,
+            invalid,
+            checks,
+        }
+    }
+
+    fn verify_stored_signature(
+        &self,
+        thought: &Thought,
+        policy: &access::AccessPolicy,
+    ) -> (Option<u8>, access::SignatureStatus) {
+        use access::SignatureStatus::{Invalid, Unsigned, Valid};
+        use signing::{SignatureVersion, StoredSignature};
+        let Some(raw) = thought.thought_signature.as_deref() else {
+            return (None, Unsigned);
+        };
+        let Ok(stored) = StoredSignature::parse(raw) else {
+            return (None, Invalid("unsupported signature shape".to_string()));
+        };
+        let version = match stored.version {
+            SignatureVersion::V1 => 1,
+            SignatureVersion::V2 => 2,
+        };
+        if thought.thought_type == ThoughtType::AccessPolicy {
+            let status = if policy.invalid_records.contains(&thought.hash) {
+                Invalid("policy record rejected on replay".to_string())
+            } else {
+                Valid
+            };
+            return (Some(version), status);
+        }
+        let Some(key_id) = thought.signing_key_id.as_deref() else {
+            return (
+                Some(version),
+                Invalid("signature without signing_key_id".to_string()),
+            );
+        };
+        let Some(key) = self
+            .agent_registry
+            .agents
+            .get(&thought.agent_id)
+            .and_then(|agent| agent.public_keys.iter().find(|k| k.key_id == key_id))
+        else {
+            return (
+                Some(version),
+                Invalid(format!("key '{key_id}' is not registered")),
+            );
+        };
+        let verifies = |payload: &[u8]| {
+            signing::verify_ed25519_signature(&key.public_key_bytes, payload, &stored.signature)
+                .is_ok()
+        };
+        let ok = match stored.version {
+            SignatureVersion::V2 => verifies(&signing::thought_payload_v2_stored(
+                self.chain_key(),
+                thought,
+            )),
+            SignatureVersion::V1 => self
+                .v1_candidate_inputs(thought)
+                .iter()
+                .any(|input| verifies(&signable_thought_payload(&thought.agent_id, input))),
+        };
+        let status = if ok {
+            Valid
+        } else {
+            Invalid(match stored.version {
+                SignatureVersion::V2 => "signature does not verify".to_string(),
+                SignatureVersion::V1 => {
+                    "v1 signature does not verify (v1 cannot see edits made at commit time)"
+                        .to_string()
+                }
+            })
+        };
+        (Some(version), status)
+    }
+
+    /// Inputs a v1 signer may have signed: the stored relations, or those with the
+    /// commit-time edits (automatic `References` edges, filled `valid_at`) undone.
+    fn v1_candidate_inputs(&self, thought: &Thought) -> Vec<ThoughtInput> {
+        let base = |relations: Vec<ThoughtRelation>| {
+            let mut input = ThoughtInput::new(thought.thought_type, thought.content.clone());
+            input.session_id = thought.session_id;
+            input.role = thought.role;
+            input.confidence = thought.confidence;
+            input.importance = thought.importance;
+            input.tags = thought.tags.clone();
+            input.concepts = thought.concepts.clone();
+            input.refs = thought.refs.clone();
+            input.relations = relations;
+            input
+        };
+        let auto_targets: Vec<Uuid> = thought
+            .refs
+            .iter()
+            .filter_map(|r| self.thoughts.get(*r as usize).map(|t| t.id))
+            .collect();
+        let stripped = thought
+            .relations
+            .iter()
+            .filter(|r| {
+                !(r.kind == ThoughtRelationKind::References && auto_targets.contains(&r.target_id))
+            })
+            .map(|r| ThoughtRelation {
+                valid_at: None,
+                ..r.clone()
+            })
+            .collect();
+        vec![base(thought.relations.clone()), base(stripped)]
     }
 
     /// Mark one registered agent as disabled.

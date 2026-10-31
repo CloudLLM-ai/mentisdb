@@ -71,7 +71,7 @@ Primitive encodings (all integers big-endian):
 | `u8`, `u64` | fixed width |
 | `f32` | the 4 bytes of the IEEE-754 bits of the value clamped to `0.0..=1.0` |
 | `uuid` | the 16 raw bytes |
-| `time` | `i64` microseconds since the Unix epoch, UTC |
+| `time` | `i64` seconds since the Unix epoch, UTC, then `u32` nanoseconds of the second |
 
 ### `mentisdb/key-registration/v1` (proof of possession)
 
@@ -115,9 +115,10 @@ chain fails because the head has moved on. The cost is that a signer must sign
 against the current head, so a concurrent writer can make the append fail with
 `stale head`; the client fetches the new head and signs again.
 
-The server never edits a signed thought: the automatic near-duplicate
-`Supersedes` relation is skipped for signed thoughts, so what is stored is what
-was signed. `id` and `timestamp` are assigned by the chain and are not signed;
+The server never edits a signed thought: for a thought that carries a signature
+it adds no automatic `References` edges for `refs`, fills in no `valid_at`,
+removes no duplicate relations and adds no near-duplicate `Supersedes` edge, so
+what is stored is exactly what was signed and can be re-verified later. `id` and `timestamp` are assigned by the chain and are not signed;
 they are covered by the record hash instead.
 
 ### Signature versions on stored thoughts

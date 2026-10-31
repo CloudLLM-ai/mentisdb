@@ -467,6 +467,9 @@ fn thought_sound_sequence(tt: ThoughtType) -> &'static [(f32, u64)] {
 
         // ── LLM Extracted ─────────────────────────────────────────────────────
         ThoughtType::LLMExtracted => &[(523.25, 50), (659.25, 50), (783.99, 70)], // synthesized chime
+
+        // ── Governance ────────────────────────────────────────────────────────
+        ThoughtType::AccessPolicy => &[(392.00, 90), (392.00, 90), (523.25, 120)], // seal stamp
     }
 }
 

@@ -13,7 +13,7 @@ use mentisdb::ThoughtType;
 /// and the display form must equal the canonical name.
 #[test]
 fn every_variant_round_trips() {
-    assert_eq!(ThoughtType::ALL.len(), 31);
+    assert_eq!(ThoughtType::ALL.len(), 32);
     for thought_type in ThoughtType::ALL {
         let name = thought_type.as_str();
         assert_eq!(
