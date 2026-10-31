@@ -788,21 +788,53 @@ impl WriterState {
     }
 }
 
-fn open_append_writer(file_path: &Path) -> io::Result<BufWriter<File>> {
+fn open_append_writer(file_path: &Path) -> io::Result<File> {
     if let Some(parent) = file_path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)?;
         }
     }
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(file_path)?;
-    Ok(BufWriter::new(file))
+    OpenOptions::new().create(true).append(true).open(file_path)
 }
 
+/// What a group commit needs from the chain file: append bytes, learn the
+/// committed length, roll a failed write back, and force data to disk.
+///
+/// A trait (rather than `File`) so tests can inject write and sync failures.
+trait CommitFile: Write {
+    /// Current length of the file in bytes.
+    fn committed_len(&self) -> io::Result<u64>;
+    /// Cut the file back to `len` bytes.
+    fn truncate_to(&mut self, len: u64) -> io::Result<()>;
+    /// Flush file data (not necessarily metadata) to stable storage.
+    fn sync_data(&self) -> io::Result<()>;
+}
+
+impl CommitFile for File {
+    fn committed_len(&self) -> io::Result<u64> {
+        Ok(self.metadata()?.len())
+    }
+
+    fn truncate_to(&mut self, len: u64) -> io::Result<()> {
+        self.set_len(len)
+    }
+
+    fn sync_data(&self) -> io::Result<()> {
+        File::sync_data(self)
+    }
+}
+
+/// Write the pending group commit to the chain file.
+///
+/// The buffer is cleared on *every* outcome. Retaining it after a failure made
+/// the writer's shutdown flush append the same bytes a second time, so a full
+/// disk (partial write) or a failed `fsync` left a torn record followed by a
+/// duplicate of it, which no torn-tail repair can read past. Instead a failed
+/// write is rolled back to the pre-commit length so the file never holds a
+/// partial record, and a failed sync leaves the (complete) records in place;
+/// either way the caller reports the error to every waiting append.
 fn flush_background_buffer(
-    file: &mut Option<BufWriter<File>>,
+    file: &mut Option<File>,
     file_path: &Path,
     write_buffer: &mut Vec<u8>,
     dirty_count: &mut usize,
@@ -814,16 +846,27 @@ fn flush_background_buffer(
     if file.is_none() {
         *file = Some(open_append_writer(file_path)?);
     }
-    let writer = file.as_mut().unwrap();
-    writer.write_all(write_buffer)?;
-    writer.flush()?;
+    let file = file.as_mut().expect("append writer was just opened");
+    let result = commit_group(file, write_buffer, sync);
+    write_buffer.clear();
+    *dirty_count = 0;
+    result
+}
+
+/// Append `buffer` to `file`, rolling the file back if the write fails.
+fn commit_group<F: CommitFile>(file: &mut F, buffer: &[u8], sync: bool) -> io::Result<()> {
+    let start = file.committed_len()?;
+    if let Err(error) = file.write_all(buffer).and_then(|()| file.flush()) {
+        // Best effort: a failed rollback leaves a torn tail that the next open
+        // repairs, which is no worse than before.
+        let _ = file.truncate_to(start);
+        return Err(error);
+    }
     if sync {
         // One fsync per group commit: acknowledged durable appends survive
         // power loss, not just process crashes.
-        writer.get_ref().sync_data()?;
+        file.sync_data()?;
     }
-    write_buffer.clear();
-    *dirty_count = 0;
     Ok(())
 }
 
@@ -876,7 +919,7 @@ impl BackgroundWriter {
                     Shutdown(Option<mpsc::Sender<io::Result<()>>>),
                 }
 
-                let mut file = None;
+                let mut file: Option<File> = None;
                 // Pre-reserve enough for a typical group commit (16 thoughts × ~512 bytes each).
                 let mut write_buffer = Vec::with_capacity(FLUSH_THRESHOLD * 512);
                 let mut dirty_count = 0usize;
@@ -12440,7 +12483,7 @@ fn read_next_binary_payload(reader: &mut impl Read) -> io::Result<Option<Vec<u8>
 /// data that must not be truncated, so the chain fails open with `InvalidData`.
 fn reject_non_torn_partial_payload(partial: &[u8], claimed_len: u64) -> io::Result<()> {
     if (partial.len() as u64) > MAX_THOUGHT_PAYLOAD_BYTES + 8
-        || deserialize_binary_thought_payload(partial).is_ok()
+        || partial_holds_complete_record(partial)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -12452,6 +12495,20 @@ fn reject_non_torn_partial_payload(partial: &[u8], claimed_len: u64) -> io::Resu
         ));
     }
     Ok(())
+}
+
+/// Whether `bytes` are a whole serialized thought, as opposed to a prefix of one.
+///
+/// Decoding alone cannot tell: the shorter legacy layouts end exactly where the
+/// current layout's optional trailing fields begin, so a prefix of a current
+/// record that was cut after those fields parses as a "complete" legacy record,
+/// reading its `prev_hash` and `hash` from the zero bytes of the absent `None`
+/// tags. Real records always carry a 64-digit hex hash, so require one; this
+/// stops a genuinely torn tail from being refused as mid-file corruption.
+fn partial_holds_complete_record(bytes: &[u8]) -> bool {
+    deserialize_binary_thought_payload(bytes).is_ok_and(|thought| {
+        thought.hash.len() == 64 && thought.hash.bytes().all(|b| b.is_ascii_hexdigit())
+    })
 }
 
 /// Result of scanning the record framing of a binary chain file.
@@ -12939,5 +12996,100 @@ fn rehash_chain_to_bincode(thoughts: &mut [Thought]) {
         thought.prev_hash = prev_hash.clone();
         thought.hash = compute_thought_hash(thought);
         prev_hash = thought.hash.clone();
+    }
+}
+
+#[cfg(test)]
+mod commit_group_tests {
+    use super::*;
+
+    /// In-memory chain file that can fail a write part-way through or fail
+    /// the final sync, to exercise the group-commit failure paths.
+    #[derive(Default)]
+    struct FakeFile {
+        data: Vec<u8>,
+        fail_write_after: Option<usize>,
+        fail_sync: bool,
+    }
+
+    impl Write for FakeFile {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if let Some(limit) = self.fail_write_after {
+                if self.data.len() + buf.len() > limit {
+                    let room = limit.saturating_sub(self.data.len());
+                    self.data.extend_from_slice(&buf[..room]);
+                    return Err(io::Error::other("injected: no space left on device"));
+                }
+            }
+            self.data.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl CommitFile for FakeFile {
+        fn committed_len(&self) -> io::Result<u64> {
+            Ok(self.data.len() as u64)
+        }
+
+        fn truncate_to(&mut self, len: u64) -> io::Result<()> {
+            self.data.truncate(len as usize);
+            Ok(())
+        }
+
+        fn sync_data(&self) -> io::Result<()> {
+            if self.fail_sync {
+                Err(io::Error::other("injected: fsync failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// A write that fails part-way must leave the file exactly as it was
+    /// before the commit, never a torn record.
+    #[test]
+    fn test_failed_group_write_is_rolled_back_to_the_previous_length() {
+        let mut file = FakeFile {
+            data: b"good-prefix".to_vec(),
+            fail_write_after: Some(15),
+            fail_sync: false,
+        };
+        let error = commit_group(&mut file, b"0123456789", false).unwrap_err();
+        assert!(error.to_string().contains("no space"));
+        assert_eq!(file.data, b"good-prefix", "partial bytes must be cut off");
+    }
+
+    /// A failed sync is reported, and the complete records stay in the file.
+    #[test]
+    fn test_failed_group_sync_reports_error_and_keeps_complete_records() {
+        let mut file = FakeFile {
+            fail_sync: true,
+            ..FakeFile::default()
+        };
+        let error = commit_group(&mut file, b"record", true).unwrap_err();
+        assert!(error.to_string().contains("fsync"));
+        assert_eq!(file.data, b"record");
+        assert!(commit_group(&mut FakeFile::default(), b"record", true).is_ok());
+    }
+
+    /// Whatever happens to the commit, the pending buffer is emptied so the
+    /// writer's shutdown flush cannot append the same records a second time.
+    #[test]
+    fn test_pending_buffer_is_cleared_even_when_the_write_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chain.tcbin");
+        std::fs::write(&path, b"existing").unwrap();
+        let mut file = Some(File::open(&path).unwrap());
+        let mut buffer = b"pending record".to_vec();
+        let mut dirty = 3;
+        let result = flush_background_buffer(&mut file, &path, &mut buffer, &mut dirty, false);
+        assert!(result.is_err(), "writing through a read-only handle fails");
+        assert!(buffer.is_empty(), "no duplicate on the shutdown flush");
+        assert_eq!(dirty, 0);
+        assert_eq!(std::fs::read(&path).unwrap(), b"existing");
     }
 }

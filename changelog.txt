@@ -84,6 +84,21 @@ UNRELEASED
     readable (the version is recorded in the 64/65-byte stored signature) but are
     not accepted on restricted chains. Signed thoughts are committed exactly as
     signed (no automatic relations, `valid_at` or dedup edges).
+  - fix(storage): a crash that left more than about 40% of the final record on
+    disk made the chain refuse to open ("length prefix ... points past end of
+    file but the following bytes hold a complete record"). The torn-tail check
+    decoded the partial payload, and a prefix of a current-layout record parses
+    as a complete record in the shorter legacy layout (its `prev_hash`/`hash`
+    are read from the zero bytes of absent `None` tags). A partial payload now
+    only counts as a complete record when it carries a 64-digit hex hash, so
+    genuine tears are truncated and preserved as `.torn-*` while a corrupt
+    length prefix over an intact record still fails open untouched. Found by a
+    new test that cuts the last record at every byte.
+  - fix(storage): a failed group commit kept its bytes in the writer buffer, so
+    the writer's shutdown flush appended them a second time. After a full disk
+    (partial write) or a failed `fsync` the chain file held a torn record
+    followed by its duplicate, which no repair can read past. The buffer is now
+    always cleared and a failed write is rolled back to the pre-commit length.
   - fix(storage): a forged length prefix inside a chain record (restored
     backup, imported or copied `.tcbin`) or inside a persisted HNSW graph made
     bincode attempt a `String`/`Vec<u8>` allocation of the claimed size and
