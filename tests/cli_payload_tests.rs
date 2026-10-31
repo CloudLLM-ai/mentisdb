@@ -6,7 +6,7 @@
 //! tests pin the outgoing JSON body so the CLI and the REST schema cannot drift
 //! again without a failing test.
 
-use mentisdb::cli::{build_add_body, build_ranked_search_body, AddCommand, SearchCommand};
+use mentisdb::cli::{build_add_body, parse_args, AddCommand, CliCommand};
 
 fn add_command(content: &str, thought_type: Option<&str>) -> AddCommand {
     AddCommand {
@@ -20,13 +20,12 @@ fn add_command(content: &str, thought_type: Option<&str>) -> AddCommand {
     }
 }
 
-fn search_command(text: &str) -> SearchCommand {
-    SearchCommand {
-        text: text.to_string(),
-        limit: None,
-        scope: None,
-        chain_key: None,
-        url: "http://127.0.0.1:9472".to_string(),
+/// Parse `mentisdb search ...` and return the JSON body it would POST.
+fn search_body(args: &[&str]) -> serde_json::Value {
+    let argv = std::iter::once("mentisdb").chain(args.iter().copied());
+    match parse_args(argv).expect("search should parse") {
+        CliCommand::Remote(invocation) => invocation.body.expect("search posts a body"),
+        other => panic!("expected a remote command, got {other:?}"),
     }
 }
 
@@ -93,12 +92,16 @@ fn add_body_carries_optional_fields() {
 /// Ranked search reads the query from `text`, not `query`.
 #[test]
 fn search_body_uses_text_field() {
-    let mut cmd = search_command("cache invalidation");
-    cmd.limit = Some(5);
-    cmd.scope = Some("user".to_string());
-    cmd.chain_key = Some("chain-1".to_string());
-
-    let body = build_ranked_search_body(&cmd);
+    let body = search_body(&[
+        "search",
+        "cache invalidation",
+        "--limit",
+        "5",
+        "--scope",
+        "user",
+        "--chain",
+        "chain-1",
+    ]);
     assert_eq!(body["text"], "cache invalidation");
     assert_eq!(body["limit"], 5);
     assert_eq!(body["scope"], "user");

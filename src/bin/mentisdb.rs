@@ -2216,8 +2216,7 @@ Usage:
   mentisdb setup <agent|all> [--url <url>] [--dry-run]
   mentisdb wizard [--url <url>] [--yes]
   mentisdb add <content> [--type <type>] [--scope <scope>] [--tag <tag>] [--agent <id>] [--chain <key>] [--url <url>]
-  mentisdb search <query> [--limit <n>] [--scope <scope>] [--chain <key>] [--url <url>]
-  mentisdb agents [--chain <key>] [--url <url>]
+  mentisdb <group> <command> [options]   (thought, search, chain, agent, entity-type, memory, skill, webhook, vectors, daemon; see below)
   mentisdb backup [--dir <path>] [--output <path>] [--flush] [--include-tls]
   mentisdb restore <archive.mbak> [--dir <path>] [--overwrite] [--yes]
   mentisdb cert [<ip-address-or-domain>] [--force] [--out-dir <path>] [--env-file <path>] [--no-env-update]
@@ -2423,18 +2422,11 @@ where
     }
 
     let first = args[0].to_string_lossy();
-    if matches!(
-        first.as_ref(),
-        "setup"
-            | "wizard"
-            | "add"
-            | "search"
-            | "agents"
-            | "backup"
-            | "restore"
-            | "bearertoken"
-            | "cert"
-    ) {
+    let help_for_subcommand = first == "help"
+        && args
+            .get(1)
+            .is_some_and(|word| mentisdb::cli::is_subcommand(&word.to_string_lossy()));
+    if help_for_subcommand || mentisdb::cli::is_subcommand(first.as_ref()) {
         let mut command = vec![OsString::from("mentisdb")];
         command.extend(args);
         return Ok(DaemonArgMode::CliSubcommand(command));

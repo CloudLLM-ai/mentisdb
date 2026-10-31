@@ -46,30 +46,6 @@ pub struct AddCommand {
     pub url: String,
 }
 
-/// Parsed `search` subcommand arguments.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchCommand {
-    /// The search query text.
-    pub text: String,
-    /// Maximum number of results.
-    pub limit: Option<usize>,
-    /// Optional memory scope filter.
-    pub scope: Option<String>,
-    /// Optional chain key.
-    pub chain_key: Option<String>,
-    /// Daemon REST URL.
-    pub url: String,
-}
-
-/// Parsed `agents` subcommand arguments.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentsCommand {
-    /// Optional chain key.
-    pub chain_key: Option<String>,
-    /// Daemon REST URL.
-    pub url: String,
-}
-
 /// Parsed `backup` subcommand arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupCommand {
@@ -181,10 +157,6 @@ pub enum CliCommand {
     WizardHelp,
     /// Print add subcommand help.
     AddHelp,
-    /// Print search subcommand help.
-    SearchHelp,
-    /// Print agents subcommand help.
-    AgentsHelp,
     /// Print backup subcommand help.
     BackupHelp,
     /// Print restore subcommand help.
@@ -199,10 +171,10 @@ pub enum CliCommand {
     Wizard(WizardCommand),
     /// Add a thought to a running daemon.
     Add(AddCommand),
-    /// Search thoughts on a running daemon.
-    Search(SearchCommand),
-    /// List agents on a running daemon.
-    Agents(AgentsCommand),
+    /// Print help text for a daemon command or group (from the command catalog).
+    RemoteHelp(String),
+    /// Run a daemon-facing command (thought, search, chain, agent, ...).
+    Remote(Box<super::remote::RemoteInvocation>),
     /// Create a backup archive.
     Backup(BackupCommand),
     /// Restore from a backup archive.
@@ -232,6 +204,10 @@ where
         return Ok(CliCommand::Help);
     };
 
+    if let Some(parsed) = parse_remote(&parts) {
+        return parsed;
+    }
+
     // Check for subcommand-specific help flags
     let has_help_flag = parts
         .iter()
@@ -243,8 +219,6 @@ where
         "setup" if has_help_flag => Ok(CliCommand::SetupHelp),
         "wizard" if has_help_flag => Ok(CliCommand::WizardHelp),
         "add" if has_help_flag => Ok(CliCommand::AddHelp),
-        "search" if has_help_flag => Ok(CliCommand::SearchHelp),
-        "agents" if has_help_flag => Ok(CliCommand::AgentsHelp),
         "backup" if has_help_flag => Ok(CliCommand::BackupHelp),
         "restore" if has_help_flag => Ok(CliCommand::RestoreHelp),
         "bearertoken" if has_help_flag => Ok(CliCommand::BearerTokenHelp),
@@ -252,14 +226,31 @@ where
         "setup" => parse_setup(parts),
         "wizard" => parse_wizard(parts),
         "add" => parse_add(parts),
-        "search" => parse_search(parts),
-        "agents" => parse_agents(parts),
         "backup" => parse_backup(parts),
         "restore" => parse_restore(parts),
         "bearertoken" => parse_bearer_token(parts),
         "cert" => parse_cert(parts),
         other => Err(format!("Unknown subcommand '{other}'")),
     }
+}
+
+/// Resolve daemon-facing commands from the catalog.
+///
+/// `mentisdb help <command...>` is accepted as `mentisdb <command...> --help`.
+fn parse_remote(parts: &[String]) -> Option<Result<CliCommand, String>> {
+    let catalog = super::catalog::commands();
+    let parsed = match parts.split_first() {
+        Some((first, rest)) if first == "help" && !rest.is_empty() => {
+            let mut with_flag = rest.to_vec();
+            with_flag.push("--help".to_string());
+            super::remote::parse(&catalog, &with_flag)
+        }
+        _ => super::remote::parse(&catalog, parts),
+    }?;
+    Some(parsed.map(|parsed| match parsed {
+        super::remote::Parsed::Help(text) => CliCommand::RemoteHelp(text),
+        super::remote::Parsed::Run(invocation) => CliCommand::Remote(invocation),
+    }))
 }
 
 /// Return the full `mentisdb --help` text. Composed from a static
@@ -273,6 +264,11 @@ pub fn help_text() -> String {
     let mut text = String::from(HELP_HEADER);
     text.push_str(super::cert::help_text());
     text.push_str(HELP_FOOTER);
+    text.push('\n');
+    text.push_str(&super::remote::overview(
+        &super::catalog::commands(),
+        super::catalog::GROUP_SUMMARIES,
+    ));
     text
 }
 
@@ -288,8 +284,7 @@ Usage:
   mentisdb setup <agent|all> [--url <url>] [--dry-run] [--yes]
   mentisdb wizard [--url <url>] [--yes]
   mentisdb add <content> [--type <type>] [--scope <scope>] [--tag <tag>] [--agent <id>] [--chain <key>] [--url <url>]
-  mentisdb search <query> [--limit <n>] [--scope <scope>] [--chain <key>] [--url <url>]
-  mentisdb agents [--chain <key>] [--url <url>]
+  mentisdb <group> <command> [options]      daemon commands, see 'Daemon commands' below
   mentisdb backup [-o <path>] [--dir <path>] [--flush] [--include-tls]
   mentisdb restore <archive.mentis> [--dir <path>] [--overwrite] [--yes]
   mentisdb bearertoken create --global <alias> [--dir <path>]
@@ -376,32 +371,6 @@ Commands:
       --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
       --help           Show this help text
 
-  search
-    Search thoughts on a running MentisDB daemon via ranked search.
-
-    Examples:
-      mentisdb search \\\"cache invalidation\\\"
-      mentisdb search \\\"performance\\\" --limit 5 --scope session
-
-    Options:
-      --limit <n>      Maximum results (default: 10)
-      --scope <scope>  Filter by memory scope: user, session, or agent
-      --chain <key>    Chain key (uses daemon default if omitted)
-      --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
-      --help           Show this help text
-
-  agents
-    List registered agents on a running MentisDB daemon.
-
-    Examples:
-      mentisdb agents
-      mentisdb agents --chain my-chain
-
-    Options:
-      --chain <key>    Chain key (uses daemon default if omitted)
-      --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
-      --help           Show this help text
-
   backup
     Create a .mentis backup archive of the MENTISDB_DIR.
 
@@ -479,7 +448,7 @@ Notes:
   - `mentisdb` with no subcommand starts the daemon.
   - `mentisdb --help` shows daemon help; subcommand --help shows subcommand help.
   - `setup` writes config files; it is not scaffold-only.
-  - `add`, `search`, and `agents` require a running daemon.
+  - `add` and the daemon commands (thought, search, chain, agent, ...) require a running daemon.
   - `backup` and `restore` operate on the MENTISDB_DIR directly and do not require a running daemon.
 ";
 
@@ -596,53 +565,6 @@ Examples:
   mentisdb add \"The sky is blue\"
   mentisdb add \"Session fact\" --scope session --tag important
   mentisdb add \"Insight\" --type insight --agent my-agent
-"
-}
-
-/// Return the help text for the `search` subcommand.
-pub fn search_help_text() -> &'static str {
-    "\
-mentisdb search — Search thoughts on a running MentisDB daemon via ranked search.
-
-Usage:
-  mentisdb search <query> [--limit <n>] [--scope <scope>] [--chain <key>] [--url <url>]
-
-Options:
-  --limit <n>      Maximum results (default: 10)
-  --scope <scope>  Filter by memory scope: user, session, or agent
-  --chain <key>    Chain key (uses daemon default if omitted)
-  --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
-  --help           Show this help text
-
-Notes:
-  Default search hides thoughts that later memory superseded, corrected, or
-  invalidated (Supersedes / Corrects / Invalidates). That only works when those
-  edges exist — agents should write them, and/or set MENTISDB_DEDUP_THRESHOLD
-  (e.g. 0.85) so near-duplicates auto-Supersede. For full audit history use the
-  REST/MCP include_invalidated=true flag (not exposed on this thin CLI wrapper).
-
-Examples:
-  mentisdb search \"cache invalidation\"
-  mentisdb search \"performance\" --limit 5 --scope session
-"
-}
-
-/// Return the help text for the `agents` subcommand.
-pub fn agents_help_text() -> &'static str {
-    "\
-mentisdb agents — List registered agents on a running MentisDB daemon.
-
-Usage:
-  mentisdb agents [--chain <key>] [--url <url>]
-
-Options:
-  --chain <key>    Chain key (uses daemon default if omitted)
-  --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
-  --help           Show this help text
-
-Examples:
-  mentisdb agents
-  mentisdb agents --chain my-chain
 "
 }
 
@@ -1034,94 +956,6 @@ fn parse_add(args: Vec<String>) -> Result<CliCommand, String> {
         chain_key,
         url,
     }))
-}
-
-fn parse_search(args: Vec<String>) -> Result<CliCommand, String> {
-    if args.len() < 2 {
-        return Err("search requires <query>".to_string());
-    }
-    if matches!(args[1].as_str(), "-h" | "--help" | "help") {
-        return Ok(CliCommand::Help);
-    }
-    let text = args[1].clone();
-    let mut limit = None;
-    let mut scope = None;
-    let mut chain_key = None;
-    let mut url = default_rest_url();
-    let mut index = 2;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--limit" => {
-                limit = Some(
-                    args.get(index + 1)
-                        .ok_or_else(|| "--limit requires a value".to_string())?
-                        .parse::<usize>()
-                        .map_err(|_| "invalid --limit value")?,
-                );
-                index += 2;
-            }
-            "--scope" => {
-                scope = Some(
-                    args.get(index + 1)
-                        .ok_or_else(|| "--scope requires a value".to_string())?
-                        .clone(),
-                );
-                index += 2;
-            }
-            "--chain" => {
-                chain_key = Some(
-                    args.get(index + 1)
-                        .ok_or_else(|| "--chain requires a value".to_string())?
-                        .clone(),
-                );
-                index += 2;
-            }
-            "--url" => {
-                url = args
-                    .get(index + 1)
-                    .ok_or_else(|| "--url requires a value".to_string())?
-                    .clone();
-                index += 2;
-            }
-            "-h" | "--help" => return Ok(CliCommand::Help),
-            other => return Err(format!("Unexpected argument '{other}' for search")),
-        }
-    }
-    Ok(CliCommand::Search(SearchCommand {
-        text,
-        limit,
-        scope,
-        chain_key,
-        url,
-    }))
-}
-
-fn parse_agents(args: Vec<String>) -> Result<CliCommand, String> {
-    let mut chain_key = None;
-    let mut url = default_rest_url();
-    let mut index = 1;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--chain" => {
-                chain_key = Some(
-                    args.get(index + 1)
-                        .ok_or_else(|| "--chain requires a value".to_string())?
-                        .clone(),
-                );
-                index += 2;
-            }
-            "--url" => {
-                url = args
-                    .get(index + 1)
-                    .ok_or_else(|| "--url requires a value".to_string())?
-                    .clone();
-                index += 2;
-            }
-            "-h" | "--help" | "help" => return Ok(CliCommand::Help),
-            other => return Err(format!("Unexpected argument '{other}' for agents")),
-        }
-    }
-    Ok(CliCommand::Agents(AgentsCommand { chain_key, url }))
 }
 
 fn parse_backup(args: Vec<String>) -> Result<CliCommand, String> {

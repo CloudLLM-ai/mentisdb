@@ -4,8 +4,11 @@
 //! this module so the command logic stays directly testable.
 
 mod args;
+mod catalog;
 mod cert;
+mod client;
 mod prompt;
+pub mod remote;
 mod setup;
 mod wizard;
 
@@ -16,11 +19,11 @@ use crate::backup::{
 use crate::paths::default_mentisdb_dir;
 
 pub use args::{
-    add_help_text, agents_help_text, backup_help_text, bearer_token_help_text, cert_help_text,
-    help_text, parse_args, restore_help_text, search_help_text, setup_help_text, wizard_help_text,
-    AddCommand, AgentsCommand, BackupCommand, BearerTokenCommand, CertCommand, CliCommand,
-    RestoreCommand, SearchCommand, SetupCommand, WizardCommand,
+    add_help_text, backup_help_text, bearer_token_help_text, cert_help_text, help_text, parse_args,
+    restore_help_text, setup_help_text, wizard_help_text, AddCommand, BackupCommand,
+    BearerTokenCommand, CertCommand, CliCommand, RestoreCommand, SetupCommand, WizardCommand,
 };
+pub use catalog::{commands as remote_commands, GROUP_SUMMARIES as REMOTE_GROUP_SUMMARIES};
 pub use cert::{
     build_extra_sans, resolve_paths, run_cert, update_env_file, CERT_FILENAME, KEY_FILENAME,
     MENTISDB_TLS_CERT_ENV, MENTISDB_TLS_KEY_ENV,
@@ -33,6 +36,16 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+/// Whether `word` names a CLI subcommand or command group the `mentisdb`
+/// binary should hand to [`run_with_io`] instead of treating it as a daemon flag.
+#[must_use]
+pub fn is_subcommand(word: &str) -> bool {
+    matches!(
+        word,
+        "setup" | "wizard" | "add" | "backup" | "restore" | "bearertoken" | "cert"
+    ) || remote::is_group(&catalog::commands(), word)
+}
+
 /// Run the embedded CLI with caller-provided streams.
 pub fn run_with_io<I, T>(
     args: I,
@@ -44,7 +57,11 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
-    match parse_args(args) {
+    let argv: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let is_daemon_command = argv
+        .get(1)
+        .is_some_and(|word| remote::is_group(&catalog::commands(), &word.to_string_lossy()));
+    match parse_args(argv) {
         Ok(CliCommand::Help) => {
             let _ = write!(out, "{}", args::help_text());
             ExitCode::SUCCESS
@@ -61,12 +78,8 @@ where
             let _ = write!(out, "{}", add_help_text());
             ExitCode::SUCCESS
         }
-        Ok(CliCommand::SearchHelp) => {
-            let _ = write!(out, "{}", search_help_text());
-            ExitCode::SUCCESS
-        }
-        Ok(CliCommand::AgentsHelp) => {
-            let _ = write!(out, "{}", agents_help_text());
+        Ok(CliCommand::RemoteHelp(text)) => {
+            let _ = write!(out, "{text}");
             ExitCode::SUCCESS
         }
         Ok(CliCommand::BackupHelp) => {
@@ -106,17 +119,10 @@ where
                 ExitCode::from(1)
             }
         },
-        Ok(CliCommand::Search(command)) => match run_search(&command, out, err) {
+        Ok(CliCommand::Remote(invocation)) => match client::run(&invocation, input, out) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
-                let _ = writeln!(err, "search failed: {error}");
-                ExitCode::from(1)
-            }
-        },
-        Ok(CliCommand::Agents(command)) => match run_agents(&command, out, err) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                let _ = writeln!(err, "agents failed: {error}");
+                let _ = writeln!(err, "{} failed: {error}", invocation.command);
                 ExitCode::from(1)
             }
         },
@@ -150,8 +156,11 @@ where
         },
         Err(message) => {
             let _ = writeln!(err, "{message}");
-            let _ = writeln!(err);
-            let _ = write!(err, "{}", args::help_text());
+            // Daemon commands name their own `--help`; the full overview is noise there.
+            if !is_daemon_command {
+                let _ = writeln!(err);
+                let _ = write!(err, "{}", args::help_text());
+            }
             ExitCode::from(2)
         }
     }
@@ -330,80 +339,6 @@ fn run_add(cmd: &AddCommand, out: &mut dyn Write, _err: &mut dyn Write) -> Resul
     let response = ureq::post(&url)
         .send_json(body)
         .map_err(|e| format!("POST {url}: {e}"))?;
-    let json: serde_json::Value = response
-        .into_body()
-        .read_json()
-        .map_err(|e| format!("parse response: {e}"))?;
-    let _ = writeln!(
-        out,
-        "{}",
-        serde_json::to_string_pretty(&json).unwrap_or_default()
-    );
-    Ok(())
-}
-
-/// Build the JSON body for the `search` subcommand.
-///
-/// Ranked search reads the query from the `text` field, matching
-/// `RankedSearchRequest` in the REST API.
-pub fn build_ranked_search_body(cmd: &SearchCommand) -> serde_json::Value {
-    let mut body = serde_json::Map::new();
-    body.insert(
-        "text".to_string(),
-        serde_json::Value::String(cmd.text.clone()),
-    );
-    if let Some(limit) = cmd.limit {
-        body.insert("limit".to_string(), serde_json::Value::Number(limit.into()));
-    }
-    if let Some(ref scope) = cmd.scope {
-        body.insert(
-            "scope".to_string(),
-            serde_json::Value::String(scope.clone()),
-        );
-    }
-    if let Some(ref chain_key) = cmd.chain_key {
-        body.insert(
-            "chain_key".to_string(),
-            serde_json::Value::String(chain_key.clone()),
-        );
-    }
-    serde_json::Value::Object(body)
-}
-
-fn run_search(
-    cmd: &SearchCommand,
-    out: &mut dyn Write,
-    _err: &mut dyn Write,
-) -> Result<(), String> {
-    let body = build_ranked_search_body(cmd);
-    let url = format!("{}/v1/ranked-search", cmd.url.trim_end_matches('/'));
-    let response = ureq::post(&url)
-        .send_json(body)
-        .map_err(|e| format!("POST {url}: {e}"))?;
-    let json: serde_json::Value = response
-        .into_body()
-        .read_json()
-        .map_err(|e| format!("parse response: {e}"))?;
-    let _ = writeln!(
-        out,
-        "{}",
-        serde_json::to_string_pretty(&json).unwrap_or_default()
-    );
-    Ok(())
-}
-
-fn run_agents(
-    cmd: &AgentsCommand,
-    out: &mut dyn Write,
-    _err: &mut dyn Write,
-) -> Result<(), String> {
-    let mut url = format!("{}/v1/agents", cmd.url.trim_end_matches('/'));
-    if let Some(ref chain_key) = cmd.chain_key {
-        url = format!("{url}?chain_key={chain_key}");
-    }
-    let response = ureq::get(&url)
-        .call()
-        .map_err(|e| format!("GET {url}: {e}"))?;
     let json: serde_json::Value = response
         .into_body()
         .read_json()
