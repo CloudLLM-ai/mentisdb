@@ -5,7 +5,7 @@ MCP tools, the REST API and the web dashboard can do. This file is the
 checklist: every MCP tool, REST route and dashboard action, and the CLI command
 that covers it. When a tool, route or dashboard action is added, add its row
 here and its command to `src/cli/catalog.rs` in the same change. The test
-`tests/cli_catalog_tests.rs` fails if a catalogued command is missing from this
+`tests/cli_remote_parse_tests.rs` fails if a catalogued command is missing from this
 document.
 
 ## How the CLI reaches MentisDB
@@ -28,11 +28,11 @@ Markdown, skill content, the recent-context prompt) print the raw text, and
 | `mentisdb_bootstrap` | `POST /v1/bootstrap` | `chain bootstrap` |
 | `mentisdb_append` | `POST /v1/thoughts` | `thought append` (and `add`) |
 | `mentisdb_append_retrospective` | `POST /v1/retrospectives` | `thought retro` |
-| `mentisdb_search` | `POST /v1/search` | `search --mode filter` |
-| `mentisdb_lexical_search` | `POST /v1/lexical-search` | `search --mode lexical` |
+| `mentisdb_search` | `POST /v1/search` | `search filter` |
+| `mentisdb_lexical_search` | `POST /v1/lexical-search` | `search lexical` |
 | `mentisdb_ranked_search` | `POST /v1/ranked-search` | `search` (default mode) |
-| `mentisdb_federated_search` | `POST /v1/federated-search` | `search --mode federated` |
-| `mentisdb_context_bundles` | `POST /v1/context-bundles` | `search --mode bundles` |
+| `mentisdb_federated_search` | `POST /v1/federated-search` | `search federated` |
+| `mentisdb_context_bundles` | `POST /v1/context-bundles` | `search bundles` |
 | `mentisdb_summary_candidates` | `POST /v1/summary-candidates` | `thought candidates` |
 | `mentisdb_list_chains` | `GET /v1/chains` | `chain list` |
 | `mentisdb_list_agents` | `POST /v1/agents` | `agent list` (and `agents`) |
@@ -88,8 +88,8 @@ Markdown, skill content, the recent-context prompt) print the raw text, and
 | Delete chain (`DELETE /chains/{k}`) | `chain delete` |
 | Enable / disable / sync a vector sidecar | `vectors enable`, `vectors disable`, `vectors sync` |
 | Rebuild a vector sidecar | `vectors rebuild` |
-| Paged thoughts of a chain, one thought, thoughts of an agent | `thought traverse`, `thought get`, `search --mode filter --agent` |
-| Chain search, bundles, agent search | `search`, `search --mode bundles`, `search --mode filter` |
+| Paged thoughts of a chain, one thought, thoughts of an agent | `thought traverse`, `thought get`, `search filter --agent` |
+| Chain search, bundles, agent search | `search`, `search bundles`, `search filter` |
 | List agents (all chains / one chain) | `agent list` |
 | Agent detail | `agent get` |
 | Create or patch an agent | `agent upsert` |

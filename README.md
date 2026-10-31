@@ -442,6 +442,49 @@ Once startup completes, it prints:
 
 ---
 
+## Command-Line Interface
+
+The `mentisdb` binary is a complete command-line client for everything the MCP
+tools, the REST API and the web dashboard can do. Commands are
+`mentisdb <group> <command> [options]`; run `mentisdb --help` for the
+overview, `mentisdb <group> --help` for a group, and
+`mentisdb <group> <command> --help` for flags and copy-paste examples.
+[`docs/CLI_PARITY.md`](docs/CLI_PARITY.md) maps every MCP tool, REST route and
+dashboard action to its command.
+
+| Group | What it covers |
+|---|---|
+| `thought` | `append`, `retro`, `get`, `genesis`, `traverse`, `recent`, `candidates` |
+| `search` | ranked (default), `lexical`, `filter`, `federated`, `bundles` |
+| `chain` | `list`, `head`, `bootstrap`, `branch`, `merge`, `info`, `delete` |
+| `agent` | `list`, `get`, `registry`, `upsert`, `describe`, `alias`, `key add`, `key revoke`, `disable`, `activate`, `copy` |
+| `entity-type` | `list`, `upsert` |
+| `memory` | `export`, `import`, `extract` (MEMORY.md style Markdown) |
+| `skill` | `guide`, `manifest`, `list`, `search`, `read`, `versions`, `upload`, `deprecate`, `revoke`, `delete`, `diff` |
+| `webhook` | `list`, `register`, `delete` |
+| `vectors` | `enable`, `disable`, `sync`, `rebuild` |
+| `daemon` | `health`, `version`, `flush`, `restart`, `settings list`, `settings set` |
+| local | `setup`, `wizard`, `add`, `backup`, `restore`, `bearertoken`, `cert` |
+
+```bash
+mentisdb chain bootstrap "Project Atlas memory" --chain atlas
+mentisdb thought append "Use UTC everywhere" --chain atlas --type Decision --tag time
+echo "deploy finished" | mentisdb thought append - --chain atlas --type Summary --role Checkpoint
+mentisdb search "why UTC" --chain atlas --type Decision --limit 5
+mentisdb memory export --chain atlas > MEMORY.md
+mentisdb chain delete scratch --yes --pin 123456
+```
+
+Daemon commands talk to the running daemon so they share its chain cache and
+locks: memory and registry commands use the REST API at `--url` (default
+`http://127.0.0.1:9472`, bearer token from `--token` or `MENTISDB_BEARER_TOKEN`),
+while the PIN-gated dashboard actions (`chain info/delete`, `vectors
+enable/disable/sync`, `skill diff`, `agent copy`, `daemon version/restart/settings`)
+use the dashboard API at `--dashboard-url` (default `https://127.0.0.1:9475`,
+PIN from `--pin` or `MENTISDB_DASHBOARD_PIN`). `--json` prints compact JSON for
+pipes; destructive commands require `--yes`. `backup`, `restore`, `bearertoken`
+and `cert` work on the data directory directly and do not need the daemon.
+
 ## Daemon Configuration
 
 `mentisdb` is configured with environment variables:
