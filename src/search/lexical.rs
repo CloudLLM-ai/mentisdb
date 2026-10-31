@@ -848,28 +848,35 @@ impl LexicalIndex {
         if expanded.is_empty() || doc_total == 0 {
             return empty(expanded);
         }
-        let allowed: Option<Vec<bool>> = match candidates {
+        let words_per_doc = expanded.len().div_ceil(64);
+        let mut scratch = ScanScratch::acquire(doc_total, words_per_doc);
+        let restrict = match candidates {
             LexicalCandidates::All => None,
             LexicalCandidates::Subset(positions) => {
                 if positions.is_empty() {
+                    scratch.release();
                     return empty(expanded);
                 }
-                let mut mask = vec![false; doc_total];
+                if scratch.allowed.len() < doc_total {
+                    scratch.allowed.resize(doc_total, false);
+                }
                 for &position in positions {
-                    if let Some(slot) = mask.get_mut(position) {
+                    if let Some(slot) = scratch.allowed.get_mut(position) {
                         *slot = true;
                     }
                 }
-                Some(mask)
+                Some(positions)
             }
         };
 
-        let words_per_doc = expanded.len().div_ceil(64);
         let doc_count = doc_total as f32;
-        let mut scores = vec![0.0_f32; doc_total];
         let mut touched = Vec::new();
-        let mut term_masks = vec![0_u64; doc_total * words_per_doc];
-        let mut source_masks = vec![0_u8; doc_total];
+        let ScanScratch {
+            scores,
+            term_masks,
+            source_masks,
+            allowed,
+        } = &mut scratch;
         let scoring = &query.scoring;
         let cutoffs = &query.df_cutoffs;
         let averages = [
@@ -911,7 +918,7 @@ impl LexicalIndex {
 
             for posting in postings {
                 let position = posting.doc_position;
-                if allowed.as_ref().is_some_and(|mask| !mask[position]) {
+                if restrict.is_some() && !allowed[position] {
                     continue;
                 }
                 let stats = &self.document_stats[position];
@@ -946,14 +953,25 @@ impl LexicalIndex {
             }
         }
 
-        LexicalScan {
-            scores,
+        // The restriction mask must be all-false again before the scratch is
+        // shared; scores and masks are cleared when the scan is dropped.
+        if let Some(positions) = restrict {
+            for &position in positions {
+                if let Some(slot) = allowed.get_mut(position) {
+                    *slot = false;
+                }
+            }
+        }
+        let scan = LexicalScan {
+            scores: std::mem::take(&mut scratch.scores),
             touched,
             terms: expanded.into_iter().map(|(term, _)| term).collect(),
             words_per_doc,
-            term_masks,
-            source_masks,
-        }
+            term_masks: std::mem::take(&mut scratch.term_masks),
+            source_masks: std::mem::take(&mut scratch.source_masks),
+        };
+        scratch.release();
+        scan
     }
 
     /// Materialize one [`LexicalHit`] for a document touched by `scan`.
@@ -1041,6 +1059,110 @@ pub struct LexicalScan {
     words_per_doc: usize,
     term_masks: Vec<u64>,
     source_masks: Vec<u8>,
+}
+
+/// Dense per-document scratch space reused across scans on one thread.
+///
+/// A scan needs `O(documents)` zeroed score, term-mask and source-mask arrays.
+/// Allocating them per query made a one-term search on a large chain pay for
+/// the whole index. Instead the arrays are kept, all-zero, in a per-thread
+/// slot: a scan borrows them, and [`LexicalScan`]'s `Drop` clears only the
+/// positions it touched before handing them back, so steady-state cost is
+/// `O(matches)` rather than `O(documents)`.
+///
+/// Invariant: every array in the pool is entirely zero (or `false`).
+#[derive(Default)]
+struct ScanScratch {
+    scores: Vec<f32>,
+    term_masks: Vec<u64>,
+    source_masks: Vec<u8>,
+    allowed: Vec<bool>,
+}
+
+/// Largest scratch (in bytes) a thread keeps between scans; a giant one-off
+/// index is released instead of pinning memory on every worker thread.
+const SCAN_SCRATCH_RETAIN_BYTES: usize = 64 * 1024 * 1024;
+
+thread_local! {
+    static SCAN_SCRATCH: std::cell::RefCell<Option<ScanScratch>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+impl ScanScratch {
+    /// Take the thread's scratch (or a fresh one) sized for `doc_total`
+    /// documents and `words_per_doc` term-mask words per document.
+    fn acquire(doc_total: usize, words_per_doc: usize) -> Self {
+        let mut scratch = SCAN_SCRATCH
+            .try_with(|slot| slot.try_borrow_mut().ok().and_then(|mut slot| slot.take()))
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        if scratch.scores.len() < doc_total {
+            scratch.scores.resize(doc_total, 0.0);
+            scratch.source_masks.resize(doc_total, 0);
+        }
+        let mask_words = doc_total * words_per_doc;
+        if scratch.term_masks.len() < mask_words {
+            scratch.term_masks.resize(mask_words, 0);
+        }
+        scratch
+    }
+
+    fn bytes(&self) -> usize {
+        self.scores.len() * 4
+            + self.term_masks.len() * 8
+            + self.source_masks.len()
+            + self.allowed.len()
+    }
+
+    /// Return an all-zero scratch to the thread's slot, keeping the larger
+    /// array of each kind when the slot is already occupied (a scan's arrays
+    /// and its restriction mask come back separately).
+    fn release(self) {
+        let _ = SCAN_SCRATCH.try_with(|slot| {
+            let Ok(mut slot) = slot.try_borrow_mut() else {
+                return;
+            };
+            let mut merged = slot.take().unwrap_or_default();
+            merged.scores = longer(merged.scores, self.scores);
+            merged.term_masks = longer(merged.term_masks, self.term_masks);
+            merged.source_masks = longer(merged.source_masks, self.source_masks);
+            merged.allowed = longer(merged.allowed, self.allowed);
+            if merged.bytes() <= SCAN_SCRATCH_RETAIN_BYTES {
+                *slot = Some(merged);
+            }
+        });
+    }
+}
+
+/// The longer of two all-zero arrays.
+fn longer<T>(left: Vec<T>, right: Vec<T>) -> Vec<T> {
+    if right.len() > left.len() {
+        right
+    } else {
+        left
+    }
+}
+
+impl Drop for LexicalScan {
+    fn drop(&mut self) {
+        if self.scores.is_empty() {
+            return;
+        }
+        let words = self.words_per_doc;
+        for &position in &self.touched {
+            self.scores[position] = 0.0;
+            self.source_masks[position] = 0;
+            self.term_masks[position * words..(position + 1) * words].fill(0);
+        }
+        ScanScratch {
+            scores: std::mem::take(&mut self.scores),
+            term_masks: std::mem::take(&mut self.term_masks),
+            source_masks: std::mem::take(&mut self.source_masks),
+            allowed: Vec::new(),
+        }
+        .release();
+    }
 }
 
 impl LexicalScan {

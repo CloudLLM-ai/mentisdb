@@ -4433,6 +4433,60 @@ impl ManagedSidecarEntry {
     }
 }
 
+/// Sliding window of normalized token sets for the most recent thoughts.
+///
+/// Dedup compares each new thought with the last `dedup_scan_window` thoughts.
+/// Tokenizing (stemming, lemmas) dominates that scan, so the sets are computed
+/// once per thought and reused. The window self-validates against the chain
+/// (length and tail hash) and rebuilds when it no longer lines up, which keeps
+/// it correct across signed appends that skip dedup, window changes and any
+/// operation that rewrites the thought list.
+#[derive(Default)]
+struct DedupTokenWindow {
+    /// Chain position of the first cached set.
+    start: usize,
+    /// Token sets for positions `start..start + sets.len()`.
+    sets: std::collections::VecDeque<HashSet<String>>,
+    /// Hash of the last cached thought, to detect a rewritten chain.
+    tail_hash: Option<String>,
+}
+
+impl DedupTokenWindow {
+    /// Bring the window up to date with `thoughts` and return the position of
+    /// its first set. Afterwards `self.sets` covers the last `window` thoughts.
+    fn sync(&mut self, thoughts: &[Thought], window: usize) -> usize {
+        let len = thoughts.len();
+        let want_start = len.saturating_sub(window);
+        let end = self.start + self.sets.len();
+        // A cache that starts after `want_start` (the window grew) is missing
+        // older thoughts, and one whose tail hash differs was rewritten.
+        let aligned = self.sets.is_empty()
+            || (end <= len
+                && self.start <= want_start
+                && thoughts.get(end - 1).map(|t| &t.hash) == self.tail_hash.as_ref());
+        if !aligned {
+            self.sets.clear();
+            self.start = want_start;
+        }
+        while self.start < want_start && !self.sets.is_empty() {
+            self.sets.pop_front();
+            self.start += 1;
+        }
+        if self.sets.is_empty() {
+            self.start = want_start;
+        }
+        for thought in &thoughts[self.start + self.sets.len()..] {
+            self.sets.push_back(
+                search::lexical::normalize_lexical_tokens(&thought.content, true)
+                    .into_iter()
+                    .collect(),
+            );
+        }
+        self.tail_hash = thoughts.last().map(|thought| thought.hash.clone());
+        self.start
+    }
+}
+
 #[derive(Default)]
 struct PendingDerivedWrite {
     sidecar_wals: Vec<(PathBuf, crate::search::VectorSidecarWalRecord)>,
@@ -5076,6 +5130,9 @@ pub struct MentisDb {
     /// Maximum number of recent thoughts to scan during dedup checking.
     /// Limits the cost of the similarity comparison on large chains.
     dedup_scan_window: usize,
+    /// Normalized token sets of the recent thoughts, so dedup tokenizes each
+    /// thought once instead of re-tokenizing the whole window per append.
+    dedup_tokens: DedupTokenWindow,
     /// In-memory overlay of vector-inferred semantic edges.
     implicit_edge_overlay: Option<crate::search::ImplicitEdgeOverlay>,
     /// Cached explicit-relation adjacency, keyed by `thoughts.len()`.
@@ -5224,6 +5281,7 @@ impl MentisDb {
             access_policy: access::AccessPolicy::default(),
             dedup_threshold: None,
             dedup_scan_window: 64,
+            dedup_tokens: DedupTokenWindow::default(),
             implicit_edge_overlay: None,
             adjacency_index: std::sync::Mutex::new(None),
             pending_derived: std::sync::Mutex::new(PendingDerivedWrite::default()),
@@ -5745,26 +5803,21 @@ impl MentisDb {
                     .into_iter()
                     .collect();
             if !new_tokens.is_empty() {
-                let scan_start = self.thoughts.len().saturating_sub(self.dedup_scan_window);
+                let scan_start = self
+                    .dedup_tokens
+                    .sync(&self.thoughts, self.dedup_scan_window);
                 let mut best_similarity = 0.0_f32;
                 let mut best_target_id = None;
-                for prior in &self.thoughts[scan_start..] {
-                    let prior_tokens: HashSet<String> =
-                        search::lexical::normalize_lexical_tokens(&prior.content, true)
-                            .into_iter()
-                            .collect();
+                for (offset, prior_tokens) in self.dedup_tokens.sets.iter().enumerate() {
                     if prior_tokens.is_empty() {
                         continue;
                     }
-                    let intersection = new_tokens.intersection(&prior_tokens).count() as f32;
-                    let union = new_tokens.union(&prior_tokens).count() as f32;
-                    if union == 0.0 {
-                        continue;
-                    }
-                    let similarity = intersection / union;
+                    let intersection = new_tokens.intersection(prior_tokens).count();
+                    let union = new_tokens.len() + prior_tokens.len() - intersection;
+                    let similarity = intersection as f32 / union as f32;
                     if similarity > best_similarity {
                         best_similarity = similarity;
-                        best_target_id = Some(prior.id);
+                        best_target_id = Some(self.thoughts[scan_start + offset].id);
                     }
                 }
                 if best_similarity >= threshold {

@@ -102,6 +102,17 @@ UNRELEASED
     about past preferences, decisions and constraints, or when the user says
     "again" / "remember" / "last time". `initialize` instructions, the
     bootstrap tool description, README, WHITEPAPER 8.4 and CLI_PARITY follow.
+  - perf(storage): automatic dedup re-tokenized (stemming and lemma expansion)
+    the last 64 thoughts on every append, about 0.49 ms of pure repeated work
+    per append at 40 words per thought. A self-validating sliding window now
+    tokenizes each thought once (`benches/storage_paths.rs`,
+    `dedup_tokenize_window64`); results are identical.
+  - perf(search): `LexicalIndex::scan` allocated and zeroed O(documents) score,
+    term-mask and restriction arrays per query. The arrays are now kept in a
+    per-thread scratch (capped at 64 MiB) and only the touched positions are
+    cleared on drop, so a rare one-term query on a 100 000 document index drops
+    from 9.9 us to 1.8 us and a three-term query from about 1.8 ms to 0.93 ms;
+    scores are identical.
   - feat(access): per-chain write access control. Policies `open` (default),
     `signed` and `allowlist` are stored as signed `AccessPolicy` governance
     thoughts in the chain (hash-chained, auditable) with a Merkle commitment to

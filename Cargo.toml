@@ -137,6 +137,10 @@ harness = false
 name = "hnsw_scale"
 harness = false
 
+[[bench]]
+name = "storage_paths"
+harness = false
+
 [[bin]]
 name = "mentisdb"
 path = "src/bin/mentisdb.rs"
