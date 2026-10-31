@@ -34,6 +34,24 @@ UNRELEASED
     hash, so a sidecar with the right count and head but missing entries read as
     fresh and left those thoughts findable only lexically. Freshness now also
     requires one entry per thought and reports a gap as `StaleThoughtCount`.
+  - feat(recall): agents no longer forget older memory at session start. The
+    mandatory startup loaded only the last 12 thoughts, so a preference stated
+    months ago was never loaded and users had to repeat themselves. New
+    `MentisDb::standing_context` (module `standing`), MCP tool
+    `mentisdb_standing_context`, REST `POST /v1/standing-context` and CLI
+    `mentisdb thought standing` return the durable half of memory regardless
+    of age: live Constraint, PreferenceUpdate, UserTrait, RelationshipUpdate,
+    Goal, Decision and LessonLearned thoughts (user-scoped or unscoped), ranked
+    by importance then recency, near-duplicate restatements collapsed
+    (Jaccard >= 0.85, newest kept), capped per type (8) and in total (40), plus
+    the newest Handoff and Checkpoint/Summary. Additive: no existing tool
+    changed. Criterion bench `standing_context` (10k thoughts).
+  - docs(skill): MENTISDB_SKILL.md startup now loads `mentisdb_standing_context`
+    before `mentisdb_recent_context`, and a new RECALL TRIGGERS section (the
+    read-side twin of WRITE TRIGGERS) tells agents to search before answering
+    about past preferences, decisions and constraints, or when the user says
+    "again" / "remember" / "last time". `initialize` instructions, the
+    bootstrap tool description, README, WHITEPAPER 8.4 and CLI_PARITY follow.
   - feat(access): per-chain write access control. Policies `open` (default),
     `signed` and `allowlist` are stored as signed `AccessPolicy` governance
     thoughts in the chain (hash-chained, auditable) with a Merkle commitment to

@@ -1608,6 +1608,8 @@ The daemon currently exposes 42 MCP tools:
   Revoke one previously registered public key.
 - `mentisdb_disable_agent`
   Disable one agent by marking its registry status as revoked.
+- `mentisdb_standing_context`
+  Render durable, age-independent memory (preferences, constraints, decisions, goals, lessons, user traits, newest handoff and checkpoint) into a prompt block; load it at session start before recent context.
 - `mentisdb_recent_context`
   Render recent thoughts into a prompt snippet for session resumption.
 - `mentisdb_memory_markdown`

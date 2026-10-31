@@ -12,10 +12,11 @@ triggers: [mentisdb, memory, remember, recall, chain, thought]
 2. `mentisdb_bootstrap(chain_key="<found>")` → open it (safe on existing chains)
 3. `mentisdb_skill_md` → load THIS skill before reading memory
 4. `mentisdb_list_agents` → reuse your existing agent identity
-5. `mentisdb_recent_context` → load where you left off
-6. Write `Summary` with `role: Checkpoint`
+5. `mentisdb_standing_context` → who the user is, what is decided, hard constraints (durable, any age)
+6. `mentisdb_recent_context` → where you left off (last N thoughts only)
+7. Write `Summary` with `role: Checkpoint`
 
-**READ BEFORE WRITE.** Never skip steps 1–5.
+**READ BEFORE WRITE.** Never skip steps 1–6. Step 6 alone forgets anything older than its window; step 5 is what stops the user repeating themselves.
 
 - **Reads never create chains.** Search, head, agents, get-thought, etc. on an unknown `chain_key` fail with not found (HTTP 404). For a new chain call `mentisdb_bootstrap` first; only bootstrap, append, import and upserts create chains.
 - **Chain-scoped bearer tokens cannot call `mentisdb_list_chains`** (global-only, like webhook list/delete and skill upload/deprecate/revoke/delete). With a scoped token, skip step 1 and use the `chain_key` you were given.
@@ -82,6 +83,15 @@ Write **immediately** when any becomes true: LessonLearned (bug cause, framework
 **Search-first rule (see §Search Before You Write above):** every append must be preceded by a `mentisdb_ranked_search` for related thoughts. Use the results to decide whether to write at all, whether to update a prior thought, and which `refs` / `relations` to set.
 
 **Minimum graph rule:** if a thought is not a pure standalone observation, add at least one backlink. Prefer 1–3 high-signal `refs` or `relations` over many weak links. When `MENTISDB_DEDUP_THRESHOLD` is set, near-duplicate content auto-emits `Supersedes`.
+
+## 🧠 RECALL TRIGGERS (READ BEFORE YOU ANSWER)
+
+Search **before replying** when the question touches the user's preferences, a past decision, a constraint, or how something was done before, or when the user says "again", "as I said", "remember", "last time", "we already". Startup context is a digest, not the whole chain.
+
+- `mentisdb_ranked_search(text="<question, paraphrased>", limit=10)`. Nothing relevant? Retry with `include_invalidated=true`; a hit there was superseded — say so and ask which is current.
+- Before proposing a plan: search `thought_types=["Constraint","Decision"]` for the topic.
+- On "why did we…": ranked search with `graph={"max_depth":2}`, then follow `refs` / `relations`.
+- Never answer "I don't know your preference" without having searched.
 
 ## 📋 THOUGHT TYPES
 
@@ -150,6 +160,7 @@ Git-like immutable version store for agent behaviour. Tools: `mentisdb_upload_sk
 |---|---|
 | **Most queries** (topical, semantic, multi-hop) | `mentisdb_ranked_search` (default) |
 | Strict keyword match, no expansion | `mentisdb_lexical_search` |
+| Durable context (preferences, constraints, decisions, goals) | `mentisdb_standing_context` |
 | Recent context | `mentisdb_recent_context(last_n=N)` |
 | One thought / first thought | `mentisdb_get_thought` / `mentisdb_get_genesis_thought` |
 | Page history | `mentisdb_traverse_thoughts` |
@@ -172,7 +183,7 @@ Scopes stored as `scope:{variant}` tags: `user` (default; all agents sharing the
 
 ## ❌ ANTI-PATTERNS
 
-Raw-log writes instead of rules. **New agent IDs for the same role** — see §Agent Identity Rule above; this is the #1 chain pollution vector. Skipping `recent_context` at start. Vague summaries. Redundant bootstraps. Unfiltered full-chain loads. No checkpoint before compaction. Sub-agents spawned without shared-memory pre-warm or dying without flushing memories. Writing near-duplicates when dedup is on. **Deferring memory writes** — save `TaskComplete` and `LessonLearned` the moment they happen, not when prompted. **Blind appends** — writing a new thought without first running `mentisdb_ranked_search` to check whether the chain already says it, whether an old lesson needs to be invalidated, or which neighbours to link to (see §Search Before You Write above).
+Raw-log writes instead of rules. **New agent IDs for the same role** — see §Agent Identity Rule above; this is the #1 chain pollution vector. Skipping `standing_context` / `recent_context` at start. Answering from memory of the current session without searching when the user asks about the past. Vague summaries. Redundant bootstraps. Unfiltered full-chain loads. No checkpoint before compaction. Sub-agents spawned without shared-memory pre-warm or dying without flushing memories. Writing near-duplicates when dedup is on. **Deferring memory writes** — save `TaskComplete` and `LessonLearned` the moment they happen, not when prompted. **Blind appends** — writing a new thought without first running `mentisdb_ranked_search` to check whether the chain already says it, whether an old lesson needs to be invalidated, or which neighbours to link to (see §Search Before You Write above).
 
 ### Sub-agents & Agent Identity
 

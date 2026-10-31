@@ -985,7 +985,13 @@ Modern MCP clients bootstrap from a handshake:
 1. `initialize.instructions` directs the agent to read `mentisdb://skill/core`
 2. `resources/read` returns the embedded operating skill
 3. `mentisdb_bootstrap` opens or creates the chain; if empty, writes a genesis checkpoint
-4. `mentisdb_recent_context` loads prior state for resumption
+4. `mentisdb_standing_context` loads what is durably true (preferences, constraints, decisions, goals, lessons, the newest handoff and checkpoint) regardless of age
+5. `mentisdb_recent_context` loads the last N thoughts for resumption
+
+Memory has an episodic half (what happened, time-ordered, served by recent context) and a
+semantic half (what stays true, served by standing context). A recency window alone forgets
+a preference stated months ago, so the skill also defines recall triggers: before answering
+about past preferences or decisions, the agent searches first.
 
 ### 8.5 REST API
 
