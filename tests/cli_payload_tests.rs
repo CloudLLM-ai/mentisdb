@@ -111,3 +111,41 @@ fn search_body_uses_text_field() {
         "must not send the old query field"
     );
 }
+
+/// `mentisdb thought standing` posts to the standing-context route with typed,
+/// canonicalized filters and prints the `prompt` field.
+#[test]
+fn thought_standing_body_carries_filters() {
+    let argv = [
+        "mentisdb",
+        "thought",
+        "standing",
+        "--chain",
+        "p",
+        "--type",
+        "decision",
+        "--type",
+        "constraint",
+        "--per-type-limit",
+        "3",
+        "--limit",
+        "10",
+        "--include-invalidated",
+    ];
+    match parse_args(argv).expect("thought standing should parse") {
+        CliCommand::Remote(invocation) => {
+            assert!(
+                invocation.url.ends_with("/v1/standing-context"),
+                "{}",
+                invocation.url
+            );
+            let body = invocation.body.expect("posts a body");
+            assert_eq!(body["chain_key"], "p");
+            assert_eq!(body["types"], serde_json::json!(["Decision", "Constraint"]));
+            assert_eq!(body["per_type_limit"], 3);
+            assert_eq!(body["limit"], 10);
+            assert_eq!(body["include_invalidated"], true);
+        }
+        other => panic!("expected a remote command, got {other:?}"),
+    }
+}

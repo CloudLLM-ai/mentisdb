@@ -47,6 +47,7 @@ Markdown, skill content, the recent-context prompt) print the raw text, and
 | `mentisdb_list_entity_types` | `POST /v1/entity-types` | `entity-type list` |
 | `mentisdb_upsert_entity_type` | `POST /v1/entity-types/upsert` | `entity-type upsert` |
 | `mentisdb_recent_context` | `POST /v1/recent-context` | `thought recent` |
+| `mentisdb_standing_context` | `POST /v1/standing-context` | `thought standing` |
 | `mentisdb_memory_markdown` | `POST /v1/memory-markdown` | `memory export` |
 | `mentisdb_import_memory_markdown` | `POST /v1/import-markdown` | `memory import` |
 | `mentisdb_get_thought` | `POST /v1/thought` | `thought get` |

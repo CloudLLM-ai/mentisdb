@@ -872,6 +872,25 @@ fn thought_commands() -> Vec<Command> {
         .text("prompt")
         .example("mentisdb thought recent --last-n 20 --chain project"),
         rest_post(
+            &["thought", "standing"],
+            "Print the standing-context prompt",
+            "Renders what is durably true however old it is: constraints, preferences, user traits, goals, decisions, lessons, plus the newest handoff and checkpoint, ranked by importance with restated duplicates collapsed. Load it at session start before `thought recent`. Prints the prompt text; --json prints the full reply with the typed entries.",
+            "/v1/standing-context",
+        )
+        .with(vec![
+            chain(),
+            Flag::opt("agent", "agent_id", Kind::Text, "ID", "Only thoughts of this agent."),
+            Flag::opt("type", "types", Kind::ThoughtType, "TYPE", "Only this ThoughtType (Constraint, PreferenceUpdate, UserTrait, RelationshipUpdate, Goal, Decision, LessonLearned, Handoff, Checkpoint, Summary); repeatable.").many(),
+            Flag::opt("since", "since", Kind::Time, "TIME", "Only thoughts at or after this time."),
+            Flag::opt("as-of", "as_of", Kind::Time, "TIME", "Show the chain as it was at this time."),
+            Flag::opt("per-type-limit", "per_type_limit", Kind::Int, "N", "Maximum thoughts per type (default 8)."),
+            Flag::opt("limit", "limit", Kind::Int, "N", "Maximum durable thoughts overall (default 40)."),
+            include_invalidated(),
+        ])
+        .text("prompt")
+        .example("mentisdb thought standing --chain project")
+        .example("mentisdb thought standing --type Constraint --type Decision --json"),
+        rest_post(
             &["thought", "candidates"],
             "List summary candidates",
             "Groups thoughts into windows that are good candidates for a Summary thought, optionally by session, agent or entity type.",

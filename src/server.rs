@@ -23,6 +23,7 @@
 //! - `POST /v1/federated-search`
 //! - `POST /v1/context-bundles`
 //! - `POST /v1/recent-context`
+//! - `POST /v1/standing-context`
 //! - `POST /v1/memory-markdown`
 //! - `POST /v1/import-markdown`
 //! - `POST /v1/thought`
@@ -117,6 +118,7 @@ MentisDB is an append-only semantic memory server.\n\
 READ THIS FIRST: call `resources/read` for `mentisdb://skill/core` immediately after initialize to load the embedded MentisDB operating skill.\n\
 If the user did not specify a chain, call `mentisdb_list_chains` and prefer a chain whose name matches the current project, repository, or working-folder name before writing.\n\
 When searching memory, use `mentisdb_ranked_search` for the best flat matches and `mentisdb_context_bundles` when you need seed-anchored supporting context grouped beneath the best lexical seeds.\n\
+Load durable memory with `mentisdb_standing_context` (who the user is, what is decided, hard constraints), then `mentisdb_recent_context` (where you left off); before answering questions about past preferences or decisions, search with `mentisdb_ranked_search`.\n\
 Reuse the best matching existing specialist agent identity before creating a new one.\n\
 Before compaction, truncation, or handoff, write a Summary checkpoint with `mentisdb_append`.";
 const SKILL_SAFETY_WARNINGS: [&str; 4] = [
@@ -1609,6 +1611,7 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
             post(rest_summary_candidates_handler),
         )
         .route("/v1/recent-context", post(rest_recent_context_handler))
+        .route("/v1/standing-context", post(rest_standing_context_handler))
         .route("/v1/memory-markdown", post(rest_memory_markdown_handler))
         .route("/v1/import-markdown", post(rest_import_markdown_handler))
         .route("/v1/thought", post(rest_get_thought_handler))
@@ -1830,7 +1833,7 @@ pub fn combined_mcp_router(config: MentisDbServiceConfig, bind_host: IpAddr) -> 
 /// - `POST /v1/bootstrap`
 /// - `POST /v1/thoughts` · `POST /v1/retrospectives`
 /// - `POST /v1/search` · `POST /v1/lexical-search` · `POST /v1/ranked-search` · `POST /v1/federated-search`
-/// - `POST /v1/context-bundles` · `POST /v1/recent-context`
+/// - `POST /v1/context-bundles` · `POST /v1/recent-context` · `POST /v1/standing-context`
 /// - `POST /v1/memory-markdown` · `POST /v1/import-markdown`
 /// - `POST /v1/thought` · `POST /v1/thoughts/genesis` · `POST /v1/thoughts/traverse`
 /// - `POST /v1/head`
@@ -2611,6 +2614,7 @@ fn default_chain_mcp_tool(tool_name: &str) -> bool {
             | "mentisdb_list_entity_types"
             | "mentisdb_upsert_entity_type"
             | "mentisdb_recent_context"
+            | "mentisdb_standing_context"
             | "mentisdb_memory_markdown"
             | "mentisdb_import_memory_markdown"
             | "mentisdb_get_thought"
@@ -2784,6 +2788,9 @@ impl ToolProtocol for MentisDbMcpProtocol {
             }
             "mentisdb_recent_context" => {
                 parse_and_call(parameters, |request| self.service.recent_context(request)).await
+            }
+            "mentisdb_standing_context" => {
+                parse_and_call(parameters, |request| self.service.standing_context(request)).await
             }
             "mentisdb_memory_markdown" => {
                 parse_and_call(parameters, |request| self.service.memory_markdown(request)).await
@@ -4556,6 +4563,51 @@ impl MentisDbService {
         Ok(RecentContextResponse {
             prompt: chain.to_catchup_prompt_with(&thoughts),
         })
+    }
+
+    async fn standing_context(
+        &self,
+        request: StandingContextRequest,
+    ) -> Result<crate::StandingContext, Box<dyn Error + Send + Sync>> {
+        let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
+        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let chain = chain.read().await;
+        let mut query = crate::StandingContextQuery::new()
+            .with_include_invalidated(request.include_invalidated.unwrap_or(false));
+        query.agent_id = request.agent_id;
+        query.since = request.since;
+        query.as_of = request.as_of;
+        if let Some(types) = request.types {
+            query.types = Some(
+                types
+                    .iter()
+                    .map(|name| parse_thought_type(name))
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        if let Some(cap) = request.per_type_limit {
+            query.per_type_cap = cap;
+        }
+        if let Some(cap) = request.limit {
+            query.total_cap = cap;
+        }
+        let standing = chain.standing_context(&query);
+        let thoughts = standing
+            .entries
+            .iter()
+            .filter_map(|entry| chain.get_thought_by_index(entry.index));
+        self.log_interaction(InteractionLogEntry {
+            access: "read",
+            operation: "standing_context",
+            chain_key,
+            metadata: InteractionMetadata::from_chain_thoughts(&chain, thoughts),
+            result_count: Some(standing.entries.len()),
+            note: Some(format!(
+                "per_type_cap={} total_cap={}",
+                query.per_type_cap, query.total_cap
+            )),
+        });
+        Ok(standing)
     }
 
     async fn memory_markdown(
@@ -6483,6 +6535,24 @@ struct RecentContextResponse {
     prompt: String,
 }
 
+/// Request body of `POST /v1/standing-context` and the
+/// `mentisdb_standing_context` tool.
+#[derive(Debug, Deserialize, Default)]
+struct StandingContextRequest {
+    chain_key: Option<String>,
+    agent_id: Option<String>,
+    /// Thought type names to restrict to; default is every standing type.
+    types: Option<Vec<String>>,
+    since: Option<DateTime<Utc>>,
+    as_of: Option<DateTime<Utc>>,
+    #[serde(default)]
+    include_invalidated: Option<bool>,
+    /// Cap per group (default 8).
+    per_type_limit: Option<usize>,
+    /// Cap on durable thoughts overall (default 40).
+    limit: Option<usize>,
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct MemoryMarkdownRequest {
     chain_key: Option<String>,
@@ -7567,6 +7637,13 @@ async fn rest_recent_context_handler(
     service_call(service.recent_context(request).await)
 }
 
+async fn rest_standing_context_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<StandingContextRequest>,
+) -> Result<Json<crate::StandingContext>, (StatusCode, Json<Value>)> {
+    service_call(service.standing_context(request).await)
+}
+
 async fn rest_memory_markdown_handler(
     State(service): State<Arc<MentisDbService>>,
     Json(request): Json<MemoryMarkdownRequest>,
@@ -7936,7 +8013,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
             "mentisdb_bootstrap",
             "CALL THIS FIRST on every agent spawn. Ensures the thought chain exists and writes a bootstrap memory on the first call. \
              After bootstrap: (1) on MCP clients that support resources, call `resources/read` for `mentisdb://skill/core` to load the core MentisDB operating instructions into your context; otherwise call `mentisdb_skill_md`; \
-             (2) inspect the `available_skills` response field and call `mentisdb_read_skill` for each trusted or relevant skill \
+             (2) call `mentisdb_standing_context` then `mentisdb_recent_context` to load durable and recent memory; \
+             (3) inspect the `available_skills` response field and call `mentisdb_read_skill` for each trusted or relevant skill \
              before performing any other work — verify provenance before loading unknown skills. \
              Also: use `mentisdb_append` with thought_type Summary and role Checkpoint before any compaction, context \
              truncation, or handoff to another agent so the next agent can resume without losing progress.",
@@ -8220,6 +8298,18 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("last_n", ToolParameterType::Integer).with_description("How many recent thoughts to include."))
         .with_parameter(ToolParameter::new("agent_id", ToolParameterType::String).with_description("Optional agent id filter to scope context to one agent."))
         .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include superseded/corrected/invalidated thoughts in recent context. Default false.")),
+        ToolMetadata::new(
+            "mentisdb_standing_context",
+            "Render the durable, age-independent memory (preferences, constraints, decisions, goals, lessons, user traits, newest handoff and checkpoint) as a prompt block. Call at session start BEFORE mentisdb_recent_context: it says who the user is and what is already decided, however old.",
+        )
+        .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
+        .with_parameter(ToolParameter::new("agent_id", ToolParameterType::String).with_description("Optional agent id filter."))
+        .with_parameter(ToolParameter::new("types", ToolParameterType::Array).with_description("Optional ThoughtType names to restrict to (Constraint, PreferenceUpdate, UserTrait, RelationshipUpdate, Goal, Decision, LessonLearned, Handoff, Checkpoint, Summary). Default: all standing types.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
+        .with_parameter(ToolParameter::new("as_of", ToolParameterType::String).with_description("Optional RFC 3339 point-in-time view of the chain."))
+        .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, keep superseded/corrected/invalidated thoughts. Default false."))
+        .with_parameter(ToolParameter::new("per_type_limit", ToolParameterType::Integer).with_description("Maximum thoughts per type. Default 8."))
+        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum durable thoughts overall. Default 40.")),
         ToolMetadata::new(
             "mentisdb_memory_markdown",
             "Export a MEMORY.md style Markdown summary from MentisDb.",

@@ -246,6 +246,28 @@ async fn test_document_commands_print_raw_text() {
         "{}",
         recent.out
     );
+    run(
+        &d,
+        &[
+            "thought",
+            "append",
+            "never deploy on fridays",
+            "--type",
+            "Constraint",
+            "--chain",
+            "docs",
+        ],
+    )
+    .await
+    .json();
+    let standing = plain(&["thought", "standing", "--chain", "docs"]).await;
+    assert!(
+        standing.ok
+            && standing.out.contains("=== STANDING CONTEXT ===")
+            && standing.out.contains("never deploy on fridays"),
+        "{}",
+        standing.out
+    );
     let export = plain(&["memory", "export", "--chain", "docs"]).await;
     assert!(
         export.ok && export.out.starts_with("# MEMORY"),
