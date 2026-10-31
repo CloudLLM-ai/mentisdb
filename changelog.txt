@@ -1,4 +1,29 @@
 0.10.10.55 OCT/22/2026
+  - fix(rest): `rest_router`, the public way to embed the REST API, answered
+    404 for `/v1/chains/merge` and `/v1/vectors/rebuild` because it kept its
+    own copy of the route table; it now shares the daemon's. `mentisdb agents`
+    sent GET to the POST-only `/v1/agents` route and always failed; it now
+    POSTs (it is the same command as `mentisdb agent list`).
+  - feat(cli): the CLI covers every MCP tool, REST route and dashboard action.
+    New groups `thought`, `search` (ranked, `lexical`, `filter`, `federated`,
+    `bundles`), `chain` (list, head, bootstrap, branch, merge, info, delete),
+    `agent` (list, get, registry, upsert, describe, alias, key add/revoke,
+    disable, activate, copy), `entity-type`, `memory` (export, import,
+    extract), `skill` (guide, manifest, list, search, read, versions, upload,
+    deprecate, revoke, delete, diff), `webhook`, `vectors` (enable, disable,
+    sync, rebuild) and `daemon` (health, version, flush, restart, settings).
+    Memory commands use the running daemon's REST API (`--url`, bearer token
+    from `--token` or `MENTISDB_BEARER_TOKEN`), dashboard-only actions use the
+    PIN-gated dashboard API (`--dashboard-url`, `--pin` or
+    `MENTISDB_DASHBOARD_PIN`). Arguments are typed and validated before any
+    request (thought types, roles, UUIDs, RFC 3339 times, scores, hex keys),
+    `--json` prints compact JSON, `-` reads content from standard input,
+    destructive commands need `--yes`, and every command has `--help` with
+    examples; `mentisdb --help` lists them all. `search` gained the filters
+    the MCP tool has (type, role, tag, agent, time range, graph depth,
+    `--include-invalidated`, `--as-of`, reranking). `docs/CLI_PARITY.md` maps
+    each tool, route and dashboard action to its command and a test keeps it
+    in sync.
   - feat(webhooks): `MENTISDB_WEBHOOK_ALLOWED_CIDRS` lets self-hosted
     deployments deliver webhooks to private targets (WireGuard, Tailscale
     `100.64.0.0/10`, LAN subnets) that the 0.10.9 SSRF guard refuses
