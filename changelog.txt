@@ -1,4 +1,4 @@
-0.10.10.55 OCT/22/2026
+UNRELEASED
   - fix(rest): `rest_router`, the public way to embed the REST API, answered
     404 for `/v1/chains/merge` and `/v1/vectors/rebuild` because it kept its
     own copy of the route table; it now shares the daemon's. `mentisdb agents`
@@ -24,6 +24,8 @@
     `--include-invalidated`, `--as-of`, reranking). `docs/CLI_PARITY.md` maps
     each tool, route and dashboard action to its command and a test keeps it
     in sync.
+
+0.10.10.55 OCT/22/2026
   - feat(webhooks): `MENTISDB_WEBHOOK_ALLOWED_CIDRS` lets self-hosted
     deployments deliver webhooks to private targets (WireGuard, Tailscale
     `100.64.0.0/10`, LAN subnets) that the 0.10.9 SSRF guard refuses
