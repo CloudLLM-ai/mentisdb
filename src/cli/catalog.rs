@@ -441,6 +441,15 @@ fn content(help: &'static str) -> Flag {
 // ── catalog ──────────────────────────────────────────────────────────────────
 
 /// Every daemon-facing command, in help order.
+///
+/// # Examples
+///
+/// ```
+/// let commands = mentisdb::cli::remote_commands();
+/// assert!(commands.iter().any(|c| c.path == ["agent", "key", "add"]));
+/// // Every command carries help text and at least one example.
+/// assert!(commands.iter().all(|c| !c.summary.is_empty() && !c.examples.is_empty()));
+/// ```
 #[must_use]
 pub fn commands() -> Vec<Command> {
     [

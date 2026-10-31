@@ -38,6 +38,16 @@ use std::process::ExitCode;
 
 /// Whether `word` names a CLI subcommand or command group the `mentisdb`
 /// binary should hand to [`run_with_io`] instead of treating it as a daemon flag.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::cli::is_subcommand;
+///
+/// assert!(is_subcommand("backup"));
+/// assert!(is_subcommand("thought"));
+/// assert!(!is_subcommand("--headless"));
+/// ```
 #[must_use]
 pub fn is_subcommand(word: &str) -> bool {
     matches!(

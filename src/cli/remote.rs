@@ -114,6 +114,17 @@ pub struct Flag {
 
 impl Flag {
     /// Named parameter `--long <METAVAR>` filling body field `field`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::cli::remote::{Flag, Kind};
+    ///
+    /// let flag = Flag::opt("limit", "limit", Kind::Int, "N", "Maximum results.").short('n');
+    /// assert_eq!(flag.long, "limit");
+    /// assert_eq!(flag.short, Some('n'));
+    /// assert!(!flag.required && !flag.positional);
+    /// ```
     #[must_use]
     pub fn opt(
         long: &'static str,
@@ -138,6 +149,15 @@ impl Flag {
     }
 
     /// Positional parameter filling body field `field`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::cli::remote::{Flag, Kind};
+    ///
+    /// let flag = Flag::pos("query", "text", Kind::Text, "What to look for.").req();
+    /// assert!(flag.positional && flag.required);
+    /// ```
     #[must_use]
     pub fn pos(long: &'static str, field: &'static str, kind: Kind, help: &'static str) -> Self {
         Self {
@@ -312,6 +332,16 @@ fn group_commands<'a>(catalog: &'a [Command], group: &str) -> Vec<&'a Command> {
 }
 
 /// Whether `word` is the first word of any command in the catalog.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::cli::remote::is_group;
+///
+/// let catalog = mentisdb::cli::remote_commands();
+/// assert!(is_group(&catalog, "chain"));
+/// assert!(!is_group(&catalog, "backup"));
+/// ```
 #[must_use]
 pub fn is_group(catalog: &[Command], word: &str) -> bool {
     !group_commands(catalog, word).is_empty()
@@ -322,6 +352,33 @@ pub fn is_group(catalog: &[Command], word: &str) -> bool {
 /// Returns `None` when the first word is not a remote command group, so the
 /// caller can try the local commands. Otherwise returns help text or a fully
 /// built invocation, or an error message describing what is wrong.
+///
+/// # Errors
+///
+/// The inner `Err` carries a one-line message for an unknown subcommand or
+/// flag, a missing required argument, an extra positional argument, or a value
+/// that does not satisfy its [`Kind`]. It never panics on any input.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::cli::remote::{parse, Parsed};
+/// use mentisdb::cli::remote_commands;
+///
+/// let catalog = remote_commands();
+/// let args: Vec<String> = ["thought", "get", "--index", "3"]
+///     .iter()
+///     .map(ToString::to_string)
+///     .collect();
+/// let Some(Ok(Parsed::Run(invocation))) = parse(&catalog, &args) else {
+///     panic!("should parse");
+/// };
+/// assert_eq!(invocation.url, "http://127.0.0.1:9472/v1/thought");
+/// assert_eq!(invocation.body.unwrap()["thought_index"], 3);
+///
+/// // A word that is not a daemon command group is left to the local commands.
+/// assert!(parse(&catalog, &["backup".to_string()]).is_none());
+/// ```
 pub fn parse(catalog: &[Command], parts: &[String]) -> Option<Result<Parsed, String>> {
     let group = parts.first()?;
     if !is_group(catalog, group) {
@@ -808,7 +865,21 @@ fn help_row(left: &str, right: &str) -> String {
     format!("  {left:<30} {right}\n")
 }
 
-/// Full `--help` text for one command.
+/// Full `--help` text for one command: usage line, description, arguments,
+/// options, connection options and examples.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::cli::remote::command_help;
+/// use mentisdb::cli::remote_commands;
+///
+/// let commands = remote_commands();
+/// let branch = commands.iter().find(|c| c.path == ["chain", "branch"]).unwrap();
+/// let text = command_help(branch);
+/// assert!(text.contains("Usage:\n  mentisdb chain branch"));
+/// assert!(text.contains("Examples:"));
+/// ```
 #[must_use]
 pub fn command_help(command: &Command) -> String {
     let mut text = format!(
@@ -858,6 +929,16 @@ fn connection_help(transport: Transport) -> &'static str {
 }
 
 /// `mentisdb <group> --help`: the commands in one group.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::cli::remote::group_help;
+///
+/// let catalog = mentisdb::cli::remote_commands();
+/// let text = group_help(&catalog, "skill");
+/// assert!(text.contains("skill upload") && text.contains("skill diff"));
+/// ```
 #[must_use]
 pub fn group_help(catalog: &[Command], group: &str) -> String {
     let mut text = format!("mentisdb {group}\n\nCommands:\n");
@@ -871,6 +952,18 @@ pub fn group_help(catalog: &[Command], group: &str) -> String {
 }
 
 /// Overview of every remote command group, for `mentisdb --help`.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::cli::remote::overview;
+///
+/// let text = overview(
+///     &mentisdb::cli::remote_commands(),
+///     mentisdb::cli::REMOTE_GROUP_SUMMARIES,
+/// );
+/// assert!(text.contains("thought append") && text.contains("Connection options"));
+/// ```
 #[must_use]
 pub fn overview(catalog: &[Command], group_summaries: &[(&str, &str)]) -> String {
     let mut text = String::from(

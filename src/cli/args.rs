@@ -255,7 +255,7 @@ fn parse_remote(parts: &[String]) -> Option<Result<CliCommand, String>> {
 
 /// Return the full `mentisdb --help` text. Composed from a static
 /// header / subcommand index and the per-subcommand help blocks
-/// exposed by [`super::cert::help_text`], [`bearer_token_help_text`],
+/// exposed by the cert module's help text, [`bearer_token_help_text`],
 /// etc. The function returns an owned [`String`] because the cert
 /// block is appended at runtime so the source of truth for its
 /// wording stays in the cert module.
