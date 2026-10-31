@@ -1,4 +1,21 @@
 UNRELEASED
+  - fix(security): MCP authorization was fail-open for chain-scoped tools it
+    did not list. A tool outside the hard-coded default-chain list that named no
+    chain was allowed for any token while its handler used the server's default
+    chain. It is now fail-closed: every chain-scoped tool requires the default
+    chain unless it is one of the three explicit-only tools (merge, branch,
+    federated search).
+  - fix(security): `thoughts/traverse` reserved `chunk_size` entries up front,
+    so `chunk_size = 2^64-1` panicked with a capacity overflow (and a few
+    hundred million exhausts memory). The reservation is capped by the chain
+    length.
+  - fix(validation): chain keys that were only whitespace, contained control
+    characters or exceeded 256 bytes could open (and persist) a chain through
+    the library API, branch creation and restore; only the empty string was
+    refused. `mentisdb::validate_chain_key` now guards every entry point and
+    the server shares it. New `chain_key` fuzz target.
+  - fix(security): the bearer-token registry was written world-readable; it is
+    now created 0600.
   - fix(security): the dashboard PIN could be guessed without limit through
     `Authorization: Bearer <pin>` on any dashboard route (only the login form
     was rate limited). The bearer path now shares the login form's per-IP

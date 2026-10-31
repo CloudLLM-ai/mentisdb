@@ -2603,47 +2603,18 @@ fn mcp_tool_requires_global(tool_name: &str) -> bool {
     mcp_tool_auth(tool_name) == OperationAuth::GlobalOnly
 }
 
+/// Whether a chain-scoped tool resolves a blank `chain_key` to the server's
+/// default chain.
+///
+/// Fail-closed: every chain-scoped tool does, except the three that name every
+/// chain explicitly (`source`/`target`/`branch` keys, `chain_keys`) and never
+/// fall back. A new tool therefore needs the default chain authorized unless
+/// it is listed here as explicit-only; forgetting to list it cannot widen
+/// access.
 fn default_chain_mcp_tool(tool_name: &str) -> bool {
-    matches!(
+    !matches!(
         tool_name,
-        "mentisdb_bootstrap"
-            | "mentisdb_append"
-            | "mentisdb_append_retrospective"
-            | "mentisdb_search"
-            | "mentisdb_lexical_search"
-            | "mentisdb_ranked_search"
-            | "mentisdb_context_bundles"
-            | "mentisdb_summary_candidates"
-            | "mentisdb_list_agents"
-            | "mentisdb_get_agent"
-            | "mentisdb_list_agent_registry"
-            | "mentisdb_upsert_agent"
-            | "mentisdb_set_agent_description"
-            | "mentisdb_add_agent_alias"
-            | "mentisdb_add_agent_key"
-            | "mentisdb_revoke_agent_key"
-            | "mentisdb_disable_agent"
-            | "mentisdb_list_entity_types"
-            | "mentisdb_upsert_entity_type"
-            | "mentisdb_recent_context"
-            | "mentisdb_standing_context"
-            | "mentisdb_memory_markdown"
-            | "mentisdb_import_memory_markdown"
-            | "mentisdb_get_thought"
-            | "mentisdb_get_genesis_thought"
-            | "mentisdb_traverse_thoughts"
-            | "mentisdb_upload_skill"
-            | "mentisdb_search_skill"
-            | "mentisdb_read_skill"
-            | "mentisdb_skill_versions"
-            | "mentisdb_deprecate_skill"
-            | "mentisdb_revoke_skill"
-            | "mentisdb_delete_skill"
-            | "mentisdb_head"
-            | "mentisdb_get_access_policy"
-            | "mentisdb_set_access_policy"
-            | "mentisdb_verify_signatures"
-            | "mentisdb_extract_memories"
+        "mentisdb_merge_chains" | "mentisdb_branch_from" | "mentisdb_federated_search"
     )
 }
 
@@ -7995,8 +7966,7 @@ fn not_found_error(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
     Box::new(io::Error::new(io::ErrorKind::NotFound, message.into()))
 }
 
-/// Maximum accepted `chain_key` length in bytes.
-pub const MAX_CHAIN_KEY_BYTES: usize = 256;
+pub use crate::MAX_CHAIN_KEY_BYTES;
 
 /// Trim a client-supplied chain key and validate its shape.
 ///
@@ -8021,22 +7991,7 @@ pub fn normalize_chain_key(chain_key: &str) -> Result<String, Box<dyn Error + Se
 ///
 /// Returns an `InvalidInput` I/O error describing the violation.
 pub fn validate_chain_key_shape(chain_key: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let invalid = |message: &str| -> Box<dyn Error + Send + Sync> {
-        Box::new(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            message.to_string(),
-        ))
-    };
-    if chain_key.trim().is_empty() {
-        return Err(invalid("chain_key must not be empty"));
-    }
-    if chain_key.len() > MAX_CHAIN_KEY_BYTES {
-        return Err(invalid("chain_key exceeds the maximum length"));
-    }
-    if chain_key.chars().any(char::is_control) {
-        return Err(invalid("chain_key must not contain control characters"));
-    }
-    Ok(())
+    Ok(crate::validate_chain_key(chain_key)?)
 }
 
 /// Classifies a service error into an HTTP status and a client-safe message.

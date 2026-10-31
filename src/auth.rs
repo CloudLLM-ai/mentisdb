@@ -774,7 +774,7 @@ impl BearerTokenStore {
         let mut merged = records.to_vec();
         self.overlay_last_used(&mut merged);
         let content = serde_json::to_string_pretty(&merged)?;
-        fs::write(&temp_path, content)?;
+        write_private_file(&temp_path, content.as_bytes())?;
         fs::rename(temp_path, &self.path)?;
         self.store_cache(Arc::new(merged));
         let mut state = self.last_used.lock().unwrap_or_else(|e| e.into_inner());
@@ -782,6 +782,21 @@ impl BearerTokenStore {
         state.last_persist = std::time::Instant::now();
         Ok(())
     }
+}
+
+/// Writes `bytes` to `path`, readable and writable by the owner only (0600 on
+/// Unix), replacing any stale file left by an interrupted save.
+///
+/// The token registry names every credential's alias, scope and hash; other
+/// local users have no business reading it.
+fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let _ = fs::remove_file(path);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(path)?;
+    io::Write::write_all(&mut file, bytes)
 }
 
 /// Parse whether bearer-token access is enabled from an environment-style value.

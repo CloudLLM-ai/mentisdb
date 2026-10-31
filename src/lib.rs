@@ -5355,12 +5355,7 @@ impl MentisDb {
         chain_key: &str,
         default_storage_kind: StorageAdapterKind,
     ) -> io::Result<Self> {
-        if chain_key.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "chain_key must not be empty; provide a non-empty identifier for the chain",
-            ));
-        }
+        validate_chain_key(chain_key)?;
         if default_storage_kind == StorageAdapterKind::Jsonl {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -5443,12 +5438,7 @@ impl MentisDb {
                 format!("Thought {branch_thought_id} not found in chain '{source_chain_key}'"),
             ));
         }
-        if branch_chain_key.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "branch_chain_key must not be empty",
-            ));
-        }
+        validate_chain_key(branch_chain_key)?;
         let mut branch = Self::open_with_key(chain_dir, branch_chain_key)?;
         if !branch.thoughts.is_empty() {
             return Err(io::Error::new(
@@ -6858,7 +6848,9 @@ impl MentisDb {
         chunk_size: usize,
         query: &ThoughtQuery,
     ) -> Vec<usize> {
-        let mut matches = Vec::with_capacity(chunk_size.saturating_add(1));
+        // `chunk_size` is caller-controlled: never reserve more than the chain can yield.
+        let mut matches =
+            Vec::with_capacity(chunk_size.saturating_add(1).min(self.thoughts.len() + 1));
         let mut current = if include_anchor {
             Some(anchor_position)
         } else {
@@ -6888,7 +6880,9 @@ impl MentisDb {
         chunk_size: usize,
         query: &ThoughtQuery,
     ) -> Vec<usize> {
-        let mut matches = Vec::with_capacity(chunk_size.saturating_add(1));
+        // `chunk_size` is caller-controlled: never reserve more than the chain can yield.
+        let mut matches =
+            Vec::with_capacity(chunk_size.saturating_add(1).min(self.thoughts.len() + 1));
 
         match direction {
             ThoughtTraversalDirection::Forward => {
@@ -10451,6 +10445,48 @@ pub fn chain_filename(
     _personality: Option<&str>,
 ) -> String {
     chain_storage_filename(chain_key, StorageAdapterKind::default())
+}
+
+/// Maximum accepted chain key length in bytes.
+pub const MAX_CHAIN_KEY_BYTES: usize = 256;
+
+/// Rejects chain keys that must never name a chain.
+///
+/// A chain key becomes part of a file name and of every authorization
+/// decision, so it must be a visible identifier: not empty or whitespace-only
+/// (such a key would collide with the "no chain given" default and creates
+/// the unnameable `-<hash>.tcbin` file), at most [`MAX_CHAIN_KEY_BYTES`] bytes,
+/// and free of control characters (NUL, newlines, escapes) that corrupt logs,
+/// registries and terminals. Leading and trailing spaces are allowed here;
+/// request handlers trim before calling (see `server::normalize_chain_key`).
+///
+/// # Errors
+///
+/// [`io::ErrorKind::InvalidInput`] naming the violated rule.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::validate_chain_key;
+///
+/// assert!(validate_chain_key("project-memory").is_ok());
+/// assert!(validate_chain_key("").is_err());
+/// assert!(validate_chain_key("  \t ").is_err());
+/// assert!(validate_chain_key("a\nb").is_err());
+/// assert!(validate_chain_key(&"x".repeat(257)).is_err());
+/// ```
+pub fn validate_chain_key(chain_key: &str) -> io::Result<()> {
+    let invalid = |message: &str| io::Error::new(io::ErrorKind::InvalidInput, message.to_string());
+    if chain_key.trim().is_empty() {
+        return Err(invalid("chain_key must not be empty"));
+    }
+    if chain_key.len() > MAX_CHAIN_KEY_BYTES {
+        return Err(invalid("chain_key exceeds the maximum length"));
+    }
+    if chain_key.chars().any(char::is_control) {
+        return Err(invalid("chain_key must not contain control characters"));
+    }
+    Ok(())
 }
 
 /// Stable filename derived from a chain key and storage adapter kind.

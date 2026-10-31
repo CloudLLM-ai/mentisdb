@@ -46,3 +46,9 @@ path = "fuzz_targets/thought_payload_v2.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "chain_key"
+path = "fuzz_targets/chain_key.rs"
+test = false
+doc = false
