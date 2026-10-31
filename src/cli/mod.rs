@@ -7,6 +7,7 @@ mod args;
 mod catalog;
 mod cert;
 mod client;
+pub mod key;
 mod prompt;
 pub mod remote;
 mod setup;
@@ -52,7 +53,7 @@ use std::process::ExitCode;
 pub fn is_subcommand(word: &str) -> bool {
     matches!(
         word,
-        "setup" | "wizard" | "add" | "backup" | "restore" | "bearertoken" | "cert"
+        "setup" | "wizard" | "add" | "backup" | "restore" | "bearertoken" | "cert" | "key"
     ) || remote::is_group(&catalog::commands(), word)
 }
 
@@ -88,6 +89,17 @@ where
             let _ = write!(out, "{}", add_help_text());
             ExitCode::SUCCESS
         }
+        Ok(CliCommand::KeyHelp) => {
+            let _ = write!(out, "{}", key::KEY_HELP);
+            ExitCode::SUCCESS
+        }
+        Ok(CliCommand::Key(command)) => match key::run_key(&command, out) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                let _ = writeln!(err, "key failed: {error}");
+                ExitCode::from(1)
+            }
+        },
         Ok(CliCommand::RemoteHelp(text)) => {
             let _ = write!(out, "{text}");
             ExitCode::SUCCESS

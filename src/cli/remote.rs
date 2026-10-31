@@ -83,6 +83,53 @@ pub enum Kind {
     Relation,
     /// `NAME=VALUE` pairs collected into an object.
     Pairs,
+    /// Path of a file holding a 32-byte Ed25519 seed as hex; the CLI signs with it
+    /// and never sends it.
+    SecretKeyFile,
+}
+
+/// What the CLI signs locally before sending a command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignWith {
+    /// A key-registration proof of possession for `agent key add`.
+    KeyRegistration,
+}
+
+/// An Ed25519 seed held in memory; its `Debug` output is redacted.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(pub [u8; 32]);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(<redacted>)")
+    }
+}
+
+/// Read a hex-encoded 32-byte Ed25519 seed from `path`.
+///
+/// # Errors
+///
+/// A message when the file cannot be read or does not hold 64 hex characters.
+///
+/// # Examples
+///
+/// ```
+/// let dir = std::env::temp_dir().join(format!("mentisdb_doc_seed_{}", std::process::id()));
+/// std::fs::create_dir_all(&dir).unwrap();
+/// let path = dir.join("key");
+/// std::fs::write(&path, format!("{}\n", "ab".repeat(32))).unwrap();
+/// let secret = mentisdb::cli::remote::read_secret_key_file(path.to_str().unwrap()).unwrap();
+/// assert_eq!(secret.0, [0xab; 32]);
+/// assert!(mentisdb::cli::remote::read_secret_key_file("/nonexistent/key").is_err());
+/// # let _ = std::fs::remove_dir_all(&dir);
+/// ```
+pub fn read_secret_key_file(path: &str) -> Result<Secret, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read '{path}': {e}"))?;
+    let bytes = crate::signing::from_hex(&text).map_err(|e| format!("'{path}': {e}"))?;
+    let seed: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| format!("'{path}' must hold exactly 32 bytes (64 hex characters)"))?;
+    Ok(Secret(seed))
 }
 
 /// One accepted parameter of a command.
@@ -250,6 +297,8 @@ pub struct Command {
     pub route: &'static str,
     /// Output style.
     pub render: Render,
+    /// Local signing the CLI performs before sending, if any.
+    pub sign: Option<SignWith>,
 }
 
 /// A fully parsed remote command, ready to execute.
@@ -275,6 +324,10 @@ pub struct RemoteInvocation {
     pub insecure: bool,
     /// Body field to fill from standard input at run time.
     pub stdin_field: Option<String>,
+    /// Seed to sign with (from `--private-key-file`); never sent.
+    pub secret: Option<Secret>,
+    /// Local signing to perform before sending.
+    pub sign: Option<SignWith>,
 }
 
 /// Result of resolving `argv` against the catalog.
@@ -410,6 +463,7 @@ struct Collected {
     path_values: BTreeMap<&'static str, String>,
     query: Vec<(&'static str, String)>,
     stdin_field: Option<String>,
+    secret: Option<Secret>,
 }
 
 #[derive(Default)]
@@ -434,7 +488,7 @@ fn build(command: &Command, rest: &[String]) -> Result<RemoteInvocation, String>
     };
     let url = build_url(base, command.route, &collected)?;
     let body = (command.method == HttpMethod::Post).then_some(Value::Object(collected.body));
-    Ok(RemoteInvocation {
+    let invocation = RemoteInvocation {
         command: name,
         method: command.method,
         transport: command.transport,
@@ -445,7 +499,43 @@ fn build(command: &Command, rest: &[String]) -> Result<RemoteInvocation, String>
         credential: common.credential,
         insecure: common.insecure,
         stdin_field: collected.stdin_field,
-    })
+        secret: collected.secret,
+        sign: command.sign,
+    };
+    check_signing_inputs(command, &invocation)?;
+    Ok(invocation)
+}
+
+/// Reject a signing command that has neither a key file nor the manual fields.
+fn check_signing_inputs(command: &Command, invocation: &RemoteInvocation) -> Result<(), String> {
+    let name = command.path.join(" ");
+    match (command.sign, &invocation.secret) {
+        (Some(SignWith::KeyRegistration), None) => {
+            let body = invocation.body.as_ref();
+            let has = |field: &str| body.is_some_and(|b| b.get(field).is_some());
+            let manual = has("public_key_hex")
+                && has("registered_at_unix_secs")
+                && has("registration_signature_hex");
+            if manual {
+                Ok(())
+            } else {
+                Err(format!(
+                    "'mentisdb {name}' needs --private-key-file, or all of --public-key-hex, --registered-at and --proof-hex; run 'mentisdb {name} --help'"
+                ))
+            }
+        }
+        (Some(SignWith::KeyRegistration), Some(_)) if !has_chain(invocation) => Err(format!(
+            "'mentisdb {name}' signs locally and needs --chain so the proof names the chain"
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn has_chain(invocation: &RemoteInvocation) -> bool {
+    invocation
+        .body
+        .as_ref()
+        .is_some_and(|b| b.get("chain_key").is_some())
 }
 
 type Named<'a> = Vec<(&'a Flag, Option<String>)>;
@@ -561,6 +651,7 @@ fn collect(
         path_values: BTreeMap::new(),
         query: Vec::new(),
         stdin_field: None,
+        secret: None,
     };
     for (field, value) in &command.fixed {
         collected
@@ -618,6 +709,12 @@ fn apply(collected: &mut Collected, flag: &Flag, raw: Option<&str>) -> Result<()
     } else {
         format!("--{}", flag.long)
     };
+    if flag.kind == Kind::SecretKeyFile {
+        let path = raw.ok_or_else(|| format!("{label}: a value is required"))?;
+        collected.secret =
+            Some(read_secret_key_file(path).map_err(|why| format!("{label}: {why}"))?);
+        return Ok(());
+    }
     if matches!(flag.place, Place::Local) {
         return Ok(());
     }
@@ -732,6 +829,7 @@ fn convert(kind: Kind, raw: Option<&str>) -> Result<Value, String> {
             .map_err(|e| format!("cannot read '{raw}': {e}")),
         Kind::HexBytes => decode_hex(raw).map(Value::from),
         Kind::Relation => parse_relation(raw),
+        Kind::SecretKeyFile => Err("handled before conversion".to_string()),
         Kind::Pairs => raw
             .split_once('=')
             .map(|(k, v)| {
@@ -870,6 +968,10 @@ fn kind_hint(flag: &Flag) -> String {
         Kind::Relation => " Format KIND:THOUGHT_UUID[@CHAIN].".to_string(),
         Kind::Pairs => " Format NAME=VALUE.".to_string(),
         Kind::FileText => " Use - for standard input.".to_string(),
+        Kind::SecretKeyFile => {
+            " File with a 32-byte seed as 64 hex characters (see 'mentisdb key generate')."
+                .to_string()
+        }
         Kind::Text if flag.positional => " Use - for standard input.".to_string(),
         _ => String::new(),
     };

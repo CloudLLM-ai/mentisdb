@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
+pub use mentisdb::access;
 pub use mentisdb::auth;
 pub use mentisdb::search;
 pub use mentisdb::server::{rest_router, MentisDbServiceConfig};
@@ -306,7 +307,9 @@ async fn test_agent_registry_commands() {
     run(&d, &["agent", "alias", "bot", "builder", "--chain", "reg"])
         .await
         .json();
-    let key = "11".repeat(32);
+    let key_file = unique_dir().with_extension("key");
+    std::fs::write(&key_file, format!("{}\n", "11".repeat(32))).unwrap();
+    let key_file = key_file.to_str().unwrap().to_string();
     let with_key = run(
         &d,
         &[
@@ -316,8 +319,8 @@ async fn test_agent_registry_commands() {
             "bot",
             "--key-id",
             "k1",
-            "--public-key-hex",
-            &key,
+            "--private-key-file",
+            &key_file,
             "--chain",
             "reg",
         ],

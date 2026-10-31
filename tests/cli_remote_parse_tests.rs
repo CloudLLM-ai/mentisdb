@@ -215,9 +215,11 @@ fn test_timestamps_normalize_to_utc() {
     assert_eq!(b["since"], "2026-01-01T00:00:00+00:00");
 }
 
-/// Hex keys become byte arrays; key add defaults the algorithm.
+/// Manual key registration passes the hex key, timestamp and proof through; with
+/// neither a key file nor the manual fields the command refuses to build.
 #[test]
-fn test_agent_key_add_decodes_hex() {
+fn test_agent_key_add_takes_manual_proof_fields() {
+    let hex = "ab".repeat(32);
     let b = body(&[
         "agent",
         "key",
@@ -226,11 +228,82 @@ fn test_agent_key_add_decodes_hex() {
         "--key-id",
         "k1",
         "--public-key-hex",
-        "0a0B ff",
+        &hex,
+        "--registered-at",
+        "1790000000",
+        "--proof-hex",
+        &"cd".repeat(64),
     ]);
-    assert_eq!(b["public_key_bytes"], json!([10, 11, 255]));
+    assert_eq!(b["public_key_hex"], hex.as_str());
+    assert_eq!(b["registered_at_unix_secs"], 1_790_000_000);
+    assert_eq!(b["registration_signature_hex"], "cd".repeat(64).as_str());
     assert_eq!(b["algorithm"], "ed25519");
     assert_eq!(b["agent_id"], "bot");
+    let error = rejection(&[
+        "agent",
+        "key",
+        "add",
+        "bot",
+        "--key-id",
+        "k1",
+        "--public-key-hex",
+        &hex,
+    ]);
+    assert!(error.contains("--private-key-file"), "{error}");
+}
+
+/// A key file is read at parse time, never sent, and signing needs `--chain`.
+#[test]
+fn test_private_key_file_is_local_only() {
+    let dir = std::env::temp_dir().join(format!("mentisdb_cli_keyfile_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("k.key");
+    std::fs::write(&path, format!("{}\n", "07".repeat(32))).unwrap();
+    let path = path.to_str().unwrap();
+    let inv = invocation(&[
+        "agent",
+        "key",
+        "add",
+        "bot",
+        "--key-id",
+        "k",
+        "--chain",
+        "c",
+        "--private-key-file",
+        path,
+    ]);
+    assert!(inv.secret.is_some());
+    assert!(
+        !format!("{inv:?}").contains("0707"),
+        "secret must be redacted from Debug"
+    );
+    assert!(!inv.body.as_ref().unwrap().to_string().contains("0707"));
+    let error = rejection(&[
+        "agent",
+        "key",
+        "add",
+        "bot",
+        "--key-id",
+        "k",
+        "--private-key-file",
+        path,
+    ]);
+    assert!(error.contains("--chain"), "{error}");
+    std::fs::write(dir.join("short.key"), "abcd").unwrap();
+    let error = rejection(&[
+        "agent",
+        "key",
+        "add",
+        "bot",
+        "--key-id",
+        "k",
+        "--chain",
+        "c",
+        "--private-key-file",
+        dir.join("short.key").to_str().unwrap(),
+    ]);
+    assert!(error.contains("32 bytes"), "{error}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Fixed fields make `agent activate` an upsert that sets the status.

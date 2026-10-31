@@ -77,6 +77,7 @@ fn cmd(
         method,
         route,
         render: Render::Json,
+        sign: None,
     }
 }
 
@@ -157,6 +158,11 @@ impl Command {
 
     fn text(mut self, field: &'static str) -> Self {
         self.render = Render::Text(field);
+        self
+    }
+
+    fn signed(mut self, sign: super::remote::SignWith) -> Self {
+        self.sign = Some(sign);
         self
     }
 
@@ -1100,17 +1106,22 @@ fn agent_commands() -> Vec<Command> {
         rest_post(
             &["agent", "key", "add"],
             "Register a public key for an agent",
-            "Registers an Ed25519 public key (hex) the agent can sign thoughts and skills with.",
+            "Registers an Ed25519 public key the agent can sign thoughts and skills with. Registration needs a proof of possession: pass --private-key-file and the CLI derives the public key and signs the proof for you (--chain is then required so the proof names the chain), or pass --public-key-hex, --registered-at and --proof-hex produced elsewhere. The proof must be less than 10 minutes old. See docs/CHAIN_ACCESS.md for the payload.",
             "/v1/agents/keys",
         )
+        .signed(super::remote::SignWith::KeyRegistration)
         .with(vec![
             agent_id(),
             Flag::opt("key-id", "key_id", Kind::Text, "KEY_ID", "Identifier for the key.").req(),
-            Flag::opt("public-key-hex", "public_key_bytes", Kind::HexBytes, "HEX", "Ed25519 public key, 32 bytes as hex.").req(),
+            Flag::opt("private-key-file", "", Kind::SecretKeyFile, "FILE", "Sign the proof with this seed file; the key itself is never sent."),
+            Flag::opt("public-key-hex", "public_key_hex", Kind::Text, "HEX", "Ed25519 public key, 32 bytes as 64 hex characters (derived from --private-key-file when given)."),
+            Flag::opt("registered-at", "registered_at_unix_secs", Kind::Int, "SECS", "Unix seconds the proof was made at."),
+            Flag::opt("proof-hex", "registration_signature_hex", Kind::Text, "HEX", "Proof-of-possession signature, 64 bytes as 128 hex characters."),
             Flag::opt("algorithm", "algorithm", Kind::Choice(KEY_ALGORITHMS), "ALG", "Key algorithm.").default_to("ed25519"),
             chain(),
         ])
-        .example("mentisdb agent key add builder --key-id ci-2026 --public-key-hex 9f86d081..."),
+        .example("mentisdb agent key add builder --key-id builder-202610 --chain project --private-key-file ~/.mentisdb/builder.key")
+        .example("mentisdb agent key add builder --key-id k1 --public-key-hex 9f86d081... --registered-at 1790000000 --proof-hex 1c2d..."),
         rest_post(
             &["agent", "key", "revoke"],
             "Revoke an agent's key",

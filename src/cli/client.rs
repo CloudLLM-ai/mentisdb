@@ -1,6 +1,6 @@
 //! HTTP execution and output rendering for remote CLI commands.
 
-use super::remote::{HttpMethod, RemoteInvocation, Render, Transport, DASHBOARD_PIN_ENV};
+use super::remote::{HttpMethod, RemoteInvocation, Render, SignWith, Transport, DASHBOARD_PIN_ENV};
 use serde_json::Value;
 use std::io::{BufRead, Write};
 use std::time::Duration;
@@ -19,6 +19,7 @@ pub fn run(
 ) -> Result<(), String> {
     let mut invocation = invocation.clone();
     fill_stdin(&mut invocation, input)?;
+    sign_locally(&mut invocation)?;
     let reply = send(&invocation)?;
     write_reply(&invocation, &reply, out)
 }
@@ -33,6 +34,47 @@ fn fill_stdin(invocation: &mut RemoteInvocation, input: &mut dyn BufRead) -> Res
         .map_err(|e| format!("reading standard input: {e}"))?;
     if let Some(Value::Object(body)) = invocation.body.as_mut() {
         insert_dotted(body, &field, Value::String(text));
+    }
+    Ok(())
+}
+
+/// Perform the local signing a command asked for, filling the signature fields.
+fn sign_locally(invocation: &mut RemoteInvocation) -> Result<(), String> {
+    let (Some(sign), Some(secret)) = (invocation.sign, invocation.secret.clone()) else {
+        return Ok(());
+    };
+    let Some(Value::Object(body)) = invocation.body.as_mut() else {
+        return Ok(());
+    };
+    match sign {
+        SignWith::KeyRegistration => {
+            use ed25519_dalek::{Signer, SigningKey};
+            let text = |field: &str| {
+                body.get(field)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            let key = SigningKey::from_bytes(&secret.0);
+            let public = key.verifying_key().to_bytes();
+            let now = chrono::Utc::now().timestamp();
+            let payload = crate::signing::key_registration_payload(
+                &text("chain_key"),
+                &text("agent_id"),
+                &text("key_id"),
+                &public,
+                now,
+            );
+            body.insert(
+                "public_key_hex".into(),
+                Value::String(crate::signing::to_hex(&public)),
+            );
+            body.insert("registered_at_unix_secs".into(), Value::from(now));
+            body.insert(
+                "registration_signature_hex".into(),
+                Value::String(crate::signing::to_hex(&key.sign(&payload).to_bytes())),
+            );
+        }
     }
     Ok(())
 }

@@ -171,6 +171,10 @@ pub enum CliCommand {
     Wizard(WizardCommand),
     /// Add a thought to a running daemon.
     Add(AddCommand),
+    /// Print `mentisdb key` help.
+    KeyHelp,
+    /// Generate or inspect a signing key.
+    Key(super::key::KeyCommand),
     /// Print help text for a daemon command or group (from the command catalog).
     RemoteHelp(String),
     /// Run a daemon-facing command (thought, search, chain, agent, ...).
@@ -223,6 +227,8 @@ where
         "restore" if has_help_flag => Ok(CliCommand::RestoreHelp),
         "bearertoken" if has_help_flag => Ok(CliCommand::BearerTokenHelp),
         "cert" if has_help_flag => Ok(CliCommand::CertHelp),
+        "key" if has_help_flag || parts.len() == 1 => Ok(CliCommand::KeyHelp),
+        "key" => super::key::parse_key_args(&parts[1..]).map(CliCommand::Key),
         "setup" => parse_setup(parts),
         "wizard" => parse_wizard(parts),
         "add" => parse_add(parts),
@@ -292,6 +298,8 @@ Usage:
   mentisdb bearertoken list [--global | --chain <chain_key> [--chain <chain_key> ...]] [--dir <path>]
   mentisdb bearertoken revoke <alias> [--dir <path>]
   mentisdb bearertoken remove <alias> [--dir <path>]
+  mentisdb key generate [--out <file>] [--force]
+  mentisdb key show <file>
   mentisdb cert [<ip-address-or-domain>] [--force] [--out-dir <path>] [--env-file <path>] [--no-env-update]
 
 Client transport (--mode):
