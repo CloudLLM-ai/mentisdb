@@ -12,6 +12,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use dashmap::DashMap;
+pub use mentisdb::access;
 pub use mentisdb::auth;
 pub use mentisdb::search;
 pub use mentisdb::{

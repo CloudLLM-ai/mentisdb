@@ -4356,11 +4356,28 @@ impl MentisDbService {
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let mut chain = chain.write().await;
         let algorithm = parse_public_key_algorithm(&request.algorithm)?;
+        let public_key = crate::access::bytes_from_array_or_hex(
+            request.public_key_bytes,
+            request.public_key_hex.as_deref(),
+            "public_key",
+        )
+        .map_err(client_input_error)?;
+        let signature = crate::access::bytes_from_array_or_hex(
+            request.registration_signature,
+            request.registration_signature_hex.as_deref(),
+            "registration_signature",
+        )
+        .map_err(client_input_error)?;
+        let proof = crate::access::KeyRegistrationProof {
+            registered_at_unix_secs: request.registered_at_unix_secs,
+            signature,
+        };
         let agent = chain.add_agent_key(
             &request.agent_id,
             &request.key_id,
             algorithm,
-            request.public_key_bytes,
+            public_key,
+            &proof,
         )?;
         self.log_interaction(InteractionLogEntry {
             access: "write",
@@ -6196,7 +6213,12 @@ struct AddAgentKeyRequest {
     agent_id: String,
     key_id: String,
     algorithm: String,
-    public_key_bytes: Vec<u8>,
+    public_key_bytes: Option<Vec<u8>>,
+    public_key_hex: Option<String>,
+    /// Unix seconds of the proof of possession.
+    registered_at_unix_secs: i64,
+    registration_signature: Option<Vec<u8>>,
+    registration_signature_hex: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -7977,13 +7999,17 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("alias", ToolParameterType::String).with_description("Alias to add to the agent record.").required()),
         ToolMetadata::new(
             "mentisdb_add_agent_key",
-            "Add or replace one public verification key on a registered agent. This is the intended path for future signed-thought workflows.",
+            "Add or replace one public verification key on a registered agent. The key must be a valid Ed25519 public key and the call must include a proof of possession: a signature by that key over the mentisdb/key-registration/v1 payload (see docs/CHAIN_ACCESS.md) made within 10 minutes of the call.",
         )
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key. Defaults to the server default chain."))
         .with_parameter(ToolParameter::new("agent_id", ToolParameterType::String).with_description("Stable agent id to update.").required())
         .with_parameter(ToolParameter::new("key_id", ToolParameterType::String).with_description("Stable identifier for the public key.").required())
         .with_parameter(ToolParameter::new("algorithm", ToolParameterType::String).with_description("Public-key algorithm. Currently supported: ed25519.").required())
-        .with_parameter(ToolParameter::new("public_key_bytes", ToolParameterType::Array).with_description("Raw public-key bytes.").with_items(ToolParameterType::Integer).required()),
+        .with_parameter(ToolParameter::new("public_key_bytes", ToolParameterType::Array).with_description("Raw 32-byte public key as integers. Give this or public_key_hex.").with_items(ToolParameterType::Integer))
+        .with_parameter(ToolParameter::new("public_key_hex", ToolParameterType::String).with_description("Raw 32-byte public key as 64 hex characters. Give this or public_key_bytes."))
+        .with_parameter(ToolParameter::new("registered_at_unix_secs", ToolParameterType::Integer).with_description("Unix seconds the proof was made at; must be within 600 seconds of the server clock.").required())
+        .with_parameter(ToolParameter::new("registration_signature", ToolParameterType::Array).with_description("64-byte proof-of-possession signature as integers. Give this or registration_signature_hex.").with_items(ToolParameterType::Integer))
+        .with_parameter(ToolParameter::new("registration_signature_hex", ToolParameterType::String).with_description("64-byte proof-of-possession signature as 128 hex characters. Give this or registration_signature.")),
         ToolMetadata::new(
             "mentisdb_revoke_agent_key",
             "Mark one previously registered public key as revoked for a given agent.",

@@ -299,6 +299,7 @@
 //! We designed MentisDB to be infrastructure you can trust for years. Welcome.
 #![warn(missing_docs)]
 
+pub mod access;
 pub mod auth;
 pub mod backup;
 #[cfg(feature = "server")]
@@ -6209,20 +6210,60 @@ impl MentisDb {
     }
 
     /// Add or replace one public verification key on an existing registered agent.
+    ///
+    /// The key must be a valid, non-weak Ed25519 public key and `proof` must be
+    /// a fresh signature by that key over
+    /// [`signing::key_registration_payload`] for this chain, agent and key id, so
+    /// nobody can register a key they do not hold.
+    ///
+    /// # Errors
+    ///
+    /// An [`access::AccessError`] wrapped in `io::Error` for a malformed key, a
+    /// stale or invalid proof; `NotFound`/`InvalidInput` for an unknown agent or
+    /// empty key id.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ed25519_dalek::{Signer, SigningKey};
+    /// use mentisdb::access::KeyRegistrationProof;
+    /// use mentisdb::signing::key_registration_payload;
+    /// use mentisdb::{MentisDb, PublicKeyAlgorithm, StorageAdapterKind, ThoughtType};
+    ///
+    /// let dir = std::env::temp_dir().join(format!("mentisdb_doc_addkey_{}", std::process::id()));
+    /// let mut chain = MentisDb::open_with_key_and_storage_kind(&dir, "doc", StorageAdapterKind::Binary).unwrap();
+    /// chain.append("alice", ThoughtType::Insight, "hello").unwrap();
+    ///
+    /// let secret = SigningKey::from_bytes(&[5u8; 32]);
+    /// let public = secret.verifying_key().to_bytes().to_vec();
+    /// let now = chrono::Utc::now().timestamp();
+    /// let payload = key_registration_payload("doc", "alice", "alice-1", &public, now);
+    /// let proof = KeyRegistrationProof { registered_at_unix_secs: now, signature: secret.sign(&payload).to_bytes().to_vec() };
+    /// chain.add_agent_key("alice", "alice-1", PublicKeyAlgorithm::Ed25519, public.clone(), &proof).unwrap();
+    ///
+    /// // Without the private key the registration is refused.
+    /// let forged = KeyRegistrationProof { registered_at_unix_secs: now, signature: vec![0; 64] };
+    /// assert!(chain.add_agent_key("alice", "alice-2", PublicKeyAlgorithm::Ed25519, public, &forged).is_err());
+    /// # let _ = std::fs::remove_dir_all(&dir);
+    /// ```
     pub fn add_agent_key(
         &mut self,
         agent_id: &str,
         key_id: &str,
         algorithm: PublicKeyAlgorithm,
         public_key_bytes: Vec<u8>,
+        proof: &access::KeyRegistrationProof,
     ) -> io::Result<AgentRecord> {
         let key_id = normalize_non_empty_label(key_id, "key_id")?;
-        if public_key_bytes.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "public_key_bytes must not be empty",
-            ));
-        }
+        proof
+            .verify(
+                self.chain_key(),
+                agent_id,
+                &key_id,
+                &public_key_bytes,
+                Utc::now().timestamp(),
+            )
+            .map_err(access::AccessError::into_io)?;
 
         let record = self.agent_record_mut(agent_id)?;
         record.add_public_key(AgentPublicKey {

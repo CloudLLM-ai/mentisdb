@@ -2165,7 +2165,11 @@ async fn api_activate_agent(
 struct AddKeyBody {
     key_id: String,
     algorithm: String,
-    public_key_bytes: Vec<u8>,
+    public_key_bytes: Option<Vec<u8>>,
+    public_key_hex: Option<String>,
+    registered_at_unix_secs: i64,
+    registration_signature: Option<Vec<u8>>,
+    registration_signature_hex: Option<String>,
 }
 
 /// `POST /dashboard/api/agents/:chain_key/:agent_id/keys`
@@ -2181,12 +2185,40 @@ async fn api_add_agent_key(
         .parse::<PublicKeyAlgorithm>()
         .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))))?;
 
+    let bad_request = |e: String| (StatusCode::BAD_REQUEST, Json(json!({ "error": e })));
+    let public_key = crate::access::bytes_from_array_or_hex(
+        body.public_key_bytes,
+        body.public_key_hex.as_deref(),
+        "public_key",
+    )
+    .map_err(bad_request)?;
+    let signature = crate::access::bytes_from_array_or_hex(
+        body.registration_signature,
+        body.registration_signature_hex.as_deref(),
+        "registration_signature",
+    )
+    .map_err(bad_request)?;
+    let proof = crate::access::KeyRegistrationProof {
+        registered_at_unix_secs: body.registered_at_unix_secs,
+        signature,
+    };
+
     let arc = get_or_open_chain(&state, &chain_key).await?;
     let mut chain = arc.write().await;
 
     let agent = chain
-        .add_agent_key(&agent_id, &body.key_id, algorithm, body.public_key_bytes)
-        .map_err(internal_error)?;
+        .add_agent_key(&agent_id, &body.key_id, algorithm, public_key, &proof)
+        .map_err(|e| match crate::access::AccessError::from_io(&e) {
+            Some(access) => (
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    StatusCode::FORBIDDEN
+                } else {
+                    StatusCode::BAD_REQUEST
+                },
+                Json(json!({ "error": access.to_string() })),
+            ),
+            None => internal_error(e),
+        })?;
 
     Ok(Json(serde_json::to_value(agent).map_err(internal_error)?))
 }

@@ -19,6 +19,27 @@ use serde_json::json;
 use tower::util::ServiceExt;
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// The key and proof-of-possession fields `POST /v1/agents/keys` requires, for a
+/// key derived from `seed`, registered as `key_id` of `agent_id` on `chain_key`.
+fn key_registration_fields(
+    chain_key: &str,
+    agent_id: &str,
+    key_id: &str,
+    seed: u8,
+) -> serde_json::Value {
+    use ed25519_dalek::{Signer, SigningKey};
+    let secret = SigningKey::from_bytes(&[seed; 32]);
+    let public = secret.verifying_key().to_bytes();
+    let now = chrono::Utc::now().timestamp();
+    let payload =
+        mentisdb::signing::key_registration_payload(chain_key, agent_id, key_id, &public, now);
+    json!({
+        "public_key_hex": mentisdb::signing::to_hex(&public),
+        "registered_at_unix_secs": now,
+        "registration_signature_hex": mentisdb::signing::to_hex(&secret.sign(&payload).to_bytes()),
+    })
+}
 static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 const EMBEDDED_SKILL_MD: &str = include_str!("../MENTISDB_SKILL.md");
 
@@ -2227,13 +2248,26 @@ async fn rest_router_manages_agent_registry_records() {
                 .uri("/v1/agents/keys")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    json!({
-                        "chain_key": "registry-admin",
-                        "agent_id": "agent-admin",
-                        "key_id": "main-ed25519",
-                        "algorithm": "ed25519",
-                        "public_key_bytes": [1, 2, 3, 4]
-                    })
+                    {
+                        let mut body = json!({
+                            "chain_key": "registry-admin",
+                            "agent_id": "agent-admin",
+                            "key_id": "main-ed25519",
+                            "algorithm": "ed25519",
+                        });
+                        body.as_object_mut().unwrap().extend(
+                            key_registration_fields(
+                                "registry-admin",
+                                "agent-admin",
+                                "main-ed25519",
+                                11,
+                            )
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                        );
+                        body
+                    }
                     .to_string(),
                 ))
                 .unwrap(),
@@ -3160,8 +3194,6 @@ Always verify signatures before trusting skill content.
     // --- Step 2: Generate a deterministic Ed25519 keypair from a fixed seed ---
     // Using a fixed 32-byte seed guarantees test determinism without requiring `rand`.
     let signing_key = SigningKey::from_bytes(&[42u8; 32]);
-    let verifying_key = signing_key.verifying_key();
-    let pub_key_bytes: Vec<u8> = verifying_key.as_bytes().to_vec();
 
     let add_key = router
         .clone()
@@ -3171,13 +3203,26 @@ Always verify signatures before trusting skill content.
                 .uri("/v1/agents/keys")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    json!({
-                        "chain_key": "sig-test-chain",
-                        "agent_id": "signing-agent",
-                        "key_id": "ed25519-main",
-                        "algorithm": "ed25519",
-                        "public_key_bytes": pub_key_bytes
-                    })
+                    {
+                        let mut body = json!({
+                            "chain_key": "sig-test-chain",
+                            "agent_id": "signing-agent",
+                            "key_id": "ed25519-main",
+                            "algorithm": "ed25519",
+                        });
+                        body.as_object_mut().unwrap().extend(
+                            key_registration_fields(
+                                "sig-test-chain",
+                                "signing-agent",
+                                "ed25519-main",
+                                42,
+                            )
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                        );
+                        body
+                    }
                     .to_string(),
                 ))
                 .unwrap(),
