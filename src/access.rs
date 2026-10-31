@@ -69,6 +69,10 @@ pub enum AccessError {
     /// The signature does not verify; for v2 this also happens when the chain
     /// head moved since the signer fetched it (sign again against the new head).
     BadSignature(SigningError),
+    /// The v2 signature is valid but was made against an earlier chain head:
+    /// another writer appended first. Nothing was written; fetch the head,
+    /// sign again and retry.
+    StaleHead,
     /// The key is valid but not in the chain's allowed set.
     KeyNotAllowed {
         /// Agent that was named.
@@ -91,6 +95,7 @@ impl AccessError {
             | Self::KeyProofStale { .. }
             | Self::UnsupportedSignature(_)
             | Self::MissingSigningKeyId
+            | Self::StaleHead
             | Self::PolicyInvalid(_) => io::ErrorKind::InvalidInput,
             _ => io::ErrorKind::PermissionDenied,
         }
@@ -142,6 +147,9 @@ impl fmt::Display for AccessError {
             Self::KeyRevoked { agent_id, key_id } => {
                 write!(f, "key '{key_id}' of agent '{agent_id}' has been revoked")
             }
+            Self::StaleHead => f.write_str(
+                "stale head: the signature is valid for an earlier chain head because another thought was appended first; fetch the head, sign again and retry",
+            ),
             Self::BadSignature(why) => write!(
                 f,
                 "{why} (a v2 signature also fails when the chain head moved; fetch the head and sign again)"

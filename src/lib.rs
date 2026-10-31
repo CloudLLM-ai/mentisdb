@@ -5743,8 +5743,43 @@ impl MentisDb {
                 signing::thought_payload_v2(self.chain_key(), agent_id, prev, input)
             }
         };
-        signing::verify_ed25519_signature(&key.public_key_bytes, &payload, &stored.signature)
-            .map_err(AccessError::BadSignature)?;
+        if let Err(error) =
+            signing::verify_ed25519_signature(&key.public_key_bytes, &payload, &stored.signature)
+        {
+            if stored.version == SignatureVersion::V2 {
+                // Distinguish "signed against an older head" (retry) from a
+                // forged or corrupted signature. Bounded so a bad signature
+                // cannot make the server do unbounded verification work.
+                for older in self.thoughts.iter().rev().skip(1).take(8) {
+                    let payload =
+                        signing::thought_payload_v2(self.chain_key(), agent_id, &older.hash, input);
+                    if signing::verify_ed25519_signature(
+                        &key.public_key_bytes,
+                        &payload,
+                        &stored.signature,
+                    )
+                    .is_ok()
+                    {
+                        return Err(AccessError::StaleHead);
+                    }
+                }
+                // Also the case where the signer saw the empty chain.
+                if self.thoughts.len() <= 9 {
+                    let payload =
+                        signing::thought_payload_v2(self.chain_key(), agent_id, "", input);
+                    if signing::verify_ed25519_signature(
+                        &key.public_key_bytes,
+                        &payload,
+                        &stored.signature,
+                    )
+                    .is_ok()
+                    {
+                        return Err(AccessError::StaleHead);
+                    }
+                }
+            }
+            return Err(AccessError::BadSignature(error));
+        }
         if mode == access::AccessMode::Allowlist
             && !self
                 .access_policy

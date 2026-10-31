@@ -215,11 +215,12 @@ fn test_v2_signature_cannot_be_replayed_across_chains_or_positions() {
         rejection(two.append_thought("alice", signed.clone())),
         AccessError::BadSignature(_)
     ));
-    // Same bytes onto the same chain again (the head moved on).
-    assert!(matches!(
+    // Same bytes onto the same chain again (the head moved on): refused, and
+    // reported as signed over an earlier head.
+    assert_eq!(
         rejection(one.append_thought("alice", signed)),
-        AccessError::BadSignature(_)
-    ));
+        AccessError::StaleHead
+    );
     let _ = std::fs::remove_dir_all(d1);
     let _ = std::fs::remove_dir_all(d2);
 }

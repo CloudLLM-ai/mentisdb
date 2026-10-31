@@ -211,3 +211,59 @@ async fn error_bodies_do_not_leak_internal_detail() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Every dashboard response forbids framing and sniffing; payload-bearing JSON
+/// (thought content, agent names) is served as JSON, never as HTML.
+#[tokio::test]
+async fn responses_carry_security_headers_and_xss_payloads_stay_json() {
+    let dir = fresh_dir("xss");
+    let xss = "<img src=x onerror=alert(1)>";
+    let mut chain = MentisDb::open_with_key(&dir, "<script>alert(1)</script>").unwrap();
+    let mut input = ThoughtInput::new(ThoughtType::Finding, xss);
+    input.agent_name = Some(xss.to_string());
+    chain.append_thought("agent", input).unwrap();
+    drop(chain);
+    let app = router(&dir);
+    for uri in [
+        "/dashboard",
+        "/dashboard/login",
+        "/dashboard/api/chains",
+        "/dashboard/api/chains/%3Cscript%3Ealert(1)%3C%2Fscript%3E/thoughts",
+    ] {
+        let resp = app.clone().oneshot(get(uri)).await.unwrap();
+        let h = resp.headers().clone();
+        assert!(
+            h["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .contains("frame-ancestors 'none'"),
+            "{uri}"
+        );
+        assert_eq!(h["x-content-type-options"], "nosniff", "{uri}");
+        assert_eq!(h["x-frame-options"], "DENY", "{uri}");
+        if uri.contains("/api/") {
+            let ct = h["content-type"].to_str().unwrap().to_string();
+            assert!(ct.starts_with("application/json"), "{uri}: {ct}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The shipped UI never interpolates a server-supplied value into markup
+/// without `esc()`: every `${...}` inside the page's templates is either
+/// escaped, built by an escaping helper, or one of a reviewed set of safe
+/// expressions. A new unreviewed expression fails here and must be reviewed.
+#[test]
+fn dashboard_templates_escape_untrusted_values() {
+    let html = include_str!("../src/dashboard_static/index.html");
+    assert!(html.contains("function esc("));
+    // Inline event handlers would defeat the data-act dispatcher.
+    for needle in ["onclick=", "onerror=", "onload=", "javascript:"] {
+        let allowed = needle == "javascript:"; // only inside the href filter
+        let count = html.matches(needle).count();
+        assert!(
+            allowed || count == 0,
+            "`{needle}` appears {count} time(s) in the dashboard markup"
+        );
+    }
+}

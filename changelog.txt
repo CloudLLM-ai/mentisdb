@@ -1,4 +1,16 @@
 UNRELEASED
+  - fix(security): dashboard responses now carry a Content-Security-Policy
+    (`frame-ancestors 'none'`, `base-uri 'none'`, same-origin connections),
+    `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and
+    `Referrer-Policy: no-referrer`, closing clickjacking of the state-changing
+    UI and adding defence in depth against stored XSS in thought, agent, skill
+    and chain-key text (the UI already escapes all of it).
+  - feat(access): a v2-signed append built on an older head now fails with the
+    typed `AccessError::StaleHead` (HTTP 400, "fetch the head, sign again")
+    instead of an indistinguishable `BadSignature`; forged signatures stay
+    `BadSignature`. Nothing is written either way. New `AccessError` variant.
+  - test(access): Merkle-root replay, v1 downgrade on allowlist chains, the
+    two-signer stale-head race and governor-key revocation are pinned.
   - fix(security): MCP authorization was fail-open for chain-scoped tools it
     did not list. A tool outside the hard-coded default-chain list that named no
     chain was allowed for any token while its handler used the server's default

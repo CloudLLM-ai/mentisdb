@@ -237,6 +237,35 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
         )
         .with_state(state)
         .layer(middleware::from_fn(host_allowlist_middleware))
+        .layer(middleware::from_fn(security_headers_middleware))
+}
+
+/// Content-Security-Policy of every dashboard response.
+///
+/// The single-file UI uses inline script and style, so those stay allowed;
+/// everything else is pinned to the same origin. The directives that matter
+/// most as defence in depth: `frame-ancestors 'none'` (no clickjacking of the
+/// state-changing UI), `base-uri 'none'`, `object-src 'none'`, `form-action 'self'`.
+pub(crate) const DASHBOARD_CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'";
+
+/// Adds CSP, `nosniff`, `X-Frame-Options` and `no-referrer` to every dashboard
+/// response so rendered thought content cannot be framed, sniffed into script
+/// or leak the dashboard URL.
+async fn security_headers_middleware(request: axum::extract::Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    for (name, value) in [
+        ("content-security-policy", DASHBOARD_CSP),
+        ("x-content-type-options", "nosniff"),
+        ("x-frame-options", "DENY"),
+        ("referrer-policy", "no-referrer"),
+    ] {
+        headers.insert(
+            header::HeaderName::from_static(name),
+            header::HeaderValue::from_static(value),
+        );
+    }
+    response
 }
 
 // ── Host allowlist (DNS-rebinding defence) ────────────────────────────────────
