@@ -124,10 +124,14 @@ fn test_append_with_stale_sidecar_never_embeds_history_on_request_path() {
     chain
         .append("a", ThoughtType::Finding, "append against a stale sidecar")
         .unwrap();
-    assert_eq!(
-        probe.inputs_embedded_on(me) - before,
-        0,
-        "the request thread must not embed the chain while the sidecar is stale"
+    // The repair scheduled by the failed embed may finish and be adopted
+    // before this append, in which case the append legitimately embeds its own
+    // thought (1). While the rebuild is still pending it embeds nothing (0).
+    // The old synchronous rebuild embedded all 22.
+    let embedded = probe.inputs_embedded_on(me) - before;
+    assert!(
+        embedded <= 1,
+        "the request thread must not embed the chain while the sidecar is stale (embedded {embedded})"
     );
 
     wait_for_adoption(&mut chain);
