@@ -34,6 +34,8 @@ UNRELEASED
     `mentisdb_set_access_policy`, `mentisdb_verify_signatures`, REST routes
     `/v1/access/{policy,policy/set,verify}`, and a read-only policy panel in the
     dashboard. Design, threat model and formats: docs/CHAIN_ACCESS.md.
+    COMPAT: a chain that contains an `AccessPolicy` record cannot be read by a
+    MentisDB version that predates the type; chains without one are unchanged.
   - feat(cli): `mentisdb chain access show|set|allow|deny|verify`,
     `mentisdb key generate|show`, `--private-key-file` on `agent key add`,
     `thought append` and `thought retro` (signing happens locally; the seed is
