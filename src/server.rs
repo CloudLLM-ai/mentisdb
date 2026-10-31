@@ -1873,76 +1873,7 @@ pub fn combined_mcp_router(config: MentisDbServiceConfig, bind_host: IpAddr) -> 
 /// }
 /// ```
 pub fn rest_router(config: MentisDbServiceConfig) -> Router {
-    let service = Arc::new(MentisDbService::new(config));
-    Router::new()
-        .route("/health", get(health_handler))
-        .route("/mentisdb_skill_md", get(rest_skill_markdown_handler))
-        .route("/v1/skills", get(rest_list_skills_handler))
-        .route("/v1/skills/manifest", get(rest_skill_manifest_handler))
-        .route("/v1/skills/upload", post(rest_upload_skill_handler))
-        .route("/v1/skills/search", post(rest_search_skill_handler))
-        .route("/v1/skills/read", post(rest_read_skill_handler))
-        .route("/v1/skills/versions", post(rest_skill_versions_handler))
-        .route("/v1/skills/deprecate", post(rest_deprecate_skill_handler))
-        .route("/v1/skills/revoke", post(rest_revoke_skill_handler))
-        .route("/v1/skills/delete", post(rest_delete_skill_handler))
-        .route("/v1/bootstrap", post(rest_bootstrap_handler))
-        .route("/v1/thoughts", post(rest_append_handler))
-        .route(
-            "/v1/retrospectives",
-            post(rest_append_retrospective_handler),
-        )
-        .route("/v1/search", post(rest_search_handler))
-        .route("/v1/lexical-search", post(rest_lexical_search_handler))
-        .route("/v1/ranked-search", post(rest_ranked_search_handler))
-        .route("/v1/federated-search", post(rest_federated_search_handler))
-        .route("/v1/context-bundles", post(rest_context_bundles_handler))
-        .route(
-            "/v1/summary-candidates",
-            post(rest_summary_candidates_handler),
-        )
-        .route("/v1/recent-context", post(rest_recent_context_handler))
-        .route("/v1/memory-markdown", post(rest_memory_markdown_handler))
-        .route("/v1/import-markdown", post(rest_import_markdown_handler))
-        .route("/v1/thought", post(rest_get_thought_handler))
-        .route("/v1/thoughts/genesis", post(rest_genesis_thought_handler))
-        .route(
-            "/v1/thoughts/traverse",
-            post(rest_traverse_thoughts_handler),
-        )
-        .route("/v1/head", post(rest_head_handler))
-        .route("/v1/admin/flush", post(rest_flush_handler))
-        .route("/v1/chains", get(rest_list_chains_handler))
-        .route("/v1/chains/branch", post(rest_branch_handler))
-        .route("/v1/agents", post(rest_list_agents_handler))
-        .route("/v1/agent", post(rest_get_agent_handler))
-        .route("/v1/agent-registry", post(rest_list_agent_registry_handler))
-        .route("/v1/agents/upsert", post(rest_upsert_agent_handler))
-        .route(
-            "/v1/agents/description",
-            post(rest_set_agent_description_handler),
-        )
-        .route("/v1/agents/aliases", post(rest_add_agent_alias_handler))
-        .route("/v1/agents/keys", post(rest_add_agent_key_handler))
-        .route(
-            "/v1/agents/keys/revoke",
-            post(rest_revoke_agent_key_handler),
-        )
-        .route("/v1/agents/disable", post(rest_disable_agent_handler))
-        .route("/v1/entity-types", post(rest_list_entity_types_handler))
-        .route(
-            "/v1/entity-types/upsert",
-            post(rest_upsert_entity_type_handler),
-        )
-        .route("/v1/webhooks", get(rest_list_webhooks_handler))
-        .route("/v1/webhooks", post(rest_register_webhook_handler))
-        .route("/v1/webhooks/{id}", delete(rest_delete_webhook_handler))
-        .route("/v1/extract-memories", post(rest_extract_memories_handler))
-        .with_state(service.clone())
-        .layer(middleware::from_fn_with_state(
-            service,
-            rest_bearer_auth_middleware,
-        ))
+    rest_router_with_service(Arc::new(MentisDbService::new(config)))
 }
 
 /// Core service state shared by the MCP and REST servers.
