@@ -2148,7 +2148,10 @@ fn tool_call_auth_target(
             chain_keys.insert(nested);
         }
     }
-    if chain_keys.is_empty() && default_chain_mcp_tool(tool_name) {
+    // The handler falls back to the default chain whenever the top-level
+    // `chain_key` is blank, however many decoy chain fields the request names,
+    // so the default chain must be authorized too.
+    if default_chain_mcp_tool(tool_name) && top_level_chain_key_is_blank(parameters) {
         chain_keys.insert(default_chain_key.to_string());
     }
 
@@ -2204,38 +2207,39 @@ fn inject_single_chain_scope_into_payload(
     }
 }
 
-/// Inserts `chain_key` when the object names no chain; returns whether it changed.
+/// Inserts `chain_key` when the object does not name one; returns whether it
+/// changed.
+///
+/// Only `chain_key` counts: it is the one field every single-chain handler
+/// reads. `target_chain_key`, `source_chain_key`, `chain_keys` and friends
+/// satisfy the authorizer but are ignored by handlers that fall back to the
+/// server default chain, so treating them as "explicit" would let a decoy
+/// field redirect the call to a chain the token does not cover.
 fn inject_chain_key_object(parameters: &mut Value, chain_key: &str) -> bool {
-    let Some(map) = parameters.as_object_mut() else {
-        return false;
-    };
-    if object_has_explicit_chain_field(map) {
+    if !parameters.is_object() || !top_level_chain_key_is_blank(parameters) {
         return false;
     }
-    map.insert(
-        "chain_key".to_string(),
-        Value::String(chain_key.to_string()),
-    );
+    if let Some(map) = parameters.as_object_mut() {
+        map.insert(
+            "chain_key".to_string(),
+            Value::String(chain_key.to_string()),
+        );
+    }
     true
 }
 
-fn object_has_explicit_chain_field(map: &serde_json::Map<String, Value>) -> bool {
-    for key in [
-        "chain_key",
-        "source_chain_key",
-        "target_chain_key",
-        "branch_chain_key",
-        "chain_key_filter",
-        "chain_keys",
-    ] {
-        match map.get(key) {
-            Some(Value::String(value)) if !value.trim().is_empty() => return true,
-            Some(Value::Array(values)) if !values.is_empty() => return true,
-            Some(Value::Null) | Some(Value::String(_)) | None => {}
-            Some(_) => return true,
-        }
+/// True when the top-level `chain_key` of a parameter object is absent,
+/// `null`, or blank, i.e. the handler will resolve the chain to the server
+/// default.
+///
+/// A present non-string value (array, number, object) is *not* blank: the
+/// typed handler rejects it with 400, so it never reaches a chain.
+fn top_level_chain_key_is_blank(parameters: &Value) -> bool {
+    match parameters.get("chain_key") {
+        None | Some(Value::Null) => true,
+        Some(Value::String(value)) => value.trim().is_empty(),
+        Some(_) => false,
     }
-    false
 }
 
 /// Middleware that rewrites MCP/REST JSON bodies so a single-chain bearer token
@@ -3740,6 +3744,21 @@ impl MentisDbService {
             Uuid,
             u64,
         );
+
+        // Every key is trimmed and validated exactly as the authorizer reads it.
+        // A blank entry would otherwise resolve to the server's default chain
+        // while the authorizer (which skips blanks) never checked that chain.
+        let mut normalized_keys: Vec<String> = Vec::with_capacity(request.chain_keys.len());
+        for chain_key in &request.chain_keys {
+            let chain_key = normalize_chain_key(chain_key)?;
+            if !normalized_keys.contains(&chain_key) {
+                normalized_keys.push(chain_key);
+            }
+        }
+        let request = FederatedSearchRequest {
+            chain_keys: normalized_keys,
+            ..request
+        };
 
         if request.chain_keys.is_empty() {
             return Ok(RankedSearchResponse {
@@ -7309,7 +7328,15 @@ pub(crate) async fn rest_bearer_auth_middleware(
             // No chain key found: require a global token for safety.
             BearerAuthTarget::GlobalOnly
         }
-        OperationAuth::ChainScoped => BearerAuthTarget::Chains(chain_keys.into_iter().collect()),
+        OperationAuth::ChainScoped => {
+            // Handlers fall back to the default chain when `chain_key` is
+            // blank; decoy fields (`target_chain_key`, ...) must not hide that.
+            let blank = payload.as_ref().is_none_or(top_level_chain_key_is_blank);
+            if blank && rest_route_defaults_chain(&route) {
+                chain_keys.insert(service.config.default_chain_key.trim().to_string());
+            }
+            BearerAuthTarget::Chains(chain_keys.into_iter().collect())
+        }
     };
 
     let authorized = scope
@@ -7322,6 +7349,17 @@ pub(crate) async fn rest_bearer_auth_middleware(
 
     let reconstructed = axum::http::Request::from_parts(parts, axum::body::Body::from(body_bytes));
     next.run(reconstructed).await
+}
+
+/// Routes whose handlers name every chain explicitly (`source_chain_key`,
+/// `target_chain_key`, `branch_chain_key`, `chain_keys`) and never fall back to
+/// the server default chain. All other chain-scoped routes read `chain_key` and
+/// resolve a blank one to the default.
+fn rest_route_defaults_chain(route: &str) -> bool {
+    !matches!(
+        route,
+        "/v1/chains/merge" | "/v1/chains/branch" | "/v1/federated-search"
+    )
 }
 
 /// Maximum REST request body the auth middleware will buffer (1 MiB).

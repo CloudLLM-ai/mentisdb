@@ -1,4 +1,17 @@
 UNRELEASED
+  - fix(security): chain-scoped bearer tokens could read any chain through a
+    decoy field. A request that named `target_chain_key`, `source_chain_key`,
+    `branch_chain_key`, `chain_key_filter` or `chain_keys` instead of
+    `chain_key` satisfied the authorizer (it saw only the decoy's chain) while
+    the handler ignored the decoy and fell back to the server's default chain,
+    on REST and MCP, for single-chain, multi-chain tokens alike. Injection of a
+    single-chain token's chain now keys on `chain_key` alone, and the
+    authorizer requires the default chain whenever `chain_key` is blank.
+  - fix(security): federated search skipped blank entries of `chain_keys` when
+    authorizing but resolved them to the default chain when executing, so a
+    token scoped to one chain could search the default chain with
+    `{"chain_keys": ["", "mine"]}`. Entries are now trimmed and validated
+    (blank, oversized or control-character keys are a 400) and de-duplicated.
   - fix(cli): `--url` and `--dashboard-url` accepted values that are not
     absolute http(s) URLs (`mentisdb search q --url thought` built the request
     URL `thought/v1/ranked-search`); they are now validated at parse time with a
