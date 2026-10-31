@@ -396,7 +396,7 @@ Commands:
       mentisdb backup --dir ~/.cloudllm/mentisdb --flush --include-tls
 
     Options:
-      -o <path>          Path for the .mentis archive (default: ./mentisdb-YYYY-MM-DD-HH-MM-SS.mentis)
+      -o, --output <path>  Path for the .mentis archive (default: ./mentisdb-YYYY-MM-DD-HH-MM-SS.mentis)
       --dir <path>       Path to MENTISDB_DIR (default: platform default)
       --flush            Flush all storage adapters before backing up (recommended if daemon is running)
       --include-tls      Include TLS certificates and keys in the backup
@@ -531,7 +531,7 @@ pub fn wizard_help_text() -> &'static str {
 mentisdb wizard — Scan the local machine for supported clients, show detection status, let you choose integrations to configure, and apply changes interactively.
 
 Usage:
-  mentisdb wizard [--url <url>] [--yes]
+  mentisdb wizard [--url <url>] [--bearer <token>] [--yes]
 
 Behavior:
   - Detects whether a mentisdb integration already exists per client
@@ -541,14 +541,17 @@ Behavior:
   - For Claude Desktop, checks for npm and installs mcp-remote if needed
 
 Options:
-  --url <url>   Override the default URL for all selected integrations
-  --yes         Accept the wizard defaults without confirmation prompts
-  --help        Show this help text
+  --url <url>       Override the default URL for all selected integrations
+  --bearer <token>  Bearer token written into remote integrations as an
+                    Authorization header (alias: --token)
+  --yes             Accept the wizard defaults without confirmation prompts
+  --help            Show this help text
 
 Examples:
   mentisdb wizard
   mentisdb wizard --yes
   mentisdb wizard --url https://my.mentisdb.com:9473
+  mentisdb wizard --url https://my.mentisdb.com:9473 --bearer \"$MENTISDB_BEARER_TOKEN\"
 "
 }
 
@@ -582,7 +585,7 @@ pub fn backup_help_text() -> &'static str {
 mentisdb backup — Create a .mentis backup archive of the MENTISDB_DIR.
 
 Usage:
-  mentisdb backup [-o <path>] [--dir <path>] [--flush] [--include-tls]
+  mentisdb backup [-o|--output <path>] [--dir <path>] [--flush] [--include-tls]
 
 The backup includes all chain data files (*.tcbin, *.agents.json,
 *.entity-types.json, *.vectors.*.json), the global registry, and
@@ -593,7 +596,7 @@ for a consistent backup. If the daemon is not running, files are captured
 as-is.
 
 Options:
-  -o <path>          Path for the .mentis archive (default: ./mentisdb-YYYY-MM-DD-HH-MM-SS.mentis)
+  -o, --output <path> Path for the .mentis archive (default: ./mentisdb-YYYY-MM-DD-HH-MM-SS.mentis)
   --dir <path>       Path to MENTISDB_DIR (default: platform default)
   --flush            Flush all storage adapters before backing up (recommended if daemon is running)
   --include-tls      Include TLS certificates and keys in the backup
@@ -642,8 +645,14 @@ Examples:
 }
 
 /// Return the help text for the `cert` subcommand.
-pub fn cert_help_text() -> &'static str {
-    super::cert::help_text()
+///
+/// A usage header followed by the shared description, options and examples
+/// that `mentisdb --help` also shows.
+pub fn cert_help_text() -> String {
+    format!(
+        "mentisdb cert - mint a self-signed TLS certificate for the HTTPS servers\n\nUsage:\n  mentisdb cert [<ip-address-or-domain>] [--force] [--reset] [--out-dir <path>] [--env-file <path>] [--no-env-update]\n\n{}",
+        super::cert::help_text().trim_start()
+    )
 }
 
 fn parse_bearer_token(parts: Vec<String>) -> Result<CliCommand, String> {
