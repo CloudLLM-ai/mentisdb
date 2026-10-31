@@ -90,3 +90,41 @@ fn test_keys_root_of_the_shared_identity() {
     assert_eq!(to_hex(&merkle_root(&[leaf])), KEYS_ROOT_HEX);
     assert_eq!(fixed_record().keys_root, KEYS_ROOT_HEX);
 }
+
+/// `(op, payload hex, signature hex)` pinned by mentischat for room `den`, signer
+/// `alice`, counter 7 (copied from its `tests/interop_vectors.rs`).
+const MENTISCHAT_PINNED: [(&str, &str, &str); 9] = [
+    ("register_key", "6d656e746973636861742f72656769737465722d6b65792f7631000000000000000005616c696365000000000000000079b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664", "cc5a84e97bf94a431d2e50d10050e669805e46667321f2f716b3f2399af6ddbee8d51bac756f222ee13dc3e887793c9734513c7bd1832fa47587f297d720b009"),
+    ("create", "6d656e746973636861742f6372656174652f7631000000000364656e00000005616c6963650000000000000007000000077468652064656e", "b321fdf1d6fe8bdd24d5d2c50179a07e3a94b0633d9225315d0cf3ab229e032c33fc2f72fc9a8568dd919069b9853272cc666a49e504be4bf009c5d2411c6a00"),
+    ("invite", "6d656e746973636861742f696e766974652f7631000000000364656e00000005616c696365000000000000000700000003626f628139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394", "eb0bf1d4cb4a6fc45573a035ac580fec975fbc431d9cc0cb9a0ae134ef054860dd138cab6925d06169ab50cff994578f47a01678bb0da78c327d52f804755006"),
+    ("join", "6d656e746973636861742f6a6f696e2f7631000000000364656e00000005616c6963650000000000000007", "3a22cd642bef0d80bf4cff234675df8383361e99af0d91da2af370bc42214e195158f79f17d457e24f5012a6c9764b7ec3e667ba87d6babf0b446176ed86f206"),
+    ("leave", "6d656e746973636861742f6c656176652f7631000000000364656e00000005616c6963650000000000000007", "d5533b9d2a715dbc327021070654280d2f1a375b5fedb2c92b56e1bae5e0c43084c72666b77fd9bbd844a3cf3648dee39cb97f2bdacee181a1ad03fe1d3c590d"),
+    ("remove", "6d656e746973636861742f72656d6f76652f7631000000000364656e00000005616c696365000000000000000700000003626f62", "f78f80d00a951517f2b3a9df3b73d1f9792c742813ea9d5b5f6731b9bf71f365133d3753aa9dcc5002442081588af5ddc82ac98d97d42693286cef32c615d500"),
+    ("send", "6d656e746973636861742f73656e642f7631000000000364656e00000005616c6963650000000000000007000000164e6f207265706c79206e65656465643a2068656c6c6f", "23f31b594bbd815b2341d989a865b11117fc205888d33379a0caeea7cf9f2c3e94d7731ddab81dac36f33de4b06662d1e372ebe864b9023aef20ea58ef009802"),
+    ("welcome", "6d656e746973636861742f77656c636f6d652f7631000000000364656e00000005616c696365000000000000000700000003626f6200000003010203", "07d5f256b2919994621e85da9a7ee7f9f7b34565ac350c3147912ccd49ab07e725877a292780a3f3d86a38e0d1d62af43094db0a611fc0b75d9fc773ec1c8f02"),
+    ("key_packages", "6d656e746973636861742f6b65792d7061636b616765732f7631000000000000000005616c6963650000000000000007000000020000000201020000000103010000000109", "255d0823aa9fe5fa1c06fef6b666c6e7bc0f9c24570833376929e34f4c8939a5608d89a5526d9b4914abbd533d2a523ca00e1c74559283802e4a329b33153d08"),
+];
+
+/// mentischat's signatures verify with MentisDB's strict verifier over the raw
+/// key and raw payload, fail for a changed payload, and never share a domain tag
+/// with MentisDB's own payloads.
+#[test]
+fn test_mentischat_signatures_verify_with_the_mentisdb_verifier() {
+    let public = key().verifying_key().to_bytes();
+    for (op, payload_hex, signature_hex) in MENTISCHAT_PINNED {
+        let payload = mentisdb::signing::from_hex(payload_hex).unwrap();
+        let signature = mentisdb::signing::from_hex(signature_hex).unwrap();
+        assert!(
+            verify_ed25519_signature(&public, &payload, &signature).is_ok(),
+            "{op}"
+        );
+        let mut changed = payload.clone();
+        *changed.last_mut().unwrap() ^= 1;
+        assert!(
+            verify_ed25519_signature(&public, &changed, &signature).is_err(),
+            "{op} changed"
+        );
+        assert!(payload.starts_with(b"mentischat/"), "{op}");
+        assert!(!payload.starts_with(b"mentisdb/"), "{op}");
+    }
+}
