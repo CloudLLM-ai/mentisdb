@@ -382,6 +382,15 @@ impl VectorSidecar {
                 actual: self.thought_count,
             };
         }
+        if self.entries.len() != self.thought_count {
+            // Coverage self-check: count and head hash can both match while
+            // entries are missing (a lost WAL record, a hand-edited file), so a
+            // gap must also read as stale or the thought stays vector-invisible.
+            return VectorSidecarFreshness::StaleThoughtCount {
+                expected: thought_count,
+                actual: self.entries.len(),
+            };
+        }
         let expected_head_hash = head_hash.map(str::to_string);
         if self.head_hash != expected_head_hash {
             return VectorSidecarFreshness::StaleHeadHash {

@@ -22,6 +22,18 @@ UNRELEASED
     readable (the version is recorded in the 64/65-byte stored signature) but are
     not accepted on restricted chains. Signed thoughts are committed exactly as
     signed (no automatic relations, `valid_at` or dedup edges).
+  - fix(storage): an append against a missing or stale vector sidecar embedded
+    the whole chain synchronously under the chain's write lock (a failed embed
+    made the very next append do it), contradicting the "opening a chain never
+    embeds its history on the request path" guarantee. It now queues a
+    single-flight background rebuild with the chain's own provider, keeps
+    serving lexical and graph signals until the rebuild is adopted, and a failed
+    embed schedules the repair immediately instead of waiting for another
+    append. The managed provider is now shared (`Arc`) with the worker.
+  - fix(storage): vector sidecar freshness only compared thought count and head
+    hash, so a sidecar with the right count and head but missing entries read as
+    fresh and left those thoughts findable only lexically. Freshness now also
+    requires one entry per thought and reports a gap as `StaleThoughtCount`.
   - feat(access): per-chain write access control. Policies `open` (default),
     `signed` and `allowlist` are stored as signed `AccessPolicy` governance
     thoughts in the chain (hash-chained, auditable) with a Merkle commitment to

@@ -4377,7 +4377,7 @@ fn observe_invalidating_relations(
 }
 
 struct ManagedSidecarEntry {
-    provider: Box<dyn ManagedEmbeddingProvider>,
+    provider: Arc<dyn ManagedEmbeddingProvider>,
     auto_sync: bool,
     // In-memory vector backend rebuilt after each successful sidecar sync.
     // None until the first sidecar load/rebuild completes. Holds either the
@@ -4401,14 +4401,14 @@ impl ManagedSidecarEntry {
         build_result: VectorBackendBuildResult,
     ) -> Self {
         Self::from_boxed(
-            Box::new(RegisteredEmbeddingProvider { provider }),
+            Arc::new(RegisteredEmbeddingProvider { provider }),
             auto_sync,
             build_result,
         )
     }
 
     fn from_boxed(
-        provider: Box<dyn ManagedEmbeddingProvider>,
+        provider: Arc<dyn ManagedEmbeddingProvider>,
         auto_sync: bool,
         build_result: VectorBackendBuildResult,
     ) -> Self {
@@ -4604,7 +4604,7 @@ impl Drop for SidecarRebuildGuard {
 /// Result of one background sidecar rebuild: the provider that built it and
 /// the persisted sidecar.
 type SidecarRebuildOutcome = io::Result<(
-    Box<dyn ManagedEmbeddingProvider>,
+    Arc<dyn ManagedEmbeddingProvider>,
     crate::search::VectorSidecar,
 )>;
 
@@ -4623,7 +4623,7 @@ struct SidecarRebuildRow {
 }
 
 /// Embed `rows` in bounded batches and persist the resulting sidecar.
-fn build_sidecar_in_background<P, F>(
+fn build_sidecar_in_background<F>(
     make_provider: F,
     metadata: &crate::search::EmbeddingMetadata,
     chain_key: String,
@@ -4633,8 +4633,7 @@ fn build_sidecar_in_background<P, F>(
     head_hash: Option<String>,
 ) -> SidecarRebuildOutcome
 where
-    P: crate::search::EmbeddingProvider + Send + Sync + 'static,
-    F: FnOnce() -> io::Result<P>,
+    F: FnOnce() -> io::Result<Arc<dyn ManagedEmbeddingProvider>>,
 {
     let provider = make_provider()?;
     if provider.metadata() != metadata {
@@ -4647,8 +4646,7 @@ where
     for chunk in rows.chunks(SIDECAR_REBUILD_BATCH) {
         let batch: Vec<crate::search::EmbeddingInput> =
             chunk.iter().map(|row| row.input.clone()).collect();
-        let documents = crate::search::embed_batch_to_documents(&provider, &batch)
-            .map_err(|error| io::Error::other(format!("Failed to build embeddings: {error}")))?;
+        let documents = provider.embed_documents(&batch)?;
         entries.extend(chunk.iter().zip(documents).map(|(row, document)| {
             crate::search::VectorSidecarEntry::new(
                 row.thought_id,
@@ -4667,7 +4665,7 @@ where
         entries,
     )?;
     sidecar.save_to_path(path)?;
-    Ok((Box::new(RegisteredEmbeddingProvider { provider }), sidecar))
+    Ok((provider, sidecar))
 }
 
 struct PendingVectorBackendBuild {
@@ -7752,6 +7750,26 @@ impl MentisDb {
         P: crate::search::EmbeddingProvider + Send + Sync + 'static,
         F: FnOnce() -> io::Result<P> + Send + 'static,
     {
+        self.schedule_sidecar_rebuild_job(metadata, move || {
+            let provider = make_provider()?;
+            Ok(Arc::new(RegisteredEmbeddingProvider { provider })
+                as Arc<dyn ManagedEmbeddingProvider>)
+        })
+    }
+
+    /// Queue one background rebuild whose provider is produced on the worker.
+    ///
+    /// Shared by the public scheduler and by the append path, which hands the
+    /// handle's own already-loaded provider to the worker instead of embedding
+    /// the whole chain under the write lock.
+    fn schedule_sidecar_rebuild_job<F>(
+        &mut self,
+        metadata: crate::search::EmbeddingMetadata,
+        make_provider: F,
+    ) -> io::Result<bool>
+    where
+        F: FnOnce() -> io::Result<Arc<dyn ManagedEmbeddingProvider>> + Send + 'static,
+    {
         let chain_key = self.persistence_metadata()?.chain_key.clone();
         let path = self.vector_sidecar_path(&metadata)?;
         let Some(guard) = SidecarRebuildGuard::try_acquire(&path) else {
@@ -7877,7 +7895,7 @@ impl MentisDb {
     fn adopt_rebuilt_sidecar(
         &mut self,
         metadata: crate::search::EmbeddingMetadata,
-        provider: Box<dyn ManagedEmbeddingProvider>,
+        provider: Arc<dyn ManagedEmbeddingProvider>,
         mut sidecar: crate::search::VectorSidecar,
     ) -> io::Result<()> {
         let path = self.vector_sidecar_path(&metadata)?;
@@ -8855,6 +8873,13 @@ impl MentisDb {
                     continue;
                 }
             }
+            if self
+                .pending_sidecar_rebuilds
+                .iter()
+                .any(|pending| pending.metadata == metadata)
+            {
+                continue;
+            }
             let path =
                 chain_vector_sidecar_path(&persist_dir, &persist_key, persist_kind, &metadata);
             // Take (not clone) the live sidecar: it is put back below, so the
@@ -8865,7 +8890,7 @@ impl MentisDb {
                 .and_then(|entry| entry.cached_sidecar.take());
             let loaded =
                 cached_sidecar.or_else(|| crate::search::VectorSidecar::load_from_path(&path).ok());
-            let sidecar = match loaded {
+            match loaded {
                 Some(mut sidecar)
                     if matches!(
                         sidecar.freshness(
@@ -8888,10 +8913,29 @@ impl MentisDb {
                             Ok(record) => record,
                             Err(error) => {
                                 // Nothing was mutated; keep the (now stale)
-                                // sidecar so the next append rebuilds it.
+                                // sidecar and queue a background rebuild so
+                                // the vector gap for this thought is repaired
+                                // even if no further append arrives.
+                                let provider = Arc::clone(
+                                    &self
+                                        .managed_vector_sidecars
+                                        .get(&metadata)
+                                        .unwrap()
+                                        .provider,
+                                );
                                 if let Some(entry) = self.managed_vector_sidecars.get_mut(&metadata)
                                 {
                                     entry.cached_sidecar = Some(sidecar);
+                                }
+                                if let Err(schedule_error) = self
+                                    .schedule_sidecar_rebuild_job(metadata.clone(), move || {
+                                        Ok(provider)
+                                    })
+                                {
+                                    log_derived_failure(
+                                        "vector sidecar repair scheduling",
+                                        &schedule_error,
+                                    );
                                 }
                                 return Err(error);
                             }
@@ -8920,52 +8964,29 @@ impl MentisDb {
                     queued?;
                     continue;
                 }
-                Some(_) | None => {
-                    let provider = self
-                        .managed_vector_sidecars
-                        .get(&metadata)
-                        .unwrap()
-                        .provider
-                        .as_ref();
-                    let new_sidecar = self.rebuild_managed_vector_sidecar(provider)?;
-                    let documents: Vec<crate::search::VectorDocument> = new_sidecar
-                        .entries
-                        .iter()
-                        .map(|e| {
-                            crate::search::VectorDocument::new(
-                                e.thought_id.to_string(),
-                                e.vector.clone(),
-                            )
-                        })
-                        .collect();
-                    {
-                        let entry = self.managed_vector_sidecars.get_mut(&metadata).unwrap();
-                        let build_result = build_vector_backend_async(&metadata, documents, None);
-                        entry.cached_index = build_result.backend;
-                        entry.pending_hnsw_build = build_result.pending;
-                    }
+                stale => {
+                    // The sidecar is missing, behind the chain or from another
+                    // embedding space. Embedding the whole history here would
+                    // run on the request path under the chain's write lock, so
+                    // hand the rebuild to the single-flight background worker
+                    // and keep serving lexical and graph signals until it is
+                    // adopted. The stale sidecar stays cached so later appends
+                    // neither reload it from disk nor stack up rebuilds.
+                    let provider = Arc::clone(
+                        &self
+                            .managed_vector_sidecars
+                            .get(&metadata)
+                            .unwrap()
+                            .provider,
+                    );
                     if let Some(entry) = self.managed_vector_sidecars.get_mut(&metadata) {
-                        entry.wal_uncompacted = 0;
+                        entry.cached_sidecar = stale;
                     }
-                    self.queue_sidecar_compact(&path, &new_sidecar);
-                    new_sidecar
+                    self.schedule_sidecar_rebuild_job(metadata.clone(), move || Ok(provider))?;
                 }
-            };
-            if let Some(entry) = self.managed_vector_sidecars.get_mut(&metadata) {
-                entry.cached_sidecar = Some(sidecar);
             }
         }
         Ok(())
-    }
-
-    fn queue_sidecar_compact(&self, snapshot_path: &Path, sidecar: &crate::search::VectorSidecar) {
-        let mut pending = self
-            .pending_derived
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        pending
-            .sidecar_compacts
-            .push((snapshot_path.to_path_buf(), sidecar.clone()));
     }
 
     /// Queue one WAL record for the last append, scheduling a snapshot
@@ -9035,51 +9056,6 @@ impl MentisDb {
             ),
             self.thoughts.len(),
             self.head_hash().map(ToOwned::to_owned),
-        )
-    }
-
-    fn rebuild_managed_vector_sidecar(
-        &self,
-        provider: &dyn ManagedEmbeddingProvider,
-    ) -> io::Result<crate::search::VectorSidecar> {
-        let Some(persistence) = &self.persistence else {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "this MentisDb handle does not expose stable persistence metadata",
-            ));
-        };
-
-        let inputs: Vec<crate::search::EmbeddingInput> = self
-            .thoughts
-            .iter()
-            .map(|thought| {
-                crate::search::EmbeddingInput::new(
-                    thought.id.to_string(),
-                    self.thought_embedding_text(thought),
-                )
-            })
-            .collect();
-        let documents = provider.embed_documents(&inputs)?;
-        let entries: Vec<crate::search::VectorSidecarEntry> = self
-            .thoughts
-            .iter()
-            .zip(documents)
-            .map(|(thought, document)| {
-                crate::search::VectorSidecarEntry::new(
-                    thought.id,
-                    thought.index,
-                    thought.hash.clone(),
-                    document.vector,
-                )
-            })
-            .collect();
-        crate::search::VectorSidecar::build(
-            persistence.chain_key.clone(),
-            provider.metadata().clone(),
-            self.thoughts.len(),
-            self.head_hash().map(ToOwned::to_owned),
-            Utc::now(),
-            entries,
         )
     }
 
