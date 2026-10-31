@@ -126,6 +126,10 @@ name = "search_ranked"
 harness = false
 
 [[bench]]
+name = "standing_context"
+harness = false
+
+[[bench]]
 name = "hnsw_comparison"
 harness = false
 

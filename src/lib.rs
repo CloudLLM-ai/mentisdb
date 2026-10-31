@@ -315,6 +315,7 @@ pub mod search;
 pub mod server;
 pub mod signing;
 mod skills;
+pub mod standing;
 #[cfg(feature = "server")]
 pub mod tui;
 #[cfg(feature = "server")]
@@ -349,6 +350,10 @@ pub use skills::{
     SkillVersion, SkillVersionContent, SkillVersionSummary, MENTISDB_SKILL_CURRENT_SCHEMA_VERSION,
     MENTISDB_SKILL_REGISTRY_CURRENT_VERSION, MENTISDB_SKILL_REGISTRY_V1,
     MENTISDB_SKILL_REGISTRY_V2,
+};
+pub use standing::{
+    StandingContext, StandingContextQuery, StandingEntry, StandingGroup,
+    DEFAULT_STANDING_PER_TYPE_CAP, DEFAULT_STANDING_TOTAL_CAP, STANDING_DUPLICATE_THRESHOLD,
 };
 
 /// Persistence interface for MentisDb storage backends.
