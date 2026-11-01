@@ -26,11 +26,13 @@ with the contester ranked above it. A *standing context* query returns what is d
 the user and the project regardless of age, next to the usual window of recent thoughts.
 None of this needs an external database, a network service or an LLM call.
 
-On the LoCoMo-10P benchmark the default pipeline reaches 73.5% Recall@10, and on
-LongMemEval it reaches 68.0% Recall@5 (release 0.10.9.54, local MiniLM embeddings). On
-real project chains, an audit found no loss of recall with the age of a memory, but it
-found that near-duplicate thoughts crowd results and that paraphrased queries recall far
-less than verbatim ones. This paper describes the design as it is implemented, states
+On the LoCoMo-10P benchmark the default pipeline reaches 75.2% Recall@10, and on
+LongMemEval it reaches 70.0% Recall@5, with a small local embedding model. On real project
+chains, an audit found no loss of recall with the age of a memory, but found that
+near-duplicate thoughts crowded results and that paraphrased queries recalled far less
+than verbatim ones. Length-independent vector fusion and result-time duplicate collapse
+were built in response, and they raised rank-1 recall on the most duplicated chain from
+75% to 98%. This paper describes the design as it is implemented, states
 each default exactly, and lists what is still weak.
 
 ---
@@ -693,10 +695,16 @@ field whose cutoff it respects. Details that matter in practice:
   to 9% of the content were gated out of it by registry text alone.
 - A per-field scope that counts each field separately exists as an opt-in
   (`MENTISDB_DF_SCOPE=field`, or `df_scope` on the library query). It is not the default
-  because it has not yet been run through LoCoMo and LongMemEval.
+  because it brought no gain: under the current defaults both scopes score the same on
+  LoCoMo and LongMemEval, and on a real chain it moved citation-style probes by two
+  points in opposite directions at rank 1 and rank 10.
 - Gating is off for chains under 20 thoughts. `N` counts every committed thought,
   including invalidated ones and ones excluded by filters. The IDF of a surviving term
   always uses the global `df`.
+
+Registry text is part of the index, so when an agent's description, owner, display name
+or aliases change, the lexical index is rebuilt and older thoughts become findable by the
+new text.
 
 **Synonyms.** The daemon expands query terms with a built-in thesaurus of 895 headwords,
 keyed by stem so inflected forms expand too. Each term gets at most three synonyms at
@@ -715,12 +723,22 @@ sidecar are kept, and hits under cosine 0.04 are dropped. The vector score is
 `0.5 * cosine`. It is fused with the lexical score by:
 
 ```
-vector_contribution = vector * (1 + 35 * exp(-lexical / 3))
+rel                 = lexical / best_lexical_score_of_this_query     (0 to 1)
+vector_contribution = vector * (1 + 35 * exp(-rel / 0.8))
 ```
 
 With no lexical match the vector signal is amplified 36 times, so a paraphrase with no
-shared words can still rank. As the lexical score grows the amplification decays
-smoothly, so vectors help moderate lexical matches without overriding strong ones.
+shared words can still rank. At the query's best lexical match it is amplified about 11
+times. Because the decay depends on the lexical score *relative to the best one*, it does
+not depend on query length.
+
+That is the point of the design. The earlier rule, `1 + 35 * exp(-lexical / 3)`, decayed
+on the raw BM25 score, which grows with the number of query terms. A ten-word paraphrase
+gave even weak lexical matches a score of ten or more and silenced the vector channel
+exactly when the wording differed, which the real-chain audit measured (Section 9.4). The
+old rule remains available as `MENTISDB_VECTOR_FUSION=absolute`. The decay rate 0.8 was
+chosen from a sweep (Section 9.2): larger rates gain a little more recall but order
+results almost purely by vectors and lose lexical precision.
 
 Below 50,000 vectors the search is an exact scan. At or above that threshold
 (`MENTISDB_HNSW_THRESHOLD`) it switches to an HNSW graph (M 48, ef_construction 400,
@@ -807,7 +825,7 @@ thought ranked where it did.
 with the thoughts graph expansion reached from it and the path that reached them, so an
 agent can read supporting memories in provenance order.
 
-### 6.9 Deduplication on Write
+### 6.9 Deduplication on Write and Collapse at Read
 
 Automatic deduplication is off unless `MENTISDB_DEDUP_THRESHOLD` is set; 0.85 is a
 suggested value, not a default. When on, each unsigned append compares the new thought's
@@ -819,6 +837,13 @@ critical constraint. Signed thoughts are never deduplicated.
 
 The window is a real limit: a fact re-recorded hundreds of thoughts later is not caught.
 Section 9.4 shows that duplicates are a measured problem on real chains.
+
+Ranked search therefore also collapses duplicates when it builds a result page. For text
+queries, a hit whose normalized token set has Jaccard similarity of 0.9 or more with a
+higher-ranked hit is dropped from the page, and its id is listed on the survivor
+(`collapsed_duplicates`). Nothing is written to the chain. Collapse is on by default and
+can be turned off with `MENTISDB_COLLAPSE_DUPLICATES=off` or per request. It costs about
+0.3 ms per query on a 5000-thought chain.
 
 ### 6.10 Standing Context and Recent Context
 
@@ -956,7 +981,26 @@ daemon's automatic thesaurus.
 
 ### 9.2 Results
 
-Release 0.10.9.54 (October 2026) is the latest full run:
+The current defaults were measured on master (November 2026) on the same benchmark
+chains, reporting LoCoMo-10P R@10 and LongMemEval R@5:
+
+| Configuration | LoCoMo-10P R@10 | LongMemEval R@5 |
+|---|---|---|
+| Absolute fusion (previous default) | 73.1% | 68.0% |
+| Relative fusion, decay 0.10 | 73.0% | 67.8% |
+| Relative fusion, decay 0.25 | 73.6% | 68.4% |
+| Relative fusion, decay 0.40 | 74.0% | 69.0% |
+| Relative fusion, decay 0.80 | 75.2% | 69.4% |
+| Relative fusion, decay 1.5 | 75.5% | 70.2% |
+| Relative fusion, decay 3.0 | 75.9% | 69.6% |
+| **Current default: relative 0.8 with duplicate collapse** | **75.2%** | **70.0%** |
+
+Duplicate collapse alone, under the old fusion, moved LongMemEval R@5 from 68.0% to 68.4%
+and left LoCoMo unchanged, because the benchmark conversations contain few repeated
+turns. Its main effect is on real chains (Section 9.4).
+
+The last full run with all cutoffs is release 0.10.9.54 (October 2026), before
+valid-version retrieval, relative fusion and collapse:
 
 | Benchmark | Pipeline | R@5 | R@10 | R@20 |
 |---|---|---|---|---|
@@ -965,8 +1009,7 @@ Release 0.10.9.54 (October 2026) is the latest full run:
 | LongMemEval | default | 68.0% | 72.8% | 78.8% |
 | LongMemEval | with RRF | 68.6% | | |
 
-Query throughput was about 384 queries per second on both. The changes after 0.10.9.54 up
-to the date of this paper do not touch ranking defaults, except where Section 6 says so.
+Query throughput was then about 384 queries per second on both.
 
 Earlier full runs show where the gains came from:
 
@@ -978,6 +1021,7 @@ Earlier full runs show where the gains came from:
 | 0.8.9 | irregular lemmas | 71.9% | 66.8% |
 | 0.9.9 | automatic thesaurus, real embeddings | 72.6% | 66.8% |
 | 0.10.9.54 | stemmed thesaurus keys, damped synonyms, RRF fix | 73.5% | 68.0% |
+| master | relative vector fusion, duplicate collapse | 75.2% | 70.0% |
 
 On a two-conversation LoCoMo subset, 0.8.1 reached 88.7% R@10. That number is for the
 subset only and should not be compared with full-benchmark results.
@@ -1029,8 +1073,8 @@ nothing at these query lengths. The findings:
    against 97%), but on fewer than 40 probes per half.
 2. **Paraphrase is the weak spot.** On `sem` probes the hybrid ranker recalled the target
    in the top ten for 43% of queries on the 750-thought chain and 55% on the 525-thought
-   chain. Vector similarity alone did better, at 57% and 59%. The reason is the fusion
-   rule of Section 6.3: a long query that shares a few words with many thoughts earns a
+   chain. Vector similarity alone did better, at 57% and 59%. The reason was the
+   absolute fusion rule then in force (Section 6.3): a long query that shares a few words with many thoughts earns a
    moderate lexical score, and `exp(-lexical / 3)` then removes almost all of the vector
    signal. With 8-word queries the hybrid ranker matched or beat vectors alone.
 3. **Duplicates and dominant thoughts crowd results.** None of the chains had automatic
@@ -1067,7 +1111,12 @@ from one user, `sem` is a topic-level stand-in for a paraphrase rather than a tr
 paraphrase set, and `ref` probes are noisy. The numbers show where to look, not how
 every installation behaves.
 
-These findings set the priorities in Section 10.
+Two changes followed from the audit: relative vector fusion (Section 6.3) and result-time
+duplicate collapse (Section 6.9). Re-running the audit on the 750-thought chain with both,
+and counting a target as found when it was folded into a surviving copy, raised hybrid
+R@1 from 75% to 98% on `drop50` probes and from 76% to 98% on `rare` probes, and `sem`
+R@10 from 43% to 52%. Paraphrase remains the weakest case. The remaining limits set the
+priorities in Section 10.
 
 ### 9.5 Cost
 
@@ -1095,15 +1144,14 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
 ### 10.1 Limitations
 
 - **Paraphrase recall.** On real chains, paraphrase-like queries find the target in the top
-  ten only about half the time, and the fusion rule throws away most of the vector signal
-  for long queries with a few lexical matches. The default encoder is a small model whose
-  training window is shorter than long thoughts.
-- **Duplicates.** Deduplication is off by default and sees only the last 64 thoughts.
-  Restated facts accumulate and crowd results. The protocol's search-before-write rule is
-  the main defence, and it depends on agent discipline.
+  ten only about half the time, even after relative fusion. The default encoder is a
+  small model whose training window is shorter than long thoughts.
+- **Duplicates.** Write-time deduplication is off by default and sees only the last 64
+  thoughts, so restated facts still accumulate on disk. Result-time collapse hides them
+  from search pages, but they still inflate document frequencies and the chain.
 - **Global document frequency.** The default gate counts registry text as present in
-  every thought of an agent, which removes useful project words from content scoring.
-  The per-field alternative is not yet benchmarked.
+  every thought of an agent, which removes some project words from content scoring. The
+  per-field alternative measured no better.
 - **Currency depends on links.** Only typed `Supersedes`, `Corrects` and `Invalidates`
   edges hide an old version. Untyped replacements are detected by a type-based rule and
   only marked contested, and a replacement with no link at all is caught only by the
@@ -1128,12 +1176,13 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
 
 ### 10.2 Future Work
 
-- **Duplicate collapse in results:** fold near-duplicate clusters into one hit so that
-  restatements stop crowding the top ten.
+- **Consolidating duplicates on disk:** turn result-time clusters into explicit
+  `Supersedes` edges, under the importance guard, so chains shrink as well as read
+  cleanly.
 - **Measuring valid-version retrieval** on benchmarks with changing facts, and on real
   chains with the correction audit (`examples/correction_audit.rs`).
-- **Better paraphrase recall:** retune vector fusion so long queries keep their vector
-  signal, evaluate larger local encoders, and embed long thoughts in chunks.
+- **Better paraphrase recall:** evaluate larger local encoders, embed long thoughts in
+  chunks, and re-run all benchmark cutoffs under the current defaults.
 - **Per-field document frequency** as the default once benchmarked.
 - **Background migrations in the daemon:** wire the migration manager into startup, the
   CLI and the API, and extend hash coverage to every field.
