@@ -14,7 +14,9 @@ session without any of it unless something durable and searchable carries it for
 MentisDB is that memory, built as an embedded Rust library and an optional single-binary
 daemon. Memory is an append-only log of typed records called *thoughts*. Each record is
 linked to its predecessor by a SHA-256 hash, can carry an Ed25519 signature bound to its
-chain and position, and can be governed by a write policy recorded inside the chain itself.
+chain and position, and can be governed by an access policy recorded inside the chain itself.
+A policy can make parts of a chain private: writable only with an authorized key, and
+readable only by a client that proves it holds one.
 
 Retrieval combines BM25 lexical scoring with document-frequency gating, dense-vector
 similarity from a local ONNX model, typed graph expansion, append-order session cohesion,
@@ -86,7 +88,7 @@ embedded directly. The binary runs a daemon and also serves as the command-line 
   | mentisdb daemon (one process, binds 127.0.0.1 by default)     |
   |   MCP 9471   REST 9472   HTTPS MCP 9473   HTTPS REST 9474     |
   |   Dashboard 9475 (HTTPS)                                      |
-  |   auth: optional bearer tokens (global or chain-scoped)       |
+  |   auth: optional bearer tokens; per-request read proofs       |
   +-------------------------------+-------------------------------+
                                   |
   +-------------------------------v-------------------------------+
@@ -381,10 +383,75 @@ governor. An invalid record found on replay is ignored for enforcement and repor
 
 `Signed` chains trust the agent registry's key list, which is a sidecar outside the hash
 chain. `Allowlist` chains do not, because their allowed keys are committed in the chain.
-Policies govern writes only; they do not restrict reads. The full design, formats and
-threat model are in `docs/CHAIN_ACCESS.md`.
+The full design, formats and threat model are in `docs/CHAIN_ACCESS.md`.
 
-### 4.4 Transport Authentication
+### 4.4 Public and Private Segments
+
+Policies also decide who may read. A chain is *public* while its policy is `Open` and
+*private* while it is `Signed` or `Allowlist`. The mode is not a flag but the history of
+the governance records: every valid policy record is a mode-transition entry that opens a
+new *segment*, lasting until the next valid record (`src/audience.rs`). Each thought
+belongs to exactly one segment, decided by its position, and policy records themselves
+are always private.
+
+```
+index:    0 ......... 9 | 10 ......... 49 | 50 ......
+record:   (none)        | seq 0 allowlist | seq 1 open
+segment:  public        | private         | public
+```
+
+The segment map is recomputed from the chain at every open, so nothing is stored
+separately and older chains with policies gain segments simply by being read. A chain
+without policy records is one public segment.
+
+There are two audiences. An *authorized* reader sees every segment. A *public* reader
+sees only public segments, and sees them as if the private thoughts did not exist: BM25
+corpus statistics, the recency anchor, invalidation, successor redirection and standing
+context are computed over the visible set only, and graph expansion never passes through
+a hidden thought. This holds on every read surface: ranked, lexical, vector and graph
+search, recent and standing context, traversal, single-thought reads, context bundles,
+federated search, branch ancestors, Markdown export, listings, counts and the policy and
+verification reports.
+
+Writes respect the boundary too. An unsigned writer cannot link to, supersede or
+deduplicate against a thought in a private segment, and a refused write does not reveal
+which agents or keys exist.
+
+The library defaults to the authorized audience, because an embedder that holds the
+chain directory already holds every byte of it. The daemon starts every request from the
+public audience and raises it only for a proven reader (`src/server_lens.rs`), so a code
+path that forgets to authenticate loses data instead of leaking it. Private segments are
+not encrypted at rest. Anyone who can read the files can read them.
+
+### 4.5 Read Authentication
+
+A reader proves possession of an authorized key with one header per HTTP request,
+signed locally by the client process (the CLI, the stdio MCP proxy or an SDK), so the
+private key never travels and never enters a model's context (`src/read_auth.rs`):
+
+```
+X-Mentis-Auth: v1 agent=<id>;key=<key id>;pk=<64 hex>;ts=<unix secs>;nonce=<hex>;sig=<128 hex>
+
+signed bytes: "mentisdb/read-auth/v1\0" METHOD path_and_query sha256(body)
+              agent_id key_id public_key ts nonce
+```
+
+The signature binds one method, one URL and one body, and therefore one chain key. The
+server accepts it when the timestamp is within 60 seconds of its clock and the nonce has
+not been seen in that window, so a captured request can be neither replayed nor turned
+into a different one. The proof only identifies the reader. Whether that key may read a
+chain is decided per chain (`MentisDb::is_read_authorized`): the key must be active in
+the chain's registry with exactly that public key, and be in the policy's key set; in
+`Signed` mode every active registered key qualifies, because each may already write. The
+proof authenticates but does not encrypt, so private chains should be served over TLS.
+
+Every returned thought carries a `provenance` object: its segment, whether it is signed,
+whether the signature verifies now against the chain's registry and policy, the verified
+agent when the signing key is still active, and `trust: "untrusted_data"`. Stored
+memories are data to weigh, never instructions to follow, and the field says so to the
+agent reading them.
+
+### 4.6 Transport Authentication
 
 The daemon binds to `127.0.0.1` by default. Bearer tokens are optional and off by default
 (`src/auth.rs`). When enabled, tokens are stored as SHA-256 hashes in a `0600` file and
@@ -525,6 +592,20 @@ old file under `migrations/`, and renames the new file into place. A chain writt
 the older JSON-based hash is rehashed with the bincode hash on open. Both steps skip work
 that is already done, so running them twice is harmless. Both also block: a large chain
 is unavailable until its migration finishes.
+
+A journaled migration engine (`src/migration/`) replaces this pass but is not yet wired
+into the daemon. It runs each chain through a durable state machine (planned, backed up,
+staged, committed, finalized) recorded in `migrations/journal/`, keeps the original file
+under `migrations/backup/`, and streams records through one upgrade step per schema
+version, so memory stays flat for any chain size. It is stricter than the current pass.
+A schema 3 record must hash to exactly what it stored, under either hash algorithm, or
+the migration is refused, so a migration can never turn a tampered chain into a freshly
+valid one. Only schemas 0 to 2, whose stored hashes cannot be checked, are rehashed. A
+killed migration resumes or is discarded on the next start, a failing chain is
+quarantined untouched while the others proceed, an advisory lock keeps two processes off
+one chain, and a chain written by a newer release is refused rather than modified. Its
+manager runs on a small worker pool after startup and answers requests for a chain still
+migrating with HTTP 503, `Retry-After` and the percentage done.
 
 Because bincode encodes enum variants by position, new variants must be appended at the
 end of an enum and existing ones never reordered. A chain that contains a variant added
@@ -1011,10 +1092,12 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
   without checking, and the agent registry is outside the chain, so `Signed` chains trust
   a sidecar. Integrity is local: there is no consensus and no external anchoring of head
   hashes.
-- **Reads are not access-controlled.** Write policies do not restrict who can read a
-  chain. Bearer tokens are the only read control and are off by default.
-- **Blocking migrations.** Schema and hash migrations run before a chain serves and
-  rewrite the whole file.
+- **Read control covers private segments only.** Public segments are readable by
+  anyone who can reach the API, and bearer tokens are off by default. Private segments
+  are not encrypted at rest, and a key that can read is also a key that can write.
+- **Blocking migrations.** Until the background migration manager is wired into the
+  daemon, schema and hash migrations still run before a chain serves and rewrite the
+  whole file.
 - **Merges lose structure.** A merge drops relations, signatures and timestamps.
 - **Single writer.** Two processes writing one data directory are not detected.
 - **Benchmarks measure retrieval, not answers.** Recall at *k* says whether the evidence
@@ -1029,9 +1112,11 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
 - **Better paraphrase recall:** retune vector fusion so long queries keep their vector
   signal, evaluate larger local encoders, and embed long thoughts in chunks.
 - **Per-field document frequency** as the default once benchmarked.
-- **Read access control:** private chains whose reads require authentication, with mode
-  changes recorded in the chain, and key administration restricted to the operator.
-- **Non-blocking, recoverable migrations** and hash coverage of every field.
+- **Operator-only key administration:** changes to a private chain's allowlist only
+  through the dashboard PIN or the local CLI, never through REST or MCP, and refusal to
+  merge or copy governed chains.
+- **Background migrations in the daemon:** wire the migration manager into startup, the
+  CLI and the API, and extend hash coverage to every field.
 - **Anchoring head hashes** externally so that a full rewrite of a chain becomes
   detectable.
 - **Answer-level evaluation** with an LLM reader, alongside recall.
