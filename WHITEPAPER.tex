@@ -1000,13 +1000,18 @@ recomputed from the chain at open, so only identity changes (a new
 agent, a rename, a learned owner) are written immediately, and counters
 are saved every 16 appends and at shutdown.
 
-One writer process per data directory is assumed. The daemon takes an
-advisory lock on \passthrough{\lstinline!mentisdb.lock!} in the data
-directory. A second daemon on the same directory refuses to start, and
-the offline operator CLI refuses to run while the lock is held. An
+One writer process per data directory is enforced by an exclusive
+operating-system lock on \passthrough{\lstinline!mentisdb.lock!}, held
+by the daemon for its whole life and released by the system when it
+exits or is killed, so no stale lock is left behind. A second daemon
+refuses to start and names the holder's process id. The offline operator
+commands, restore and the mutating \passthrough{\lstinline!migrate!}
+subcommands take the same lock and refuse while a daemon holds it;
+read-only migration status, verification and dry runs do not need it. An
 in-process service embedded through the library takes the lock only if
 it is free, so embedders that bypass the daemon binary are not
-protected.
+protected, and the lock is advisory and may not be honoured on network
+filesystems.
 
 \subsubsection{5.4 Crash Recovery}
 
@@ -2042,8 +2047,9 @@ append cost.
   and timestamps.
 \item
   \textbf{Single writer.} The data-directory lock stops a second daemon
-  and the offline CLI, but a process that embeds the library can still
-  append to a chain the daemon owns.
+  and the operator commands, but a process that embeds the library can
+  still append to a chain the daemon owns, and network filesystems may
+  ignore the lock.
 \item
   \textbf{No general rate limiting.} Only dashboard logins and invalid
   read proofs are rate limited. A client that can reach the API can
