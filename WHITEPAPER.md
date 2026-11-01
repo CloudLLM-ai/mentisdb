@@ -886,16 +886,48 @@ range from easy (`drop50`: the target's words with half removed) to hard (`ref`:
 opening of a later thought that refers to the target, and `sem`: the opening of the
 target's nearest semantic neighbour among thoughts sharing few of its words).
 
-The audit of real chains found three things:
+The audit ran on 2026-10-31 against copies of three real project chains of one user,
+with 750, 525 and 86 thoughts, at commit 9944a6e with default settings (300 targets per
+query kind, seed 7, queries of at most 32 words). Its findings:
 
 1. **No age effect.** Recall did not fall with the age of the target. Older memories are
    found as reliably as recent ones once the query reaches them. Ranking does not bury the
    past; startup loading did, which standing context addresses.
-2. **Duplicates crowd results.** Near-duplicate thoughts, written because agents did not
-   search first or because a fact was restated outside the dedup window, took several of
-   the top ten slots and pushed other relevant memories out.
-3. **Paraphrase is weak.** Paraphrase-style queries recalled the target in the top ten
-   only 43% to 55% of the time, against much higher recall for verbatim-style queries.
+2. **Paraphrase is the weak spot.** On `sem` probes the hybrid ranker recalled the target
+   in the top ten for 43% of queries on the 750-thought chain and 55% on the 525-thought
+   chain. Vector similarity alone did better, at 57% and 59%. The reason is the fusion
+   rule of Section 6.3: a long query that shares a few words with many thoughts earns a
+   moderate lexical score, and `exp(-lexical / 3)` then removes almost all of the vector
+   signal. With 8-word queries the hybrid ranker matched or beat vectors alone.
+3. **Duplicates and dominant thoughts crowd results.** None of the chains had automatic
+   deduplication on, and only one `Supersedes` edge existed among them. On the
+   525-thought chain a 13-member cluster restating one build rule, each copy at importance
+   0.95, took rank 1 in 14 probes meant for other thoughts. On the 750-thought chain
+   single high-importance thoughts took rank 1 in up to 7 probes each. Turning on RRF cut
+   the rank-1 misses caused by a newer near-duplicate from 140 to 9 on that chain, but it
+   only reorders ties and does not change recall at ten.
+4. **The document-frequency gate is not what limits recall.** It removed 0.4% to 1.5% of
+   the vocabulary, mostly generic words, and a few domain words such as "android",
+   "commit", "search" and "test". Registry text alone pushed 8 terms over the cliff on the
+   largest chain; one word in 4% of content reached 98% of thoughts that way. Yet
+   per-field counting and removing the gate both moved R@1 and R@10 by at most about
+   three points, with mixed signs, and no query was left without a scorable term.
+5. **Long thoughts are truncated for embedding but still found.** The encoder sees at most
+   512 tokens and was trained on 256. On the largest chain, 9 of 40 decisions exceeded
+   512 tokens, losing half of that type's tokens to the vector signal. Queries built from
+   the truncated tails still reached R@10 of 93% to 100%, because the lexical index
+   covers the whole text.
+6. **Registry text dilutes embeddings measurably but harmlessly.** Every embedded text
+   ends with the agent's registry description. That raised the mean cosine between
+   unrelated thoughts of the same agent by 0.04 to 0.08, but changed vector-only R@1 by at
+   most three points, not consistently downwards.
+7. **One sidecar was stale.** On the smallest chain the newest 9 of 86 thoughts had no
+   embedding and were findable only lexically until the sidecar was rebuilt.
+
+The probes are synthetic and built from each chain's own thoughts, the three chains come
+from one user, `sem` is a topic-level stand-in for a paraphrase rather than a true
+paraphrase set, and `ref` probes are noisy. The numbers show where to look, not how
+every installation behaves.
 
 These findings set the priorities in Section 10.
 
@@ -924,9 +956,10 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
 
 ### 10.1 Limitations
 
-- **Paraphrase recall.** On real chains, paraphrased queries find the target in the top ten
-  only about half the time. The default encoder is a small model whose cosine scores are
-  compressed, and its training window is shorter than long thoughts.
+- **Paraphrase recall.** On real chains, paraphrase-like queries find the target in the top
+  ten only about half the time, and the fusion rule throws away most of the vector signal
+  for long queries with a few lexical matches. The default encoder is a small model whose
+  training window is shorter than long thoughts.
 - **Duplicates.** Deduplication is off by default and sees only the last 64 thoughts.
   Restated facts accumulate and crowd results. The protocol's search-before-write rule is
   the main defence, and it depends on agent discipline.
@@ -958,8 +991,8 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
   restatements stop crowding the top ten.
 - **Measuring valid-version retrieval** on benchmarks with changing facts, and on real
   chains with the correction audit (`examples/correction_audit.rs`).
-- **Better paraphrase recall:** retune vector fusion, evaluate larger local encoders, and
-  embed long thoughts in chunks.
+- **Better paraphrase recall:** retune vector fusion so long queries keep their vector
+  signal, evaluate larger local encoders, and embed long thoughts in chunks.
 - **Per-field document frequency** as the default once benchmarked.
 - **Read access control:** private chains whose reads require authentication, with mode
   changes recorded in the chain, and key administration restricted to the operator.
