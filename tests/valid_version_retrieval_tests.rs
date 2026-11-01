@@ -352,6 +352,18 @@ fn standing_context_shows_the_successor_not_nothing() {
     assert!(standing.prompt.contains("[CONTESTED"));
 }
 
+/// The MEMORY.md export is reloaded as memory: superseded policies are
+/// dropped from it and contested ones are marked.
+#[test]
+fn memory_markdown_export_drops_superseded_and_marks_contested() {
+    let (_dir, chain, _old, _new) = scenario(Link::Supersedes);
+    let md = chain.to_memory_markdown(None);
+    assert!(md.contains(NEW_POLICY) && !md.contains(OLD_POLICY));
+    let (_dir, chain, _old, _new) = scenario(Link::RefsOnlyCorrection);
+    let md = chain.to_memory_markdown(None);
+    assert!(md.contains(OLD_POLICY) && md.contains("contested by #1"));
+}
+
 /// Plain `Finding`s that merely reference a decision are not contests.
 #[test]
 fn ordinary_references_do_not_contest() {

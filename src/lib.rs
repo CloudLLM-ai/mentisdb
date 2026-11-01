@@ -3950,6 +3950,8 @@ pub struct FederatedSearchHit<'a> {
     pub matched_terms: Vec<String>,
     /// Indexed field sources that contributed to the lexical score.
     pub match_sources: Vec<crate::search::lexical::LexicalMatchSource>,
+    /// Version annotation resolved on the chain that owns the thought.
+    pub version: VersionInfo,
 }
 
 /// Federated search result over multiple chains.
@@ -8842,8 +8844,20 @@ impl MentisDb {
                     matched_terms,
                     match_sources,
                 )| {
+                    let owner = if chain_key == self_chain_key {
+                        Some(self)
+                    } else {
+                        other_chains
+                            .iter()
+                            .find(|(key, _)| *key == chain_key)
+                            .map(|(_, chain)| *chain)
+                    };
+                    let version = owner
+                        .map(|chain| chain.version_info(thought, None))
+                        .unwrap_or_default();
                     FederatedSearchHit {
                         chain_key,
+                        version,
                         thought,
                         score,
                         graph_distance,
@@ -11249,9 +11263,14 @@ impl MentisDb {
     /// # }
     /// ```
     pub fn to_memory_markdown(&self, query: Option<&ThoughtQuery>) -> String {
-        let thoughts = query
-            .map(|query| self.query(query))
-            .unwrap_or_else(|| self.thoughts.iter().collect());
+        let thoughts = query.map(|query| self.query(query)).unwrap_or_else(|| {
+            // The unfiltered export is what agents reload as memory, so it
+            // must not present a superseded policy as current.
+            self.thoughts
+                .iter()
+                .filter(|thought| !self.is_invalidated(thought.id))
+                .collect()
+        });
 
         let mut markdown = String::from("# MEMORY\n\n");
         markdown.push_str(&format!(
@@ -13540,6 +13559,9 @@ fn append_memory_section(
             metadata.push(format!("role {:?}", thought.role));
         }
         metadata.push(format!("importance {:.2}", thought.importance));
+        if let Some(contester) = chain.live_contester(thought.id, None) {
+            metadata.push(format!("contested by #{}", contester.index));
+        }
         if let Some(confidence) = thought.confidence {
             metadata.push(format!("confidence {:.2}", confidence));
         }

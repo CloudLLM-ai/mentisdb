@@ -108,6 +108,9 @@ UNRELEASED
     candidate target ids when a Correction/AssumptionInvalidated/Decision
     replaces memory without a typed invalidating relation.
     `MentisDb::append_advice` is the library entry point.
+  - fix(export): `to_memory_markdown(None)` (the MEMORY.md agents reload) listed
+    superseded thoughts as current. It now drops them and marks contested
+    entries `contested by #N`. Federated hits carry `version` too.
   - docs(skill): policy changes must carry `Supersedes` with the old id; the
     include_invalidated retry advice is replaced by "read version_status".
   - test(retrieval): end-to-end regression for the policy scenario over library,
