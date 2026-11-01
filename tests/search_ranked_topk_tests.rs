@@ -57,7 +57,11 @@ fn indices(result: &mentisdb::RankedSearchResult<'_>) -> Vec<u64> {
 #[test]
 fn limited_results_are_prefix_of_full_ordering() {
     let chain = build_chain();
-    let base = RankedSearchQuery::new().with_text("quasar telemetry");
+    // These tests pin raw top-k ordering over a templated corpus whose thoughts
+    // are near-duplicates by construction, so collapsing is switched off.
+    let base = RankedSearchQuery::new()
+        .with_text("quasar telemetry")
+        .with_collapse_duplicates(None);
     let full = chain.query_ranked(&base.clone().with_limit(10_000));
     let full_order = indices(&full);
     assert_eq!(full_order.len(), 75);
@@ -74,6 +78,7 @@ fn limited_results_are_prefix_of_full_ordering() {
 fn head_hits_are_fully_materialized() {
     let chain = build_chain();
     let query = RankedSearchQuery::new()
+        .with_collapse_duplicates(None)
         .with_text("quasar telemetry")
         .with_graph(
             RankedSearchGraph::new()
@@ -103,6 +108,7 @@ fn head_hits_are_fully_materialized() {
 fn ordering_is_deterministic_with_ties() {
     let chain = build_chain();
     let query = RankedSearchQuery::new()
+        .with_collapse_duplicates(None)
         .with_text("quasar telemetry")
         .with_limit(40);
     let first = indices(&chain.query_ranked(&query));

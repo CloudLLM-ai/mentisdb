@@ -649,14 +649,32 @@ impl MentisDb {
     /// carries a [`VersionInfo`].
     pub fn query_ranked(&self, request: &RankedSearchQuery) -> RankedSearchResult<'_> {
         let explicit = request.include_invalidated || request.filter.include_invalidated;
-        if !request.resolve_successors || explicit || request.limit == 0 {
+        // A chain with no supersession or contest edge has nothing to redirect,
+        // so skip the wider ranking pass entirely.
+        let has_lineage =
+            !self.invalidated_thought_ids().is_empty() || !self.lineage.by_target.is_empty();
+        let redirect = request.resolve_successors && !explicit && request.limit > 0 && has_lineage;
+        // Collapsing is a relevance feature: a metadata-only listing (no text)
+        // must return every thought that matches the filter.
+        let has_text = request
+            .text
+            .as_deref()
+            .is_some_and(|t| !t.trim().is_empty());
+        let collapse = request
+            .collapse_duplicates
+            .filter(|_| request.limit > 0 && has_text);
+        if !redirect && collapse.is_none() {
             let mut result = self.query_ranked_raw(request);
             self.annotate_hits(&mut result.hits, request.as_of, request.filter.audience);
             return result;
         }
         let mut wide = request.clone();
-        wide.include_invalidated = true;
-        wide.filter.include_invalidated = true;
+        if redirect {
+            wide.include_invalidated = true;
+            wide.filter.include_invalidated = true;
+        }
+        // Redirecting and collapsing both remove or replace hits, so rank a
+        // wider page and trim it back to the caller's limit afterwards.
         // Caller-supplied: saturate so `limit = usize::MAX` cannot overflow.
         wide.limit = request
             .limit
@@ -664,7 +682,18 @@ impl MentisDb {
             .max(request.limit.saturating_add(8));
         let mut result = self.query_ranked_raw(&wide);
         let raw = std::mem::take(&mut result.hits);
-        result.hits = self.redirect_hits(raw, request);
+        let mut hits = if redirect {
+            self.redirect_hits(raw, request)
+        } else {
+            let mut raw = raw;
+            self.annotate_hits(&mut raw, request.as_of, request.filter.audience);
+            raw
+        };
+        if let Some(threshold) = collapse {
+            hits = collapse_duplicate_hits(hits, threshold);
+        }
+        hits.truncate(request.limit);
+        result.hits = hits;
         result
     }
 
@@ -759,7 +788,6 @@ impl MentisDb {
             placed.insert(id, out.len());
             out.push(hit.clone());
         }
-        out.truncate(request.limit);
         self.annotate_hits(&mut out, as_of, audience);
         out
     }
@@ -979,7 +1007,8 @@ impl MentisDb {
 
 impl MentisDb {
     /// JSON for a ranked hit: [`MentisDb::thought_json`] plus `successor_of`
-    /// when the hit was surfaced in place of, or above, older thoughts.
+    /// when the hit was surfaced in place of, or above, older thoughts and
+    /// `collapsed_duplicates` when near-copies were folded into it.
     pub fn hit_json(&self, hit: &RankedSearchHit<'_>) -> serde_json::Value {
         self.hit_json_for(hit, Audience::Authorized)
     }
@@ -988,11 +1017,17 @@ impl MentisDb {
     /// segments are removed and lineage is computed from visible thoughts only.
     pub fn hit_json_for(&self, hit: &RankedSearchHit<'_>, audience: Audience) -> serde_json::Value {
         let mut json = self.thought_json_for(hit.thought, audience);
-        if !hit.version.successor_of.is_empty() {
-            if let serde_json::Value::Object(map) = &mut json {
+        if let serde_json::Value::Object(map) = &mut json {
+            if !hit.version.successor_of.is_empty() {
                 map.insert(
                     "successor_of".into(),
                     serde_json::json!(hit.version.successor_of),
+                );
+            }
+            if !hit.collapsed.is_empty() {
+                map.insert(
+                    "collapsed_duplicates".into(),
+                    serde_json::json!(hit.collapsed),
                 );
             }
         }
@@ -1011,4 +1046,83 @@ impl MentisDb {
             _ => String::new(),
         }
     }
+}
+
+/// Name of the environment variable read by [`collapse_duplicates_from_env`].
+pub const COLLAPSE_DUPLICATES_ENV: &str = "MENTISDB_COLLAPSE_DUPLICATES";
+
+/// Default near-duplicate threshold of [`RankedSearchQuery::collapse_duplicates`].
+///
+/// Reads `MENTISDB_COLLAPSE_DUPLICATES`: a number in `0.0..=1.0` enables
+/// collapsing at that Jaccard threshold, `off`/`false`/`0` disables it, and an
+/// unset or unparsable value yields the built-in default
+/// ([`DEFAULT_COLLAPSE_DUPLICATES`], `0.9`: LongMemEval R@5 rose from 68.0% to
+/// 68.4% and LoCoMo R@10 was unchanged at 73.1%).
+pub fn collapse_duplicates_from_env() -> Option<f32> {
+    match std::env::var(COLLAPSE_DUPLICATES_ENV)
+        .ok()
+        .as_deref()
+        .map(str::trim)
+    {
+        Some("off" | "false" | "0" | "none") => None,
+        Some(value) => match value.parse::<f32>() {
+            Ok(t) if (0.0..=1.0).contains(&t) && t > 0.0 => Some(t),
+            _ => DEFAULT_COLLAPSE_DUPLICATES,
+        },
+        None => DEFAULT_COLLAPSE_DUPLICATES,
+    }
+}
+
+/// Built-in default of [`collapse_duplicates_from_env`].
+pub const DEFAULT_COLLAPSE_DUPLICATES: Option<f32> = Some(0.9);
+
+fn token_jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f32 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let inter = a.intersection(b).count();
+    inter as f32 / (a.len() + b.len() - inter) as f32
+}
+
+/// Drop every hit that is a near-duplicate (Jaccard of normalized tokens at
+/// least `threshold`) of a higher-ranked hit, recording the dropped ids on the
+/// survivor. Keeps rank order.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::{MentisDb, RankedSearchQuery, StorageAdapterKind, ThoughtInput, ThoughtType};
+///
+/// # fn main() -> std::io::Result<()> {
+/// let dir = tempfile::tempdir()?;
+/// let mut chain = MentisDb::open_with_key_and_storage_kind(dir.path(), "dup", StorageAdapterKind::Binary)?;
+/// for _ in 0..3 {
+///     chain.append_thought("a", ThoughtInput::new(ThoughtType::Finding, "The build takes forty seconds on CI."))?;
+/// }
+/// let q = RankedSearchQuery::new().with_text("build seconds CI").with_collapse_duplicates(Some(0.9));
+/// let hits = chain.query_ranked(&q).hits;
+/// assert_eq!(hits.len(), 1);
+/// assert_eq!(hits[0].collapsed.len(), 2);
+/// # Ok(())
+/// # }
+/// ```
+pub(crate) fn collapse_duplicate_hits<'a>(
+    hits: Vec<RankedSearchHit<'a>>,
+    threshold: f32,
+) -> Vec<RankedSearchHit<'a>> {
+    use crate::search::lexical::normalize_lexical_tokens;
+    let mut kept: Vec<(HashSet<String>, RankedSearchHit<'a>)> = Vec::with_capacity(hits.len());
+    for hit in hits {
+        let tokens: HashSet<String> = normalize_lexical_tokens(&hit.thought.content, false)
+            .into_iter()
+            .collect();
+        match kept
+            .iter_mut()
+            .find(|(t, _)| token_jaccard(t, &tokens) >= threshold)
+        {
+            Some((_, survivor)) => survivor.collapsed.push(hit.thought.id),
+            None => kept.push((tokens, hit)),
+        }
+    }
+    kept.into_iter().map(|(_, hit)| hit).collect()
 }

@@ -561,6 +561,17 @@ and `cert` work on the data directory directly and do not need the daemon.
   (default, what every published benchmark used: a thought counts if the term is in
   *any* field, including agent registry text) or `field` (each field's own count).
   Experimental; see `WHITEPAPER.md` section 6.3.
+- `MENTISDB_VECTOR_FUSION`
+  How vector similarity is blended with the lexical score: `relative` (default; the
+  decay depends on a hit's lexical score relative to the query's best, so paraphrased
+  questions keep the vector channel) or `absolute` (the older raw-BM25 decay, which
+  silences vectors for queries longer than a few words). On LoCoMo R@10 and
+  LongMemEval R@5 `relative` scored 75.2% and 70.0% against 73.1% and 68.0%.
+- `MENTISDB_COLLAPSE_DUPLICATES`
+  Result-time collapse of exact and near-duplicate hits: a number in `(0, 1]` is the
+  Jaccard threshold (default `0.9`), `off` disables it. Collapsed ids are listed in
+  `collapsed_duplicates` on the surviving hit. Per request: `collapse_duplicates`
+  (`0` disables). Text queries only.
 - `FASTEMBED_CACHE_DIR`
   Where the FastEmbed ONNX model is cached. Default: `<MENTISDB_DIR>/.fastembed_cache`.
 - `MENTISDB_UPDATE_CHECK`
@@ -617,8 +628,29 @@ How the set gets filled:
    MentisDB skill’s search-before-write habit.
 2. **Auto-dedup** when `MENTISDB_DEDUP_THRESHOLD` is set (see above).
 
-Search filtering alone does not invent edges; pair default exclusion with dedup and/or
-good agent discipline on long-running brains.
+Search filtering alone does not invent edges, and measured chains show agents rarely
+type them (on one real installation 0 of 14 `Correction`/`AssumptionInvalidated`
+thoughts and 0 of about 90 `Decision` thoughts carried one). So retrieval also reasons
+about **lineage** (`mentisdb::lineage`):
+
+- A superseded thought that would have ranked is **replaced by its live successor**
+  (hit field `successor_of`), so hiding the old version never leaves the agent with
+  nothing. Disable with `RankedSearchQuery::with_resolve_successors(false)`.
+- An untyped link (`refs` / `References`) from a `Correction`, an
+  `AssumptionInvalidated` or a new `Decision` over an older decision-like thought, or
+  any `Contradicts`, does **not** hide the target (a reference is often background).
+  The target is reported `version_status: "contested"` and the contesting thought is
+  promoted above it.
+- Every thought JSON carries `version_status`, `successors` and `current_version`
+  when it is not plainly current, including `include_invalidated=true` results.
+- Appending a replacement without a typed relation returns `warnings` naming the
+  candidate `target_id`s; add `{"kind":"supersedes","target_id":"..."}`.
+- Standing context substitutes a superseded constraint or decision with its successor,
+  and the MEMORY.md export drops superseded thoughts.
+
+Lineage is derived from the stored chain when it is opened, so existing chains benefit
+with no migration. Cross-chain `Supersedes` (a relation with `chain_key`) is not yet
+applied to the target chain.
 
 MentisDB loads environment variables at startup from a `.env` file in the current working
 directory, then from `<MENTISDB_DIR>/.env` (where the dashboard Settings tab saves its

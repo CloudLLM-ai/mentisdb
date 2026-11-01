@@ -54,7 +54,10 @@ async fn seed(app: &axum::Router, chain: &str, contents: &[&str]) {
 }
 
 async fn federated(app: &axum::Router, extra: Value) -> Vec<Value> {
-    let mut body = json!({"chain_keys":["fed-a","fed-b"],"text":"quokka","limit":20});
+    // The corpus is templated near-duplicates; collapsing is switched off so the
+    // test keeps exercising rank fusion over every hit.
+    let mut body =
+        json!({"chain_keys":["fed-a","fed-b"],"text":"quokka","limit":20,"collapse_duplicates":0});
     for (k, v) in extra.as_object().unwrap() {
         body[k] = v.clone();
     }

@@ -1529,6 +1529,18 @@ fn observe_tokens(
     }
 }
 
+/// Hash of the text an agent record contributes to the lexical index.
+///
+/// Used to notice that a registry edit (a description, owner, display name or
+/// alias added after thoughts were written) changed what the index should hold
+/// for every earlier thought of that agent.
+pub(crate) fn agent_registry_text_hash(record: &crate::AgentRecord) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    agent_registry_tokens(record).hash(&mut hasher);
+    hasher.finish()
+}
+
 fn agent_registry_tokens(record: &crate::AgentRecord) -> Vec<String> {
     let mut text_parts = vec![record.display_name.clone()];
     if let Some(owner) = &record.owner {

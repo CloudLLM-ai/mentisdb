@@ -601,6 +601,8 @@ impl MentisDbServiceConfig {
 /// | `MENTISDB_AUTO_FLUSH` | `true` | Set `false` for batched binary writes (higher throughput, reduced durability). |
 /// | `MENTISDB_DEDUP_THRESHOLD` | *(none)* | Jaccard threshold for auto-dedup on append (0.0–1.0). Disabled when unset. |
 /// | `MENTISDB_DEDUP_SCAN_WINDOW` | `64` | Number of recent thoughts to scan for dedup. |
+/// | `MENTISDB_VECTOR_FUSION` | `relative` | Vector/lexical blend: `relative` (length-independent decay) or `absolute` (raw BM25 decay). |
+/// | `MENTISDB_COLLAPSE_DUPLICATES` | `0.9` | Result-time near-duplicate collapse threshold in `(0, 1]`, or `off`. |
 /// | `MENTISDB_DF_SCOPE` | `global` | Lexical stop-word gate document frequency: `global` (any field) or `field` (per field). |
 /// | `MENTISDB_BEARER_TOKEN_ACCESS` | `false` | Require a valid MentisDB bearer token for MCP HTTP/HTTPS access. |
 /// | `MENTISDB_BIND_HOST` | `127.0.0.1` | IP address for all server sockets. |
@@ -3901,6 +3903,7 @@ impl MentisDbService {
                 ranked_query = ranked_query.with_reranking(k);
             }
             ranked_query = apply_include_invalidated(ranked_query, request.include_invalidated);
+            ranked_query = apply_collapse_duplicates(ranked_query, request.collapse_duplicates);
 
             let ranked = chain.query_ranked(&ranked_query);
             total_candidates += ranked.total_candidates;
@@ -4061,6 +4064,7 @@ impl MentisDbService {
             rerank_k: request.rerank_k,
             entity_type: request.entity_type.clone(),
             include_invalidated: request.include_invalidated,
+            collapse_duplicates: request.collapse_duplicates,
         };
         let filter = build_ranked_filter_query(&ranked_req, primary_chain_key.clone())?;
         let mut ranked_query = RankedSearchQuery::new()
@@ -4091,6 +4095,7 @@ impl MentisDbService {
             ranked_query = ranked_query.with_reranking(query_rerank_k.max(1));
         }
         ranked_query = apply_include_invalidated(ranked_query, request.include_invalidated);
+        ranked_query = apply_collapse_duplicates(ranked_query, request.collapse_duplicates);
 
         // Collect all chain arcs, each with the audience the caller has on it.
         let mut chain_arcs: Vec<(String, Arc<RwLock<MentisDb>>, Audience)> = Vec::new();
@@ -4348,6 +4353,7 @@ impl MentisDbService {
             ranked_query = ranked_query.with_reranking(k);
         }
         ranked_query = apply_include_invalidated(ranked_query, request.include_invalidated);
+        ranked_query = apply_collapse_duplicates(ranked_query, request.collapse_duplicates);
 
         let mut total_query = ranked_query.clone();
         total_query.limit = chain.thoughts().len().max(1);
@@ -6165,6 +6171,10 @@ struct RankedSearchRequest {
     /// When true, include superseded/corrected/invalidated thoughts.
     #[serde(default)]
     include_invalidated: Option<bool>,
+    /// Near-duplicate collapse threshold in `(0, 1]` (Jaccard of normalized
+    /// tokens); `0` disables collapsing. Omit for the server default.
+    #[serde(default)]
+    collapse_duplicates: Option<f32>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -6339,6 +6349,10 @@ struct FederatedSearchRequest {
     /// When true, include superseded/corrected/invalidated thoughts.
     #[serde(default)]
     include_invalidated: Option<bool>,
+    /// Near-duplicate collapse threshold in `(0, 1]` (Jaccard of normalized
+    /// tokens); `0` disables collapsing. Omit for the server default.
+    #[serde(default)]
+    collapse_duplicates: Option<f32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -8434,7 +8448,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
         .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by."))
-        .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include thoughts superseded/corrected/invalidated by later memory. Default false: superseded thoughts are replaced by their live successor (field successor_of). Audit only; hits still carry version_status and current_version.")),
+        .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include thoughts superseded/corrected/invalidated by later memory. Default false: superseded thoughts are replaced by their live successor (field successor_of). Audit only; hits still carry version_status and current_version."))
+        .with_parameter(ToolParameter::new("collapse_duplicates", ToolParameterType::Number).with_description("Near-duplicate collapse threshold in (0,1] (Jaccard of normalized tokens); hits that copy a higher-ranked hit are folded into it and listed in collapsed_duplicates. 0 disables. Default 0.9.")),
         ToolMetadata::new(
             "mentisdb_federated_search",
             "Run federated ranked retrieval over multiple chains simultaneously and return a single merged, ranked result list. Useful for multi-agent hubs or cross-organizational memory aggregation.",
@@ -9143,6 +9158,20 @@ fn build_query(request: &SearchRequest) -> Result<ThoughtQuery, Box<dyn Error + 
         query = query.with_include_invalidated(true);
     }
     Ok(query)
+}
+
+/// Applies a request's `collapse_duplicates` override: `0` (or less) turns
+/// collapsing off, a value in `(0, 1]` sets the threshold, `None` keeps the
+/// server default.
+fn apply_collapse_duplicates(
+    ranked_query: RankedSearchQuery,
+    collapse_duplicates: Option<f32>,
+) -> RankedSearchQuery {
+    match collapse_duplicates {
+        Some(t) if t <= 0.0 || t.is_nan() => ranked_query.with_collapse_duplicates(None),
+        Some(t) => ranked_query.with_collapse_duplicates(Some(t.min(1.0))),
+        None => ranked_query,
+    }
 }
 
 fn apply_include_invalidated(

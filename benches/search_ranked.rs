@@ -99,6 +99,34 @@ pub fn ranked_search_latency(c: &mut Criterion) {
         });
     });
 
+    // Cost of the version-lineage layer: the same query with successor
+    // resolution off (raw ranking), on (default, ranks a 2x wider page), and on
+    // with near-duplicate collapsing.
+    group.bench_function("query_ranked_resolve_off", |b| {
+        let query = RankedSearchQuery::new()
+            .with_text("rare-token bm25")
+            .with_limit(25)
+            .with_resolve_successors(false)
+            .with_collapse_duplicates(None);
+        b.iter(|| black_box(chain.query_ranked(black_box(&query)).hits.len()));
+    });
+    group.bench_function("query_ranked_resolve_on", |b| {
+        let query = RankedSearchQuery::new()
+            .with_text("rare-token bm25")
+            .with_limit(25)
+            .with_resolve_successors(true)
+            .with_collapse_duplicates(None);
+        b.iter(|| black_box(chain.query_ranked(black_box(&query)).hits.len()));
+    });
+    group.bench_function("query_ranked_resolve_on_collapse", |b| {
+        let query = RankedSearchQuery::new()
+            .with_text("rare-token bm25")
+            .with_limit(25)
+            .with_resolve_successors(true)
+            .with_collapse_duplicates(Some(0.85));
+        b.iter(|| black_box(chain.query_ranked(black_box(&query)).hits.len()));
+    });
+
     group.bench_function("query_ranked_filtered_lexical", |b| {
         let query = RankedSearchQuery::new()
             .with_filter(ThoughtQuery::new().with_types(vec![ThoughtType::Decision]))

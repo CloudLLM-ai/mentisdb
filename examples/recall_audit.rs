@@ -1175,10 +1175,12 @@ fn run_probes(chain: &MentisDb, probes: &[Probe], rrf: bool, args: &Args) -> Vec
                 out.top_importance = top.score.importance;
                 out.top_recency = top.score.recency;
             }
-            match hits
-                .iter()
-                .position(|h| h.thought.index as usize == probe.target)
-            {
+            // A target folded into a higher-ranked near-duplicate counts as found
+            // at that survivor's rank: the agent still receives its text.
+            let target_id = chain.thoughts()[probe.target].id;
+            match hits.iter().position(|h| {
+                h.thought.index as usize == probe.target || h.collapsed.contains(&target_id)
+            }) {
                 Some(pos) => {
                     let hit = hits[pos];
                     out.rank = Some(pos + 1);

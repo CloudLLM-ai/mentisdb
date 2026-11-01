@@ -111,6 +111,41 @@ UNRELEASED
   - fix(export): `to_memory_markdown(None)` (the MEMORY.md agents reload) listed
     superseded thoughts as current. It now drops them and marks contested
     entries `contested by #N`. Federated hits carry `version` too.
+  - feat(search): vector fusion no longer depends on query length. The vector
+    multiplier decayed as exp(-bm25/3), and BM25 grows with the number of query
+    terms, so a paraphrased question of ten words silenced the vector channel
+    exactly when the wording differed. New default `VectorFusion::Relative`
+    (`MENTISDB_VECTOR_FUSION=absolute` restores the old blend) decays on the
+    lexical score relative to the query's best. Sweep over the decay on the
+    shipped benchmark chains, R@10 LoCoMo / R@5 LongMemEval: absolute 73.1 /
+    68.0; relative r=0.10 73.0 / 67.8, 0.25 73.6 / 68.4, 0.40 74.0 / 69.0, 0.80
+    75.2 / 69.4 (chosen), 1.5 75.5 / 70.2, 3.0 and up 75.9 / 69.6. Above ~1.5
+    the order is essentially vector-only, so 0.8 keeps lexical precision. Final
+    defaults with collapse: 75.2 / 70.0.
+  - feat(search): near-duplicate hits collapse at result time
+    (`RankedSearchQuery::collapse_duplicates`, default Jaccard 0.9,
+    `MENTISDB_COLLAPSE_DUPLICATES=off` or request `collapse_duplicates: 0`
+    disables, text queries only). One real chain had 301 of 749 live thoughts in
+    near-duplicate clusters and 149 duplicate pairs beyond the 64-thought dedup
+    window. Survivors list the folded ids in `collapsed_duplicates`. Benchmarks:
+    LongMemEval R@5 68.0 -> 68.4, LoCoMo unchanged at 73.1 (thresholds 0.85 and
+    0.95 identical). On that real chain, with a folded target counted as found,
+    recall_audit hybrid R@1 rose 75 -> 98 (drop50) and 76 -> 98 (rare), paraphrase
+    (sem) R@10 43 -> 52.
+  - perf(search): chains with no supersession or contest edge skip the wider
+    redirect pass. Criterion `search_ranked` on a 5,000 thought chain,
+    25 hits: resolve off 59 us, resolve on (no lineage) within noise of off,
+    collapse adds roughly 0.3 ms for the 2x-wide page (tokenizing and comparing
+    about 58 candidates). Numbers vary +-3x with machine load.
+  - fix(search): a description, owner, display name or alias added to an agent
+    after its thoughts were written was invisible to lexical search until a
+    restart, because the index baked the registry text in at append time. The
+    lexical index is now rebuilt when an agent record's indexed text changes.
+  - decision(search): `MENTISDB_DF_SCOPE=field` stays opt-in. LoCoMo 72.8 vs 73.1
+    and LongMemEval 68.0 vs 68.0 under the old blend, identical under the new
+    defaults (75.2 / 70.0). On the real chain, recall_audit hybrid `ref` probes
+    (n=43) went R@1 21 -> 19 and R@10 65 -> 67 and nothing else moved, a wash, so
+    the behaviour every published number was measured with is kept.
   - docs(skill): policy changes must carry `Supersedes` with the old id; the
     include_invalidated retry advice is replaced by "read version_status".
   - test(retrieval): end-to-end regression for the policy scenario over library,

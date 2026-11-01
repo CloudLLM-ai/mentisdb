@@ -329,11 +329,11 @@ pub mod tui;
 #[cfg(feature = "server")]
 /// Webhook notification system for notifying external HTTP endpoints on thought append events.
 pub mod webhooks;
-#[cfg(feature = "server")]
 pub use lineage::{
     contest_kind, AdviceCode, AppendAdvice, ParseSuccessorKindError, SuccessorKind, SuccessorNote,
     SuggestedTarget, VersionInfo, VersionStatus,
 };
+#[cfg(feature = "server")]
 pub use webhooks::{WebhookManager, WebhookPayload, WebhookRegistration, WebhookThought};
 
 use chrono::{DateTime, Utc};
@@ -3500,6 +3500,146 @@ impl Default for RankedSearchGraph {
     }
 }
 
+/// Largest vector multiplier granted to a candidate with no lexical signal.
+const VECTOR_ONLY_BOOST: f32 = 35.0;
+/// Decay rate (in units of "fraction of the best lexical score") of the vector
+/// multiplier under [`VectorFusion::Relative`]. Chosen by sweep on LoCoMo and
+/// LongMemEval: R@10 / R@5 rose monotonically from 0.10 to about 1.5 and
+/// plateaued above it. 0.8 keeps most of the gain (+2.1 and +1.4 points) while
+/// leaving lexical differences able to order strong matches; larger values make
+/// the order essentially vector-only.
+const RELATIVE_DECAY_RATE: f32 = 0.8;
+/// Decay rate (in raw BM25 units) of the vector multiplier under
+/// [`VectorFusion::Absolute`].
+const VECTOR_DECAY_RATE: f32 = 3.0;
+
+/// How a hit's vector similarity is blended into its lexical score.
+///
+/// The vector multiplier is `1 + 35 * exp(-x / r)` and decays as the lexical
+/// signal grows (under `Relative` it falls from 36x with no lexical match to
+/// about 8x at the best lexical match). The strategies differ in what `x / r` is.
+///
+/// * [`Absolute`](Self::Absolute): `x` is the raw BM25 score and `r = 3`. BM25
+///   grows with the number of query terms, so a paraphrase question of ten
+///   words gives even weak lexical matches a score of 10 or more and the
+///   vector channel is silenced exactly when the wording differs from the
+///   stored text.
+/// * [`Relative`](Self::Relative) (default): `x` is the candidate's lexical score
+///   divided by the best lexical score of the query and `r = 0.8`, so the decay
+///   does not depend on query length. On LoCoMo R@10 and LongMemEval R@5 it
+///   scored 75.2% and 69.4% against 73.1% and 68.0% for `Absolute`.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::VectorFusion;
+///
+/// assert_eq!("relative".parse::<VectorFusion>().unwrap(), VectorFusion::Relative);
+/// assert_eq!(VectorFusion::Absolute.to_string(), "absolute");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VectorFusion {
+    /// Raw BM25 decay (the behaviour before this change).
+    Absolute,
+    /// Decay on the lexical score relative to the query's best lexical score
+    /// (the default).
+    Relative,
+}
+
+/// Name of the environment variable read by [`VectorFusion::from_env`].
+pub const VECTOR_FUSION_ENV: &str = "MENTISDB_VECTOR_FUSION";
+
+/// Built-in default of [`VectorFusion::from_env`].
+pub const DEFAULT_VECTOR_FUSION: VectorFusion = VectorFusion::Relative;
+
+impl VectorFusion {
+    /// Read `MENTISDB_VECTOR_FUSION` (`absolute` or `relative`), falling back
+    /// to the built-in default for unset or unknown values.
+    pub fn from_env() -> Self {
+        std::env::var(VECTOR_FUSION_ENV)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_VECTOR_FUSION)
+    }
+
+    fn bind(self, best_lexical: f32) -> BoundVectorFusion {
+        match self {
+            Self::Absolute => BoundVectorFusion::Legacy,
+            Self::Relative => BoundVectorFusion::Relative { best_lexical },
+        }
+    }
+}
+
+impl std::fmt::Display for VectorFusion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Absolute => "absolute",
+            Self::Relative => "relative",
+        })
+    }
+}
+
+/// Error returned when a string is not a [`VectorFusion`] name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseVectorFusionError(pub String);
+
+impl std::fmt::Display for ParseVectorFusionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown vector fusion {:?} (expected \"absolute\" or \"relative\")",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for ParseVectorFusionError {}
+
+impl std::str::FromStr for VectorFusion {
+    type Err = ParseVectorFusionError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim() {
+            "absolute" => Ok(Self::Absolute),
+            "relative" => Ok(Self::Relative),
+            other => Err(ParseVectorFusionError(other.to_owned())),
+        }
+    }
+}
+
+/// Per-query values every candidate score needs.
+#[derive(Debug, Clone, Copy)]
+struct ScoreContext {
+    /// Index of the newest thought visible to the caller, the recency anchor.
+    newest_index: usize,
+    /// Vector blend with the query's best lexical score resolved.
+    fusion: BoundVectorFusion,
+}
+
+/// [`VectorFusion`] with the per-query best lexical score resolved.
+#[derive(Debug, Clone, Copy)]
+enum BoundVectorFusion {
+    Legacy,
+    Relative { best_lexical: f32 },
+}
+
+impl BoundVectorFusion {
+    /// Extra vector multiplier for a candidate with lexical score `lexical`.
+    fn extra(self, lexical: f32) -> f32 {
+        match self {
+            Self::Legacy => VECTOR_ONLY_BOOST * (-lexical / VECTOR_DECAY_RATE).exp(),
+            Self::Relative { best_lexical } => {
+                let rel = if best_lexical > 0.0 {
+                    (lexical / best_lexical).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                VECTOR_ONLY_BOOST * (-rel / RELATIVE_DECAY_RATE).exp()
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 /// The primary query builder for high-quality retrieval.
 ///
@@ -3565,6 +3705,16 @@ pub struct RankedSearchQuery {
     /// See [`crate::lineage`]. Set `false` to silently drop superseded
     /// thoughts instead.
     pub resolve_successors: bool,
+    /// Collapse near-duplicate hits: when `Some(t)`, a hit whose normalized
+    /// token set has Jaccard similarity of at least `t` with a higher-ranked hit
+    /// is dropped from the page (its id is listed in the survivor's
+    /// [`RankedSearchHit::collapsed`]), so exact and near copies stop filling
+    /// the top ranks. Defaults from `MENTISDB_COLLAPSE_DUPLICATES`, see
+    /// [`crate::lineage::collapse_duplicates_from_env`].
+    pub collapse_duplicates: Option<f32>,
+    /// How the vector score is blended with the lexical score, see
+    /// [`VectorFusion`]. Defaults from `MENTISDB_VECTOR_FUSION`.
+    pub vector_fusion: VectorFusion,
     /// Optional memory scope filter.
     ///
     /// When set, only thoughts tagged with the matching `scope:{variant}` tag
@@ -3711,6 +3861,19 @@ impl RankedSearchQuery {
         self
     }
 
+    /// Choose how vector and lexical scores are blended, see [`VectorFusion`].
+    pub fn with_vector_fusion(mut self, fusion: VectorFusion) -> Self {
+        self.vector_fusion = fusion;
+        self
+    }
+
+    /// Set the near-duplicate collapse threshold, see
+    /// [`RankedSearchQuery::collapse_duplicates`]. `None` disables collapsing.
+    pub fn with_collapse_duplicates(mut self, threshold: Option<f32>) -> Self {
+        self.collapse_duplicates = threshold;
+        self
+    }
+
     /// Enable or disable successor redirection, see
     /// [`RankedSearchQuery::resolve_successors`].
     pub fn with_resolve_successors(mut self, resolve: bool) -> Self {
@@ -3809,6 +3972,8 @@ impl Default for RankedSearchQuery {
             as_of: None,
             include_invalidated: false,
             resolve_successors: true,
+            collapse_duplicates: crate::lineage::collapse_duplicates_from_env(),
+            vector_fusion: VectorFusion::from_env(),
             scope: None,
             enable_reranking: false,
             rerank_k: 50,
@@ -3899,6 +4064,9 @@ pub struct RankedSearchHit<'a> {
     /// Whether this hit is the current version, who superseded or contests
     /// it, and which older hits it stands in for.
     pub version: VersionInfo,
+    /// Ids of lower-ranked near-duplicates collapsed into this hit, see
+    /// [`RankedSearchQuery::collapse_duplicates`].
+    pub collapsed: Vec<Uuid>,
 }
 
 /// Ranked-search response over committed thoughts.
@@ -5365,6 +5533,10 @@ pub struct MentisDb {
     entity_type_registry: EntityTypeRegistry,
     query_indexes: QueryIndexes,
     lexical_index: crate::search::lexical::LexicalIndex,
+    /// Per-agent hash of the registry text baked into `lexical_index`, so an
+    /// edit to an agent record triggers a rebuild instead of leaving earlier
+    /// thoughts indexed under the old text.
+    lexical_registry_hashes: HashMap<String, u64>,
     storage: Box<dyn StorageAdapter>,
     auto_flush: bool,
     persistence: Option<ChainPersistenceMetadata>,
@@ -5536,6 +5708,7 @@ impl MentisDb {
         let mut chain = Self {
             query_indexes: QueryIndexes::from_thoughts(&thoughts),
             lexical_index: crate::search::lexical::LexicalIndex::empty(),
+            lexical_registry_hashes: HashMap::new(),
             thoughts,
             id_to_index,
             hash_to_index,
@@ -5633,6 +5806,17 @@ impl MentisDb {
             &chain.thoughts,
             &chain.agent_registry,
         );
+        chain.lexical_registry_hashes = chain
+            .agent_registry
+            .agents
+            .iter()
+            .map(|(id, record)| {
+                (
+                    id.clone(),
+                    crate::search::lexical::agent_registry_text_hash(record),
+                )
+            })
+            .collect();
 
         Ok(chain)
     }
@@ -6250,7 +6434,9 @@ impl MentisDb {
         self.query_indexes.observe(self.thoughts.len(), &thought);
         self.lexical_index
             .observe(self.thoughts.len(), &thought, &self.agent_registry);
+        let appended_agent = thought.agent_id.clone();
         self.thoughts.push(thought);
+        self.sync_lexical_registry(Some(&appended_agent));
         if let Ok(mut cache) = self.adjacency_index.lock() {
             *cache = None;
         }
@@ -8400,12 +8586,26 @@ impl MentisDb {
             positions.extend(graph_scores.keys().copied());
             positions.sort_unstable();
             positions.dedup();
+            let fusion = request.vector_fusion.bind(
+                lexical_scan
+                    .as_ref()
+                    .map(|scan| {
+                        scan.positions()
+                            .iter()
+                            .filter_map(|&p| scan.score(p))
+                            .fold(0.0_f32, f32::max)
+                    })
+                    .unwrap_or(0.0),
+            );
             positions
                 .into_iter()
                 .filter_map(|position| {
                     let thought = self.thoughts.get(position)?;
                     self.score_candidate(
-                        newest_index,
+                        ScoreContext {
+                            newest_index,
+                            fusion,
+                        },
                         thought,
                         true,
                         lexical_scan.as_ref().and_then(|scan| scan.score(position)),
@@ -8418,7 +8618,17 @@ impl MentisDb {
             candidates
                 .iter()
                 .filter_map(|thought| {
-                    self.score_candidate(newest_index, thought, false, None, 0.0, None)
+                    self.score_candidate(
+                        ScoreContext {
+                            newest_index,
+                            fusion: BoundVectorFusion::Legacy,
+                        },
+                        thought,
+                        false,
+                        None,
+                        0.0,
+                        None,
+                    )
                 })
                 .collect()
         };
@@ -10522,13 +10732,17 @@ impl MentisDb {
     /// vector, or graph signal at all.
     fn score_candidate<'a>(
         &self,
-        newest_index: usize,
+        ctx: ScoreContext,
         thought: &'a Thought,
         has_text: bool,
         lexical: Option<f32>,
         vector: f32,
         graph_hit: Option<&RankedGraphHit>,
     ) -> Option<ScoredCandidate<'a>> {
+        let ScoreContext {
+            newest_index,
+            fusion,
+        } = ctx;
         let (lexical, vector, graph, relation, seed_support) = if has_text {
             if lexical.is_none() && graph_hit.is_none() && vector <= 0.0 {
                 return None;
@@ -10565,11 +10779,8 @@ impl MentisDb {
         // thoughts surface. When lexical is present, the boost decays
         // exponentially with VECTOR_DECAY_RATE, letting vector help moderate-
         // lexical results without overriding strong lexical signals.
-        const VECTOR_ONLY_BOOST: f32 = 35.0;
-        const VECTOR_DECAY_RATE: f32 = 3.0;
         let vector_contribution = if vector > 0.0 {
-            let extra = VECTOR_ONLY_BOOST * (-lexical / VECTOR_DECAY_RATE).exp();
-            vector * (1.0 + extra)
+            vector * (1.0 + fusion.extra(lexical))
         } else {
             0.0
         };
@@ -10640,6 +10851,7 @@ impl MentisDb {
             matched_terms,
             match_sources,
             version: VersionInfo::default(),
+            collapsed: Vec::new(),
         }
     }
 
@@ -11770,7 +11982,34 @@ impl MentisDb {
         Ok(())
     }
 
+    /// Rebuild the lexical index when an agent record's indexed text changed.
+    ///
+    /// The index stores each thought's agent registry tokens at observe time, so
+    /// a description, owner, display name or alias added later was invisible to
+    /// search until the next restart. `only` limits the check to one agent (the
+    /// append path); `None` checks every agent. An agent seen for the first
+    /// time never triggers a rebuild: it has no earlier thoughts to refresh.
+    fn sync_lexical_registry(&mut self, only: Option<&str>) {
+        let mut changed = false;
+        for (id, record) in &self.agent_registry.agents {
+            if only.is_some_and(|agent| agent != id) {
+                continue;
+            }
+            let hash = crate::search::lexical::agent_registry_text_hash(record);
+            if let Some(previous) = self.lexical_registry_hashes.insert(id.clone(), hash) {
+                changed |= previous != hash;
+            }
+        }
+        if changed {
+            self.lexical_index = crate::search::lexical::LexicalIndex::build_with_registry(
+                &self.thoughts,
+                &self.agent_registry,
+            );
+        }
+    }
+
     fn persist_registries(&mut self) -> io::Result<()> {
+        self.sync_lexical_registry(None);
         self.mark_agent_registry_dirty(true);
         self.maybe_flush_agent_registry(true)?;
         self.mark_entity_type_registry_dirty();
@@ -13559,7 +13798,9 @@ fn append_memory_section(
             metadata.push(format!("role {:?}", thought.role));
         }
         metadata.push(format!("importance {:.2}", thought.importance));
-        if let Some(contester) = chain.live_contester(thought.id, None) {
+        if let Some(contester) =
+            chain.live_contester(thought.id, None, crate::audience::Audience::Authorized)
+        {
             metadata.push(format!("contested by #{}", contester.index));
         }
         if let Some(confidence) = thought.confidence {
@@ -14451,5 +14692,45 @@ mod commit_group_tests {
         assert!(buffer.is_empty(), "no duplicate on the shutdown flush");
         assert_eq!(dirty, 0);
         assert_eq!(std::fs::read(&path).unwrap(), b"existing");
+    }
+}
+
+#[cfg(test)]
+mod vector_fusion_tests {
+    use super::*;
+
+    /// The relative decay depends only on how a candidate compares with the
+    /// query's best lexical score, so a long query (large raw BM25) keeps the
+    /// vector channel alive while the absolute decay silences it.
+    #[test]
+    fn relative_fusion_is_independent_of_query_length() {
+        let short = BoundVectorFusion::Relative { best_lexical: 4.0 };
+        let long = BoundVectorFusion::Relative { best_lexical: 40.0 };
+        let (short_extra, long_extra) = (short.extra(2.0), long.extra(20.0));
+        assert!(
+            (short_extra - long_extra).abs() < 1e-3,
+            "{short_extra} vs {long_extra}"
+        );
+        // Absolute decay at raw 20 is essentially zero.
+        assert!(BoundVectorFusion::Legacy.extra(20.0) < 0.05);
+        assert!(long_extra > 1.0);
+    }
+
+    /// No lexical signal at all gives the full boost under both strategies.
+    #[test]
+    fn zero_lexical_gets_the_full_boost() {
+        assert!((BoundVectorFusion::Legacy.extra(0.0) - VECTOR_ONLY_BOOST).abs() < 1e-4);
+        let rel = BoundVectorFusion::Relative { best_lexical: 9.0 };
+        assert!((rel.extra(0.0) - VECTOR_ONLY_BOOST).abs() < 1e-4);
+    }
+
+    /// The multiplier falls monotonically as the lexical share grows but stays
+    /// substantial at the best lexical hit (about 8x at the default decay), so
+    /// the vector channel keeps refining the order among strong lexical matches.
+    #[test]
+    fn multiplier_decreases_with_lexical_share() {
+        let rel = BoundVectorFusion::Relative { best_lexical: 10.0 };
+        let (low, mid, best) = (rel.extra(1.0), rel.extra(5.0), rel.extra(10.0));
+        assert!(low > mid && mid > best && best > 10.0, "{low} {mid} {best}");
     }
 }

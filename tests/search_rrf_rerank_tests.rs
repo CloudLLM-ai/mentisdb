@@ -42,7 +42,12 @@ fn build_needle_chain(label: &str) -> MentisDb {
 #[test]
 fn rerank_without_sidecar_boosts_only_top_lexical_hits() {
     let chain = build_needle_chain("rrf-head");
-    let plain = chain.query_ranked(&RankedSearchQuery::new().with_text("needle").with_limit(200));
+    let plain = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text("needle")
+            .with_collapse_duplicates(None)
+            .with_limit(200),
+    );
     assert_eq!(plain.hits.len(), 200);
     let mut by_lexical: Vec<_> = plain.hits.iter().collect();
     by_lexical.sort_by(|a, b| b.score.lexical.total_cmp(&a.score.lexical));
@@ -54,6 +59,7 @@ fn rerank_without_sidecar_boosts_only_top_lexical_hits() {
 
     let reranked = chain.query_ranked(
         &RankedSearchQuery::new()
+            .with_collapse_duplicates(None)
             .with_text("needle")
             .with_reranking(20)
             .with_limit(200),
@@ -83,10 +89,16 @@ fn rerank_without_sidecar_boosts_only_top_lexical_hits() {
 #[test]
 fn rerank_keeps_default_top_hit_and_adds_scaled_bonus() {
     let chain = build_needle_chain("rrf-not-worse");
-    let plain = chain.query_ranked(&RankedSearchQuery::new().with_text("needle").with_limit(200));
+    let plain = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text("needle")
+            .with_collapse_duplicates(None)
+            .with_limit(200),
+    );
     let default_top = plain.hits[0].thought.index;
     let reranked = chain.query_ranked(
         &RankedSearchQuery::new()
+            .with_collapse_duplicates(None)
             .with_text("needle")
             .with_reranking(50)
             .with_limit(200),
@@ -124,7 +136,9 @@ fn rerank_keeps_default_top_hit_and_adds_scaled_bonus() {
 #[test]
 fn rerank_head_set_matches_default_head_set_lexical_only() {
     let chain = build_needle_chain("rrf-set");
-    let query = RankedSearchQuery::new().with_text("needle");
+    let query = RankedSearchQuery::new()
+        .with_text("needle")
+        .with_collapse_duplicates(None);
     let default_head: std::collections::BTreeSet<u64> = chain
         .query_ranked(&query.clone().with_limit(10))
         .hits
@@ -145,6 +159,7 @@ fn rerank_head_set_matches_default_head_set_lexical_only() {
 fn rerank_is_deterministic() {
     let chain = build_needle_chain("rrf-determinism");
     let query = RankedSearchQuery::new()
+        .with_collapse_duplicates(None)
         .with_text("needle")
         .with_reranking(20)
         .with_limit(50);
