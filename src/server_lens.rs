@@ -128,6 +128,42 @@ pub fn scope_allows_chain(chain_key: &str) -> bool {
         .unwrap_or(true)
 }
 
+/// Invalid read proofs allowed per peer address per minute before further
+/// requests from it are refused outright. A valid proof costs the server one
+/// signature check; this bounds what a peer can make it spend on invalid ones.
+const MAX_INVALID_PROOFS_PER_MINUTE: u32 = 30;
+/// Peer addresses tracked at once; the table is cleared when it fills.
+const MAX_TRACKED_PEERS: usize = 4096;
+
+fn invalid_proofs(
+) -> &'static std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, (u32, std::time::Instant)>>
+{
+    static TABLE: OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, (u32, std::time::Instant)>>,
+    > = OnceLock::new();
+    TABLE.get_or_init(Default::default)
+}
+
+fn proof_budget_exhausted(peer: std::net::IpAddr) -> bool {
+    let table = invalid_proofs().lock().unwrap_or_else(|e| e.into_inner());
+    table.get(&peer).is_some_and(|(count, since)| {
+        since.elapsed() < std::time::Duration::from_secs(60)
+            && *count >= MAX_INVALID_PROOFS_PER_MINUTE
+    })
+}
+
+fn record_invalid_proof(peer: std::net::IpAddr) {
+    let mut table = invalid_proofs().lock().unwrap_or_else(|e| e.into_inner());
+    if table.len() >= MAX_TRACKED_PEERS && !table.contains_key(&peer) {
+        table.clear();
+    }
+    let entry = table.entry(peer).or_insert((0, std::time::Instant::now()));
+    if entry.1.elapsed() >= std::time::Duration::from_secs(60) {
+        *entry = (0, std::time::Instant::now());
+    }
+    entry.0 += 1;
+}
+
 fn nonces() -> &'static NonceCache {
     static NONCES: OnceLock<NonceCache> = OnceLock::new();
     NONCES.get_or_init(|| NonceCache::new(100_000))
@@ -148,11 +184,27 @@ pub(crate) async fn read_auth_middleware(request: Request, next: Next) -> Respon
     let Some(value) = request.headers().get(READ_AUTH_HEADER) else {
         return with_read_authority(ReadAuthority::default(), next.run(request)).await;
     };
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.ip());
+    if peer.is_some_and(proof_budget_exhausted) {
+        return reject(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many invalid read proofs from this address; try again in a minute",
+        );
+    }
+    let fail = |status: StatusCode, message: &str| {
+        if let Some(peer) = peer {
+            record_invalid_proof(peer);
+        }
+        reject(status, message)
+    };
     let Ok(header) = value.to_str().map(str::to_owned) else {
-        return reject(StatusCode::UNAUTHORIZED, "malformed read proof");
+        return fail(StatusCode::UNAUTHORIZED, "malformed read proof");
     };
     if header.len() > MAX_READ_AUTH_HEADER_LEN {
-        return reject(StatusCode::UNAUTHORIZED, "malformed read proof");
+        return fail(StatusCode::UNAUTHORIZED, "malformed read proof");
     }
     let (parts, body) = request.into_parts();
     let body = match axum::body::to_bytes(body, MAX_SIGNED_BODY_BYTES).await {
@@ -182,7 +234,7 @@ pub(crate) async fn read_auth_middleware(request: Request, next: Next) -> Respon
         });
     let proof = match verified {
         Ok(proof) => proof,
-        Err((status, message)) => return reject(status, &message),
+        Err((status, message)) => return fail(status, &message),
     };
     let authority = ReadAuthority {
         key: Some(VerifiedReadKey {

@@ -1008,12 +1008,32 @@ fn import_chain_from_staging(
     match classify_chain_relationship(local_chain.thoughts(), backup_chain.thoughts()) {
         ChainRelationship::Identical | ChainRelationship::LocalExtendsBackup => Ok(()),
         // The suffix is spliced in as raw records, bypassing the write policy
-        // `append_thought` enforces. On a signed or allowlist chain that would
-        // let a backup add unsigned or unauthorized thoughts, so such a chain
-        // takes the backup as a separate, renamed chain instead.
-        ChainRelationship::BackupExtendsLocal { .. }
-            if local_chain.access_policy().mode != crate::access::AccessMode::Open =>
+        // `append_thought` enforces. On a governed chain a backup may extend it
+        // only if every record of the suffix is one the policy of its moment
+        // would have accepted (valid policy continuations, valid signatures by
+        // allowed keys, checked with the backup's own registry). Otherwise the
+        // backup is kept as a separate, renamed chain, unchanged.
+        ChainRelationship::BackupExtendsLocal { suffix_start }
+            if local_chain.segments().has_private() =>
         {
+            let staged_registry = staged_chain_path
+                .parent()
+                .map(|dir| crate::load_agent_registry(dir, chain_key, StorageAdapterKind::Binary))
+                .transpose()
+                .ok()
+                .flatten();
+            let acceptable = staged_registry.as_ref().is_some_and(|registry| {
+                backup_chain
+                    .verify_governed_suffix(suffix_start, registry)
+                    .is_ok()
+            });
+            if acceptable {
+                return append_verified_suffix(
+                    target_dir,
+                    chain_key,
+                    &backup_chain.thoughts()[suffix_start..],
+                );
+            }
             let renamed_key = next_import_chain_key(target_dir, chain_key)?;
             copy_chain_bundle(staging_dir, target_dir, relative_path, &renamed_key, false)?;
             normalize_imported_chain(target_dir, &renamed_key, chain_key, backup_registry)

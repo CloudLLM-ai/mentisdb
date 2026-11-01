@@ -203,11 +203,14 @@ fn chain_thought_counts(dir: &Path) -> Vec<usize> {
     counts
 }
 
-/// Restoring a newer backup onto a governed chain must not splice raw records
-/// past the write policy; it is kept as a separate chain instead. An open
-/// chain still fast-forwards.
+/// Restoring a newer backup onto a governed chain splices raw records, so it
+/// must not bypass the write policy: the suffix is fast-forwarded only after
+/// every record in it verifies against the policy of its moment (here the
+/// newer thought is validly signed by an allowed key); an open chain
+/// fast-forwards as always. A suffix that does not verify is kept as a
+/// separate renamed chain (see `tests/backup_governed_tests.rs`).
 #[test]
-fn restore_does_not_fast_forward_a_governed_chain() {
+fn restore_fast_forwards_a_governed_chain_only_after_verifying_the_suffix() {
     for governed in [true, false] {
         let origin = fresh_dir("bk_origin");
         let mut chain = MentisDb::open_with_key(&origin, "room").unwrap();
@@ -235,18 +238,11 @@ fn restore_does_not_fast_forward_a_governed_chain() {
             .len();
         restore_backup(newer, replica.clone(), RestoreOptions { overwrite: false }).unwrap();
         let counts = chain_thought_counts(&replica);
+        assert_eq!(counts, vec![base_len + 1], "{counts:?}");
         if governed {
-            assert_eq!(
-                MentisDb::open_with_key(&replica, "room")
-                    .unwrap()
-                    .thoughts()
-                    .len(),
-                base_len,
-                "governed chain was extended by raw splice: {counts:?}"
-            );
-            assert_eq!(counts, vec![base_len, base_len + 1], "{counts:?}");
-        } else {
-            assert_eq!(counts, vec![base_len + 1], "{counts:?}");
+            let restored = MentisDb::open_with_key(&replica, "room").unwrap();
+            assert!(restored.verify_signatures().is_clean());
+            assert!(restored.thoughts().iter().any(|t| t.content == "newer"));
         }
         let _ = std::fs::remove_dir_all(&origin);
         let _ = std::fs::remove_dir_all(&replica);

@@ -1,4 +1,73 @@
 UNRELEASED
+  - feat(security): public and private chains. A chain is public (unsigned
+    writes, free reads) or private (signed writes by an allowed key; the
+    segment written while private is readable only by a reader who proves
+    possession of an allowed key). Every access-policy record is a
+    mode-transition entry that opens a segment, so each thought belongs to one
+    segment by position; governance records themselves are always private.
+    Segments are derived when a chain opens: chains with no record are public,
+    chains already `signed`/`allowlist` are private from their record, nothing
+    is rewritten. An unauthorized reader sees public segments only on every
+    read surface: ranked/lexical/vector/graph search, recent and standing
+    context, traversal, get/head/genesis, bundles, summaries, federated and
+    branch-ancestor search, Markdown export, chain and agent listings and
+    counts, policy and verification reports. BM25 document frequency, length
+    averages and the recency anchor are computed over the visible set so scores
+    do not move with private writes, graph expansion never passes through a
+    hidden thought, and a public thought that only a private one supersedes
+    still reads as current. Library: `mentisdb::audience::{Audience, Segment,
+    SegmentMap}`, `ThoughtQuery::audience`, `StandingContextQuery::audience`
+    and `*_for(audience)` variants.
+  - feat(security): read proofs. `X-Mentis-Auth: v1 agent=;key=;pk=;ts=;nonce=;sig=`
+    is an Ed25519 signature over method, path and query, body hash, key
+    identity, timestamp and a single-use nonce (60 s window, bounded replay
+    cache that fails closed). The private key never travels and never has to
+    enter an LLM context: `mentisdb --read-key-file/--read-agent/--read-key-id`
+    (or MENTISDB_READ_KEY_FILE/AGENT_ID/KEY_ID) and the stdio MCP proxy sign
+    locally. New module `read_auth`, fuzz target `read_auth_header`.
+  - feat(security): operator-only key administration. Adding or removing
+    allowed keys, registering or revoking agent keys, disabling agents and
+    switching a chain public/private are done from the dashboard (behind its
+    PIN) or the local CLI (`mentisdb chain access set|allow|deny|admin`,
+    `agent key add|revoke`, `agent disable|activate`, `--offline` against the
+    data directory). The operator signs policy records with
+    `<data dir>/operator/operator.key`, which is always a governor (recovery
+    path). REST routes `/v1/agents/keys`, `/v1/agents/keys/revoke`,
+    `/v1/agents/disable`, `/v1/access/policy/set` answer 403 with any token and
+    the matching MCP tools are no longer offered. New module `operator`, fuzz
+    targets `operator_op` and `segment_map`. WIRE CHANGE: clients that
+    registered keys or set policies over REST/MCP must use the operator commands.
+  - fix(security): self-service `add_agent_key` let any token holder register a
+    key and impersonate an agent; `revoke_agent_key`, `disable_agent` and the
+    `status` field of `agents/upsert` were open to any token. All are
+    operator-only now (restating the current status is still accepted).
+  - fix(security): a governor could lock a chain by writing a record with no
+    governor; such records are refused and the operator key is always kept.
+  - fix(security): a branch-scoped token searched its ancestor chains through
+    `ranked_search`; each ancestor now needs the token's scope and its own
+    audience.
+  - fix(security): merge deleted a governed source and stripped signatures, and
+    merge, dashboard copy would have published private thoughts. Merge and copy
+    refuse sources with private segments, governance records or signed
+    thoughts, with a clear error and no change. Branching is unchanged.
+  - fix(security): append advice quoted 120-character excerpts of any thought,
+    private ones included, to an unauthorized writer; automatic dedup could
+    supersede a private thought and leak its id; an unsigned writer could link
+    to or supersede a private thought. All three are closed.
+  - fix(security): a refused write told an anonymous caller whether an agent
+    or key existed, was revoked or was allowed; it now says only that the
+    policy did not accept the write. Registry edits on a private chain need a
+    read proof. A disabled agent can no longer write signed thoughts.
+  - feat(security): every thought JSON carries `provenance` (segment, signed,
+    signature valid/invalid/unsigned, verified_agent, `trust: untrusted_data`)
+    and the operating skill tells agents to treat memories as data, never as
+    instructions. docs/CHAIN_ACCESS.md rewritten with the threat model, read
+    authentication, per-surface visibility and residual risk.
+  - feat(dashboard): chains with private segments are shown only behind a PIN;
+    access administration routes `GET/POST /dashboard/api/chains/{chain}/access`.
+  - feat(registry): `chains.json` entries gain `has_private` and
+    `public_thought_count` (optional, written on the next flush) so listings
+    show public counts without opening a chain.
   - feat(migration): new `mentisdb::migration` engine for chain format upgrades.
     Each chain migrates through a durable journal (planned, backed up, staged,
     committed, finalized): the original is hard-linked into

@@ -1030,6 +1030,10 @@ fn update_registry(
             thought_count: journal.thoughts_total,
             agent_count: agents,
             entity_type_count: entity_types,
+            // Segment information is rewritten with the first normal flush
+            // after the chain is opened (it is derived from the chain itself).
+            has_private: false,
+            public_thought_count: journal.thoughts_total,
             created_at,
             updated_at: now,
         },

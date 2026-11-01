@@ -997,8 +997,27 @@ fn wait_for_daemon(mcp_addr: &str, max_attempts: u32) -> bool {
 /// streamable HTTP endpoint handles the full MCP protocol (initialize,
 /// ping, tools/list, tools/call, resources/list, resources/read, prompts,
 /// sampling, roots, notifications).
+/// The read key of this process, loaded once from the environment.
+fn read_signer() -> Option<&'static mentisdb::read_auth::ReadSigner> {
+    static SIGNER: std::sync::OnceLock<Option<mentisdb::read_auth::ReadSigner>> =
+        std::sync::OnceLock::new();
+    SIGNER
+        .get_or_init(|| match mentisdb::read_auth::ReadSigner::from_env() {
+            Ok(signer) => signer,
+            Err(why) => {
+                eprintln!("[mentisdb stdio] read key ignored: {why}");
+                None
+            }
+        })
+        .as_ref()
+}
+
 async fn proxy_jsonrpc_to_daemon(mcp_addr: &str, request: &str) -> Option<String> {
     let url = format!("http://{mcp_addr}/");
+    // When this process holds a read key (MENTISDB_READ_KEY_FILE ...), every
+    // forwarded request carries a fresh proof signed here. The key never
+    // reaches the model on the other side of stdio.
+    let read_proof = read_signer().map(|signer| signer.header("POST", "/", request.as_bytes()));
 
     // Parse to extract the method for local-only optimizations
     let parsed: serde_json::Value = serde_json::from_str(request).ok()?;
@@ -1017,10 +1036,13 @@ async fn proxy_jsonrpc_to_daemon(mcp_addr: &str, request: &str) -> Option<String
         // (e.g. notifications/initialized), but don't write anything
         // back to stdout — the daemon returns 202 Accepted with no body.
         let request_bytes = request.as_bytes().to_vec();
+        let proof = read_proof.clone();
         let _ = tokio::task::spawn_blocking(move || {
-            let _ = ureq::post(&url)
-                .header("Content-Type", "application/json")
-                .send(&*request_bytes);
+            let mut post = ureq::post(&url).header("Content-Type", "application/json");
+            if let Some(proof) = &proof {
+                post = post.header(mentisdb::read_auth::READ_AUTH_HEADER, proof);
+            }
+            let _ = post.send(&*request_bytes);
         })
         .await;
         return None;
@@ -1053,10 +1075,13 @@ async fn proxy_jsonrpc_to_daemon(mcp_addr: &str, request: &str) -> Option<String
     let request_bytes = request.as_bytes().to_vec();
     #[allow(clippy::result_large_err)]
     let resp = tokio::task::spawn_blocking(move || {
-        ureq::post(&url)
+        let mut post = ureq::post(&url)
             .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream")
-            .send(&*request_bytes)
+            .header("Accept", "application/json, text/event-stream");
+        if let Some(proof) = &read_proof {
+            post = post.header(mentisdb::read_auth::READ_AUTH_HEADER, proof);
+        }
+        post.send(&*request_bytes)
     })
     .await
     .ok()?;

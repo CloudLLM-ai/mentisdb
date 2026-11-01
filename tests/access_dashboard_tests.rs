@@ -14,7 +14,9 @@ use dashmap::DashMap;
 use ed25519_dalek::{Signer, SigningKey};
 pub use mentisdb::access;
 use mentisdb::access::{policy_thought_input, AccessMode, AllowedKey, PolicyRecord};
+pub use mentisdb::audience;
 pub use mentisdb::auth;
+pub use mentisdb::operator;
 pub use mentisdb::search;
 use mentisdb::signing::{thought_payload_v2, StoredSignature};
 pub use mentisdb::{
@@ -37,7 +39,7 @@ fn router(dir: &PathBuf) -> axum::Router {
         skills: Arc::new(RwLock::new(SkillRegistry::open(dir).unwrap())),
         mentisdb_dir: dir.clone(),
         default_chain_key: "default".to_string(),
-        dashboard_pin: None,
+        dashboard_pin: Some("1234".to_string()),
         sessions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         default_storage_adapter: StorageAdapterKind::Binary,
         auto_flush: Arc::new(AtomicBool::new(true)),
@@ -54,6 +56,7 @@ async fn call(router: &axum::Router, method: &str, uri: &str, body: Value) -> (S
                 .uri(uri)
                 .header("content-type", "application/json")
                 .header("x-mentisdb-dashboard", "1")
+                .header("authorization", "Bearer 1234")
                 .body(Body::from(body.to_string()))
                 .unwrap(),
         )

@@ -24,12 +24,11 @@ const DIRECTIONS: &[&str] = &["forward", "backward"];
 const WINDOW_UNITS: &[&str] = &["seconds", "milliseconds"];
 const STORAGE_ADAPTERS: &[&str] = &["binary", "jsonl"];
 const AGENT_STATUSES: &[&str] = &["active", "revoked"];
-const KEY_ALGORITHMS: &[&str] = &["ed25519"];
 const SKILL_FORMATS: &[&str] = &["markdown", "json"];
 const SKILL_STATUSES: &[&str] = &["active", "deprecated", "revoked"];
 /// `mentisdb agents` is the historical spelling of `agent list`.
 const AGENTS_ALIAS: &[&[&str]] = &[&["agents"]];
-const ACCESS_MODES: &[&str] = &["open", "signed", "allowlist"];
+const ACCESS_MODES: &[&str] = &["public", "private", "open", "allowlist", "signed"];
 const VECTOR_PROVIDERS: &[&str] = &["local-text-v1", "fastembed-minilm"];
 
 /// One line per command group, in display order.
@@ -490,52 +489,38 @@ pub fn commands() -> Vec<Command> {
     .concat()
 }
 
-/// A `chain access` command that builds, signs and submits a policy record.
-fn access_command(
+/// Flags shared by every operator command: the chain it administers.
+fn operator_chain() -> Flag {
+    Flag::opt(
+        "chain",
+        "chain_key",
+        Kind::Text,
+        "KEY",
+        "Chain to administer.",
+    )
+    .short('c')
+    .req()
+    .in_path()
+}
+
+/// An operator command: one [`OperatorOp`](crate::operator::OperatorOp) sent to
+/// the dashboard (PIN) route, or applied directly with `--offline`.
+fn operator_command(
     path: &'static [&'static str],
     summary: &'static str,
     about: &'static str,
-    extra: Vec<Flag>,
+    op: &'static str,
+    mut params: Vec<Flag>,
 ) -> Command {
-    let mut params = extra;
-    params.extend([
-        Flag::opt(
-            "chain",
-            "chain_key",
-            Kind::Text,
-            "KEY",
-            "Chain whose policy changes.",
-        )
-        .short('c')
-        .req(),
-        Flag::opt(
-            "agent",
-            "agent_id",
-            Kind::Text,
-            "ID",
-            "Agent id of the signer.",
-        )
-        .req(),
-        Flag::opt(
-            "signing-key-id",
-            "signing_key_id",
-            Kind::Text,
-            "KEY_ID",
-            "Key id of the signer.",
-        )
-        .req(),
-        Flag::opt(
-            "private-key-file",
-            "",
-            Kind::SecretKeyFile,
-            "FILE",
-            "Seed file of the signing key; it never leaves this machine.",
-        )
-        .req(),
-    ]);
-    rest_post(path, summary, about, "/v1/access/policy/set")
-        .signed(super::remote::SignWith::AccessPolicy)
-        .with(params)
+    params.push(operator_chain());
+    dash_post(
+        path,
+        summary,
+        about,
+        "/dashboard/api/chains/{chain_key}/access",
+    )
+    .fixed("op", op)
+    .with(params)
 }
 
 fn thought_commands() -> Vec<Command> {
@@ -1107,53 +1092,65 @@ fn chain_commands() -> Vec<Command> {
         .example("mentisdb chain merge --from scratch --into main --yes"),
         rest_post(
             &["chain", "access", "show"],
-            "Show who may write to a chain",
-            "Shows the chain's access policy: mode (open, signed or allowlist), the governor/allow key set and its Merkle root, the genesis and head policy record hashes, and any policy records that were rejected on replay. Chains without a policy record are open.",
+            "Show a chain's mode and what you may see of its policy",
+            "Shows the chain's access policy as the caller is allowed to see it. A public reader gets the mode (open/public or allowlist/private), the record sequence, the key-set commitment and the segment boundaries. A reader who proves possession of an authorized key (--read-key-file, --read-agent, --read-key-id) also gets the allowed keys and the record hashes. Chains without a policy record are public.",
             "/v1/access/policy",
         )
         .with(vec![chain()])
-        .example("mentisdb chain access show --chain vault"),
+        .example("mentisdb chain access show --chain vault")
+        .example("mentisdb chain access show --chain vault --read-key-file reader.key --read-agent reader --read-key-id reader-202610"),
         rest_post(
             &["chain", "access", "verify"],
             "Re-verify every signature in a chain",
-            "Re-checks every stored thought signature (v1 and v2) and replays the governance records. Prints per-thought status and totals, and exits non-zero when any signature fails or any policy record was rejected. Unsigned thoughts are reported, not failed.",
+            "Re-checks every stored thought signature (v1 and v2) and replays the governance records, for the thoughts the caller may see (pass --read-key-file to include the private segments). Prints per-thought status and totals, and exits non-zero when any signature fails or any policy record was rejected. Unsigned thoughts are reported, not failed.",
             "/v1/access/verify",
         )
         .failing_on_invalid()
         .with(vec![chain()])
         .example("mentisdb chain access verify --chain vault --json"),
-        access_command(
+        dash_get(
+            &["chain", "access", "admin"],
+            "Operator view of a chain's access state",
+            "Reads the operator's view: mode, the allowed key set, the segments and the operator key id. Operator only: needs the dashboard PIN (or --offline on the host that holds the data directory).",
+            "/dashboard/api/chains/{chain_key}/access",
+        )
+        .with(vec![operator_chain()])
+        .example("mentisdb chain access admin --chain vault --pin 123456"),
+        operator_command(
             &["chain", "access", "set"],
-            "Set a chain's write policy (open, signed, allowlist)",
-            "Writes a signed policy record to the chain. The first record bootstraps governance: it is signed by your key and lists it as the first governor (add more with --key, or later with 'allow'). Later records must be signed by a key already in the policy. The CLI reads the current policy and head, builds the next record, signs it with --private-key-file and submits it; a global token is required. Run 'mentisdb key generate' first, register the key with 'agent key add', then set the policy. If the head moves between fetching and submitting, run the command again.",
+            "Make a chain public or private",
+            "Operator only. 'private' starts governance with the operator key as the first governor and opens a private segment: from then on writes need a signature by an allowed key and the thoughts written are readable only by allowed keys. 'public' closes it and opens a public segment (earlier private thoughts stay private). 'signed' (any registered key) is the legacy middle mode. Needs the dashboard PIN, or --offline on the host that holds the data directory.",
+            "set_mode",
             vec![
-                Flag::pos("mode", "mode", Kind::Choice(ACCESS_MODES), "open, signed or allowlist.").req().local(),
-                Flag::opt("key", "key", Kind::Text, "AGENT:KEY_ID:PUBKEY_HEX", "Replace the governor/allow key set with these entries; repeatable. Default: keep the current set (the signer's own key on a chain without a policy).").many().local(),
+                Flag::pos("mode", "mode", Kind::Choice(ACCESS_MODES), "public (open), private (allowlist) or signed.").req(),
+                Flag::opt("key", "keys", Kind::Text, "AGENT:KEY_ID:PUBKEY_HEX", "Also allow this key; repeatable.").many(),
             ],
         )
-        .example("mentisdb chain access set allowlist --chain vault --agent admin --signing-key-id admin-202610 --private-key-file admin.key")
-        .example("mentisdb chain access set signed --chain vault --agent admin --signing-key-id admin-202610 --private-key-file admin.key --key admin:admin-202610:9f86d081..."),
-        access_command(
+        .example("mentisdb chain access set private --chain vault --pin 123456")
+        .example("mentisdb chain access set private --chain vault --key builder:builder-202610:9f86d081... --offline"),
+        operator_command(
             &["chain", "access", "allow"],
-            "Add a key to a chain's allowed set",
-            "Adds (or replaces) one key in the chain's governor/allow set and signs the new record. The mode stays as it is. The chain must already have a policy.",
+            "Allow a key on a private chain",
+            "Operator only. Registers the key (when it is not yet) and adds it to the chain's allowed set, so it can write to and read the private segments. The chain must already be private. Needs the dashboard PIN, or --offline.",
+            "allow_key",
             vec![
-                Flag::pos("agent-id", "agent_id", Kind::Text, "Agent that owns the key.").req().local(),
-                Flag::pos("key-id", "allow_key_id", Kind::Text, "Key id to add.").req().local(),
-                Flag::pos("public-key-hex", "public_key_hex", Kind::Text, "Ed25519 public key, 64 hex characters.").req().local(),
+                Flag::pos("agent-id", "agent_id", Kind::Text, "Agent that owns the key.").req(),
+                Flag::pos("key-id", "key_id", Kind::Text, "Key id to allow.").req(),
+                Flag::pos("public-key-hex", "public_key", Kind::Text, "Ed25519 public key, 64 hex characters.").req(),
             ],
         )
-        .example("mentisdb chain access allow builder builder-202610 9f86d081... --chain vault --agent admin --signing-key-id admin-202610 --private-key-file admin.key"),
-        access_command(
+        .example("mentisdb chain access allow builder builder-202610 9f86d081... --chain vault --pin 123456"),
+        operator_command(
             &["chain", "access", "deny"],
-            "Remove a key from a chain's allowed set",
-            "Removes one key from the chain's governor/allow set and signs the new record. The mode stays as it is. The chain must already have a policy, and the set may not become empty in signed or allowlist mode.",
+            "Remove a key from a private chain's allowed set",
+            "Operator only. Removes one key from the allowed set; it stops writing and reading at once. The operator key cannot be removed and the set cannot become empty. Needs the dashboard PIN, or --offline.",
+            "deny_key",
             vec![
-                Flag::pos("agent-id", "agent_id", Kind::Text, "Agent that owns the key.").req().local(),
-                Flag::pos("key-id", "allow_key_id", Kind::Text, "Key id to remove.").req().local(),
+                Flag::pos("agent-id", "agent_id", Kind::Text, "Agent that owns the key.").req(),
+                Flag::pos("key-id", "key_id", Kind::Text, "Key id to remove.").req(),
             ],
         )
-        .example("mentisdb chain access deny builder builder-202610 --chain vault --agent admin --signing-key-id admin-202610 --private-key-file admin.key"),
+        .example("mentisdb chain access deny builder builder-202610 --chain vault --pin 123456"),
         dash_get(
             &["chain", "info"],
             "Show a chain's detail and vector sidecar status",
@@ -1241,54 +1238,45 @@ fn agent_commands() -> Vec<Command> {
             chain(),
         ])
         .example("mentisdb agent alias builder ci-bot"),
-        rest_post(
+        operator_command(
             &["agent", "key", "add"],
             "Register a public key for an agent",
-            "Registers an Ed25519 public key the agent can sign thoughts and skills with. Registration needs a proof of possession: pass --private-key-file and the CLI derives the public key and signs the proof for you (--chain is then required so the proof names the chain), or pass --public-key-hex, --registered-at and --proof-hex produced elsewhere. The proof must be less than 10 minutes old. See docs/CHAIN_ACCESS.md for the payload.",
-            "/v1/agents/keys",
+            "Operator only. Registers an Ed25519 public key the agent can sign thoughts with (and, on a private chain once allowed, read with). The operator vouches for the key, so no proof of possession is needed; print the public key from a key file with 'mentisdb key show'. Use 'chain access allow' to let it into a private chain. Needs the dashboard PIN, or --offline.",
+            "register_key",
+            vec![
+                agent_id(),
+                Flag::opt("key-id", "key_id", Kind::Text, "KEY_ID", "Identifier for the key.").req(),
+                Flag::opt("public-key-hex", "public_key", Kind::Text, "HEX", "Ed25519 public key, 32 bytes as 64 hex characters.").req(),
+            ],
         )
-        .signed(super::remote::SignWith::KeyRegistration)
-        .with(vec![
-            agent_id(),
-            Flag::opt("key-id", "key_id", Kind::Text, "KEY_ID", "Identifier for the key.").req(),
-            Flag::opt("private-key-file", "", Kind::SecretKeyFile, "FILE", "Sign the proof with this seed file; the key itself is never sent."),
-            Flag::opt("public-key-hex", "public_key_hex", Kind::Text, "HEX", "Ed25519 public key, 32 bytes as 64 hex characters (derived from --private-key-file when given)."),
-            Flag::opt("registered-at", "registered_at_unix_secs", Kind::Int, "SECS", "Unix seconds the proof was made at."),
-            Flag::opt("proof-hex", "registration_signature_hex", Kind::Text, "HEX", "Proof-of-possession signature, 64 bytes as 128 hex characters."),
-            Flag::opt("algorithm", "algorithm", Kind::Choice(KEY_ALGORITHMS), "ALG", "Key algorithm.").default_to("ed25519"),
-            chain(),
-        ])
-        .example("mentisdb agent key add builder --key-id builder-202610 --chain project --private-key-file ~/.mentisdb/builder.key")
-        .example("mentisdb agent key add builder --key-id k1 --public-key-hex 9f86d081... --registered-at 1790000000 --proof-hex 1c2d..."),
-        rest_post(
+        .example("mentisdb agent key add builder --key-id builder-202610 --public-key-hex 9f86d081... --chain project --pin 123456"),
+        operator_command(
             &["agent", "key", "revoke"],
             "Revoke an agent's key",
-            "Marks the key revoked; thoughts signed with it before revocation stay valid.",
-            "/v1/agents/keys/revoke",
+            "Operator only. Marks the key revoked; thoughts signed with it before revocation stay valid, and it stops authorizing reads and writes at once. Needs the dashboard PIN, or --offline.",
+            "revoke_key",
+            vec![
+                agent_id(),
+                Flag::opt("key-id", "key_id", Kind::Text, "KEY_ID", "Key to revoke.").req(),
+            ],
         )
-        .with(vec![
-            agent_id(),
-            Flag::opt("key-id", "key_id", Kind::Text, "KEY_ID", "Key to revoke.").req(),
-            chain(),
-        ])
-        .example("mentisdb agent key revoke builder --key-id ci-2026"),
-        rest_post(
+        .example("mentisdb agent key revoke builder --key-id ci-2026 --chain project --pin 123456"),
+        operator_command(
             &["agent", "disable"],
             "Disable (revoke) an agent",
-            "Marks the agent revoked. Its history is kept.",
-            "/v1/agents/disable",
+            "Operator only. Marks the agent revoked: none of its keys authorize anything. Its history is kept. Needs the dashboard PIN, or --offline.",
+            "disable_agent",
+            vec![agent_id()],
         )
-        .with(vec![agent_id(), chain()])
-        .example("mentisdb agent disable builder"),
-        rest_post(
+        .example("mentisdb agent disable builder --chain project --pin 123456"),
+        operator_command(
             &["agent", "activate"],
             "Re-activate a revoked agent",
-            "Sets the agent's status back to active.",
-            "/v1/agents/upsert",
+            "Operator only. Sets the agent's status back to active. Needs the dashboard PIN, or --offline.",
+            "enable_agent",
+            vec![agent_id()],
         )
-        .fixed("status", "active")
-        .with(vec![agent_id(), chain()])
-        .example("mentisdb agent activate builder"),
+        .example("mentisdb agent activate builder --chain project --pin 123456"),
         dash_post(
             &["agent", "copy"],
             "Copy an agent's memories to another chain",

@@ -142,6 +142,11 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
             "/chains/{chain_key}/agents/{agent_id}/thoughts",
             get(api_agent_thoughts),
         )
+        // Operator-only administration of who may write to, and read, a chain
+        .route(
+            "/chains/{chain_key}/access",
+            get(api_chain_access_show).post(api_chain_access_apply),
+        )
         // Agent listing — all chains
         .route("/agents", get(api_agents_all).post(api_create_agent))
         // Agent listing — single chain
@@ -769,6 +774,14 @@ fn write_error(error: std::io::Error) -> (StatusCode, Json<Value>) {
             },
             Json(json!({ "error": access.to_string() })),
         ),
+        None if error.kind() == std::io::ErrorKind::InvalidInput => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": error.to_string() })),
+        ),
+        None if error.kind() == std::io::ErrorKind::NotFound => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": error.to_string() })),
+        ),
         None => internal_error(error),
     }
 }
@@ -866,6 +879,35 @@ fn trusted_registry_location(mentisdb_dir: &std::path::Path, location: &str) -> 
 /// The opened chain is inserted into `state.chains` so subsequent requests
 /// can reuse it without touching the file system.
 async fn get_or_open_chain(
+    state: &DashboardState,
+    chain_key: &str,
+) -> Result<Arc<RwLock<MentisDb>>, (StatusCode, Json<Value>)> {
+    let arc = open_chain_unchecked(state, chain_key).await?;
+    // Every chain-scoped dashboard route goes through here: the dashboard shows
+    // a chain with private segments only to an operator who passed the PIN.
+    if !operator_may_view(state, &*arc.read().await) {
+        return Err(private_chain_locked());
+    }
+    Ok(arc)
+}
+
+/// Whether the dashboard may show the private segments of `chain`: only when a
+/// PIN protects it (so the visitor is the operator). With no PIN the dashboard
+/// trusts whoever reaches the port, which is not enough for private data.
+fn operator_may_view(state: &DashboardState, chain: &MentisDb) -> bool {
+    state.dashboard_pin.is_some() || !chain.segments().has_private()
+}
+
+fn private_chain_locked() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "this chain has private segments; set MENTISDB_DASHBOARD_PIN and sign in to view or administer it"
+        })),
+    )
+}
+
+async fn open_chain_unchecked(
     state: &DashboardState,
     chain_key: &str,
 ) -> Result<Arc<RwLock<MentisDb>>, (StatusCode, Json<Value>)> {
@@ -1409,10 +1451,23 @@ async fn api_chains(
 
     // Start with all registered chains, then overlay live (in-memory) counts
     // for any chains already open in the DashMap cache.
+    let locked = state.dashboard_pin.is_none();
     let mut by_key: BTreeMap<String, Value> = registry
         .chains
         .into_iter()
         .map(|(key, reg)| {
+            if locked && reg.has_private {
+                // No PIN: show only what a public reader could see.
+                return (
+                    key.clone(),
+                    json!({
+                        "chain_key": key,
+                        "thought_count": reg.public_thought_count,
+                        "agent_count": 0,
+                        "private": true,
+                    }),
+                );
+            }
             let storage_size = std::fs::metadata(&reg.storage_location)
                 .map(|m| m.len())
                 .unwrap_or(0);
@@ -1442,6 +1497,18 @@ async fn api_chains(
     for entry in state.chains.iter() {
         let key = entry.key().clone();
         if let Ok(chain) = entry.value().try_read() {
+            if !operator_may_view(&state, &chain) {
+                by_key.insert(
+                    key.clone(),
+                    json!({
+                        "chain_key": key,
+                        "thought_count": chain.visible_thought_count(crate::audience::Audience::Public),
+                        "agent_count": 0,
+                        "private": true,
+                    }),
+                );
+                continue;
+            }
             let storage_size = std::fs::metadata(chain.storage_location())
                 .map(|m| m.len())
                 .unwrap_or(0);
@@ -1473,6 +1540,18 @@ async fn api_chains(
         let key = entry.key().clone();
         if !by_key.contains_key(&key) {
             if let Ok(chain) = entry.value().try_read() {
+                if !operator_may_view(&state, &chain) {
+                    by_key.insert(
+                        key.clone(),
+                        json!({
+                            "chain_key": key,
+                            "thought_count": chain.visible_thought_count(crate::audience::Audience::Public),
+                            "agent_count": 0,
+                            "private": true,
+                        }),
+                    );
+                    continue;
+                }
                 let storage_size = std::fs::metadata(chain.storage_location())
                     .map(|m| m.len())
                     .unwrap_or(0);
@@ -1504,6 +1583,57 @@ async fn api_chains(
 
     let chains: Vec<Value> = by_key.into_values().collect();
     Ok(Json(json!(chains)))
+}
+
+/// Access administration is the operator's alone, so it needs a PIN: with no
+/// PIN the dashboard cannot tell the operator from any other local process.
+fn require_pin(state: &DashboardState) -> Result<(), (StatusCode, Json<Value>)> {
+    if state.dashboard_pin.is_some() {
+        return Ok(());
+    }
+    Err((
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "administering chain access needs a dashboard PIN: set MENTISDB_DASHBOARD_PIN, restart, and sign in (or use `mentisdb ... --offline` on the host)"
+        })),
+    ))
+}
+
+/// `GET /dashboard/api/chains/:chain_key/access`
+///
+/// The chain's access state as the operator sees it: mode, the allowed key
+/// set, segments and the operator key. PIN required.
+async fn api_chain_access_show(
+    State(state): State<DashboardState>,
+    Path(chain_key): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_pin(&state)?;
+    let arc = get_or_open_chain(&state, &chain_key).await?;
+    let mut chain = arc.write().await;
+    let operator = crate::operator::OperatorIdentity::load_or_create(&state.mentisdb_dir)
+        .map_err(internal_error)?;
+    crate::operator::apply(&mut chain, &operator, &crate::operator::OperatorOp::Show)
+        .map(Json)
+        .map_err(write_error)
+}
+
+/// `POST /dashboard/api/chains/:chain_key/access`
+///
+/// Apply one [`crate::operator::OperatorOp`] (set mode, allow or deny a key,
+/// register or revoke a key, disable or enable an agent). PIN required.
+async fn api_chain_access_apply(
+    State(state): State<DashboardState>,
+    Path(chain_key): Path<String>,
+    Json(op): Json<crate::operator::OperatorOp>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_pin(&state)?;
+    let arc = get_or_open_chain(&state, &chain_key).await?;
+    let mut chain = arc.write().await;
+    let operator = crate::operator::OperatorIdentity::load_or_create(&state.mentisdb_dir)
+        .map_err(internal_error)?;
+    crate::operator::apply(&mut chain, &operator, &op)
+        .map(Json)
+        .map_err(write_error)
 }
 
 /// `GET /dashboard/api/chains/:chain_key`
@@ -2666,6 +2796,17 @@ async fn api_copy_agent_to_chain(
     // Open source chain (read-only snapshot).
     let src_arc = get_or_open_chain(&state, &chain_key).await?;
     let src_chain = src_arc.read().await;
+    if let Some(reason) = src_chain.thoughts_merge_blocker(
+        src_chain
+            .thoughts()
+            .iter()
+            .filter(|t| t.agent_id == agent_id && t.thought_type != ThoughtType::AccessPolicy),
+    ) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("cannot copy: {reason}") })),
+        ));
+    }
 
     // Collect thoughts belonging to this agent (oldest first).
     let (agent_thoughts, agent_name, agent_owner, agent_description): (
@@ -2867,6 +3008,14 @@ async fn api_merge_chains(
 
     // Open the source chain (read-only traversal to collect agents).
     let source_arc = get_or_open_chain(&state, source_key).await?;
+    // Merging re-appends thoughts unsigned and deletes the source: it would
+    // publish private segments and discard signatures, so it is refused.
+    if let Some(reason) = source_arc.read().await.merge_blocker() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("cannot merge '{source_key}': {reason}") })),
+        ));
+    }
 
     // Collect the distinct source agent IDs from the source chain.
     let source_agent_ids: Vec<String> = {

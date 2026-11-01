@@ -14,7 +14,7 @@ exclude = ["fuzz/", "data/", "docs/", "lme-benches/", ".fastembed_cache/", ".git
 
 [features]
 default = ["server", "startup-sound", "llm-extraction", "local-embeddings"]
-server = ["dep:axum", "dep:env_logger", "dep:if-addrs", "dep:log", "dep:tokio", "mcp/server", "dep:rcgen", "dep:axum-server", "dep:rustls-pemfile", "dep:x509-parser", "dep:reqwest", "dep:rustls"]
+server = ["dep:tokio-stream", "dep:axum", "dep:env_logger", "dep:if-addrs", "dep:log", "dep:tokio", "mcp/server", "dep:rcgen", "dep:axum-server", "dep:rustls-pemfile", "dep:x509-parser", "dep:reqwest", "dep:rustls"]
 startup-sound = ["dep:rodio"]
 local-embeddings = ["dep:fastembed", "dep:rustls"]
 llm-extraction = ["dep:openai-rust2", "dep:anyhow"]
@@ -48,6 +48,7 @@ rustls-pemfile = { version = "2", optional = true }
 x509-parser = { version = "0.18", optional = true }
 rodio = { version = "0.23", optional = true }
 tokio = { version = "1.50.0", features = ["full"], optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
 # Kept on 5.x on purpose: fastembed 7 pulls ort 2.0.0-rc.15, which auto-registers the
 # CoreML execution provider on macOS with no public switch to opt out. CoreML made query
 # embedding ~2.5x slower (LoCoMo 363 -> 141 q/s) and is not bit-compatible with the CPU

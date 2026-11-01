@@ -455,3 +455,91 @@ impl NonceCache {
         self.len() == 0
     }
 }
+
+/// Environment variable naming the seed file used to prove read access.
+pub const ENV_READ_KEY_FILE: &str = "MENTISDB_READ_KEY_FILE";
+/// Environment variable naming the agent of the read key.
+pub const ENV_READ_AGENT_ID: &str = "MENTISDB_READ_AGENT_ID";
+/// Environment variable naming the key id of the read key.
+pub const ENV_READ_KEY_ID: &str = "MENTISDB_READ_KEY_ID";
+
+/// A key a client process holds to sign read proofs.
+///
+/// The seed lives in this process only. The stdio MCP proxy and the CLI build one
+/// from the environment and sign every request they forward, so the language
+/// model on the other side of the proxy never sees the key, only the answers.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::read_auth::{verify_request, ReadSigner};
+///
+/// let signer = ReadSigner::new([5u8; 32], "alice", "alice-1");
+/// let header = signer.header("POST", "/", b"{}");
+/// assert!(verify_request(&header, "POST", "/", b"{}", chrono::Utc::now().timestamp()).is_ok());
+/// ```
+#[derive(Clone)]
+pub struct ReadSigner {
+    seed: [u8; 32],
+    agent_id: String,
+    key_id: String,
+}
+
+impl std::fmt::Debug for ReadSigner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ReadSigner({}/{})", self.agent_id, self.key_id)
+    }
+}
+
+impl ReadSigner {
+    /// Build a signer from a seed and the identity the chain's policy lists.
+    #[must_use]
+    pub fn new(seed: [u8; 32], agent_id: impl Into<String>, key_id: impl Into<String>) -> Self {
+        Self {
+            seed,
+            agent_id: agent_id.into(),
+            key_id: key_id.into(),
+        }
+    }
+
+    /// Build a signer from `MENTISDB_READ_KEY_FILE`, `MENTISDB_READ_AGENT_ID` and
+    /// `MENTISDB_READ_KEY_ID`; `Ok(None)` when none of them is set.
+    ///
+    /// # Errors
+    ///
+    /// A message when the file is set but unreadable or not a 32-byte hex seed, or
+    /// when the agent or key id is missing.
+    pub fn from_env() -> Result<Option<Self>, String> {
+        let get = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+        let Some(file) = get(ENV_READ_KEY_FILE) else {
+            return Ok(None);
+        };
+        let (Some(agent_id), Some(key_id)) = (get(ENV_READ_AGENT_ID), get(ENV_READ_KEY_ID)) else {
+            return Err(format!(
+                "{ENV_READ_KEY_FILE} also needs {ENV_READ_AGENT_ID} and {ENV_READ_KEY_ID}"
+            ));
+        };
+        let text =
+            std::fs::read_to_string(&file).map_err(|e| format!("cannot read '{file}': {e}"))?;
+        let seed: [u8; 32] = from_hex(text.trim())
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| format!("'{file}' must hold a 32-byte seed as 64 hex characters"))?;
+        Ok(Some(Self::new(seed, agent_id, key_id)))
+    }
+
+    /// The header value that authenticates one request.
+    #[must_use]
+    pub fn header(&self, method: &str, target: &str, body: &[u8]) -> String {
+        sign_request(
+            &self.seed,
+            &self.agent_id,
+            &self.key_id,
+            method,
+            target,
+            body,
+            chrono::Utc::now().timestamp(),
+            &fresh_nonce(),
+        )
+    }
+}

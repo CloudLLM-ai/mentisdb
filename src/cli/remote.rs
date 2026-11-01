@@ -91,14 +91,9 @@ pub enum Kind {
 /// What the CLI signs locally before sending a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignWith {
-    /// A key-registration proof of possession for `agent key add`.
-    KeyRegistration,
     /// A v2 thought signature for `thought append` / `thought retro` when a key
     /// file is given: the CLI fetches the chain head and signs the thought.
     Thought,
-    /// A signed access-policy record for `chain access set|allow|deny`: the CLI
-    /// fetches the current policy and head, builds the next record and signs it.
-    AccessPolicy,
 }
 
 /// An Ed25519 seed held in memory; its `Debug` output is redacted.
@@ -125,11 +120,11 @@ pub struct ReadKey {
 }
 
 /// Environment variable naming the seed file used to prove read access.
-pub const READ_KEY_FILE_ENV: &str = "MENTISDB_READ_KEY_FILE";
+pub const READ_KEY_FILE_ENV: &str = crate::read_auth::ENV_READ_KEY_FILE;
 /// Environment variable naming the agent of the read key.
-pub const READ_AGENT_ENV: &str = "MENTISDB_READ_AGENT_ID";
+pub const READ_AGENT_ENV: &str = crate::read_auth::ENV_READ_AGENT_ID;
 /// Environment variable naming the key id of the read key.
-pub const READ_KEY_ID_ENV: &str = "MENTISDB_READ_KEY_ID";
+pub const READ_KEY_ID_ENV: &str = crate::read_auth::ENV_READ_KEY_ID;
 
 /// Read a hex-encoded 32-byte Ed25519 seed from `path`.
 ///
@@ -358,6 +353,11 @@ pub struct RemoteInvocation {
     /// (`--read-key-file`, `--read-agent`, `--read-key-id`); signing commands
     /// fall back to their own signing key.
     pub read_key: Option<ReadKey>,
+    /// Apply an operator command directly to the data directory on this host
+    /// instead of calling the dashboard (`--offline`).
+    pub offline: bool,
+    /// Data directory for `--offline` (default: `$MENTISDB_DIR` or the platform default).
+    pub data_dir: Option<String>,
     /// Local signing to perform before sending.
     pub sign: Option<SignWith>,
     /// Arguments the CLI uses itself and never sends (for example the key set to
@@ -386,6 +386,9 @@ Connection options (every command):
                          REST request is signed locally with it (the key is never sent)
   --read-agent <ID>      Agent the read key belongs to (default: $MENTISDB_READ_AGENT_ID)
   --read-key-id <ID>     Key id of the read key (default: $MENTISDB_READ_KEY_ID)
+  --offline              Operator commands only: apply the change directly to the data
+                         directory on this host (stop the daemon first or use the dashboard)
+  --data-dir <DIR>       Data directory for --offline (default: $MENTISDB_DIR or the platform default)
   --insecure             Skip TLS certificate verification (always skipped for loopback)
   --json                 Print compact single-line JSON instead of the default presentation
   -h, --help             Show this help
@@ -510,6 +513,8 @@ struct Collected {
 
 #[derive(Default)]
 struct Common {
+    offline: bool,
+    data_dir: Option<String>,
     read_key_file: Option<String>,
     read_agent: Option<String>,
     read_key_id: Option<String>,
@@ -547,6 +552,8 @@ fn build(command: &Command, rest: &[String]) -> Result<RemoteInvocation, String>
         stdin_field: collected.stdin_field,
         secret: collected.secret,
         read_key,
+        offline: common.offline,
+        data_dir: common.data_dir.clone(),
         sign: command.sign,
         local: collected.local,
         fail_on_invalid: command.fail_on_invalid,
@@ -582,31 +589,11 @@ fn resolve_read_key(common: &Common) -> Result<Option<ReadKey>, String> {
     }))
 }
 
-/// Reject a signing command that has neither a key file nor the manual fields.
+/// Reject a signing command that lacks what its signature must name.
 fn check_signing_inputs(command: &Command, invocation: &RemoteInvocation) -> Result<(), String> {
     let name = command.path.join(" ");
     match (command.sign, &invocation.secret) {
-        (Some(SignWith::KeyRegistration), None) => {
-            let body = invocation.body.as_ref();
-            let has = |field: &str| body.is_some_and(|b| b.get(field).is_some());
-            let manual = has("public_key_hex")
-                && has("registered_at_unix_secs")
-                && has("registration_signature_hex");
-            if manual {
-                Ok(())
-            } else {
-                Err(format!(
-                    "'mentisdb {name}' needs --private-key-file, or all of --public-key-hex, --registered-at and --proof-hex; run 'mentisdb {name} --help'"
-                ))
-            }
-        }
-        (Some(SignWith::KeyRegistration), Some(_)) if !has_chain(invocation) => Err(format!(
-            "'mentisdb {name}' signs locally and needs --chain so the proof names the chain"
-        )),
-        (Some(SignWith::AccessPolicy), None) => Err(format!(
-            "'mentisdb {name}' needs --private-key-file: policy changes are signed locally"
-        )),
-        (Some(SignWith::AccessPolicy | SignWith::Thought), Some(_)) => {
+        (Some(SignWith::Thought), Some(_)) => {
             let body = invocation.body.as_ref();
             let has = |field: &str| body.is_some_and(|b| b.get(field).is_some());
             let missing: Vec<&str> = [
@@ -629,13 +616,6 @@ fn check_signing_inputs(command: &Command, invocation: &RemoteInvocation) -> Res
         }
         _ => Ok(()),
     }
-}
-
-fn has_chain(invocation: &RemoteInvocation) -> bool {
-    invocation
-        .body
-        .as_ref()
-        .is_some_and(|b| b.get("chain_key").is_some())
 }
 
 type Named<'a> = Vec<(&'a Flag, Option<String>)>;
@@ -674,6 +654,8 @@ fn split_args<'a>(
         };
         match key.as_str() {
             "--json" => common.json = true,
+            "--offline" => common.offline = true,
+            "--data-dir" => common.data_dir = Some(take_value("--data-dir")?),
             "--insecure" => common.insecure = true,
             "--url" => common.url = Some(base_url("--url", take_value("--url")?)?),
             "--dashboard-url" => {

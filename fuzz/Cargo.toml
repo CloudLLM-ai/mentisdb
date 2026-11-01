@@ -67,3 +67,24 @@ path = "fuzz_targets/migration_chain.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "read_auth_header"
+path = "fuzz_targets/read_auth_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "operator_op"
+path = "fuzz_targets/operator_op.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "segment_map"
+path = "fuzz_targets/segment_map.rs"
+test = false
+doc = false
+bench = false

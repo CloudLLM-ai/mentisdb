@@ -313,6 +313,7 @@ pub mod integrations;
 pub mod lineage;
 pub mod llm;
 pub mod migration;
+pub mod operator;
 pub mod paths;
 pub mod read_auth;
 pub mod search;
@@ -1736,6 +1737,14 @@ pub struct MentisDbRegistration {
     /// Number of distinct entity types in the per-chain registry.
     #[serde(default)]
     pub entity_type_count: usize,
+    /// Whether the chain has private segments (see [`audience`]). Lets listings
+    /// show only public counts for a chain without opening it. Absent in
+    /// registries written before this field existed, which reads as `false`.
+    #[serde(default)]
+    pub has_private: bool,
+    /// Number of thoughts in public segments; meaningful when `has_private`.
+    #[serde(default)]
+    pub public_thought_count: u64,
     /// UTC timestamp when the registration was created.
     pub created_at: DateTime<Utc>,
     /// UTC timestamp when the registration was last updated.
@@ -6302,8 +6311,17 @@ impl MentisDb {
             log_derived_failure("chain registration persist", &error);
         }
 
+        // Webhook URLs are registered without any proof of read access, so a
+        // thought of a private segment (or a governance record) is never pushed
+        // to one: the event would hand private text to whoever registered.
         #[cfg(feature = "server")]
-        if let Some(ref webhook_manager) = self.webhook_manager {
+        if let Some(webhook_manager) = self.webhook_manager.as_ref().filter(|_| {
+            let last = self.thoughts.last();
+            last.is_some_and(|thought| {
+                thought.thought_type != ThoughtType::AccessPolicy
+                    && self.is_visible(thought, audience::Audience::Public)
+            })
+        }) {
             let thought = self.thoughts.last().unwrap().clone();
             let chain_key = self.chain_key().to_string();
             let manager = webhook_manager.clone();
@@ -7100,6 +7118,71 @@ impl MentisDb {
         Ok(updated)
     }
 
+    /// Register a public key for an agent on the operator's authority, with no
+    /// proof of possession. Creates the agent record when it does not exist.
+    ///
+    /// Only the operator may call this (see [`operator`]): REST and MCP never
+    /// reach it. The key must be a valid, non-weak Ed25519 point. Registering
+    /// the same key again is a no-op; registering a different key under an
+    /// existing id is refused.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` for a malformed or weak key, or a key id already bound to
+    /// another key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::{MentisDb, PublicKeyAlgorithm, StorageAdapterKind};
+    ///
+    /// let dir = std::env::temp_dir().join(format!("mentisdb_doc_opkey_{}", std::process::id()));
+    /// let mut chain = MentisDb::open_with_key_and_storage_kind(&dir, "doc", StorageAdapterKind::Binary).unwrap();
+    /// let public = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]).verifying_key().to_bytes().to_vec();
+    /// chain.add_agent_key_as_operator("alice", "alice-1", PublicKeyAlgorithm::Ed25519, public.clone()).unwrap();
+    /// // Idempotent for the same key, refused for a different key under the same id.
+    /// chain.add_agent_key_as_operator("alice", "alice-1", PublicKeyAlgorithm::Ed25519, public).unwrap();
+    /// assert!(chain.add_agent_key_as_operator("alice", "alice-1", PublicKeyAlgorithm::Ed25519, vec![9; 32]).is_err());
+    /// # let _ = std::fs::remove_dir_all(&dir);
+    /// ```
+    pub fn add_agent_key_as_operator(
+        &mut self,
+        agent_id: &str,
+        key_id: &str,
+        algorithm: PublicKeyAlgorithm,
+        public_key_bytes: Vec<u8>,
+    ) -> io::Result<AgentRecord> {
+        let key_id = normalize_non_empty_label(key_id, "key_id")?;
+        signing::validate_public_key(&public_key_bytes)
+            .map_err(|e| access::AccessError::InvalidPublicKey(e).into_io())?;
+        let record = {
+            let agent_id = normalize_non_empty_label(agent_id, "agent_id")?;
+            self.agent_registry
+                .agents
+                .entry(agent_id.clone())
+                .or_insert_with(|| AgentRecord::stub(&agent_id))
+        };
+        if let Some(existing) = record.public_keys.iter().find(|k| k.key_id == key_id) {
+            if existing.public_key_bytes == public_key_bytes && existing.revoked_at.is_none() {
+                return Ok(record.clone());
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("key id '{key_id}' is already bound to another key or was revoked; use a new key id"),
+            ));
+        }
+        record.add_public_key(AgentPublicKey {
+            key_id,
+            algorithm,
+            public_key_bytes,
+            added_at: Utc::now(),
+            revoked_at: None,
+        });
+        let updated = record.clone();
+        self.persist_registries()?;
+        Ok(updated)
+    }
+
     /// Revoke one public verification key on an existing registered agent.
     pub fn revoke_agent_key(&mut self, agent_id: &str, key_id: &str) -> io::Result<AgentRecord> {
         let key_id = normalize_non_empty_label(key_id, "key_id")?;
@@ -7333,6 +7416,103 @@ impl MentisDb {
         None
     }
 
+    /// Check that every thought from `suffix_start` on could legitimately have
+    /// been appended under the policy in force at its own position, using the
+    /// keys of `registry`.
+    ///
+    /// This is what lets a restore fast-forward a governed chain with a newer
+    /// backup without bypassing the write policy: policy records must be valid
+    /// continuations, and in a signed or allowlist segment every thought must
+    /// carry a valid v2 signature by a key of its agent (and, for allowlist,
+    /// listed in the policy of that moment). Revocations that happened later are
+    /// ignored on purpose: the keys were good when the thoughts were written.
+    ///
+    /// # Errors
+    ///
+    /// A message naming the first thought that would not have been accepted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::{MentisDb, StorageAdapterKind, ThoughtType};
+    ///
+    /// let dir = std::env::temp_dir().join(format!("mentisdb_doc_suffix_{}", std::process::id()));
+    /// let mut chain = MentisDb::open_with_key_and_storage_kind(&dir, "doc", StorageAdapterKind::Binary).unwrap();
+    /// chain.append("alice", ThoughtType::Insight, "public").unwrap();
+    /// // Everything in a public chain is acceptable.
+    /// assert!(chain.verify_governed_suffix(0, chain.agent_registry()).is_ok());
+    /// # let _ = std::fs::remove_dir_all(&dir);
+    /// ```
+    pub fn verify_governed_suffix(
+        &self,
+        suffix_start: usize,
+        registry: &AgentRegistry,
+    ) -> Result<(), String> {
+        let chain_key = self.chain_key();
+        let start = suffix_start.min(self.thoughts.len());
+        let mut policy = access::AccessPolicy::replay(chain_key, &self.thoughts[..start]);
+        for thought in &self.thoughts[start..] {
+            if thought.thought_type == ThoughtType::AccessPolicy {
+                policy
+                    .apply_thought(chain_key, thought)
+                    .map_err(|e| format!("thought #{}: {e}", thought.index))?;
+                continue;
+            }
+            let signature = thought
+                .thought_signature
+                .as_deref()
+                .map(signing::StoredSignature::parse)
+                .transpose()
+                .map_err(|e| format!("thought #{}: {e}", thought.index))?;
+            if policy.mode == access::AccessMode::Open && signature.is_none() {
+                continue;
+            }
+            let Some(stored) = signature else {
+                return Err(format!(
+                    "thought #{} is unsigned in a segment that requires signatures",
+                    thought.index
+                ));
+            };
+            let key_id = thought.signing_key_id.as_deref().unwrap_or_default();
+            let key = registry
+                .agents
+                .get(&thought.agent_id)
+                .and_then(|agent| agent.public_keys.iter().find(|k| k.key_id == key_id))
+                .ok_or_else(|| {
+                    format!(
+                        "thought #{}: key '{key_id}' of agent '{}' is not in the registry",
+                        thought.index, thought.agent_id
+                    )
+                })?;
+            if policy.mode != access::AccessMode::Open
+                && stored.version != signing::SignatureVersion::V2
+            {
+                return Err(format!("thought #{} has a v1 signature", thought.index));
+            }
+            let payload = match stored.version {
+                signing::SignatureVersion::V2 => {
+                    signing::thought_payload_v2_stored(chain_key, thought)
+                }
+                signing::SignatureVersion::V1 => {
+                    // v1 cannot be checked after the chain edited the thought;
+                    // it is only accepted in a public segment, unchecked.
+                    continue;
+                }
+            };
+            signing::verify_ed25519_signature(&key.public_key_bytes, &payload, &stored.signature)
+                .map_err(|e| format!("thought #{}: {e}", thought.index))?;
+            if policy.mode == access::AccessMode::Allowlist
+                && !policy.contains(&thought.agent_id, key_id, &key.public_key_bytes)
+            {
+                return Err(format!(
+                    "thought #{}: key '{key_id}' of '{}' was not allowed at that point",
+                    thought.index, thought.agent_id
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Whether `audience` may see the thought at append-order `index`.
     ///
     /// # Examples
@@ -7466,6 +7646,14 @@ impl MentisDb {
         signing_key_id: &str,
         signature: Vec<u8>,
     ) -> io::Result<&Thought> {
+        if record.keys.is_empty() {
+            // A record with no governor could never be followed by another one.
+            return Err(access::AccessError::PolicyInvalid(
+                "a policy record must keep at least one governor, or nobody could change the policy again"
+                    .to_string(),
+            )
+            .into_io());
+        }
         let key_id = signing_key_id.trim().to_string();
         let mut input = access::policy_thought_input(record);
         input.signing_key_id = Some(key_id.clone());
@@ -11601,6 +11789,8 @@ impl MentisDb {
                 thought_count: self.thoughts.len() as u64,
                 agent_count: self.agent_registry.agents.len(),
                 entity_type_count: self.entity_type_registry.entity_types.len(),
+                has_private: self.segments().has_private(),
+                public_thought_count: self.visible_thought_count(audience::Audience::Public) as u64,
                 created_at,
                 updated_at: now,
             },
@@ -12846,6 +13036,8 @@ fn upsert_chain_registration_from_report(
             )?
             .entity_types
             .len(),
+            has_private: false,
+            public_thought_count: report.thought_count,
             created_at,
             updated_at: now,
         },

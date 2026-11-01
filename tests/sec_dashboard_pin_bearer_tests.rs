@@ -13,7 +13,9 @@ use axum::{
 };
 use dashmap::DashMap;
 pub use mentisdb::access;
+pub use mentisdb::audience;
 pub use mentisdb::auth;
+pub use mentisdb::operator;
 pub use mentisdb::search;
 pub use mentisdb::{
     chain_storage_filename, deregister_chain, load_registered_chains, AgentStatus,

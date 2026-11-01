@@ -20,26 +20,6 @@ use tower::util::ServiceExt;
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// The key and proof-of-possession fields `POST /v1/agents/keys` requires, for a
-/// key derived from `seed`, registered as `key_id` of `agent_id` on `chain_key`.
-fn key_registration_fields(
-    chain_key: &str,
-    agent_id: &str,
-    key_id: &str,
-    seed: u8,
-) -> serde_json::Value {
-    use ed25519_dalek::{Signer, SigningKey};
-    let secret = SigningKey::from_bytes(&[seed; 32]);
-    let public = secret.verifying_key().to_bytes();
-    let now = chrono::Utc::now().timestamp();
-    let payload =
-        mentisdb::signing::key_registration_payload(chain_key, agent_id, key_id, &public, now);
-    json!({
-        "public_key_hex": mentisdb::signing::to_hex(&public),
-        "registered_at_unix_secs": now,
-        "registration_signature_hex": mentisdb::signing::to_hex(&secret.sign(&payload).to_bytes()),
-    })
-}
 static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 const EMBEDDED_SKILL_MD: &str = include_str!("../MENTISDB_SKILL.md");
 
@@ -400,13 +380,14 @@ async fn mcp_router_lists_mentisdb_tools() {
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "mentisdb_add_agent_alias"));
-    assert!(tools
+    // Key and policy administration is not offered over MCP at all.
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "mentisdb_add_agent_key"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "mentisdb_revoke_agent_key"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "mentisdb_disable_agent"));
     assert!(tools
@@ -2240,82 +2221,39 @@ async fn rest_router_manages_agent_registry_records() {
         .unwrap();
     assert_eq!(alias.status(), StatusCode::OK);
 
-    let add_key = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/agents/keys")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    {
-                        let mut body = json!({
-                            "chain_key": "registry-admin",
-                            "agent_id": "agent-admin",
-                            "key_id": "main-ed25519",
-                            "algorithm": "ed25519",
-                        });
-                        body.as_object_mut().unwrap().extend(
-                            key_registration_fields(
-                                "registry-admin",
-                                "agent-admin",
-                                "main-ed25519",
-                                11,
-                            )
-                            .as_object()
-                            .unwrap()
-                            .clone(),
-                        );
-                        body
-                    }
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(add_key.status(), StatusCode::OK);
-
-    let revoke_key = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/agents/keys/revoke")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "chain_key": "registry-admin",
-                        "agent_id": "agent-admin",
-                        "key_id": "main-ed25519"
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(revoke_key.status(), StatusCode::OK);
-
-    let disable = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/agents/disable")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "chain_key": "registry-admin",
-                        "agent_id": "agent-admin"
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(disable.status(), StatusCode::OK);
+    // Registering or revoking keys and disabling an agent are operator-only:
+    // REST answers 403 whatever the body says (see tests/operator_surfaces_tests.rs).
+    for (uri, body) in [
+        (
+            "/v1/agents/keys",
+            json!({
+                "chain_key": "registry-admin", "agent_id": "agent-admin",
+                "key_id": "main-ed25519", "algorithm": "ed25519",
+            }),
+        ),
+        (
+            "/v1/agents/keys/revoke",
+            json!({"chain_key": "registry-admin", "agent_id": "agent-admin", "key_id": "main-ed25519"}),
+        ),
+        (
+            "/v1/agents/disable",
+            json!({"chain_key": "registry-admin", "agent_id": "agent-admin"}),
+        ),
+    ] {
+        let refused = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN, "{uri}");
+    }
 
     let get_agent = router
         .clone()
@@ -2345,17 +2283,16 @@ async fn rest_router_manages_agent_registry_records() {
     assert_eq!(agent_json["agent"]["display_name"], "Registry Admin");
     assert_eq!(agent_json["agent"]["owner"], "@gubatron");
     assert_eq!(agent_json["agent"]["description"], "Admin test agent");
-    assert_eq!(agent_json["agent"]["status"], "Revoked");
+    assert_eq!(agent_json["agent"]["status"], "Active");
     assert!(agent_json["agent"]["aliases"]
         .as_array()
         .unwrap()
         .iter()
         .any(|alias| alias == "astro-admin"));
-    assert_eq!(
-        agent_json["agent"]["public_keys"][0]["algorithm"],
-        "Ed25519"
-    );
-    assert!(agent_json["agent"]["public_keys"][0]["revoked_at"].is_string());
+    assert!(agent_json["agent"]["public_keys"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 
     let registry = router
         .oneshot(
@@ -3144,6 +3081,29 @@ async fn rest_upload_skill_with_signature_verification() {
     use ed25519_dalek::{Signer, SigningKey};
 
     let dir = unique_chain_dir();
+    // Registering an agent key is the operator's job (REST answers 403), so the
+    // key is registered the way the CLI and dashboard do it, before the daemon
+    // opens the chain.
+    {
+        let mut chain = mentisdb::MentisDb::open_with_key_and_storage_kind(
+            &dir,
+            "sig-test-chain",
+            StorageAdapterKind::Binary,
+        )
+        .unwrap();
+        chain
+            .add_agent_key_as_operator(
+                "signing-agent",
+                "ed25519-main",
+                mentisdb::PublicKeyAlgorithm::Ed25519,
+                SigningKey::from_bytes(&[42u8; 32])
+                    .verifying_key()
+                    .to_bytes()
+                    .to_vec(),
+            )
+            .unwrap();
+        chain.flush().unwrap();
+    }
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "sig-test-chain",
@@ -3195,45 +3155,7 @@ Always verify signatures before trusting skill content.
     // Using a fixed 32-byte seed guarantees test determinism without requiring `rand`.
     let signing_key = SigningKey::from_bytes(&[42u8; 32]);
 
-    let add_key = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/agents/keys")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    {
-                        let mut body = json!({
-                            "chain_key": "sig-test-chain",
-                            "agent_id": "signing-agent",
-                            "key_id": "ed25519-main",
-                            "algorithm": "ed25519",
-                        });
-                        body.as_object_mut().unwrap().extend(
-                            key_registration_fields(
-                                "sig-test-chain",
-                                "signing-agent",
-                                "ed25519-main",
-                                42,
-                            )
-                            .as_object()
-                            .unwrap()
-                            .clone(),
-                        );
-                        body
-                    }
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        add_key.status(),
-        StatusCode::OK,
-        "adding public key must succeed"
-    );
+    // (the key was registered by the operator above)
 
     // --- Step 3: Upload with a valid signature → expect 200 ---
     let valid_sig: Vec<u8> = signing_key

@@ -95,6 +95,9 @@ pub enum AccessError {
         /// Agent that was named.
         agent_id: String,
     },
+    /// The action belongs to the operator (dashboard behind its PIN, or the
+    /// local command line) and is not available over REST or MCP.
+    OperatorOnly(&'static str),
     /// A policy record is malformed or inconsistent.
     PolicyInvalid(String),
     /// The signer may not change the policy.
@@ -199,6 +202,10 @@ impl fmt::Display for AccessError {
             Self::AgentDisabled { agent_id } => {
                 write!(f, "agent '{agent_id}' has been disabled")
             }
+            Self::OperatorOnly(what) => write!(
+                f,
+                "{what} is operator-only: use the dashboard (behind its PIN) or the local `mentisdb` command line; REST and MCP cannot do it"
+            ),
             Self::PolicyInvalid(why) => write!(f, "invalid access policy record: {why}"),
             Self::NotAuthorized(why) => write!(f, "not authorized to change the access policy: {why}"),
         }
@@ -333,12 +340,17 @@ pub const MAX_POLICY_KEYS: usize = 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AccessMode {
-    /// Anyone who can reach the API may append (the default).
+    /// Anyone who can reach the API may append (the default). Also written
+    /// `public`: the segment this mode opens is readable by everyone.
     #[default]
+    #[serde(alias = "public")]
     Open,
     /// Every thought must carry a valid v2 signature by an active key of its agent.
     Signed,
-    /// Like `Signed`, and the key must be in the policy's allowed key set.
+    /// Like `Signed`, and the key must be in the policy's allowed key set. Also
+    /// written `private`: the segment this mode opens is readable only by
+    /// authorized keys.
+    #[serde(alias = "private")]
     Allowlist,
 }
 

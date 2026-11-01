@@ -731,9 +731,9 @@ REST endpoints:
 - `POST /v1/agents/upsert`
 - `POST /v1/agents/description`
 - `POST /v1/agents/aliases`
-- `POST /v1/agents/keys`
-- `POST /v1/agents/keys/revoke`
-- `POST /v1/agents/disable`
+- `POST /v1/agents/keys` (403: operator-only)
+- `POST /v1/agents/keys/revoke` (403: operator-only)
+- `POST /v1/agents/disable` (403: operator-only)
 - `POST /v1/thought`
 - `POST /v1/thoughts`
 - `POST /v1/thoughts/genesis`
@@ -1318,6 +1318,33 @@ Response shape:
 
 ---
 
+## Public and private chains
+
+A chain is **public** (anyone with access writes unsigned and reads freely) or
+**private** (writes need a signature by an authorized Ed25519 key, and what is
+written while private can be read only by a reader who proves possession of an
+authorized key). Mode changes are signed records in the chain that open
+*segments*; every thought belongs to the segment its position falls in, so an
+unauthorized reader sees only the public segments, on every read surface
+(search, context, traversal, exports, listings, counts).
+
+```bash
+# operator (dashboard PIN, or --offline on the host that holds the data directory)
+mentisdb chain access set private --chain vault --pin 123456
+mentisdb agent key add builder --key-id builder-1 --public-key-hex <64 hex> --chain vault --pin 123456
+mentisdb chain access allow builder builder-1 <64 hex> --chain vault --pin 123456
+
+# an authorized client signs every request locally; the key never leaves it
+mentisdb search "launch plan" --chain vault --read-key-file builder.key --read-agent builder --read-key-id builder-1
+MENTISDB_READ_KEY_FILE=builder.key MENTISDB_READ_AGENT_ID=builder MENTISDB_READ_KEY_ID=builder-1 mentisdb --mode stdio
+```
+
+Only the operator can add or remove keys; REST and MCP cannot. Every
+returned thought carries a `provenance` object (segment, signature, verified
+agent, `trust: untrusted_data`) and the operating skill tells agents to treat
+memories as data, never as instructions. Serve private chains over HTTPS.
+Details, wire formats and the threat model: [docs/CHAIN_ACCESS.md](docs/CHAIN_ACCESS.md).
+
 ## Web Dashboard
 
 The daemon includes an embedded browser UI at:
@@ -1609,18 +1636,12 @@ The daemon currently exposes 48 MCP tools:
   Set or clear the description stored for one registered agent.
 - `mentisdb_add_agent_alias`
   Add a historical or alternate alias to a registered agent.
-- `mentisdb_add_agent_key`
-  Add or replace one public verification key on a registered agent.
-- `mentisdb_revoke_agent_key`
-  Revoke one previously registered public key.
-- `mentisdb_disable_agent`
-  Disable one agent by marking its registry status as revoked.
 - `mentisdb_get_access_policy`
-  Return a chain's write-access policy (mode, governor keys, Merkle root, sequence, genesis hash).
-- `mentisdb_set_access_policy`
-  Submit a signed `AccessPolicy` governance record (needs a global token for the first record and a governor signature after that).
+  Return a chain's access policy as the caller may see it: mode, sequence, key-set commitment and segment boundaries for everyone; the allowed keys and record hashes for a reader who proved an authorized key.
 - `mentisdb_verify_signatures`
-  Re-verify every signed thought and policy record of a chain and report failures.
+  Re-verify the signed thoughts and policy records the caller may see and report failures.
+
+Registering or revoking agent keys, disabling agents and changing a chain's access policy are **operator-only** (dashboard behind its PIN, or the local `mentisdb` command line): they are not MCP tools and the matching REST routes answer 403. See [Public and private chains](#public-and-private-chains).
 - `mentisdb_standing_context`
   Render durable, age-independent memory (preferences, constraints, decisions, goals, lessons, user traits, newest handoff and checkpoint) into a prompt block; load it at session start before recent context.
 - `mentisdb_recent_context`
@@ -1800,18 +1821,18 @@ Agents that have registered Ed25519 public keys in the agent registry must sign 
 
 Required fields when the uploading agent has active keys:
 
-- `signing_key_id` — the `key_id` registered via `POST /v1/agents/keys` or `mentisdb_add_agent_key`
+- `signing_key_id` — the `key_id` the operator registered for the agent (`mentisdb agent key add`)
 - `skill_signature` — 64-byte Ed25519 signature over the raw skill content bytes
 
 Agents without registered public keys may upload without signatures.
 
 Upload flow for signing agents:
 
-1. Register a public key:
+1. Ask the operator to register your public key:
    ```bash
-   POST /v1/agents/keys   { agent_id, key_id, algorithm: "ed25519", public_key_bytes }
+   mentisdb agent key add AGENT --key-id KEY_ID --public-key-hex <64 hex> --chain CHAIN --pin <dashboard pin>
    ```
-   or via MCP: `mentisdb_add_agent_key`
+   (REST `POST /v1/agents/keys` and the MCP tool answer 403: key registration is operator-only.)
 2. Sign the raw content bytes with the corresponding private key (Ed25519).
 3. Include `signing_key_id` and `skill_signature` in the upload request:
    ```bash
@@ -1871,7 +1892,9 @@ qwen mcp add --transport http mentisdb http://127.0.0.1:9471
 
 - a standard streamable HTTP MCP endpoint at `POST /`
 - a Server-Sent Events (SSE) endpoint at `GET /` returning `text/event-stream` with
-  live MCP protocol events — every tool call result and error is broadcast in real time
+  one `tool_called` event per tool call (tool name, chain key, outcome, duration). Tool
+  arguments and results are never broadcast: they can be private text. With bearer
+  enforcement on, subscribing needs a valid token
 - the legacy CloudLLM-compatible MCP endpoints at `POST /tools/list` and
   `POST /tools/execute`
 

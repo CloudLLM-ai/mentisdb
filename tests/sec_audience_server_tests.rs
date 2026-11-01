@@ -670,3 +670,53 @@ async fn refused_writes_do_not_reveal_registry_or_allowlist_state() {
         }
     }
 }
+
+/// A peer that keeps sending invalid read proofs is cut off before the server
+/// spends more verification work on it; other peers are unaffected.
+#[tokio::test]
+async fn invalid_read_proofs_are_rate_limited_per_peer() {
+    let world = world("ratelimit");
+    let router = rest_router(world.config.clone());
+    let bad =
+        |ip: [u8; 4]| {
+            let mut request = Request::post("/v1/search")
+                .header("content-type", "application/json")
+                .header("x-mentis-auth", "v1 garbage")
+                .body(Body::from("{}"))
+                .unwrap();
+            request.extensions_mut().insert(axum::extract::ConnectInfo(
+                std::net::SocketAddr::from((ip, 50000)),
+            ));
+            request
+        };
+    let attacker = [203, 0, 113, 77];
+    let mut statuses = Vec::new();
+    for _ in 0..40 {
+        let response = router.clone().oneshot(bad(attacker)).await.unwrap();
+        statuses.push(response.status());
+    }
+    assert_eq!(statuses[0], StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        *statuses.last().unwrap(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "{statuses:?}"
+    );
+    // Another peer still gets the ordinary answer, and so does a request with no proof.
+    let other = router
+        .clone()
+        .oneshot(bad([203, 0, 113, 78]))
+        .await
+        .unwrap();
+    assert_eq!(other.status(), StatusCode::UNAUTHORIZED);
+    let mut plain = Request::post("/v1/search")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"chain_key":"c"}).to_string()))
+        .unwrap();
+    plain
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            attacker, 50001,
+        ))));
+    let (status, _) = send(&router, plain).await;
+    assert_eq!(status, StatusCode::OK, "no proof means public, not blocked");
+}

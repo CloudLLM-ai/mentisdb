@@ -20,11 +20,95 @@ pub fn run(
     out: &mut dyn Write,
 ) -> Result<(), String> {
     let mut invocation = invocation.clone();
+    if invocation.offline {
+        return run_offline(&invocation, out);
+    }
     fill_stdin(&mut invocation, input)?;
     sign_locally(&mut invocation)?;
     let reply = send(&invocation)?;
     write_reply(&invocation, &reply, out)?;
     check_reply(&invocation, &reply)
+}
+
+/// Apply an operator command straight to the data directory on this host.
+///
+/// Filesystem access to the data directory is the operator's authority, so no
+/// PIN is needed; the operator key in `<data dir>/operator/` signs the policy
+/// record. It refuses while a daemon answers on the REST address, because two
+/// processes must not append to one chain.
+fn run_offline(invocation: &RemoteInvocation, out: &mut dyn Write) -> Result<(), String> {
+    use crate::operator::{apply, OperatorIdentity, OperatorOp};
+    let url = url::Url::parse(&invocation.url).map_err(|e| e.to_string())?;
+    let chain_key = url
+        .path_segments()
+        .and_then(|mut segments| {
+            segments
+                .by_ref()
+                .skip_while(|segment| *segment != "chains")
+                .nth(1)
+                .map(str::to_string)
+        })
+        .filter(|_| url.path().ends_with("/access"))
+        .ok_or_else(|| {
+            format!(
+                "'mentisdb {}' cannot run with --offline: only operator commands (chain access, agent key, agent disable/activate) can",
+                invocation.command
+            )
+        })?;
+    let chain_key = percent_decode(&chain_key);
+    let op: OperatorOp = match invocation.method {
+        HttpMethod::Get => OperatorOp::Show,
+        _ => serde_json::from_value(invocation.body.clone().unwrap_or(Value::Null))
+            .map_err(|e| format!("invalid operator command: {e}"))?,
+    };
+    let dir = invocation
+        .data_dir
+        .as_deref()
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("MENTISDB_DIR").map(std::path::PathBuf::from))
+        .unwrap_or_else(crate::paths::default_mentisdb_dir);
+    let Some(_lock) = crate::operator::DataDirLock::try_acquire(&dir).map_err(|e| e.to_string())?
+    else {
+        return Err(format!(
+            "a mentisdb process is using {}: two processes must not write one chain. Use the dashboard route (--pin) or stop the daemon first",
+            dir.display()
+        ));
+    };
+    let registered = crate::load_registered_chains(&dir).map_err(|e| e.to_string())?;
+    if !registered.chains.contains_key(&chain_key) {
+        return Err(format!(
+            "no chain '{chain_key}' in {} (check --data-dir)",
+            dir.display()
+        ));
+    }
+    let operator = OperatorIdentity::load_or_create(&dir).map_err(|e| e.to_string())?;
+    let mut chain = crate::MentisDb::open_with_key(&dir, &chain_key).map_err(|e| e.to_string())?;
+    let value = apply(&mut chain, &operator, &op).map_err(|e| e.to_string())?;
+    chain.flush().map_err(|e| e.to_string())?;
+    write_reply(invocation, &Reply::Json(value), out)
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let escaped = (bytes[i] == b'%' && i + 3 <= bytes.len())
+            .then(|| std::str::from_utf8(&bytes[i + 1..i + 3]).ok())
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match escaped {
+            Some(value) => {
+                out.push(value);
+                i += 3;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn fill_stdin(invocation: &mut RemoteInvocation, input: &mut dyn BufRead) -> Result<(), String> {
@@ -50,9 +134,7 @@ fn sign_locally(invocation: &mut RemoteInvocation) -> Result<(), String> {
         return Ok(());
     };
     let result = match sign {
-        SignWith::KeyRegistration => sign_key_registration(&mut body, &secret),
         SignWith::Thought => sign_thought(invocation, &mut body, &secret),
-        SignWith::AccessPolicy => sign_access_policy(invocation, &mut body, &secret),
     };
     invocation.body = Some(Value::Object(body));
     result
@@ -63,33 +145,6 @@ fn body_text(body: &serde_json::Map<String, Value>, field: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
-}
-
-fn sign_key_registration(
-    body: &mut serde_json::Map<String, Value>,
-    secret: &Secret,
-) -> Result<(), String> {
-    use ed25519_dalek::{Signer, SigningKey};
-    let key = SigningKey::from_bytes(&secret.0);
-    let public = key.verifying_key().to_bytes();
-    let now = chrono::Utc::now().timestamp();
-    let payload = crate::signing::key_registration_payload(
-        &body_text(body, "chain_key"),
-        &body_text(body, "agent_id"),
-        &body_text(body, "key_id"),
-        &public,
-        now,
-    );
-    body.insert(
-        "public_key_hex".into(),
-        Value::String(crate::signing::to_hex(&public)),
-    );
-    body.insert("registered_at_unix_secs".into(), Value::from(now));
-    body.insert(
-        "registration_signature_hex".into(),
-        Value::String(crate::signing::to_hex(&key.sign(&payload).to_bytes())),
-    );
-    Ok(())
 }
 
 /// POST `path` (relative to the REST base of `invocation`) and return the JSON reply.
@@ -272,117 +327,6 @@ fn relation_kind(raw: &str) -> Result<crate::ThoughtRelationKind, String> {
 }
 
 /// Build, sign and fill the next policy record for `chain access set|allow|deny`.
-fn sign_access_policy(
-    invocation: &RemoteInvocation,
-    body: &mut serde_json::Map<String, Value>,
-    secret: &Secret,
-) -> Result<(), String> {
-    use crate::access::{policy_thought_input, AccessMode, AllowedKey, PolicyRecord};
-    use ed25519_dalek::{Signer, SigningKey};
-    let chain = body_text(body, "chain_key");
-    let agent = body_text(body, "agent_id");
-    let key_id = body_text(body, "signing_key_id");
-    let signing = SigningKey::from_bytes(&secret.0);
-    let own_public = signing.verifying_key().to_bytes();
-
-    let signer = ReadKey {
-        seed: secret.clone(),
-        agent_id: agent.clone(),
-        key_id: key_id.clone(),
-    };
-    let shown = fetch_json(
-        invocation,
-        "/v1/access/policy",
-        serde_json::json!({ "chain_key": chain }),
-        Some(signer.clone()),
-    )?;
-    let current: crate::access::AccessPolicy = serde_json::from_value(shown["policy"].clone())
-        .map_err(|e| format!("cannot read the current policy: {e}"))?;
-    let local = |field: &str| {
-        invocation
-            .local
-            .get(field)
-            .and_then(Value::as_str)
-            .map(str::to_string)
-    };
-
-    let mode = match local("mode") {
-        Some(raw) => raw.parse::<AccessMode>().map_err(|e| e.to_string())?,
-        None => current.mode,
-    };
-    let mut keys = current.keys.clone();
-    if let Some(Value::Array(listed)) = invocation.local.get("key") {
-        keys = listed
-            .iter()
-            .filter_map(Value::as_str)
-            .map(parse_key_spec)
-            .collect::<Result<_, _>>()?;
-    } else if invocation.command == "chain access set" && current.seq.is_none() {
-        keys = vec![AllowedKey::new(&agent, &key_id, &own_public)];
-    }
-    if invocation.command == "chain access allow" {
-        let (agent_id, key, public) = (
-            local("agent_id").unwrap_or_default(),
-            local("allow_key_id").unwrap_or_default(),
-            local("public_key_hex").unwrap_or_default(),
-        );
-        let bytes = crate::signing::from_hex(&public).map_err(|e| e.to_string())?;
-        keys.retain(|k| !(k.agent_id == agent_id && k.key_id == key));
-        keys.push(AllowedKey::new(&agent_id, &key, &bytes));
-    }
-    if invocation.command == "chain access deny" {
-        let (agent_id, key) = (
-            local("agent_id").unwrap_or_default(),
-            local("allow_key_id").unwrap_or_default(),
-        );
-        let before = keys.len();
-        keys.retain(|k| !(k.agent_id == agent_id && k.key_id == key));
-        if keys.len() == before {
-            return Err(format!("'{agent_id}/{key}' is not in the chain's key set"));
-        }
-    }
-    if matches!(
-        invocation.command.as_str(),
-        "chain access allow" | "chain access deny"
-    ) && current.seq.is_none()
-    {
-        return Err(
-            "this chain has no access policy yet; create one with 'mentisdb chain access set'"
-                .to_string(),
-        );
-    }
-    let seq = current.seq.map_or(0, |s| s + 1);
-    let prev = current.head_record_hash.clone().unwrap_or_default();
-    let record = PolicyRecord::new(seq, mode, keys, &prev).map_err(|e| e.to_string())?;
-    let head = current_head(invocation, &chain, Some(signer))?;
-    let payload =
-        crate::signing::thought_payload_v2(&chain, &agent, &head, &policy_thought_input(&record));
-    body.insert(
-        "signature_hex".into(),
-        Value::String(crate::signing::to_hex(&signing.sign(&payload).to_bytes())),
-    );
-    body.insert(
-        "record".into(),
-        serde_json::to_value(&record).map_err(|e| e.to_string())?,
-    );
-    Ok(())
-}
-
-/// Parse `AGENT:KEY_ID:PUBLIC_KEY_HEX` from `--key`.
-fn parse_key_spec(spec: &str) -> Result<crate::access::AllowedKey, String> {
-    let mut parts = spec.splitn(3, ':');
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(agent), Some(key_id), Some(hex)) if !agent.is_empty() && !key_id.is_empty() => {
-            let bytes =
-                crate::signing::from_hex(hex).map_err(|e| format!("--key '{spec}': {e}"))?;
-            Ok(crate::access::AllowedKey::new(agent, key_id, &bytes))
-        }
-        _ => Err(format!(
-            "--key expects AGENT:KEY_ID:PUBLIC_KEY_HEX, got '{spec}'"
-        )),
-    }
-}
-
 fn insert_dotted(body: &mut serde_json::Map<String, Value>, field: &str, value: Value) {
     match field.split_once('.') {
         None => {

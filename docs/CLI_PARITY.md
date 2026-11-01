@@ -41,9 +41,6 @@ Markdown, skill content, the recent-context prompt) print the raw text, and
 | `mentisdb_upsert_agent` | `POST /v1/agents/upsert` | `agent upsert` |
 | `mentisdb_set_agent_description` | `POST /v1/agents/description` | `agent describe` |
 | `mentisdb_add_agent_alias` | `POST /v1/agents/aliases` | `agent alias` |
-| `mentisdb_add_agent_key` | `POST /v1/agents/keys` | `agent key add` |
-| `mentisdb_revoke_agent_key` | `POST /v1/agents/keys/revoke` | `agent key revoke` |
-| `mentisdb_disable_agent` | `POST /v1/agents/disable` | `agent disable` |
 | `mentisdb_list_entity_types` | `POST /v1/entity-types` | `entity-type list` |
 | `mentisdb_upsert_entity_type` | `POST /v1/entity-types/upsert` | `entity-type upsert` |
 | `mentisdb_recent_context` | `POST /v1/recent-context` | `thought recent` |
@@ -71,7 +68,6 @@ Markdown, skill content, the recent-context prompt) print the raw text, and
 | `mentisdb_delete_webhook` | `DELETE /v1/webhooks/{id}` | `webhook delete` |
 | `mentisdb_extract_memories` | `POST /v1/extract-memories` | `memory extract` |
 | `mentisdb_get_access_policy` | `POST /v1/access/policy` | `chain access show` |
-| `mentisdb_set_access_policy` | `POST /v1/access/policy/set` | `chain access set`, `chain access allow`, `chain access deny` |
 | `mentisdb_verify_signatures` | `POST /v1/access/verify` | `chain access verify` |
 
 ## REST routes with no MCP tool
@@ -97,8 +93,6 @@ Markdown, skill content, the recent-context prompt) print the raw text, and
 | List agents (all chains / one chain) | `agent list` |
 | Agent detail | `agent get` |
 | Create or patch an agent | `agent upsert` |
-| Revoke / activate an agent | `agent disable`, `agent activate` |
-| Add / delete an agent key | `agent key add`, `agent key revoke` |
 | Agent memory Markdown export | `memory export --agent` |
 | Import MEMORY.md | `memory import` |
 | Copy an agent's memories to another chain | `agent copy` |
@@ -116,12 +110,38 @@ Markdown, skill content, the recent-context prompt) print the raw text, and
 `setup`, `wizard` (agent integrations), `backup`, `restore`, `cert`,
 `bearertoken`, `key generate` and `key show` (Ed25519 seed files for signing), `add` (quick thought append), `agents` (alias of `agent list`).
 
-## Chain access control
+## Operator commands (no MCP tool, REST answers 403)
 
-`chain access show|set|allow|deny|verify` manage a chain's write policy (design:
-[CHAIN_ACCESS.md](CHAIN_ACCESS.md)). `set`, `allow` and `deny` sign the policy
-record locally with `--private-key-file` (they fetch the current policy and head,
-build the next record and submit it with a global token); `thought append`/`retro`
-accept the same flag to sign a thought for a chain that requires signatures, and
-`agent key add --private-key-file` signs the proof of possession. The dashboard
-shows the policy read only because changes need a private-key signature.
+Administering who may write to and read a chain, the registry of agent keys and
+an agent's status is the operator's alone (design:
+[CHAIN_ACCESS.md](CHAIN_ACCESS.md)). The matching REST routes
+(`/v1/agents/keys`, `/v1/agents/keys/revoke`, `/v1/agents/disable`,
+`/v1/access/policy/set`) answer 403 with any bearer token and the MCP tools
+(`mentisdb_add_agent_key`, `mentisdb_revoke_agent_key`, `mentisdb_disable_agent`,
+`mentisdb_set_access_policy`) are not offered. The operator uses:
+
+| Operator action | CLI command | Dashboard route |
+|---|---|---|
+| Show the operator's view of a chain | `chain access admin` | `GET /dashboard/api/chains/{chain}/access` |
+| Make a chain public or private | `chain access set public\|private\|signed` | `POST .../access` `{"op":"set_mode"}` |
+| Allow / remove a key | `chain access allow`, `chain access deny` | `{"op":"allow_key"}`, `{"op":"deny_key"}` |
+| Register / revoke an agent key | `agent key add`, `agent key revoke` | `{"op":"register_key"}`, `{"op":"revoke_key"}` |
+| Disable / activate an agent | `agent disable`, `agent activate` | `{"op":"disable_agent"}`, `{"op":"enable_agent"}` |
+
+They go through the dashboard behind its PIN (`--pin`, or
+`$MENTISDB_DASHBOARD_PIN`), or run directly against the data directory on the
+host with `--offline [--data-dir DIR]`, which refuses while a daemon holds the
+directory. The operator signs policy records with the key in
+`<data dir>/operator/operator.key`.
+
+## Reading private chains
+
+`chain access show` and `chain access verify` (REST) show what the caller may
+see: a public reader gets the mode and segment boundaries, a reader who proves a
+key gets the key list and every segment. Every REST command accepts
+`--read-key-file FILE --read-agent ID --read-key-id ID` (or
+`MENTISDB_READ_KEY_FILE`, `MENTISDB_READ_AGENT_ID`, `MENTISDB_READ_KEY_ID`) and
+signs each request locally with it; the key is never sent. `thought append` and
+`thought retro` sign a thought with `--private-key-file` for a chain that
+requires signatures, and use that key for the head lookup too. The stdio MCP
+proxy reads the same environment variables.

@@ -108,17 +108,9 @@ fn test_invalid_values_are_rejected_locally() {
     assert!(rejection(&["thought", "get", "--id", "not-a-uuid"]).contains("expected a UUID"));
     assert!(rejection(&["search", "q", "--since", "yesterday"]).contains("RFC 3339"));
     assert!(rejection(&["search", "q", "--limit", "many"]).contains("expected an integer"));
-    assert!(rejection(&[
-        "agent",
-        "key",
-        "add",
-        "a",
-        "--key-id",
-        "k",
-        "--public-key-hex",
-        "xyz"
-    ])
-    .contains("hex"));
+    // Operator key arguments are validated by the operator code, not the parser;
+    // a missing one is still caught here.
+    assert!(rejection(&["chain", "access", "allow", "a", "k", "--chain", "c"]).contains("missing"));
 }
 
 /// Unknown flags, missing required arguments and extra positionals name the command.
@@ -215,103 +207,171 @@ fn test_timestamps_normalize_to_utc() {
     assert_eq!(b["since"], "2026-01-01T00:00:00+00:00");
 }
 
-/// Manual key registration passes the hex key, timestamp and proof through; with
-/// neither a key file nor the manual fields the command refuses to build.
+/// Key registration is an operator command: it goes to the dashboard route as
+/// one `register_key` operation, with the chain in the path and no proof of
+/// possession (the operator vouches for the key).
 #[test]
-fn test_agent_key_add_takes_manual_proof_fields() {
+fn test_agent_key_add_is_an_operator_operation() {
     let hex = "ab".repeat(32);
-    let b = body(&[
-        "agent",
-        "key",
-        "add",
-        "bot",
-        "--key-id",
-        "k1",
-        "--public-key-hex",
-        &hex,
-        "--registered-at",
-        "1790000000",
-        "--proof-hex",
-        &"cd".repeat(64),
-    ]);
-    assert_eq!(b["public_key_hex"], hex.as_str());
-    assert_eq!(b["registered_at_unix_secs"], 1_790_000_000);
-    assert_eq!(b["registration_signature_hex"], "cd".repeat(64).as_str());
-    assert_eq!(b["algorithm"], "ed25519");
-    assert_eq!(b["agent_id"], "bot");
-    let error = rejection(&[
-        "agent",
-        "key",
-        "add",
-        "bot",
-        "--key-id",
-        "k1",
-        "--public-key-hex",
-        &hex,
-    ]);
-    assert!(error.contains("--private-key-file"), "{error}");
-}
-
-/// A key file is read at parse time, never sent, and signing needs `--chain`.
-#[test]
-fn test_private_key_file_is_local_only() {
-    let dir = std::env::temp_dir().join(format!("mentisdb_cli_keyfile_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("k.key");
-    std::fs::write(&path, format!("{}\n", "07".repeat(32))).unwrap();
-    let path = path.to_str().unwrap();
     let inv = invocation(&[
         "agent",
         "key",
         "add",
         "bot",
         "--key-id",
-        "k",
+        "k1",
+        "--public-key-hex",
+        &hex,
         "--chain",
-        "c",
-        "--private-key-file",
-        path,
+        "vault",
     ]);
-    assert!(inv.secret.is_some());
-    assert!(
-        !format!("{inv:?}").contains("0707"),
-        "secret must be redacted from Debug"
+    assert_eq!(
+        inv.url,
+        "https://127.0.0.1:9475/dashboard/api/chains/vault/access"
     );
-    assert!(!inv.body.as_ref().unwrap().to_string().contains("0707"));
-    let error = rejection(&[
-        "agent",
-        "key",
-        "add",
-        "bot",
-        "--key-id",
-        "k",
-        "--private-key-file",
-        path,
+    let b = inv.body.unwrap();
+    assert_eq!(b["op"], "register_key");
+    assert_eq!(b["agent_id"], "bot");
+    assert_eq!(b["key_id"], "k1");
+    assert_eq!(b["public_key"], hex.as_str());
+    // The key, the chain and the key id are all required.
+    for missing in [
+        &[
+            "agent", "key", "add", "bot", "--key-id", "k1", "--chain", "c",
+        ][..],
+        &[
+            "agent",
+            "key",
+            "add",
+            "bot",
+            "--public-key-hex",
+            &hex,
+            "--chain",
+            "c",
+        ][..],
+        &[
+            "agent",
+            "key",
+            "add",
+            "bot",
+            "--key-id",
+            "k1",
+            "--public-key-hex",
+            &hex,
+        ][..],
+    ] {
+        let error = rejection(missing);
+        assert!(error.contains("missing"), "{error}");
+    }
+}
+
+/// Operator commands are offline-capable and PIN-gated, never REST-token commands.
+#[test]
+fn test_operator_commands_target_the_dashboard() {
+    let hex = "cd".repeat(32);
+    for (args, op) in [
+        (
+            vec!["chain", "access", "set", "private", "--chain", "v"],
+            "set_mode",
+        ),
+        (
+            vec!["chain", "access", "allow", "a", "k", &hex, "--chain", "v"],
+            "allow_key",
+        ),
+        (
+            vec!["chain", "access", "deny", "a", "k", "--chain", "v"],
+            "deny_key",
+        ),
+        (
+            vec![
+                "agent", "key", "revoke", "a", "--key-id", "k", "--chain", "v",
+            ],
+            "revoke_key",
+        ),
+        (
+            vec!["agent", "disable", "a", "--chain", "v"],
+            "disable_agent",
+        ),
+        (
+            vec!["agent", "activate", "a", "--chain", "v"],
+            "enable_agent",
+        ),
+    ] {
+        let inv = invocation(&args);
+        assert!(
+            inv.url.contains("/dashboard/api/chains/v/access"),
+            "{args:?}: {}",
+            inv.url
+        );
+        assert_eq!(inv.body.unwrap()["op"], op, "{args:?}");
+    }
+    let inv = invocation(&[
+        "chain",
+        "access",
+        "set",
+        "public",
+        "--chain",
+        "v",
+        "--offline",
+        "--data-dir",
+        "/x",
     ]);
-    assert!(error.contains("--chain"), "{error}");
+    assert!(inv.offline);
+    assert_eq!(inv.data_dir.as_deref(), Some("/x"));
+    // `public` and `private` are accepted names for the modes.
+    assert_eq!(
+        body(&["chain", "access", "set", "public", "--chain", "v"])["mode"],
+        "public"
+    );
+    assert!(
+        rejection(&["chain", "access", "set", "sideways", "--chain", "v"])
+            .contains("is not one of")
+    );
+}
+
+/// A read key needs its agent and key id; the seed is redacted from Debug.
+#[test]
+fn test_read_key_flags() {
+    let dir = std::env::temp_dir().join(format!("mentisdb_cli_readkey_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("r.key");
+    std::fs::write(&path, format!("{}\n", "09".repeat(32))).unwrap();
+    let path = path.to_str().unwrap();
+    let inv = invocation(&[
+        "thought",
+        "get",
+        "--index",
+        "0",
+        "--read-key-file",
+        path,
+        "--read-agent",
+        "reader",
+        "--read-key-id",
+        "r1",
+    ]);
+    let key = inv.read_key.as_ref().expect("read key");
+    assert_eq!(
+        (key.agent_id.as_str(), key.key_id.as_str()),
+        ("reader", "r1")
+    );
+    assert!(!format!("{inv:?}").contains("0909"));
+    let error = rejection(&["thought", "get", "--index", "0", "--read-key-file", path]);
+    assert!(error.contains("--read-agent"), "{error}");
     std::fs::write(dir.join("short.key"), "abcd").unwrap();
     let error = rejection(&[
-        "agent",
-        "key",
-        "add",
-        "bot",
-        "--key-id",
-        "k",
-        "--chain",
-        "c",
-        "--private-key-file",
+        "thought",
+        "get",
+        "--index",
+        "0",
+        "--read-key-file",
         dir.join("short.key").to_str().unwrap(),
+        "--read-agent",
+        "a",
+        "--read-key-id",
+        "k",
     ]);
     assert!(error.contains("32 bytes"), "{error}");
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// Fixed fields make `agent activate` an upsert that sets the status.
-#[test]
-fn test_agent_activate_sends_fixed_status() {
-    let inv = invocation(&["agent", "activate", "bot"]);
-    assert_eq!(inv.url, "http://127.0.0.1:9472/v1/agents/upsert");
-    assert_eq!(inv.body.unwrap()["status"], "active");
 }
 
 /// `agents` is the historical spelling of `agent list` and now POSTs, as the route requires.

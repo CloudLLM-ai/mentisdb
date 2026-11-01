@@ -1,42 +1,248 @@
-# Per-chain write access control
+# Public and private chains
 
-Status: design, implemented in slices (see the changelog `UNRELEASED` block).
+Status: implemented (see the changelog `UNRELEASED` block).
 
-MentisDB chains are append-only and hash-linked, but until now anyone who could
-reach the REST/MCP port could write to any chain, `signing_key_id` /
-`thought_signature` were stored without being checked, and agent public keys
-could be registered without proving possession of the private key. This
-document defines how a chain can require Ed25519-signed writes, how that
-requirement is recorded in the chain itself, and how it is enforced.
+A MentisDB chain is either **public** or **private**.
+
+* **Public**: no keys are needed. Anyone who can reach the server may write
+  unsigned and anyone may read.
+* **Private**: writes need a valid Ed25519 signature by an authorized key, and
+  the thoughts written while the chain is private can be read only by a reader
+  who proves possession of an authorized key.
+
+The mode is not a flag. It is the history of the chain's *governance records*
+(access-policy thoughts, below), so every change of mode is a tamper-evident
+entry in the chain itself that opens a new **segment**. Each thought belongs to
+exactly one segment, decided by its position:
+
+```text
+index:    0 ........ 9 | 10 ......... 49 50 | 51 ...........
+entry:    (none)       | seq 0 private  seq 1 public
+segment:  public #0    | private #1 ........ | public #2
+```
+
+* An **authorized reader** (a key in the chain's current policy, proved per
+  request) and the **operator** (dashboard behind its PIN, or the local
+  command line) see everything.
+* **Everyone else** sees only thoughts of public segments, on *every* read
+  surface: ranked, lexical and vector search, recent and standing context,
+  traversal, get by id, hash or index, head, genesis, context bundles,
+  summaries, federated search, branch-ancestor search, Markdown export, chain
+  and agent listings, counts, policy and verification reports.
+
+Who may *change* the allowed keys, the registry of agent keys or an agent's
+status is **only the operator**. REST and MCP, with any bearer token, global or
+chain-scoped, cannot.
+
+Existing chains need no migration: a chain with no governance record is public
+from its first thought; a chain whose policy was already `signed` or
+`allowlist` is private from the position of that record. The segment list is
+recomputed from the chain whenever it opens, so nothing new is stored.
 
 ## Threat model
 
-In scope:
+Assets: the content of private segments (confidentiality), the integrity of
+the chain and of its authorship claims, and the set of keys allowed to write
+and read.
 
-1. **Unauthorized writer.** A client that can call the API but is not supposed
-   to write to a chain (stolen bearer token, shared network, another tenant).
-2. **Forged identity.** A writer claiming to be agent `A` without `A`'s key.
-3. **Replay.** Re-submitting a thought `A` really signed onto another chain, or
-   onto the same chain at another position.
-4. **Key squatting.** Registering a public key one does not own, or a weak or
-   malformed key, so later signature checks are meaningless.
-5. **Silent policy change.** Loosening the policy (or swapping the allowed key
-   set) without a trace; the policy history must be auditable and tamper
-   evident.
+Actors: an anonymous network client; a holder of a stolen bearer token
+(global or chain-scoped); an agent that has been prompt-injected by data it
+read; a hostile web page driving a local browser; a registered agent whose key
+is not allowed on the chain; a former member whose key was removed; someone
+with read access to a backup; someone with write access to the data directory.
 
-Out of scope (documented limits):
+| STRIDE | What is protected | How |
+|---|---|---|
+| Spoofing | Authorship; reader identity | Ed25519 signatures bound to chain key and head (thought v2); a read proof signs each request; registering keys is operator-only so nobody can add a key and sign as an agent |
+| Tampering | Chain, policy, key set | Hash chain; governance records are signed, linked (`prev_policy`) and committed (`keys_root`); an invalid record is ignored and reported |
+| Repudiation | Who changed access | Every change is a signed record in the chain; the operator signs with a key kept on the host |
+| Information disclosure | Private segments | Audience filter at the library (queries, ranking statistics, graph, lineage, advice, export) and at every server route; see *What a public reader can still learn* |
+| Denial of service | Read proofs, nonce cache, bodies | 1 MiB body cap, bounded replay cache that fails closed to the public view, constant-work header grammar |
+| Elevation of privilege | Key administration | Operator-only; REST/MCP routes answer 403; the operator key is always a governor so a policy can never lock itself out |
 
-* An attacker with write access to the chain *files* can append records. The
-  hash chain detects edits to existing records but cannot stop a well-formed
-  append. Policy records are still self-authenticating (they must verify under
-  the rules below), so file access alone cannot forge a policy change **after
-  the genesis policy record exists**. It can still plant the genesis record on a
-  chain that never had one (see *Bootstrap*).
-* Confidentiality. Policies control who may write, not who may read.
-* Private-key custody. Keys are generated and held by the agent.
-* The agent registry is a sidecar file, not part of the hash chain. `Signed`
-  chains therefore trust the registry's key list; `Allowlist` chains do not,
-  because the allowed public keys are committed inside the chain.
+Out of scope, documented limits:
+
+* **Transport.** A read proof authenticates the reader; it does not encrypt
+  the response. Serve private chains over HTTPS. A proof is bound to method,
+  path, query and body, not to a host name, so do not terminate TLS in front of
+  a rewriting proxy.
+* **Filesystem access.** Whoever can read the data directory can read every
+  thought, the operator key included. Confidentiality is against API callers,
+  not against the host. Back up `operator/operator.key` with the chains.
+* **Private-key custody** is the agent's.
+* **Clock.** Proofs are accepted within 60 seconds of the server clock.
+* An attacker with write access to the chain *files* can append well-formed
+  records; the hash chain detects edits to existing records, and policy
+  records must still verify under the rules below.
+
+## Read authentication
+
+A reader proves possession of an authorized key on each request. The private
+key never travels over the wire and never has to enter a language model's
+context: the process that talks to the server (the `mentisdb` CLI, the stdio
+MCP proxy, an SDK) holds the key file and signs.
+
+```text
+X-Mentis-Auth: v1 agent=alice;key=alice-202610;pk=<64 hex>;ts=1767225600;nonce=<32 hex>;sig=<128 hex>
+```
+
+`agent` and `key` are percent-encoded (`%XX` uppercase for anything outside
+`A-Za-z0-9._~-`). The header is parsed strictly: exactly those six fields, in
+that order, lowercase hex, at most 1024 bytes, and it is accepted only if
+re-rendering it reproduces it byte for byte. The signature (strict Ed25519)
+covers:
+
+```
+"mentisdb/read-auth/v1\0"
+str METHOD   str path_and_query   bytes[32] SHA-256(body)
+str agent_id   str key_id   bytes[32] public_key   i64 ts   str nonce
+```
+
+`METHOD` is upper-case; `path_and_query` is exactly what the request line
+carries; the body is the complete request body (empty for `GET`). The chain
+key travels in the body, so it is covered. A proof therefore authorizes one
+method, one URL and one body, once.
+
+The server accepts a proof when
+
+1. the header parses and the signature verifies;
+2. `ts` is within 60 seconds of its clock;
+3. the `(public key, nonce)` pair has not been seen in the last 120 seconds
+   (bounded cache of 100 000 entries; when it is full of live entries the
+   request is refused with 503 rather than weakened);
+
+and then asks **per chain** whether `(agent_id, key_id, public key)` is in that
+chain's current key set *and* is an active key (agent not disabled, key not
+revoked) of the chain's registry. Only then is the request an *authorized
+reader* of that chain. A valid proof by a key that is not allowed gains
+nothing, and a request without the header is a public reader. A header that
+is present but invalid is refused with 401 so a client with a stale clock
+learns why.
+
+Clients:
+
+* `mentisdb ... --read-key-file FILE --read-agent ID --read-key-id ID` (or
+  `MENTISDB_READ_KEY_FILE`, `MENTISDB_READ_AGENT_ID`, `MENTISDB_READ_KEY_ID`)
+  signs every REST request. Commands that sign thoughts use their own signing
+  key for the head lookup.
+* `mentisdb --mode stdio` reads the same environment variables once and signs
+  every request it forwards to the daemon.
+* Library: `mentisdb::read_auth::{sign_request, ReadSigner}`.
+
+Range of the proof: key sets are per chain, so one signature never reads a
+chain the key is not allowed on, even in a federated search; each chain is
+checked on its own.
+
+## What each surface shows a public reader
+
+| Surface | Public view |
+|---|---|
+| `search`, `lexical-search`, `ranked-search`, `federated-search`, `context-bundles`, `summary-candidates` | Candidates are filtered **before** ranking. `total` and counts are of visible thoughts. BM25 corpus statistics (document count, document frequency, length averages) and the recency anchor are computed over the visible set, so scores do not move when private thoughts are added. Graph expansion never enters a hidden thought: paths cannot pass *through* one. |
+| `recent-context`, `standing-context`, `memory-markdown` | Visible thoughts only. |
+| `thought`, `thoughts/genesis`, `thoughts/traverse`, `head` | A hidden thought is reported exactly like one that does not exist. Genesis and head mean the first and last *public* thought. A hidden traversal anchor yields an empty page. `head` counts only public thoughts. |
+| Superseding, contesting, successor redirection, `current_version`, `version_status`, append advice | Computed from visible thoughts only. A public thought that only a private thought supersedes still reads as current. Advice returned to a writer who is not an authorized reader never quotes private thoughts. |
+| `refs`, `relations` on every returned thought | Pointers into hidden segments, and relations that point into other chains, are removed. |
+| `chains`, `agents`, `agent`, `agent-registry` | Counts and activity (`thought_count`, first/last seen, timestamps) are recomputed over visible thoughts; an agent that only wrote privately is not listed; storage paths are blank for a chain with private segments. |
+| `access/policy`, `access/verify` | Mode, `seq`, `keys_root` and segment boundaries. The key list, record hashes and the list of rejected records are withheld, and the verification report lists only visible thoughts. |
+| `chains/branch` from a private thought | Not found, as for an unknown id. |
+| Errors | A refused write reveals only that the policy did not accept it; it does not say whether an agent or key exists, was revoked or is not allowed. |
+| MCP resources | The only resource is the static skill text. |
+| Webhooks | A thought of a private segment, and every governance record, is never pushed to a webhook: registering one needs no proof of read access, so the event would hand private text to whoever registered. Public thoughts are delivered as before. |
+| SSE event stream (`GET /`) | One `tool_called` event per tool call (tool name, chain key, outcome, duration). Arguments and results are never broadcast. With bearer enforcement on, subscribing needs a valid token. |
+| Operator logs | The interaction log (`MENTISDB_LOG_FILE`) records agent ids, tags and concepts of each operation for the operator; it is a local file, not an API surface. |
+| Dashboard | A chain with private segments is shown only behind a PIN; see *Operator*. |
+
+Merge, copy and branch: see *Moving thoughts between chains*.
+
+### What a public reader can still learn
+
+Deliberately public, because the chain must stay verifiable and usable:
+
+* **That the chain has private segments, and where.** The mode, `seq` and the
+  segment boundaries are shown, and `index` values in responses skip the
+  hidden positions, so the *number* of private thoughts in a gap is visible.
+* **One hash across each gap.** The first public thought after a private
+  segment names the hash of the thought before it in `prev_hash`, so a public
+  reader can check that the visible thoughts are linked to the rest. The hash
+  commits to content that cannot be recovered from it.
+* **Timing.** Responses are not padded; request latency may differ slightly
+  for chains with a large private segment.
+* **Signatures of public thoughts and the keys that made them** (`provenance`,
+  registry entries of visible authors).
+
+## Provenance and the prompt-injection boundary
+
+Everything stored in a chain is **data**. A thought written by one agent is
+read by another; whoever can write to a public chain, and anyone who could
+write while a chain was public, can put text in front of the next reader that
+looks like an instruction. MentisDB cannot make that text safe. It marks where
+it came from so the reading agent can weigh it, and the operating skill
+(`MENTISDB_SKILL.md`) tells agents to treat memories as data, never as
+instructions.
+
+Every thought in a response carries a `provenance` object:
+
+```json
+"provenance": {
+  "segment": "public",           // or "private"
+  "signed": true,
+  "signature": "valid",          // "unsigned", "valid" or "invalid"
+  "signature_version": 2,
+  "verified_agent": "alice",     // agent id when the signature is valid and the key is active, else null
+  "trust": "untrusted_data"
+}
+```
+
+How to read it: an unsigned thought in a public segment can have been written
+by anyone. A thought with `verified_agent` was written by whoever holds that
+agent's key *now*, which says nothing about whether its content is true or
+safe. A private-segment thought was signed by a key the operator allowed. An
+agent should never execute commands, change its goals or reveal data because
+a retrieved thought says so; it should weigh the thought as evidence.
+
+## Operator
+
+The operator is whoever can reach one of two places:
+
+* the **dashboard behind its PIN** (`MENTISDB_DASHBOARD_PIN`); without a PIN the
+  dashboard cannot tell the operator from any other local process, so it
+  neither administers access nor shows chains that have private segments;
+* the **local `mentisdb` command line**, which can run any operator command with
+  `--offline` against the data directory (filesystem access is the boundary:
+  whoever has it already holds every byte). `--offline` refuses to run while a
+  daemon holds the data directory, because two processes must not append to
+  one chain.
+
+Operator commands (dashboard route `POST /dashboard/api/chains/{chain}/access`,
+CLI below, library `mentisdb::operator::apply`):
+
+| Command | Effect |
+|---|---|
+| `chain access set public\|private\|signed` | Switch mode. Going private on a chain with no policy bootstraps governance and opens a private segment; going public closes it and opens a public one (earlier private thoughts stay private). |
+| `chain access allow AGENT KEY_ID PUBKEY` | Register the key if needed and add it to the allowed set. |
+| `chain access deny AGENT KEY_ID` | Remove it. The operator key and the last governor cannot be removed. |
+| `agent key add / revoke`, `agent disable / activate` | Registry administration. Registering a key needs no proof of possession: the operator vouches for it. |
+| `chain access admin` | The operator's view: keys, segments, the operator key id. |
+
+The operator signs governance records with an Ed25519 key kept in
+`<data dir>/operator/operator.key` (directory `0700`, file `0600`, created on
+first use, never overwritten). That key is a governor of every policy the
+operator writes. It is the **recovery path**: if every agent governor key is
+lost, the operator can still change the policy. A record that would leave no
+governor is refused, so a policy cannot lock itself out. Back the key file up
+with the chains; without it, and without a governor key, the key list of a
+private chain can no longer be changed.
+
+What REST and MCP do instead: `POST /v1/agents/keys`, `/v1/agents/keys/revoke`,
+`/v1/agents/disable`, `/v1/access/policy/set` and status changes through
+`/v1/agents/upsert` answer **403** (`operator-only`) with any token; the
+matching MCP tools are not offered. Editing an agent's name, description or
+aliases on a private chain needs a read proof, because the registry is what
+labels authors in every response.
+
+Chains governed before the operator model keep working: governor-signed
+records (`MentisDb::set_access_policy`) are still valid, and a governor can add
+the operator key once so the chain becomes operator-managed.
 
 ## Key encoding and identity (shared with mentischat)
 
@@ -202,47 +408,42 @@ the signer.
 An invalid record found on replay (for example planted by file tampering after
 genesis) is **ignored** for enforcement and reported by `chain access verify`.
 
-### Bootstrap
 
-A chain starts `Open` with no governance record. The first record (`seq` 0) is
-the bootstrap:
+## Moving thoughts between chains
 
-* It is accepted only through the operator-authenticated entry points: the
-  library call `MentisDb::set_access_policy`, REST/MCP with a **global** bearer
-  token, or the dashboard behind its PIN. A chain-scoped token cannot bootstrap.
-* The signer must include their own key in `keys`; that key becomes the first
-  governor. This is trust-on-first-record: whoever the operator lets publish
-  `seq` 0 is the root of trust. Operators should record the genesis record's
-  `hash` out of band (`chain access show` prints it).
-* After `seq` 0 exists, the operator-authenticated entry points are no longer
-  enough: every further change needs a governor's signature (rule 3).
-* Lost governance keys cannot be recovered in place. The documented recovery is
-  `chain branch` from the last thought before the first policy record, or
-  restoring a backup.
-
-Setting the mode back to `open` is a normal signed record; the governor set
-stays on record and keeps controlling later changes.
+Merging and copying re-append thoughts unsigned under another chain's key,
+and a merge then deletes the source. For a chain with private segments,
+governance records or signed thoughts that would publish private text,
+discard signatures (which bind chain and position) and destroy the originals.
+`chains/merge` and the dashboard's merge and copy therefore **refuse** such a
+source with a clear error and change nothing. `chains/branch` copies nothing
+(the branch records its parent), so it is allowed from any thought the caller
+can see. Branch-ancestor search checks each ancestor chain's audience and the
+bearer token's chain scope on its own.
 
 ## Enforcement surfaces
 
 | Surface | Behaviour |
 |---|---|
-| Library | `MentisDb::append_thought` (above); `set_access_policy`, `access_policy`, `verify_signatures`. |
-| MCP and REST | All appends go through the library path. New tools/routes: `mentisdb_get_access_policy` (`POST /v1/access/policy`), `mentisdb_set_access_policy` (`POST /v1/access/policy/set`), `mentisdb_verify_signatures` (`POST /v1/access/verify`). `set` needs a global token. Appending with a bad or missing signature returns 403. |
-| Dashboard | Chain detail shows the mode, `keys_root`, `seq`, the allowed keys and the genesis hash (read only). Changes go through the API/CLI because they need a private-key signature. |
-| CLI | `mentisdb chain access show \| set \| allow \| deny \| verify`, plus `mentisdb key generate`. |
+| Library | `MentisDb::append_thought` (above). `ThoughtQuery::audience`, `StandingContextQuery::audience`, `*_for(audience)` variants (`get_thought_for`, `thought_json_for`, `hit_json_for`, `summary_candidates_for`, `resolve_context_for`, `verify_signatures_for`, `append_advice_for`, `version_info_for`, `is_invalidated_for`), `is_visible`, `visible_thoughts`, `redact_for`, `segments()`, `is_read_authorized`. The default audience is `Authorized`: a program that holds the data directory holds every byte. |
+| REST and MCP | Every request runs with the audience its proof earns, per chain; with no proof it is public. Code that runs outside the middleware (a unit test calling a service method) is public too, so forgetting to authenticate loses data instead of leaking it. |
+| Dashboard | PIN required for chains with private segments and for all access administration. |
+| CLI | `mentisdb chain access show \| verify \| admin \| set \| allow \| deny`, `mentisdb agent key add \| revoke`, `agent disable \| activate`, `mentisdb key generate \| show`; read commands take `--read-key-file`; operator commands take `--pin` or `--offline`. |
 
 ## Migration
 
-* No schema change: existing chains and thoughts are untouched and stay `Open`.
-* v1 signatures already stored remain valid on `Open` chains and are reported as
-  `v1` by `chain access verify`.
-* `add_agent_key` now requires a proof of possession and a valid curve point;
-  keys already in a registry are not re-checked and keep working, but
-  `chain access verify` flags any that are not valid points.
-* Adding the `AccessPolicy` thought type changes nothing for old readers until
-  a policy record is written; a chain that has one cannot be read by a
-  MentisDB version that predates the type.
+* Existing chains are untouched. A chain without governance records is one
+  public segment. A chain governed before this model is private from the
+  position of its first non-`open` record; its governance records are private.
+* `ChainRegistration` gains two optional fields (`has_private`,
+  `public_thought_count`) written on the next flush; absent means public.
+* v1 signatures already stored remain valid on public chains and are reported
+  as `v1` by `chain access verify`.
+* `add_agent_key` (library) still requires a proof of possession and a valid
+  curve point; `add_agent_key_as_operator` is the operator's variant.
+* Clients that registered keys or set policies over REST or MCP must move to
+  the operator commands; the routes answer 403.
+* Thought v2 signatures are unchanged and backward compatible.
 
 ## Cost of verification on append
 
@@ -261,5 +462,20 @@ durable (fsync) writes the verification is small next to the disk flush.
 a typed accept or reject, accepted records are canonical and rebuildable),
 `signature_envelope` (stored-signature shapes, key validation, hex, and "never
 verifies with a key validation rejects"), `thought_payload_v2` (deterministic,
-domain-prefixed, and distinct chain/agent/head triples never collide) and
-`cli_args`. Run one with `cd fuzz && cargo +nightly fuzz run policy_record`.
+domain-prefixed, and distinct chain/agent/head triples never collide), `cli_args`,
+`read_auth_header` (the read-proof grammar: typed accept or reject, canonical
+re-rendering, verification never panics for any clock), `operator_op` (operator
+command bodies and key specs) and `segment_map` (a public reader sees a subset of an
+authorized reader's view and never a governance record). Run one with
+`cd fuzz && cargo +nightly fuzz run read_auth_header`.
+
+## Residual risk
+
+* A public reader learns the existence and rough size of private segments and one
+  boundary hash (see above). Hiding those would break verifiability of the
+  public history.
+* Content written while a chain was public stays public forever; going private
+  does not retract it.
+* A key that was once allowed and later removed keeps whatever it already read.
+* Latency side channels are not closed.
+* The operator key and the data directory are as trusted as the host.

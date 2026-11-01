@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 pub use mentisdb::access;
+pub use mentisdb::audience;
 pub use mentisdb::auth;
+pub use mentisdb::operator;
 pub use mentisdb::search;
 pub use mentisdb::server::{rest_router, MentisDbServiceConfig};
 pub use mentisdb::{
@@ -41,6 +43,7 @@ fn unique_dir() -> PathBuf {
 struct Daemon {
     rest: String,
     dashboard: String,
+    dir: PathBuf,
 }
 
 async fn serve(router: axum::Router) -> String {
@@ -58,7 +61,7 @@ async fn start(pin: Option<&str>) -> Daemon {
     let state = dashboard_impl::DashboardState {
         chains: Arc::new(DashMap::new()),
         skills: Arc::new(RwLock::new(SkillRegistry::open(&dir).unwrap())),
-        mentisdb_dir: dir,
+        mentisdb_dir: dir.clone(),
         default_chain_key: "default".to_string(),
         dashboard_pin: pin.map(str::to_string),
         sessions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -67,7 +70,26 @@ async fn start(pin: Option<&str>) -> Daemon {
         bearer_token_access: Arc::new(AtomicBool::new(false)),
     };
     let dashboard = serve(dashboard_impl::dashboard_router(state)).await;
-    Daemon { rest, dashboard }
+    Daemon {
+        rest,
+        dashboard,
+        dir,
+    }
+}
+
+/// A fresh REST listener over the same data directory.
+///
+/// In the daemon the dashboard and REST share one in-memory chain map; in these
+/// tests they do not, so after an operator change made through the dashboard a
+/// new listener is what picks it up from disk.
+async fn reopen_rest(daemon: &Daemon) -> Daemon {
+    let config =
+        MentisDbServiceConfig::new(daemon.dir.clone(), "default", StorageAdapterKind::Binary);
+    Daemon {
+        rest: serve(rest_router(config)).await,
+        dashboard: daemon.dashboard.clone(),
+        dir: daemon.dir.clone(),
+    }
 }
 
 /// What one CLI invocation printed.
@@ -287,7 +309,7 @@ async fn test_document_commands_print_raw_text() {
 /// The agent registry commands change the same record the registry returns.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_agent_registry_commands() {
-    let d = start(None).await;
+    let d = start(Some("2468")).await;
     run(
         &d,
         &[
@@ -329,9 +351,9 @@ async fn test_agent_registry_commands() {
     run(&d, &["agent", "alias", "bot", "builder", "--chain", "reg"])
         .await
         .json();
-    let key_file = unique_dir().with_extension("key");
-    std::fs::write(&key_file, format!("{}\n", "11".repeat(32))).unwrap();
-    let key_file = key_file.to_str().unwrap().to_string();
+    // Key and status administration is the operator's: it goes through the
+    // dashboard (PIN) and changes the registry on disk.
+    let key_hex = public_hex(0x11);
     let with_key = run(
         &d,
         &[
@@ -341,32 +363,53 @@ async fn test_agent_registry_commands() {
             "bot",
             "--key-id",
             "k1",
-            "--private-key-file",
-            &key_file,
+            "--public-key-hex",
+            &key_hex,
             "--chain",
             "reg",
+            "--pin",
+            "2468",
         ],
     )
     .await
     .json();
-    assert_eq!(with_key["agent"]["public_keys"][0]["key_id"], "k1");
-    let revoked = run(
+    assert_eq!(with_key["changed"], true);
+    let registry_on_disk = || {
+        MentisDb::open_with_key_and_storage_kind(&d.dir, "reg", StorageAdapterKind::Binary)
+            .unwrap()
+            .agent_registry()
+            .agents["bot"]
+            .clone()
+    };
+    assert_eq!(registry_on_disk().public_keys[0].key_id, "k1");
+    run(
         &d,
         &[
-            "agent", "key", "revoke", "bot", "--key-id", "k1", "--chain", "reg",
+            "agent", "key", "revoke", "bot", "--key-id", "k1", "--chain", "reg", "--pin", "2468",
         ],
     )
     .await
     .json();
-    assert!(revoked["agent"]["public_keys"][0]["revoked_at"].is_string());
-    let disabled = run(&d, &["agent", "disable", "bot", "--chain", "reg"])
-        .await
-        .json();
-    assert_eq!(disabled["agent"]["status"], "Revoked");
-    let active = run(&d, &["agent", "activate", "bot", "--chain", "reg"])
-        .await
-        .json();
-    assert_eq!(active["agent"]["status"], "Active");
+    assert!(registry_on_disk().public_keys[0].revoked_at.is_some());
+    run(
+        &d,
+        &["agent", "disable", "bot", "--chain", "reg", "--pin", "2468"],
+    )
+    .await
+    .json();
+    assert_eq!(registry_on_disk().status, AgentStatus::Revoked);
+    run(
+        &d,
+        &[
+            "agent", "activate", "bot", "--chain", "reg", "--pin", "2468",
+        ],
+    )
+    .await
+    .json();
+    assert_eq!(registry_on_disk().status, AgentStatus::Active);
+    // Without the PIN the dashboard refuses.
+    let refused = run(&d, &["agent", "disable", "bot", "--chain", "reg"]).await;
+    assert!(!refused.ok, "{}", refused.out);
     let record = run(&d, &["agent", "get", "bot", "--chain", "reg"])
         .await
         .json();
@@ -687,61 +730,58 @@ fn public_hex(seed_byte: u8) -> String {
     )
 }
 
-/// Full signed-chain workflow through the CLI: register keys, lock a chain to an
-/// allowlist, sign appends locally, grow and shrink the allowed set, verify.
+/// Full private-chain workflow through the CLI: the operator makes a chain
+/// private and manages its keys through the dashboard, agents sign and read
+/// locally, and an allowed key stops working the moment it is removed.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_chain_access_workflow_through_the_cli() {
-    let d = start(None).await;
-    let (admin_key, friend_key) = (write_seed("01"), write_seed("02"));
-    for agent in ["admin", "friend"] {
-        run(&d, &["agent", "upsert", agent, "--chain", "vault"])
-            .await
-            .json();
+    let d = start(Some("2468")).await;
+    {
+        // The chain exists (with one public thought) before the operator acts;
+        // it is created on disk so the REST listener first opens it afterwards.
+        let mut chain =
+            MentisDb::open_with_key_and_storage_kind(&d.dir, "vault", StorageAdapterKind::Binary)
+                .unwrap();
+        chain
+            .append("seed", ThoughtType::Insight, "opening note")
+            .unwrap();
+        chain.flush().unwrap();
     }
-    run(
-        &d,
-        &[
-            "agent",
-            "key",
-            "add",
-            "admin",
-            "--key-id",
-            "a1",
-            "--chain",
-            "vault",
-            "--private-key-file",
-            &admin_key,
-        ],
-    )
-    .await
-    .json();
-    run(
-        &d,
-        &[
-            "agent",
-            "key",
-            "add",
-            "friend",
-            "--key-id",
-            "f1",
-            "--chain",
-            "vault",
-            "--private-key-file",
-            &friend_key,
-        ],
-    )
-    .await
-    .json();
+    let (admin_key, friend_key) = (write_seed("01"), write_seed("02"));
+    fn op<'a>(args: &[&'a str]) -> Vec<&'a str> {
+        let mut all: Vec<&'a str> = args.to_vec();
+        all.extend(["--pin", "2468"]);
+        all
+    }
+    for (agent, key_id, seed) in [("admin", "a1", 1), ("friend", "f1", 2)] {
+        run(
+            &d,
+            &op(&[
+                "agent",
+                "key",
+                "add",
+                agent,
+                "--key-id",
+                key_id,
+                "--public-key-hex",
+                &public_hex(seed),
+                "--chain",
+                "vault",
+            ]),
+        )
+        .await
+        .json();
+    }
 
-    // Without a policy the chain is open.
-    let shown = run(&d, &["chain", "access", "show", "--chain", "vault"])
+    // Without a policy the chain is public.
+    let shown = run(&d, &op(&["chain", "access", "admin", "--chain", "vault"]))
         .await
         .json();
     assert_eq!(shown["policy"]["mode"], "open");
     // allow/deny need an existing policy.
     let early = run(
         &d,
-        &[
+        &op(&[
             "chain",
             "access",
             "allow",
@@ -750,13 +790,7 @@ async fn test_chain_access_workflow_through_the_cli() {
             &public_hex(2),
             "--chain",
             "vault",
-            "--agent",
-            "admin",
-            "--signing-key-id",
-            "a1",
-            "--private-key-file",
-            &admin_key,
-        ],
+        ]),
     )
     .await;
     assert!(
@@ -765,28 +799,29 @@ async fn test_chain_access_workflow_through_the_cli() {
         early.err
     );
 
-    // Bootstrap: the signer becomes the first governor.
+    // The operator makes the chain private and allows the administrator.
     let set = run(
         &d,
-        &[
-            "chain",
-            "access",
-            "set",
-            "allowlist",
-            "--chain",
-            "vault",
-            "--agent",
-            "admin",
-            "--signing-key-id",
-            "a1",
-            "--private-key-file",
-            &admin_key,
-        ],
+        &op(&["chain", "access", "set", "private", "--chain", "vault"]),
     )
     .await
     .json();
     assert_eq!(set["policy"]["mode"], "allowlist");
-    assert_eq!(set["policy"]["keys"][0]["key_id"], "a1");
+    run(
+        &d,
+        &op(&[
+            "chain",
+            "access",
+            "allow",
+            "admin",
+            "a1",
+            &public_hex(1),
+            "--chain",
+            "vault",
+        ]),
+    )
+    .await
+    .json();
 
     // Unsigned appends are refused; the signed one lands.
     let refused = run(
@@ -828,31 +863,46 @@ async fn test_chain_access_workflow_through_the_cli() {
     assert_eq!(signed["thought"]["content"], "signed note");
 
     // The friend is registered but not allowed yet.
-    let denied = run(
-        &d,
-        &[
-            "thought",
-            "append",
-            "hi",
-            "--chain",
-            "vault",
-            "--agent",
-            "friend",
-            "--signing-key-id",
-            "f1",
-            "--private-key-file",
-            &friend_key,
-        ],
-    )
-    .await;
+    let friend_append = |text: &'static str, daemon: &Daemon| {
+        let (rest, dashboard, key) = (
+            daemon.rest.clone(),
+            daemon.dashboard.clone(),
+            friend_key.clone(),
+        );
+        async move {
+            let daemon = Daemon {
+                rest,
+                dashboard,
+                dir: PathBuf::new(),
+            };
+            run(
+                &daemon,
+                &[
+                    "thought",
+                    "append",
+                    text,
+                    "--chain",
+                    "vault",
+                    "--agent",
+                    "friend",
+                    "--signing-key-id",
+                    "f1",
+                    "--private-key-file",
+                    &key,
+                ],
+            )
+            .await
+        }
+    };
+    let denied = friend_append("hi", &d).await;
     assert!(
         !denied.ok && denied.err.contains("did not accept"),
         "{}",
         denied.err
     );
-    let allowed = run(
+    run(
         &d,
-        &[
+        &op(&[
             "chain",
             "access",
             "allow",
@@ -861,102 +911,58 @@ async fn test_chain_access_workflow_through_the_cli() {
             &public_hex(2),
             "--chain",
             "vault",
-            "--agent",
-            "admin",
-            "--signing-key-id",
-            "a1",
-            "--private-key-file",
-            &admin_key,
-        ],
+        ]),
     )
     .await
     .json();
-    assert_eq!(allowed["policy"]["keys"].as_array().unwrap().len(), 2);
-    assert_eq!(allowed["policy"]["seq"], 1);
+    let d = reopen_rest(&d).await;
+    friend_append("hello from the friend", &d).await.json();
     run(
         &d,
-        &[
-            "thought",
-            "retro",
-            "friend learned",
-            "--chain",
-            "vault",
-            "--agent",
-            "friend",
-            "--signing-key-id",
-            "f1",
-            "--private-key-file",
-            &friend_key,
-        ],
+        &op(&[
+            "chain", "access", "deny", "friend", "f1", "--chain", "vault",
+        ]),
     )
     .await
     .json();
-
-    // Removing the friend locks them out again.
-    let removed = run(
+    let d = reopen_rest(&d).await;
+    assert!(!friend_append("again", &d).await.ok);
+    // The operator key cannot be removed.
+    let admin_view = run(&d, &op(&["chain", "access", "admin", "--chain", "vault"]))
+        .await
+        .json();
+    let operator_id = admin_view["operator_key"]["key_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let hijack = run(
         &d,
-        &[
+        &op(&[
             "chain",
             "access",
             "deny",
-            "friend",
-            "f1",
+            "mentisdb-operator",
+            &operator_id,
             "--chain",
             "vault",
-            "--agent",
-            "admin",
-            "--signing-key-id",
-            "a1",
-            "--private-key-file",
-            &admin_key,
-        ],
-    )
-    .await
-    .json();
-    assert_eq!(removed["policy"]["keys"].as_array().unwrap().len(), 1);
-    let again = run(
-        &d,
-        &[
-            "thought",
-            "append",
-            "hi again",
-            "--chain",
-            "vault",
-            "--agent",
-            "friend",
-            "--signing-key-id",
-            "f1",
-            "--private-key-file",
-            &friend_key,
-        ],
+        ]),
     )
     .await;
-    assert!(!again.ok);
-    // A non-governor cannot change the policy.
-    let hijack = run(
+    assert!(
+        !hijack.ok && hijack.err.contains("recovery"),
+        "{}",
+        hijack.err
+    );
+    // Operator commands without the PIN do nothing.
+    let no_pin = run(
         &d,
-        &[
-            "chain",
-            "access",
-            "set",
-            "open",
-            "--chain",
-            "vault",
-            "--agent",
-            "friend",
-            "--signing-key-id",
-            "f1",
-            "--private-key-file",
-            &friend_key,
-        ],
+        &["chain", "access", "set", "public", "--chain", "vault"],
     )
     .await;
-    // The stranger cannot even read the current policy (it is shown only to
-    // keys that may read the chain), let alone replace it.
-    assert!(!hijack.ok, "{}", hijack.err);
+    assert!(!no_pin.ok);
 
-    // Every signature in the chain re-verifies.
-    // (verification covers private thoughts, so it needs a key that may read them)
+    // Every signature in the chain re-verifies (verification covers the private
+    // thoughts, so it needs a key that may read them).
     let report = run(
         &d,
         &[
@@ -975,9 +981,16 @@ async fn test_chain_access_workflow_through_the_cli() {
     )
     .await
     .json();
-    assert_eq!(report["invalid"], 0);
-    assert_eq!(report["policy"]["seq"], 2);
-    assert!(report["valid"].as_u64().unwrap() >= 5, "{report}");
+    assert_eq!(report["invalid"], 0, "{report}");
+    assert_eq!(report["policy"]["seq"], 3);
+    assert!(report["valid"].as_u64().unwrap() >= 6, "{report}");
+    // A public reader sees only the public opening thought.
+    let public_report = run(&d, &["chain", "access", "verify", "--chain", "vault"])
+        .await
+        .json();
+    let checks = public_report["checks"].as_array().unwrap();
+    assert_eq!(checks.len(), 1, "{public_report}");
+    assert_eq!(checks[0]["status"], "unsigned");
 }
 
 /// Signing flags are validated before anything is sent.
@@ -1005,25 +1018,24 @@ async fn test_signing_commands_check_their_inputs() {
         "{}",
         no_chain.err
     );
-    let no_key = run(
+    let no_key_id = run(
         &d,
         &[
-            "chain",
-            "access",
-            "set",
-            "signed",
+            "thought",
+            "append",
+            "x",
             "--chain",
             "c",
             "--agent",
             "a",
-            "--signing-key-id",
-            "k",
+            "--private-key-file",
+            &key,
         ],
     )
     .await;
     assert!(
-        !no_key.ok && no_key.err.contains("--private-key-file"),
+        !no_key_id.ok && no_key_id.err.contains("--signing-key-id"),
         "{}",
-        no_key.err
+        no_key_id.err
     );
 }
