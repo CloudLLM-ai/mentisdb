@@ -18,8 +18,9 @@ chain and position, and can be governed by a write policy recorded inside the ch
 
 Retrieval combines BM25 lexical scoring with document-frequency gating, dense-vector
 similarity from a local ONNX model, typed graph expansion, append-order session cohesion,
-and optional Reciprocal Rank Fusion. Superseded and corrected thoughts are hidden by
-default but never deleted. A *standing context* query returns what is durably true about
+and optional Reciprocal Rank Fusion. Nothing is deleted: a superseded thought is replaced
+in results by its current successor, and one that a newer thought merely contests is shown
+with the contester ranked above it. A *standing context* query returns what is durably true about
 the user and the project regardless of age, next to the usual window of recent thoughts.
 None of this needs an external database, a network service or an LLM call.
 
@@ -230,7 +231,7 @@ within ten minutes of the server clock (`KeyRegistrationProof::verify` in
 The registry is a sidecar file, not part of the hash chain. Section 4.3 explains what that
 means for trust.
 
-### 3.6 Invalidation and Point-in-Time Reads
+### 3.6 Versions, Invalidation and Point-in-Time Reads
 
 Nothing is deleted. When a thought is superseded, corrected or invalidated, the new
 thought carries the edge and the old one stays in the log.
@@ -240,6 +241,37 @@ together with each target's invalidating edges (`observe_invalidating_relations`
 append updates the set. The default read paths hide invalidated thoughts: filter search,
 ranked search, context bundles and recent context. A caller sees them with
 `include_invalidated=true`, which is how an agent audits what changed.
+
+Hiding alone is not enough, for two reasons. A successor often uses different words than
+the thought it replaces, so hiding the old version can leave the agent with nothing. And
+agents rarely type their links. On one real installation, none of 14 `Correction` and
+`AssumptionInvalidated` thoughts and none of about 90 `Decision` thoughts carried a
+`Supersedes`, `Corrects` or `Invalidates` relation; half the corrections carried no link
+and the rest only plain references. The invalidated set stayed empty and the old policy
+kept winning searches. The lineage index (`src/lineage.rs`) addresses both problems. It is
+derived from the stored chain at open time, so existing chains benefit without migration.
+
+- **Superseded.** A thought targeted by a strong edge is `superseded`. When it would have
+  ranked, ranked search puts its *live successor* in its place: the newest unsuperseded
+  end of the chain of supersessions, followed up to 64 steps. The successor inherits the
+  old thought's score and reports which thoughts it stands in for (`successor_of`), so it
+  reaches the agent even when its wording does not match the query.
+- **Contested.** A weak link from a thought that says it replaces something marks the
+  target `contested`. That covers a `Correction` or `AssumptionInvalidated` that refers to
+  any thought, a `Decision` or `StrategyShift` that refers to an earlier decision,
+  constraint, preference, plan or strategy with a plain reference or none, and any
+  `Contradicts` edge. A contested thought stays visible, names the contesting thought,
+  and that thought is promoted directly above it. Weak links do not hide, because a plain
+  reference is often background and hiding it would lose valid memory.
+- **Annotated everywhere.** Every thought returned on every surface carries
+  `version_status` (`current`, `contested` or `superseded`) and, when not current, its
+  `successors` and `current_version`, including results fetched with
+  `include_invalidated=true`.
+- **Advice at write time.** When a new `Correction`, `AssumptionInvalidated` or `Decision`
+  looks like a replacement but carries no strong relation, the append response returns
+  `warnings` naming up to three likely targets, so the agent can add the typed link.
+
+`with_resolve_successors(false)` on a library query restores plain hiding.
 
 A query with `as_of = T` sees the chain as it was at time `T`. It considers only thoughts
 committed at or before `T`, and hides a thought only if an invalidating edge was in force
@@ -258,7 +290,10 @@ adapter, thought and agent counts, and location.
 
 `branch_from` creates a new chain whose first thought is a `StateSnapshot` with a
 cross-chain `BranchesFrom` edge to a thought of the source chain. Nothing is copied and
-the source is untouched; the branch inherits context by reference.
+the source is untouched; the branch inherits context by reference. Ranked search through
+the daemon follows `BranchesFrom` edges and also searches the ancestor chains,
+deduplicating by thought id. It searches each ancestor whole, so thoughts appended to the
+parent after the fork point appear in the branch's results too.
 
 Merging is a server operation. It re-appends the source chain's thoughts, unsigned, onto
 the target and then deregisters the source. It copies type, role, content, importance,
@@ -506,7 +541,9 @@ defaults as of current master.
 Ranking starts from a candidate set (`retrieval_candidates`). It removes invalidated
 thoughts unless `include_invalidated` is set, applies `as_of` (Section 3.6), and applies
 filters on type, role, agent, tags, concepts, scope, entity type, session and time range.
-Filters only restrict; they never add score.
+Filters only restrict; they never add score. After scoring, superseded thoughts that
+would have ranked are replaced by their live successors and contested thoughts are
+preceded by their contesters (Section 3.6).
 
 ### 6.2 Lexical Signal: BM25 with Document-Frequency Gating
 
@@ -688,7 +725,9 @@ collapses restatements, and caps the result:
 | Checkpoint | `Checkpoint` or `Summary` type or role | the newest one |
 
 Only user-scoped or unscoped thoughts are standing. Within a group, restatements with
-Jaccard similarity of 0.85 or more collapse to the newest. The result is a compact prompt
+Jaccard similarity of 0.85 or more collapse to the newest. A superseded constraint or
+decision is replaced by its live successor, even when the successor is not itself a
+standing type such as a `Correction`, and contested entries are flagged in the prompt. The result is a compact prompt
 block delimited by `=== STANDING CONTEXT ===` that the agent loads at startup, next to the
 recent-context block. It is available as an MCP tool, a REST route
 (`POST /v1/standing-context`) and a CLI command (`mentisdb thought standing`).
@@ -720,7 +759,10 @@ proposed memory and makes three decisions. Should it write at all, or is this al
 known? Should it correct, invalidate or supersede an earlier thought instead of writing a
 parallel one? Which one to three earlier thoughts should it link to, with which typed
 edge? This keeps chains small and connected, and it is the main defence against
-duplicates. Automatic deduplication is only the downstream half.
+duplicates. Automatic deduplication is only the downstream half. A change of policy or
+decision must carry a `Supersedes`, `Corrects` or `Invalidates` relation to the thought it
+replaces. A plain reference only marks the old version contested, and if the append
+response carries warnings the agent adds the typed link.
 
 **Write triggers.** Write immediately on a lesson learned, a decision, a constraint, a
 correction or invalidated assumption, a checkpoint, a completed task, an open question or a
@@ -728,9 +770,10 @@ hypothesis. One strong memory is better than many weak ones.
 
 **Recall triggers.** Search before answering when a question touches the user's
 preferences, a past decision, a constraint or how something was done before, or when the
-user says "again", "remember" or "last time". If nothing turns up, retry with
-`include_invalidated=true`, and if a hit appears only there, tell the user it was
-superseded. Never say "I don't know your preference" without having searched.
+user says "again", "remember" or "last time". The agent checks each hit's
+`version_status` and answers from the current version when a hit is contested or
+superseded. Searching with `include_invalidated=true` is for history, not for finding the
+current answer. Never say "I don't know your preference" without having searched.
 
 Standing context covers what must be known at the start. Recall triggers cover what
 becomes relevant later. Together they address the complaint that users have to repeat
@@ -890,6 +933,10 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
 - **Global document frequency.** The default gate counts registry text as present in
   every thought of an agent, which removes useful project words from content scoring.
   The per-field alternative is not yet benchmarked.
+- **Currency depends on links.** Only typed `Supersedes`, `Corrects` and `Invalidates`
+  edges hide an old version. Untyped replacements are detected by a type-based rule and
+  only marked contested, and a replacement with no link at all is caught only by the
+  append-time warning.
 - **Live view ignores edge expiry.** An invalidating edge hides its target forever in live
   reads, even after its `invalid_at`.
 - **Integrity gaps.** Two fields are outside the record hash, legacy migration rehashes
@@ -907,8 +954,10 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
 
 ### 10.2 Future Work
 
-- **Valid-version retrieval:** redirect hits on superseded thoughts to their current
-  successor, annotate what was superseded, and collapse duplicate clusters in results.
+- **Duplicate collapse in results:** fold near-duplicate clusters into one hit so that
+  restatements stop crowding the top ten.
+- **Measuring valid-version retrieval** on benchmarks with changing facts, and on real
+  chains with the correction audit (`examples/correction_audit.rs`).
 - **Better paraphrase recall:** retune vector fusion, evaluate larger local encoders, and
   embed long thoughts in chunks.
 - **Per-field document frequency** as the default once benchmarked.
