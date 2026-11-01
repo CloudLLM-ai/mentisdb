@@ -133,7 +133,7 @@ declared order. The order matters because records are encoded positionally.
 
 | Field | Type | Set by | Meaning |
 |---|---|---|---|
-| `schema_version` | `u32` | chain | Record layout version (currently 3) |
+| `schema_version` | `u32` | chain | Record layout version (currently 3; 4 is an alias) |
 | `id` | `Uuid` | chain | Stable identifier (random v4) |
 | `index` | `u64` | chain | Position in the chain, from 0 |
 | `timestamp` | `DateTime<Utc>` | chain | Commit time |
@@ -640,7 +640,8 @@ Derived files make search fast, and each one can be rebuilt from the log.
 | V0 | Original layout, no version field (JSON lines) |
 | V1 | Explicit version, registry-backed chains, optional signatures |
 | V2 | `Reframe` type, `Supersedes` relation, cross-chain `chain_key` on relations |
-| V3 | `valid_at` and `invalid_at` on relations; later `entity_type` and `source_episode` were appended without a version bump |
+| V3 | `valid_at` and `invalid_at` on relations. Three layouts share this number: the base one, an *entity-only* one that added `entity_type`, and the current one that also added `source_episode`, all without a version bump |
+| 4 | Not a schema: builds of March and April 2026 stamped 4 on V3 records. It is a permanent alias for V3, so the next thought schema will be V5 |
 
 Upgrading a chain's format runs in the background and never blocks startup
 (`src/migration/`). When the daemon starts, a migration manager reads only the first
@@ -661,14 +662,29 @@ interrupted three times, or one that fails, is quarantined untouched while the o
 the daemon carry on. An advisory lock keeps two processes off one chain, and a chain or
 data directory written by a newer release is refused rather than modified.
 
-The engine is strict about integrity. A schema 3 record must hash to exactly what it
-stored, under either hash algorithm, and a migration that would invalidate a v2 signature
-is refused, so a migration can never turn a tampered chain into a freshly valid one.
-Schemas 0 to 2 stored hashes that cannot be recomputed. For them the engine checks the
-stored hash links before rehashing, refusing a chain with a removed, inserted or
-reordered record, though not one with an edited record whose stored hash was kept. A
-migration that rewrites hashes also deletes the chain's signed verification checkpoint,
-which is bound to the old hashes.
+The engine verifies before it rehashes, and refuses anything that does not verify. There
+is no override that accepts an unverifiable record. A schema 3 record is decoded with the
+layout that consumes its entire payload, so one layout's bytes are never read as
+another's fields. Releases through 0.10.10 decoded entity-only records with the base
+layout, which lost the entity type and blanked the hashes. The record is then accepted
+only if its stored hash equals one of three values:
+
+- the current hash of the record as rebuilt into the current chain;
+- the legacy JSON hash, with the stored `prev_hash` linking to the previous stored hash;
+- the current hash computed with the *stored* `schema_version` and the stored
+  `prev_hash`, again linking to the previous stored hash. This is the form the
+  schema-4 builds wrote.
+
+Schemas 0 to 2 stored hashes under rules that can no longer be reproduced. For them the
+engine checks the stored hash links before rehashing, refusing a chain with a removed,
+inserted or reordered record, though not one whose content was edited while its stored
+hash was kept. When a library opens a chain containing schema-4 records in place, the
+loader applies the same rule: each alias record must verify in its stored form, and every
+other record against the chain rebuilt under schema 3, or the open fails. A migration that would change the `prev_hash` a v2 signature is bound to is
+refused. A migration that rewrites hashes deletes the chain's signed verification
+checkpoint, which is bound to the old hashes. On copies of two real chains written by the
+schema-4 builds, with 525 and 66 thoughts, every record verified and migrated with
+identical content, head hash and entity types.
 
 Operators drive and inspect migrations with the `mentisdb migrate` command (`status`,
 `run` with an optional `--dry-run`, `verify`, `retry`, `skip`, `rollback` and
