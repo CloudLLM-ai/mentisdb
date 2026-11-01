@@ -1,4 +1,35 @@
 UNRELEASED
+  - fix(retrieval): an agent that saved a policy change linked to the old policy
+    could later be handed the OLD policy. Measured on a real installation: none
+    of 14 Correction/AssumptionInvalidated and none of ~90 Decision thoughts
+    carried a typed Supersedes/Corrects/Invalidates relation (7 of the 14
+    corrections carried no link at all, the rest only `refs`, stored as
+    `References`), so the invalidated set stayed empty and the old memory won
+    lexically. Now (new module `lineage`, derived at open time, no migration):
+    a superseded thought that would have ranked is replaced by its live
+    successor (`successor_of`), and a thought merely referenced by a newer
+    Correction/AssumptionInvalidated/Decision-over-Decision, or contradicted by
+    anything, is kept but reported `version_status=contested` with the
+    contesting thought promoted above it. Weak links do not hide: a reference
+    from a correction is often background (a consolidation note references six
+    memories that stay valid), so hiding would lose good memory.
+    `RankedSearchQuery::with_resolve_successors(false)` restores plain hiding.
+  - feat(retrieval): every thought JSON on every surface (search, get, head,
+    recent, traverse, bundles, dashboard) carries `version_status`, `successors`
+    and `current_version` when not plainly current, including results returned
+    with `include_invalidated=true`. Library: `RankedSearchHit::version`,
+    `MentisDb::{version_status, current_version, version_info, hit_json}`.
+  - feat(standing): standing context replaces a superseded constraint or
+    decision with its live successor (previously it vanished whenever the
+    successor was not itself a standing type) and flags contested entries.
+  - feat(append): the append response (REST and MCP) carries `warnings` naming
+    candidate target ids when a Correction/AssumptionInvalidated/Decision
+    replaces memory without a typed invalidating relation.
+    `MentisDb::append_advice` is the library entry point.
+  - docs(skill): policy changes must carry `Supersedes` with the old id; the
+    include_invalidated retry advice is replaced by "read version_status".
+  - test(retrieval): end-to-end regression for the policy scenario over library,
+    REST and MCP for seven link styles, old wording and paraphrase.
   - fix(security): dashboard responses now carry a Content-Security-Policy
     (`frame-ancestors 'none'`, `base-uri 'none'`, same-origin connections),
     `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and

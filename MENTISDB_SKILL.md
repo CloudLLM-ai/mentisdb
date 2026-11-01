@@ -59,8 +59,8 @@ Don't write when the answer is "I already know this." Common cases where the rig
 
 Real work invalidates prior memory. Search first to surface candidates:
 
-- A new `Correction` or `AssumptionInvalidated` only makes sense if there is an existing thought to correct. Search for the original lesson / decision / assumption and link the new thought to it with a typed edge (`Corrects`, `Invalidates`, `Supersedes`).
-- If a `LessonLearned` from months ago no longer holds (the framework changed, the bug was in our code not theirs, the workaround is now standard), prefer `AssumptionInvalidated` over a parallel new `LessonLearned` and link with `Invalidates` / `Corrects` — **default search hides the superseded target** so future agents see the current truth (use `include_invalidated=true` only for audit).
+- **A policy or decision change MUST carry a typed edge to the one it replaces**: `relations=[{"kind":"supersedes","target_id":"<old id>"}]` (`Corrects` if the old one was wrong, `Invalidates` if it no longer holds). `refs` or `References` alone do NOT invalidate: the old version stays live and only gets flagged `contested`. A `Correction`/`AssumptionInvalidated` needs an existing thought to correct; search for it first. If the append response has `warnings`, re-append the link using the `target_id` it names.
+- If a `LessonLearned` from months ago no longer holds (the framework changed, the bug was in our code not theirs, the workaround is now standard), prefer `AssumptionInvalidated` over a parallel new `LessonLearned` and link with `Invalidates` / `Corrects` — **default search hides the superseded target and returns its newest live successor in its place** (`successor_of`); `include_invalidated=true` is audit only.
 - If your new memory *narrows* an existing broad one (e.g. "X is fast" → "X is fast for read-heavy workloads but slow for batch writes"), use `Supersedes` with a short note about the narrower scope. Default ranked search then excludes the broader/outdated thought and surfaces the narrower one.
 
 ### Decision 3: Which existing memories should I link to?
@@ -88,7 +88,7 @@ Write **immediately** when any becomes true: LessonLearned (bug cause, framework
 
 Search **before replying** when the question touches the user's preferences, a past decision, a constraint, or how something was done before, or when the user says "again", "as I said", "remember", "last time", "we already". Startup context is a digest, not the whole chain.
 
-- `mentisdb_ranked_search(text="<question, paraphrased>", limit=10)`. Nothing relevant? Retry with `include_invalidated=true`; a hit there was superseded — say so and ask which is current.
+- `mentisdb_ranked_search(text="<question, paraphrased>", limit=10)`. Check every hit's `version_status`: `contested` or `superseded` means a newer thought exists (`successors`, `current_version`); read it and answer from it. Retry with `include_invalidated=true` only for history, never to find the current answer.
 - Before proposing a plan: search `thought_types=["Constraint","Decision"]` for the topic.
 - On "why did we…": ranked search with `graph={"max_depth":2}`, then follow `refs` / `relations`.
 - Never answer "I don't know your preference" without having searched.

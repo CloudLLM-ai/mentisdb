@@ -414,7 +414,12 @@ impl MentisDb {
         filter.agent_ids = query.agent_id.clone().map(|id| vec![id]);
         filter.since = query.since;
         let wanted = query.types.as_deref();
-        let candidates = self.retrieval_candidates(&filter, query.as_of, query.include_invalidated);
+        // Superseded thoughts are fetched too so that each can be replaced by
+        // its live successor: dropping them would leave the digest with no
+        // constraint or decision at all whenever the replacement is not itself
+        // a standing type (for example a `Correction`).
+        let candidates = self.retrieval_candidates(&filter, query.as_of, true);
+        let mut seen: HashSet<Uuid> = HashSet::new();
 
         let mut pools: Vec<(StandingGroup, Vec<Candidate<'_>>)> = StandingGroup::ALL
             .iter()
@@ -430,8 +435,22 @@ impl MentisDb {
             let Some(group) = StandingGroup::for_thought(thought, wanted.is_some()) else {
                 continue;
             };
-            if let Some((_, pool)) = pools.iter_mut().find(|(g, _)| *g == group) {
-                pool.push(Candidate::new(thought));
+            let superseded =
+                !query.include_invalidated && self.invalidated_at(thought.id, query.as_of);
+            let mut subjects: Vec<&Thought> = Vec::new();
+            if superseded {
+                subjects.extend(self.live_successor(thought.id, query.as_of));
+            } else {
+                subjects.push(thought);
+                subjects.extend(self.live_contester(thought.id, query.as_of));
+            }
+            for subject in subjects {
+                if !seen.insert(subject.id) {
+                    continue;
+                }
+                if let Some((_, pool)) = pools.iter_mut().find(|(g, _)| *g == group) {
+                    pool.push(Candidate::new(subject));
+                }
             }
         }
 
@@ -487,13 +506,14 @@ impl MentisDb {
             for (_, c) in lines {
                 let t = c.thought;
                 prompt.push_str(&format!(
-                    "[#{}] {:?}/{:?} ({}, {}) {}\n",
+                    "[#{}] {:?}/{:?} ({}, {}) {}{}\n",
                     t.index,
                     t.thought_type,
                     t.role,
                     self.agent_label_for(t),
                     t.timestamp.format("%Y-%m-%d"),
-                    t.content
+                    t.content,
+                    self.contested_suffix(t)
                 ));
             }
         }

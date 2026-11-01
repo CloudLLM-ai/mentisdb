@@ -309,6 +309,7 @@ pub(crate) mod dashboard;
 pub(crate) mod decode_limits;
 pub mod integrations;
 #[cfg(feature = "llm-extraction")]
+pub mod lineage;
 pub mod llm;
 pub mod paths;
 pub mod search;
@@ -323,6 +324,10 @@ pub mod tui;
 /// Webhook notification system for notifying external HTTP endpoints on thought append events.
 pub mod webhooks;
 #[cfg(feature = "server")]
+pub use lineage::{
+    contest_kind, AdviceCode, AppendAdvice, ParseSuccessorKindError, SuccessorKind, SuccessorNote,
+    SuggestedTarget, VersionInfo, VersionStatus,
+};
 pub use webhooks::{WebhookManager, WebhookPayload, WebhookRegistration, WebhookThought};
 
 use chrono::{DateTime, Utc};
@@ -3503,6 +3508,13 @@ pub struct RankedSearchQuery {
     /// Point-in-time (`as_of`) queries still exclude thoughts that were already
     /// invalidated at that timestamp unless this flag is set.
     pub include_invalidated: bool,
+    /// When `true` (the default) and `include_invalidated` is `false`, a
+    /// superseded thought that would have ranked is replaced by its live
+    /// successor and a contested thought is preceded by the thought contesting
+    /// it, so hiding the old version never leaves the agent with nothing.
+    /// See [`crate::lineage`]. Set `false` to silently drop superseded
+    /// thoughts instead.
+    pub resolve_successors: bool,
     /// Optional memory scope filter.
     ///
     /// When set, only thoughts tagged with the matching `scope:{variant}` tag
@@ -3649,6 +3661,13 @@ impl RankedSearchQuery {
         self
     }
 
+    /// Enable or disable successor redirection, see
+    /// [`RankedSearchQuery::resolve_successors`].
+    pub fn with_resolve_successors(mut self, resolve: bool) -> Self {
+        self.resolve_successors = resolve;
+        self
+    }
+
     /// Filter results to a specific memory scope.
     ///
     /// This adds a `scope:{variant}` tag to the underlying filter's
@@ -3739,6 +3758,7 @@ impl Default for RankedSearchQuery {
             limit: 10,
             as_of: None,
             include_invalidated: false,
+            resolve_successors: true,
             scope: None,
             enable_reranking: false,
             rerank_k: 50,
@@ -3826,6 +3846,9 @@ pub struct RankedSearchHit<'a> {
     pub matched_terms: Vec<String>,
     /// Indexed field sources that contributed to the lexical score.
     pub match_sources: Vec<crate::search::lexical::LexicalMatchSource>,
+    /// Whether this hit is the current version, who superseded or contests
+    /// it, and which older hits it stands in for.
+    pub version: VersionInfo,
 }
 
 /// Ranked-search response over committed thoughts.
@@ -5208,6 +5231,8 @@ pub struct MentisDb {
     /// inspects only the edges aimed at one thought instead of scanning the
     /// whole chain. Built at open and updated on append.
     invalidating_edges: HashMap<Uuid, Vec<InvalidatingEdge>>,
+    /// Reverse index of strong and weak successor links, see [`crate::lineage`].
+    lineage: lineage::LineageIndex,
     /// Access policy derived from the chain's governance records.
     access_policy: access::AccessPolicy,
     /// Optional deduplication threshold for automatic `Supersedes` relations.
@@ -5368,6 +5393,7 @@ impl MentisDb {
             pending_chain_registration_sync: false,
             pending_chain_registration_updates: 0,
             invalidated_thought_ids: HashSet::new(),
+            lineage: lineage::LineageIndex::default(),
             invalidating_edges: HashMap::new(),
             access_policy: access::AccessPolicy::default(),
             dedup_threshold: None,
@@ -5401,6 +5427,9 @@ impl MentisDb {
                 &mut chain.invalidating_edges,
                 thought,
             );
+            chain
+                .lineage
+                .observe(thought, &chain.thoughts, &chain.id_to_index);
         }
 
         chain.access_policy = access::AccessPolicy::replay(chain.chain_key(), &chain.thoughts);
@@ -6055,6 +6084,11 @@ impl MentisDb {
             &mut self.invalidated_thought_ids,
             &mut self.invalidating_edges,
             self.thoughts.last().unwrap(),
+        );
+        self.lineage.observe(
+            self.thoughts.last().unwrap(),
+            &self.thoughts,
+            &self.id_to_index,
         );
 
         // The canonical record is durable and indexed from here on. Everything
@@ -7117,7 +7151,7 @@ impl MentisDb {
     /// Render a JSON representation of a thought with resolved agent metadata.
     pub fn thought_json(&self, thought: &Thought) -> serde_json::Value {
         let agent_record = self.agent_record_for(&thought.agent_id);
-        serde_json::json!({
+        let mut json = serde_json::json!({
             "schema_version": thought.schema_version,
             "id": thought.id,
             "index": thought.index,
@@ -7141,7 +7175,9 @@ impl MentisDb {
             "hash": thought.hash,
             "entity_type": thought.entity_type,
             "source_episode": thought.source_episode,
-        })
+        });
+        self.annotate_thought_json(thought, &mut json);
+        json
     }
 
     /// Query the chain using semantic filters.
@@ -7241,7 +7277,7 @@ impl MentisDb {
     ///     println!("[{}] {}", hit.thought.index, hit.thought.content);
     /// }
     /// ```
-    pub fn query_ranked(&self, request: &RankedSearchQuery) -> RankedSearchResult<'_> {
+    pub(crate) fn query_ranked_raw(&self, request: &RankedSearchQuery) -> RankedSearchResult<'_> {
         let candidates = self.retrieval_candidates(
             &request.filter,
             request.as_of,
@@ -9461,6 +9497,7 @@ impl MentisDb {
             graph_path: graph_hit.map(|hit| hit.best_hit.path.clone()),
             matched_terms,
             match_sources,
+            version: VersionInfo::default(),
         }
     }
 

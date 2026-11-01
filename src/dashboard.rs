@@ -1186,7 +1186,7 @@ fn ranked_hit_response(
     hit: crate::RankedSearchHit<'_>,
 ) -> DashboardRankedHitResponse {
     DashboardRankedHitResponse {
-        thought: chain.thought_json(hit.thought),
+        thought: chain.hit_json(&hit),
         score: DashboardRankedScoreResponse {
             lexical: hit.score.lexical,
             vector: hit.score.vector,

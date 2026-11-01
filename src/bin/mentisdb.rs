@@ -2385,7 +2385,12 @@ Important environment variables:
 
 Search notes:
   Default ranked/search/context retrieval excludes thoughts that were superseded,
-  corrected, or invalidated by a later relation. Pass include_invalidated=true on
+  corrected, or invalidated by a later relation and returns the newest live successor
+  in its place (hit field successor_of). Thoughts that a Correction, AssumptionInvalidated
+  or newer Decision only references are kept but marked version_status=contested. Every
+  thought JSON carries version_status/successors/current_version when not plainly current.
+  Appending a Correction or Decision that replaces memory without a Supersedes/Corrects/
+  Invalidates relation returns warnings naming the target ids. Pass include_invalidated=true on
   MCP/REST search tools for full audit history. Point-in-time as_of still shows
   what was valid at that timestamp.
 

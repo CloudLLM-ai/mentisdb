@@ -3395,12 +3395,13 @@ impl MentisDbService {
         let thought = Self::append_thought_released(&chain, &agent_id, input).await?;
         // Snapshot what the response and log need, then release the chain lock
         // before doing any interaction-log I/O.
-        let (metadata, thought_value, head_hash) = {
+        let (metadata, thought_value, head_hash, warnings) = {
             let guard = chain.read().await;
             (
                 InteractionMetadata::from_chain_thought(&guard, &thought),
                 thought_to_json(&guard, &thought),
                 guard.head_hash().map(ToOwned::to_owned),
+                guard.append_advice(&thought),
             )
         };
         self.log_interaction(InteractionLogEntry {
@@ -3419,6 +3420,7 @@ impl MentisDbService {
         Ok(AppendThoughtResponse {
             thought: thought_value,
             head_hash,
+            warnings,
         })
     }
 
@@ -3487,6 +3489,7 @@ impl MentisDbService {
         Ok(AppendThoughtResponse {
             thought: thought_to_json(&guard, &thought),
             head_hash: guard.head_hash().map(ToOwned::to_owned),
+            warnings: guard.append_advice(&thought),
         })
     }
 
@@ -3555,7 +3558,7 @@ impl MentisDbService {
             .skip(offset)
             .take(page_size)
             .map(|hit| LexicalSearchResult {
-                thought: thought_to_json(&chain, hit.thought),
+                thought: chain.hit_json(&hit),
                 score: hit.score.lexical,
                 matched_terms: hit.matched_terms,
                 match_sources: hit
@@ -3639,7 +3642,7 @@ impl MentisDbService {
                 all_hits.push((
                     search_key.clone(),
                     RankedSearchHitOwned {
-                        thought: thought_to_json(&chain, hit.thought),
+                        thought: chain.hit_json(&hit),
                         score: RankedSearchScoreResponse {
                             lexical: hit.score.lexical,
                             vector: hit.score.vector,
@@ -3887,7 +3890,7 @@ impl MentisDbService {
                 for hit in ranked_result.hits {
                     all_hits.push((
                         chain_key_str.clone(),
-                        thought_to_json(&chain, hit.thought),
+                        chain.hit_json(&hit),
                         hit.score,
                         hit.graph_distance,
                         hit.graph_seed_paths,
@@ -5834,6 +5837,11 @@ struct AppendRetrospectiveRequest {
 struct AppendThoughtResponse {
     thought: Value,
     head_hash: Option<String>,
+    /// Guidance for the agent, present only when the append looks like a
+    /// replacement that lacks a typed `Supersedes`/`Corrects`/`Invalidates`
+    /// relation. The append itself succeeded.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<crate::AppendAdvice>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -8226,7 +8234,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
         .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by."))
-        .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include thoughts superseded/corrected/invalidated by later memory. Default false — normal ranked search hides stale memories.")),
+        .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include thoughts superseded/corrected/invalidated by later memory. Default false: superseded thoughts are replaced by their live successor (field successor_of). Audit only; hits still carry version_status and current_version.")),
         ToolMetadata::new(
             "mentisdb_federated_search",
             "Run federated ranked retrieval over multiple chains simultaneously and return a single merged, ranked result list. Useful for multi-agent hubs or cross-organizational memory aggregation.",
