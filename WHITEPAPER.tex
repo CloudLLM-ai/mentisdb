@@ -681,6 +681,8 @@ Payload
 \endlastfoot
 64 bytes & v1 & Legacy JSON of the semantic fields. Not bound to a chain
 or position, so replayable; accepted only on open chains. \\
+empty & none & Written by some older clients. Treated as unsigned
+everywhere; new writes store no signature instead. \\
 65 bytes starting \passthrough{\lstinline!0x02!} & v2 & Domain
 \passthrough{\lstinline!mentisdb/thought/v2!}, then chain key, agent,
 \passthrough{\lstinline!prev\_hash!}, session, type, role, content,
@@ -2094,10 +2096,6 @@ append cost.
   only governed chains have a checkpoint that lets later opens skip the
   verified prefix, and a hash-changing migration deletes that checkpoint
   instead of re-issuing it.
-\item
-  \textbf{Unexplained invalid signatures.} One real chain carries 43
-  signatures that do not verify, both before and after migration. The
-  cause is under investigation.
 \item
   \textbf{Migrations make a chain briefly unavailable.} A chain being
   migrated answers 503 until it finishes, and library code that opens a

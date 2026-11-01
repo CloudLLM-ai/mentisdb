@@ -364,6 +364,7 @@ Two payload versions exist, distinguished by the stored signature itself:
 | Stored `thought_signature` | Version | Payload |
 |---|---|---|
 | 64 bytes | v1 | Legacy JSON of the semantic fields. Not bound to a chain or position, so replayable; accepted only on open chains. |
+| empty | none | Written by some older clients. Treated as unsigned everywhere; new writes store no signature instead. |
 | 65 bytes starting `0x02` | v2 | Domain `mentisdb/thought/v2`, then chain key, agent, `prev_hash`, session, type, role, content, confidence, importance, tags (which include the scope), concepts, refs, relations with validity, entity type and source episode. |
 
 The v2 payload (`encode_thought_v2` in `src/signing.rs`) uses big-endian length-prefixed
@@ -1282,8 +1283,6 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
 - **Opening a chain costs O(n).** Every open recomputes every hash; only governed chains
   have a checkpoint that lets later opens skip the verified prefix, and a hash-changing
   migration deletes that checkpoint instead of re-issuing it.
-- **Unexplained invalid signatures.** One real chain carries 43 signatures that do not
-  verify, both before and after migration. The cause is under investigation.
 - **Migrations make a chain briefly unavailable.** A chain being migrated answers 503
   until it finishes, and library code that opens a legacy chain directly still migrates
   it in place, blocking that open.
