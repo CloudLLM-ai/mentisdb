@@ -991,10 +991,9 @@ are saved every 16 appends and at shutdown.
 
 One writer process per data directory is assumed. The daemon takes an
 advisory lock on \passthrough{\lstinline!mentisdb.lock!} in the data
-directory, and the offline operator CLI refuses to run while it is held.
-A second daemon that finds the lock taken starts anyway, and library
-embedders do not take it, so the assumption is enforced only for the
-operator CLI.
+directory. A second daemon on the same directory refuses to start, and
+the offline operator CLI refuses to run while the lock is held. Library
+embedders do not take the lock.
 
 \subsubsection{5.4 Crash Recovery}
 
@@ -2020,9 +2019,9 @@ append cost.
   \textbf{Merges lose structure.} A merge drops relations, signatures
   and timestamps.
 \item
-  \textbf{Single writer.} Only the offline operator CLI respects the
-  daemon's data-directory lock. A second daemon or an embedding process
-  can still append to the same chain.
+  \textbf{Single writer.} The data-directory lock stops a second daemon
+  and the offline CLI, but a process that embeds the library can still
+  append to a chain the daemon owns.
 \item
   \textbf{No general rate limiting.} Only dashboard logins and invalid
   read proofs are rate limited. A client that can reach the API can
