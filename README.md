@@ -1047,7 +1047,7 @@ Current ranked-search behavior:
 - each ranked hit also includes a `vector` score component when semantic sidecars contribute to the ranking
 - graph-expanded hits also expose `graph_distance`, `graph_seed_paths`, `graph_relation_kinds`, and `graph_path` provenance so callers can explain why a supporting thought surfaced
 - grouped context delivery is available through `query_context_bundles`, which anchors supporting graph hits beneath lexical seeds in deterministic order
-- over MCP (`mentisdb_ranked_search`, `mentisdb_federated_search`) and REST (`/v1/ranked-search`, `/v1/federated-search`), `compact: true` returns each hit as `chain_key`, the total `score` and the thought, in the same order as the full form. The thought leaves out `hash`, `prev_hash`, `thought_signature`, `signing_key_id`, `schema_version`, `agent_name` and `agent_owner` (which repeat the agent registry) and any null or empty field; every other field, including `relations`, `concepts`, `refs` and `content`, is kept, and a field added to `Thought` later is kept by default. Version fields on the thought (`version_status`, `successors`, `current_version`, `successor_of`, `collapsed_duplicates`) are kept. Graph-expanded hits keep `graph_distance`, `graph_seed_paths`, `graph_relation_kinds` and `graph_path`. Score components, `matched_terms` and `match_sources` are left out. Responses are about a quarter smaller, and `cargo bench --bench search_compact` shows no measurable time cost
+- `compact: true` (MCP `mentisdb_ranked_search` and `mentisdb_federated_search`, REST `/v1/ranked-search` and `/v1/federated-search`, CLI `mentisdb search --compact` and `mentisdb search federated --compact`) returns smaller hits for routine recall; see [Compact search results](#compact-search-results)
 
 Lexical ranked example:
 
@@ -1186,6 +1186,97 @@ Product rule:
 - use `query_ranked` for flat ranked retrieval and `query_context_bundles` when the caller wants seed-anchored support context instead of one mixed list
 
 The ranked-search benchmark `benches/search_ranked.rs` and evaluation tests in `tests/search_ranked_eval_tests.rs` are the guardrails for that additive surface.
+
+### Compact search results
+
+Ranked and federated search accept an opt-in `compact: true`. It cuts the tokens an agent spends reading results without removing any field the agent reasons with. The default response is unchanged. It is available on MCP (`mentisdb_ranked_search`, `mentisdb_federated_search`), REST (`POST /v1/ranked-search`, `POST /v1/federated-search`) and the CLI (`mentisdb search --compact`, `mentisdb search federated --compact`). It is not offered on `mentisdb_context_bundles`.
+
+A compact hit is `chain_key`, the total `score` as a plain number, and the thought, in the same order as the full form. Graph-expanded hits also keep `graph_distance`, `graph_seed_paths`, `graph_relation_kinds` and `graph_path`.
+
+| | Full hit | Compact hit |
+|---|---|---|
+| `score` | object with `lexical`, `vector`, `graph`, `importance`, ... and `total` | the `total` number |
+| `matched_terms`, `match_sources` | present | left out |
+| thought `hash`, `prev_hash` | present | left out (chain integrity) |
+| thought `thought_signature`, `signing_key_id` | present | left out (signing; `provenance` still carries the server's verdict) |
+| thought `schema_version` | present | left out |
+| thought `agent_name`, `agent_owner` | present | left out (they repeat the agent registry entry for `agent_id`; `mentisdb_get_agent` resolves it) |
+| top-level thought fields that are `null`, `""`, `[]` or `{}` | present | left out |
+| thought `provenance` (`segment`, `signed`, `signature`, `signature_version`, `verified_agent`, `trust`) | present | **always kept, whole** |
+| `version_status`, `successors`, `current_version`, `successor_of`, `collapsed_duplicates` | present when set | **always kept** |
+| `relations`, `concepts`, `refs`, `content`, `tags`, ids, importance, confidence, timestamps | present | kept (zero and `false` are values, not empty) |
+
+Fields are dropped by name from a fixed list, so a field added to the thought later appears in compact hits by default. Visibility is decided before compaction: a public reader still gets only the public segment, and a reader with a valid `X-Mentis-Auth` proof still gets the private one, each hit with its `provenance`.
+
+Full hit (`POST /v1/ranked-search`):
+
+```json
+{
+  "backend": "hybrid",
+  "total": 1,
+  "results": [
+    {
+      "chain_key": "project",
+      "score": {
+        "confidence": 0.0, "graph": 0.0, "importance": 0.17541419, "lexical": 1.9490464,
+        "recency": 0.05, "relation": 0.0, "rrf": 0.0, "seed_support": 0.0,
+        "session_cohesion": 0.0, "total": 5.932654, "vector": 0.34079674
+      },
+      "matched_terms": ["job", "queue", "storag"],
+      "match_sources": ["content", "tags", "concepts"],
+      "graph_distance": null, "graph_path": null, "graph_relation_kinds": [], "graph_seed_paths": 0,
+      "thought": {
+        "agent_id": "builder", "agent_name": "Builder", "agent_owner": "platform",
+        "concepts": ["job queue"], "confidence": null,
+        "content": "Use Postgres for the job queue; revisit if throughput exceeds 5k jobs per second.",
+        "entity_type": null,
+        "hash": "31de8f264b1588a29be30a278a24e8623cf51b8f3ce8483a7e52f69ce80e21e1",
+        "id": "1182d44f-3834-4ff0-9121-eab986b1a4f5", "importance": 0.800000011920929, "index": 0,
+        "prev_hash": "",
+        "provenance": {
+          "segment": "public", "signature": "unsigned", "signature_version": null,
+          "signed": false, "trust": "untrusted_data", "verified_agent": null
+        },
+        "refs": [], "relations": [], "role": "Memory", "schema_version": 3, "session_id": null,
+        "signing_key_id": null, "source_episode": null, "tags": ["storage"],
+        "thought_signature": null, "thought_type": "Decision",
+        "timestamp": "2026-11-01T23:03:19.669167Z"
+      }
+    }
+  ]
+}
+```
+
+The same request with `"compact": true`:
+
+```json
+{
+  "backend": "hybrid",
+  "total": 1,
+  "results": [
+    {
+      "chain_key": "project",
+      "score": 5.932654,
+      "thought": {
+        "agent_id": "builder",
+        "concepts": ["job queue"],
+        "content": "Use Postgres for the job queue; revisit if throughput exceeds 5k jobs per second.",
+        "id": "1182d44f-3834-4ff0-9121-eab986b1a4f5", "importance": 0.800000011920929, "index": 0,
+        "provenance": {
+          "segment": "public", "signature": "unsigned", "signature_version": null,
+          "signed": false, "trust": "untrusted_data", "verified_agent": null
+        },
+        "role": "Memory", "tags": ["storage"], "thought_type": "Decision",
+        "timestamp": "2026-11-01T23:03:19.669167Z"
+      }
+    }
+  ]
+}
+```
+
+When to use it: routine recall and scanning many hits, where the content, tags, relations, version status and provenance are what the agent reads. Leave it off when you need the hashes or signatures to verify a thought yourself, when you audit a provenance chain, or when you debug per-component scores or matched terms. `mentisdb_get_thought` (REST `POST /v1/thought`) returns the full record of any hit.
+
+Measured on a copy of a working MentisDB with 11 chains (12 ranked, graph and federated searches, 10 hits each), responses were 23.7% smaller (353,071 B to 269,335 B); on a generated corpus of 66 queries they were 34.2% smaller. `cargo bench --bench search_compact` shows the same request time with and without `compact` (about 25% fewer bytes). Contributed by Austin Faulkner-Pearce.
 
 ### Search Scoring (0.8.1)
 
@@ -1743,7 +1834,7 @@ The daemon currently exposes 45 MCP tools:
 - `mentisdb_lexical_search`
   Return flat ranked lexical matches with explainable term and field provenance.
 - `mentisdb_ranked_search`
-  Return flat ranked lexical, graph-aware, or heuristic results with additive score breakdowns. Supports `as_of` for point-in-time queries and `scope` for memory scope filtering.
+  Return flat ranked lexical, graph-aware, or heuristic results with additive score breakdowns. Supports `as_of` for point-in-time queries and `scope` for memory scope filtering. Pass `compact: true` for smaller hits (see [Compact search results](#compact-search-results)).
 - `mentisdb_context_bundles`
   Return seed-anchored grouped support context beneath the best lexical seeds.
 - `mentisdb_summary_candidates`
@@ -1817,7 +1908,7 @@ Registering or revoking agent keys, disabling agents and changing a chain's acce
 - `mentisdb_delete_webhook`
   Remove a webhook registration by its UUID. Requires a global token when bearer-token access is enabled.
 - `mentisdb_federated_search`
-  Run one ranked-search query across multiple chains simultaneously and return one merged, deduplicated, re-scored result list. Each hit carries the `chain_key` it came from, so multi-agent hubs and cross-organizational memory aggregations can share a single query surface. Per-chain queries may override limits, filters, and RRF settings.
+  Run one ranked-search query across multiple chains simultaneously and return one merged, deduplicated, re-scored result list. Each hit carries the `chain_key` it came from, so multi-agent hubs and cross-organizational memory aggregations can share a single query surface. Per-chain queries may override limits, filters, and RRF settings. Accepts `compact: true` like `mentisdb_ranked_search`.
 - `mentisdb_extract_memories`
   Run the opt-in LLM-extraction pipeline: ingest raw text (paste, transcript, document), call an OpenAI-compatible model, validate the strict JSON schema of candidate thoughts, and return them for human review before append. Nothing is written to the chain until the caller confirms.
 - `mentisdb_list_entity_types`
