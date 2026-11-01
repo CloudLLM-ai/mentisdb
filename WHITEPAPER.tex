@@ -558,10 +558,10 @@ its \passthrough{\lstinline!valid\_at!} is not after
 \passthrough{\lstinline!invalid\_at!} is not at or before
 \passthrough{\lstinline!T!}.
 
-The live view treats every invalidating edge as permanent. An edge whose
-\passthrough{\lstinline!invalid\_at!} has passed still hides its target
-from live reads. Only \passthrough{\lstinline!as\_of!} reads honour edge
-validity.
+Live reads apply the same rule with \passthrough{\lstinline!T!} set to
+now, so an invalidating edge whose \passthrough{\lstinline!invalid\_at!}
+has passed, or whose \passthrough{\lstinline!valid\_at!} lies in the
+future, does not hide its target.
 
 \subsubsection{3.7 Chains, Branches and Merges}
 
@@ -1953,10 +1953,6 @@ append cost.
   Untyped replacements are detected by a type-based rule and only marked
   contested, and a replacement with no link at all is caught only by the
   append-time warning.
-\item
-  \textbf{Live view ignores edge expiry.} An invalidating edge hides its
-  target forever in live reads, even after its
-  \passthrough{\lstinline!invalid\_at!}.
 \item
   \textbf{Integrity gaps.} Two fields are outside the record hash,
   legacy migration rehashes without checking, and the agent registry is

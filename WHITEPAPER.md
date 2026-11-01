@@ -283,8 +283,8 @@ committed at or before `T`, and hides a thought only if an invalidating edge was
 at `T`: the edge's source was committed by then, its `valid_at` is not after `T`, and its
 `invalid_at` is not at or before `T`.
 
-The live view treats every invalidating edge as permanent. An edge whose `invalid_at` has
-passed still hides its target from live reads. Only `as_of` reads honour edge validity.
+Live reads apply the same rule with `T` set to now, so an invalidating edge whose
+`invalid_at` has passed, or whose `valid_at` lies in the future, does not hide its target.
 
 ### 3.7 Chains, Branches and Merges
 
@@ -1179,8 +1179,6 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
   edges hide an old version. Untyped replacements are detected by a type-based rule and
   only marked contested, and a replacement with no link at all is caught only by the
   append-time warning.
-- **Live view ignores edge expiry.** An invalidating edge hides its target forever in live
-  reads, even after its `invalid_at`.
 - **Integrity gaps.** Two fields are outside the record hash, legacy migration rehashes
   without checking, and the agent registry is outside the chain, so `Signed` chains trust
   a sidecar. Integrity is local: there is no consensus and no external anchoring of head
