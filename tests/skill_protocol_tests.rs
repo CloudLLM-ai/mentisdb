@@ -29,3 +29,30 @@ fn test_skill_loads_standing_context_before_recent_and_defines_recall_triggers()
 fn test_skill_stays_under_its_size_budget() {
     assert!(SKILL.len() < 19_000, "skill grew to {} bytes", SKILL.len());
 }
+
+/// The skill teaches the `compact` search flag: when to pass it (scanning many
+/// hits), what it keeps (provenance and version status, so an agent can still
+/// weigh a hit), when to leave it off, and where the full record is.
+#[test]
+fn test_skill_teaches_compact_search() {
+    let recall = SKILL
+        .split("## 🧠 RECALL TRIGGERS")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("recall triggers section");
+    let line = recall
+        .lines()
+        .find(|line| line.contains("`compact=true`"))
+        .expect("recall triggers mention compact=true");
+    for needle in [
+        "ranked or federated",
+        "provenance",
+        "version_status",
+        "hashes, signatures",
+        "verify",
+        "mentisdb_get_thought",
+    ] {
+        assert!(line.contains(needle), "compact guidance lacks {needle}");
+    }
+    assert!(SKILL.contains("(compact too) has `provenance`"));
+}
