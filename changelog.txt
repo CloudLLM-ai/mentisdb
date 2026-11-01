@@ -1,4 +1,11 @@
 UNRELEASED
+  - fix(build): `lineage` was gated on the `llm-extraction` feature by a
+    misplaced attribute, so `--no-default-features` (with or without `server`)
+    did not compile. Both configurations build again.
+  - fix(invalidation): the live `is_invalidated` check ignored a relation's
+    `invalid_at`/`valid_at`, so an expired supersession still hid its target
+    while `is_invalidated_as_of` disagreed. They now agree; lineage edges also
+    treat "live" as "now".
   - feat(security): public and private chains. A chain is public (unsigned
     writes, free reads) or private (signed writes by an allowed key; the
     segment written while private is readable only by a reader who proves

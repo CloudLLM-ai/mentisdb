@@ -11658,7 +11658,17 @@ impl MentisDb {
     /// [`MentisDb::is_invalidated_as_of`].
     #[inline]
     pub fn is_invalidated(&self, thought_id: Uuid) -> bool {
+        // The set is a fast negative filter; an edge whose `invalid_at` has
+        // passed (or whose `valid_at` is still ahead) no longer invalidates,
+        // exactly as `is_invalidated_as_of(now)` decides.
         self.invalidated_thought_ids.contains(&thought_id)
+            && self
+                .invalidating_edges
+                .get(&thought_id)
+                .is_some_and(|edges| {
+                    let now = Utc::now();
+                    edges.iter().any(|edge| edge.in_force_at(now))
+                })
     }
 
     /// Return `true` when `thought_id` was invalidated by a relation that was
@@ -11696,9 +11706,10 @@ impl MentisDb {
         self.invalidating_edges
             .get(&thought_id)
             .is_some_and(|edges| {
-                edges
-                    .iter()
-                    .any(|edge| self.is_visible_index(edge.source_index, audience))
+                let now = Utc::now();
+                edges.iter().any(|edge| {
+                    edge.in_force_at(now) && self.is_visible_index(edge.source_index, audience)
+                })
             })
     }
 

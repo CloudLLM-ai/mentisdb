@@ -299,7 +299,8 @@ pub(crate) struct SuccessorEdge {
 
 impl SuccessorEdge {
     fn in_force_at(&self, as_of: Option<DateTime<Utc>>) -> bool {
-        let Some(as_of) = as_of else { return true };
+        // Live reads mean "now": an expired or not-yet-valid edge is not in force.
+        let as_of = as_of.unwrap_or_else(Utc::now);
         self.timestamp <= as_of
             && !self.valid_at.is_some_and(|v| v > as_of)
             && !self.invalid_at.is_some_and(|i| i <= as_of)

@@ -518,3 +518,39 @@ mod transport {
         }
     }
 }
+
+/// Regression: the live invalidation check ignored a relation's `invalid_at`,
+/// so an expired supersession still hid its target while the `as_of` check
+/// disagreed. Both must say the old policy is current again.
+#[test]
+fn expired_supersession_no_longer_hides_the_target() {
+    let dir = tempdir().unwrap();
+    let mut chain =
+        MentisDb::open_with_key_and_storage_kind(dir.path(), "expired", StorageAdapterKind::Binary)
+            .unwrap();
+    let old = chain
+        .append_thought("a", ThoughtInput::new(ThoughtType::Decision, OLD_POLICY))
+        .unwrap()
+        .clone();
+    let past = chrono::Utc::now() - chrono::Duration::hours(1);
+    chain
+        .append_thought(
+            "a",
+            ThoughtInput::new(ThoughtType::Decision, NEW_POLICY).with_relations(vec![
+                ThoughtRelation {
+                    kind: ThoughtRelationKind::Supersedes,
+                    target_id: old.id,
+                    chain_key: None,
+                    valid_at: Some(past - chrono::Duration::hours(1)),
+                    invalid_at: Some(past),
+                },
+            ]),
+        )
+        .unwrap();
+    assert!(!chain.is_invalidated(old.id));
+    assert_eq!(
+        chain.is_invalidated(old.id),
+        chain.is_invalidated_as_of(old.id, chrono::Utc::now())
+    );
+    assert_eq!(chain.version_status(old.id), VersionStatus::Current);
+}
