@@ -128,6 +128,7 @@ Clients:
 * `mentisdb --mode stdio` reads the same environment variables once and signs
   every request it forwards to the daemon.
 * Library: `mentisdb::read_auth::{sign_request, ReadSigner}`.
+* Python: `pymentisdb.ReadSigner` (`pip install pymentisdb[signing]`) or the same environment variables; `MentisDbClient(read_signer=...)` signs every request. A pinned test vector is shared with the Rust tests.
 
 Range of the proof: key sets are per chain, so one signature never reads a
 chain the key is not allowed on, even in a federated search; each chain is
@@ -536,3 +537,4 @@ authorized reader's view and never a governance record). Run one with
 * A key that was once allowed and later removed keeps whatever it already read.
 * Latency side channels are not closed.
 * The operator key and the data directory are as trusted as the host.
+* No general request rate limiting exists (only the invalid-proof limiter); run behind a reverse proxy that limits request rates if the port is exposed.

@@ -260,3 +260,32 @@ fn domain_separation_from_other_signatures() {
         assert!(!READ_AUTH_DOMAIN.starts_with(other) && !other.starts_with(READ_AUTH_DOMAIN));
     }
 }
+
+/// A pinned vector shared with `pymentisdb/tests/test_read_auth.py`: both
+/// implementations must produce exactly this header (Ed25519 is deterministic).
+#[test]
+fn the_pinned_cross_language_vector_matches() {
+    let body = br#"{"chain_key":"vault","text":"launch"}"#;
+    let header = sign_request(
+        &[7u8; 32],
+        "alice smith",
+        "alice-1",
+        "POST",
+        "/v1/ranked-search?x=1",
+        body,
+        1_767_225_600,
+        "00112233445566778899aabbccddeeff",
+    );
+    assert_eq!(header, PINNED_VECTOR);
+    assert!(verify_request(
+        &header,
+        "POST",
+        "/v1/ranked-search?x=1",
+        body,
+        1_767_225_600
+    )
+    .is_ok());
+}
+
+/// Same string as `PINNED_VECTOR` in the Python tests.
+pub const PINNED_VECTOR: &str = "v1 agent=alice%20smith;key=alice-1;pk=ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c;ts=1767225600;nonce=00112233445566778899aabbccddeeff;sig=34598ee03953d6edb1eb52cc9853b9af891745d392e94123b1708a64dcb4ff8ab9d86bed01b1773ef79542e7ac3eff0e6410d846a94b29db517c33f504706b0e";

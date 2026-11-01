@@ -2999,7 +2999,14 @@ async fn sse_events_middleware(
     let stream =
         tokio_stream::wrappers::BroadcastStream::new(broadcaster.subscribe()).map(|message| {
             Ok::<_, std::convert::Infallible>(match message {
-                Ok(message) => message.format(),
+                Ok(mut message) => {
+                    // A CR or LF in `event` or `id` would end the field and let
+                    // its author forge further fields or whole events.
+                    let strip = |value: String| value.replace(['\r', '\n'], "");
+                    message.event = message.event.take().map(strip);
+                    message.id = message.id.take().map(strip);
+                    message.format()
+                }
                 Err(_) => {
                     "event: warning\ndata: {\"message\":\"events were dropped\"}\n\n".to_string()
                 }

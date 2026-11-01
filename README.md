@@ -2409,6 +2409,17 @@ pip install pymentisdb
 pip install pymentisdb[langchain]  # with LangChain integration
 ```
 
+### Reading private chains
+
+```python
+from pymentisdb import MentisDbClient, ReadSigner  # pip install pymentisdb[signing]
+
+client = MentisDbClient(read_signer=ReadSigner.from_file("builder.key", "builder", "builder-1"))
+```
+
+Every request is signed locally (the key never leaves the process); see
+[docs/CHAIN_ACCESS.md](docs/CHAIN_ACCESS.md). Without a signer the client reads public segments only.
+
 ### Basic Example
 
 ```python

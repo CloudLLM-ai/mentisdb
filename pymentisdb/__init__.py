@@ -17,6 +17,7 @@ Example:
 
 __version__ = "0.9.0"
 
+from .read_auth import ReadSigner
 from .client import MentisDbClient
 from .types import (
     ThoughtType,
@@ -37,6 +38,7 @@ from .types import (
 from .langchain import MentisDbMemory
 
 __all__ = [
+    "ReadSigner",
     "__version__",
     "MentisDbClient",
     "MentisDbMemory",

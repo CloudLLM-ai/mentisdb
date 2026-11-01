@@ -2,10 +2,13 @@
 MentisDbClient - Python client for the MentisDB REST API.
 """
 
+import json
 import requests
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlsplit
 
+from .read_auth import READ_AUTH_HEADER, ReadSigner
 from .types import (
     ThoughtInput,
     Thought,
@@ -50,21 +53,46 @@ class MentisDbClient:
         ...     print(hit.thought.content)
     """
 
-    def __init__(self, base_url: str = "http://127.0.0.1:9472"):
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:9472",
+        read_signer: Optional[ReadSigner] = None,
+    ):
+        """Create a client.
+
+        ``read_signer`` proves possession of a key allowed on a private chain:
+        every request is signed locally and the key never leaves the process.
+        When it is omitted, ``MENTISDB_READ_KEY_FILE``, ``MENTISDB_READ_AGENT_ID``
+        and ``MENTISDB_READ_KEY_ID`` are used if set. Without a signer the client
+        reads public segments only.
+        """
         self.base_url = base_url.rstrip("/")
         self._session = requests.Session()
+        self._read_signer = read_signer if read_signer is not None else ReadSigner.from_env()
+
+    def _proof_headers(self, method: str, url: str, body: bytes) -> dict:
+        if self._read_signer is None:
+            return {}
+        parts = urlsplit(url)
+        target = parts.path + (f"?{parts.query}" if parts.query else "")
+        return {READ_AUTH_HEADER: self._read_signer.header(method, target, body)}
 
     def _post(self, endpoint: str, data: Optional[dict] = None) -> dict:
         """Make a POST request to the REST API."""
         url = f"{self.base_url}{endpoint}"
-        response = self._session.post(url, json=data or {}, timeout=30)
+        # The proof covers the body bytes, so serialize once and send exactly that.
+        body = json.dumps(data or {}, separators=(",", ":")).encode("utf-8")
+        headers = {"Content-Type": "application/json", **self._proof_headers("POST", url, body)}
+        response = self._session.post(url, data=body, headers=headers, timeout=30)
         response.raise_for_status()
         return response.json()
 
     def _get(self, endpoint: str) -> dict:
         """Make a GET request to the REST API."""
         url = f"{self.base_url}{endpoint}"
-        response = self._session.get(url, timeout=30)
+        response = self._session.get(
+            url, headers=self._proof_headers("GET", url, b""), timeout=30
+        )
         response.raise_for_status()
         return response.json()
 
