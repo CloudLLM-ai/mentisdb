@@ -11,6 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 serde_json = "1"
+bincode = { version = "2.0.1", features = ["serde"] }
 url = "2"
 mentisdb = { path = "..", default-features = false, features = ["server"] }
 
@@ -52,3 +53,17 @@ name = "chain_key"
 path = "fuzz_targets/chain_key.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "migration_record"
+path = "fuzz_targets/migration_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "migration_chain"
+path = "fuzz_targets/migration_chain.rs"
+test = false
+doc = false
+bench = false

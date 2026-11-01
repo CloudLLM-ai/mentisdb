@@ -312,6 +312,7 @@ pub mod integrations;
 #[cfg(feature = "llm-extraction")]
 pub mod lineage;
 pub mod llm;
+pub mod migration;
 pub mod paths;
 pub mod read_auth;
 pub mod search;
