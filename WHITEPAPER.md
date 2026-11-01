@@ -26,10 +26,9 @@ with the contester ranked above it. A *standing context* query returns what is d
 the user and the project regardless of age, next to the usual window of recent thoughts.
 None of this needs an external database, a network service or an LLM call.
 
-In the last full benchmark run (release 0.10.9.54, local MiniLM embeddings) the pipeline
-reached 73.5% Recall@10 on LoCoMo-10P and 68.0% Recall@5 on LongMemEval. A provisional
-A/B of the current defaults against the previous ones moved these from 73.1% to 75.2% and
-from 68.0% to 70.0% on existing benchmark chains. On real project
+With its current defaults and a small local embedding model (MiniLM, 384 dimensions), the
+pipeline reaches 76.7% Recall@10 on LoCoMo-10P and 69.8% Recall@5 on LongMemEval, up from
+73.5% and 68.0% in release 0.10.9.54 under the same protocol. On real project
 chains, an audit found no loss of recall with the age of a memory, but found that
 near-duplicate thoughts crowded results and that paraphrased queries recalled far less
 than verbatim ones. Length-independent vector fusion and result-time duplicate collapse
@@ -278,6 +277,9 @@ derived from the stored chain at open time, so existing chains benefit without m
   looks like a replacement but carries no strong relation, the append response returns
   `warnings` naming up to three likely targets, so the agent can add the typed link.
 
+Lineage follows cross-chain relations too, so a thought on a branch that supersedes one
+on its parent redirects results in branch and federated search, subject to the reader's
+audience. Context bundles redirect superseded seeds the same way.
 `with_resolve_successors(false)` on a library query restores plain hiding.
 
 A query with `as_of = T` sees the chain as it was at time `T`. It considers only thoughts
@@ -728,7 +730,7 @@ new text.
 stem so inflected forms expand too. Each term gets at most three synonyms at weight 0.3,
 in the library and the daemon alike. On the A/B chains of Section 9.2, turning synonyms
 off scored 75.3% LoCoMo R@10 and 69.6% LongMemEval R@5, weight 0.3 scored 75.2% and 70.0%,
-and the older weight 0.7 scored 74.8% and 68.2%.
+and the older weight 0.7 scored 74.8% and 68.2%, so 0.3 is kept mainly for LongMemEval.
 
 ### 6.3 Vector Signal and Fusion
 
@@ -1007,9 +1009,26 @@ and is stated with each result.
 
 ### 9.2 Results
 
-The last full benchmark protocol, with fresh ingestion and MiniLM embeddings, is release
-0.10.9.54 (October 2026), before valid-version retrieval, relative fusion and collapse.
-These are the reference numbers until the full protocol is re-run on the current defaults:
+The full protocol was re-run on master on 2026-11-01 with the current defaults (relative
+fusion at 0.8, duplicate collapse at 0.9, synonym weight 0.3, global document frequency),
+MiniLM embeddings, a fresh daemon and data directory, and fresh ingestion. The scripts and
+question sets are the same as for the release run below. Raw outputs and the protocol are
+in `results/benchmarks/2026-11-01-full-protocol/`.
+
+| Benchmark | Pipeline | R@5 | R@10 | R@20 | Queries/s |
+|---|---|---|---|---|---|
+| LoCoMo-10P | default | 67.9% | **76.7%** | 83.4% | 428 |
+| LoCoMo-10P | with RRF | 68.6% | 76.9% | 83.5% | 429 |
+| LoCoMo-10P single-hop | default | 71.9% | 80.4% | 86.0% | |
+| LoCoMo-10P multi-hop | default | 53.0% | 62.9% | 73.8% | |
+| LongMemEval | default | **69.8%** | 75.6% | 81.4% | 371 |
+| LongMemEval | with RRF | 70.2% | 75.8% | 82.0% | 362 |
+
+LongMemEval R@10 and R@20 are the per-type results weighted by the number of questions of
+each type. LoCoMo R@5 comes from a separate top-5 evaluation of the same chain.
+
+For comparison, release 0.10.9.54 (October 2026) under the same protocol, before
+valid-version retrieval, relative fusion and collapse:
 
 | Benchmark | Pipeline | R@5 | R@10 | R@20 |
 |---|---|---|---|---|
@@ -1018,30 +1037,15 @@ These are the reference numbers until the full protocol is re-run on the current
 | LongMemEval | default | 68.0% | 72.8% | 78.8% |
 | LongMemEval | with RRF | 68.6% | | |
 
-Query throughput was then about 384 queries per second on both.
+The default pipeline gained 4.0 points of LoCoMo R@5, 3.2 of LoCoMo R@10, 1.8 of
+LongMemEval R@5 and 2.8 of LongMemEval R@10. RRF now adds less than a point, so it stays
+off by default. Multi-hop questions remain about 17 points behind single-hop ones.
 
-**Provisional A/B of the current defaults.** The current defaults were compared with the
-previous ones on master on 2026-11-01, on scratch copies of two already-ingested benchmark chains: a LoCoMo-10P chain of
-5882 thoughts with the dependency-free `local-text` embeddings (256 dimensions, graph
-expansion to depth 3), and a LongMemEval chain with MiniLM embeddings (384 dimensions).
-
-| Metric | Previous defaults | Current defaults |
-|---|---|---|
-| LoCoMo-10P R@10 | 73.1% | **75.2%** |
-| LoCoMo-10P single-hop R@10 | 77.0% | 79.0% |
-| LoCoMo-10P multi-hop R@10 | 58.9% | 61.5% |
-| LoCoMo-10P R@20 | 80.3% | 82.0% |
-| LongMemEval R@5 | 68.0% | **70.0%** |
-| LongMemEval R@10 | 73.2% | 75.8% |
-| LongMemEval R@20 | 79.2% | 81.8% |
-
-LongMemEval R@10 and R@20 are computed from the harness's per-type table weighted by the
-number of questions of each type. The largest LongMemEval gains were on multi-session
-questions (R@10 70.7% to 78.2%) and single-session preferences (R@5 20.0% to 30.0%),
-which are where wording differs most between question and evidence. Preference questions
-remain the weakest type by far.
-
-The decay rate of the relative fusion was chosen from a sweep on the same chains:
+**Choosing the fusion decay.** The decay rate of relative fusion was chosen by an A/B on
+scratch copies of older, already-ingested benchmark chains (the LoCoMo one with 256-
+dimension `local-text` embeddings), comparing configurations on one binary. Those numbers
+measure the effect of each setting, not an absolute result, and are not comparable with
+the tables above:
 
 | Configuration | LoCoMo-10P R@10 | LongMemEval R@5 |
 |---|---|---|
@@ -1052,15 +1056,12 @@ The decay rate of the relative fusion was chosen from a sweep on the same chains
 | Relative fusion, decay 0.80 | 75.2% | 69.4% |
 | Relative fusion, decay 1.5 | 75.5% | 70.2% |
 | Relative fusion, decay 3.0 | 75.9% | 69.6% |
-| **Current default: relative 0.8 with duplicate collapse** | **75.2%** | **70.0%** |
+| Relative 0.8 with duplicate collapse | 75.2% | 70.0% |
 
-Duplicate collapse alone, under the old fusion, moved LongMemEval R@5 from 68.0% to 68.4%
-and left LoCoMo unchanged, because the benchmark conversations contain few repeated
-turns. Its main effect is on real chains (Section 9.4).
-
-These chains and sidecars differ from those of the release run above, so the A/B shows
-the size of the change, not a new absolute result; it is not comparable with the
-0.10.9.54 table. The full protocol has not yet been re-run on the current defaults.
+Larger decay rates gain a little recall but order results almost purely by vectors, so
+0.8 was kept for lexical precision. Duplicate collapse alone moved LongMemEval R@5 from
+68.0% to 68.4% and left LoCoMo unchanged, because the benchmark conversations contain few
+repeated turns. Its main effect is on real chains (Section 9.4).
 
 Earlier full runs show where the gains came from:
 
@@ -1072,7 +1073,7 @@ Earlier full runs show where the gains came from:
 | 0.8.9 | irregular lemmas | 71.9% | 66.8% |
 | 0.9.9 | automatic thesaurus, real embeddings | 72.6% | 66.8% |
 | 0.10.9.54 | stemmed thesaurus keys, damped synonyms, RRF fix | 73.5% | 68.0% |
-| master (provisional A/B, other chains) | relative fusion and collapse | 73.1% to 75.2% | 68.0% to 70.0% |
+| master, 2026-11-01 | valid-version retrieval, relative fusion, collapse | 76.7% | 69.8% |
 
 On a two-conversation LoCoMo subset, 0.8.1 reached 88.7% R@10. That number is for the
 subset only and should not be compared with full-benchmark results.
@@ -1231,7 +1232,7 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
 - **Measuring valid-version retrieval** on benchmarks with changing facts, and on real
   chains with the correction audit (`examples/correction_audit.rs`).
 - **Better paraphrase recall:** evaluate larger local encoders, embed long thoughts in
-  chunks, and re-run all benchmark cutoffs under the current defaults.
+  chunks.
 - **Per-field document frequency** as the default once benchmarked.
 - **Background migrations in the daemon:** wire the migration manager into startup, the
   CLI and the API, and extend hash coverage to every field.
