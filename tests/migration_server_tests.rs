@@ -64,15 +64,37 @@ async fn rest(method: &'static str, url: String, body: Option<Value>) -> Reply {
         .unwrap()
 }
 
-/// Start a daemon over `dir` with a manager whose first record of every chain
-/// waits `hold_ms`, so a migration stays observable.
-async fn daemon(dir: &Path, hold_ms: u64) -> (String, String, MigrationManager) {
+/// A latch that holds migrations open until the test releases it, so every
+/// assertion about "a chain is migrating" is deterministic (no timing).
+#[derive(Default)]
+struct Gate {
+    open: std::sync::Mutex<bool>,
+    changed: std::sync::Condvar,
+}
+
+impl Gate {
+    fn wait(&self) {
+        let mut open = self.open.lock().unwrap();
+        while !*open {
+            open = self.changed.wait(open).unwrap();
+        }
+    }
+
+    fn release(&self) {
+        *self.open.lock().unwrap() = true;
+        self.changed.notify_all();
+    }
+}
+
+/// Start a daemon over `dir`. With a `gate`, every migration blocks at the
+/// first record of its chain until the gate is released.
+async fn daemon(dir: &Path, gate: Option<Arc<Gate>>) -> (String, String, MigrationManager) {
     let mut migration = MigrationConfig::new(dir);
     migration.backup_retention = None;
     migration.options = MigrationOptions {
         failpoint: Some(Arc::new(move |fp| {
-            if matches!(fp, Failpoint::DuringStage { thought: 0 }) {
-                std::thread::sleep(Duration::from_millis(hold_ms));
+            if let (Some(gate), Failpoint::DuringStage { thought: 0 }) = (&gate, fp) {
+                gate.wait();
             }
             false
         })),
@@ -122,7 +144,8 @@ async fn test_migrating_chain_is_503_and_others_are_served() {
     let dir = TempDir::new().unwrap();
     put(dir.path(), "old", FixtureFormat::Schema1, 40);
     put(dir.path(), "current", FixtureFormat::Current, 7);
-    let (rest_url, mcp_url, manager) = daemon(dir.path(), 600).await;
+    let gate = Arc::new(Gate::default());
+    let (rest_url, mcp_url, manager) = daemon(dir.path(), Some(Arc::clone(&gate))).await;
 
     let blocked = head(&rest_url, "old").await;
     assert_eq!(blocked.status, 503, "{:?}", blocked.body);
@@ -155,6 +178,7 @@ async fn test_migrating_chain_is_503_and_others_are_served() {
     assert_eq!(mcp.status, 200, "{:?}", mcp.body);
     assert!(mcp.body.to_string().contains("\"old\""), "{:?}", mcp.body);
 
+    gate.release();
     let manager2 = manager.clone();
     assert!(
         tokio::task::spawn_blocking(move || manager2.wait_idle(Duration::from_secs(60)))
@@ -182,7 +206,7 @@ async fn test_quarantined_chain_is_503_without_retry_after_and_retry_works() {
     corrupt[middle] ^= 0x01;
     std::fs::write(&path, &corrupt).unwrap();
 
-    let (rest_url, _mcp, manager) = daemon(dir.path(), 0).await;
+    let (rest_url, _mcp, manager) = daemon(dir.path(), None).await;
     let manager2 = manager.clone();
     assert!(
         tokio::task::spawn_blocking(move || manager2.wait_idle(Duration::from_secs(60)))
@@ -257,7 +281,8 @@ async fn test_without_a_manager_a_legacy_chain_still_opens() {
 async fn test_dashboard_gate_and_banner_endpoint() {
     let dir = TempDir::new().unwrap();
     put(dir.path(), "old", FixtureFormat::Schema1, 20);
-    let (rest_url, _mcp, manager) = daemon(dir.path(), 700).await;
+    let gate = Arc::new(Gate::default());
+    let (rest_url, _mcp, manager) = daemon(dir.path(), Some(Arc::clone(&gate))).await;
     assert!(mentisdb::migration::manager_for_dir(dir.path()).is_some());
 
     // The dashboard is served over TLS only; exercise its handlers through the
@@ -269,6 +294,7 @@ async fn test_dashboard_gate_and_banner_endpoint() {
         found.gate("old"),
         Some(mentisdb::migration::MigrationBlock::Migrating { .. })
     ));
+    gate.release();
     let manager2 = manager.clone();
     assert!(
         tokio::task::spawn_blocking(move || manager2.wait_idle(Duration::from_secs(60)))

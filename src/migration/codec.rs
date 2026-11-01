@@ -208,7 +208,13 @@ pub fn decode_and_upgrade(payload: &[u8]) -> Result<DecodedRecord, MigrationErro
             if let Ok((with_entity, used)) =
                 bincode::serde::decode_from_slice::<LegacyThoughtV3b, _>(payload, config)
             {
-                if used == payload.len() {
+                if used == payload.len()
+                    && crate::plausible_schema3_hashes(
+                        with_entity.index,
+                        &with_entity.prev_hash,
+                        &with_entity.hash,
+                    )
+                {
                     return Ok(DecodedRecord {
                         thought: step_add_source_episode(with_entity, &mut steps),
                         layout: RecordLayout::Schema3Entity,
@@ -220,7 +226,9 @@ pub fn decode_and_upgrade(payload: &[u8]) -> Result<DecodedRecord, MigrationErro
             let (base, used): (LegacyThoughtV2, usize) =
                 bincode::serde::decode_from_slice(payload, config)
                     .map_err(|e| invalid(format!("schema 3 record: {e}")))?;
-            if used != payload.len() {
+            if used != payload.len()
+                || !crate::plausible_schema3_hashes(base.index, &base.prev_hash, &base.hash)
+            {
                 return Err(invalid(format!(
                     "schema 3 record matches no known layout ({} of {} bytes used)",
                     used,

@@ -14450,6 +14450,24 @@ fn load_binary_thoughts_per_thought(reader: &mut impl Read) -> io::Result<Vec<Th
     Ok(thoughts)
 }
 
+/// Whether `prev_hash`/`hash` look like the hash fields of a real schema-3
+/// record: a full hex SHA-256 hash, and a previous hash only after the first
+/// record.
+///
+/// The schema-3 layouts differ by one or two optional bytes, so a record that
+/// is cut short (a torn tail) can decode, exactly and wrongly, as an *older*
+/// layout with shifted fields. Such a decode leaves a short or empty `hash`;
+/// this check rejects it so only a genuine decode is accepted.
+pub(crate) fn plausible_schema3_hashes(index: u64, prev_hash: &str, hash: &str) -> bool {
+    let is_hash = |value: &str| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit());
+    is_hash(hash)
+        && (if index == 0 {
+            prev_hash.is_empty()
+        } else {
+            is_hash(prev_hash)
+        })
+}
+
 /// Verify and rebuild a chain that contains schema-4 alias records.
 ///
 /// Alias records must verify under the rule that produced them (stored
@@ -14592,7 +14610,7 @@ fn reject_non_torn_partial_payload(partial: &[u8], claimed_len: u64) -> io::Resu
 /// tags. Real records always carry a 64-digit hex hash, so require one; this
 /// stops a genuinely torn tail from being refused as mid-file corruption.
 fn partial_holds_complete_record(bytes: &[u8]) -> bool {
-    deserialize_binary_thought_payload(bytes).is_ok_and(|thought| {
+    deserialize_binary_thought(bytes, false).is_ok_and(|thought| {
         thought.hash.len() == 64 && thought.hash.bytes().all(|b| b.is_ascii_hexdigit())
     })
 }
@@ -14737,6 +14755,14 @@ fn chain_storage_file_is_healthy(path: &Path, storage_kind: StorageAdapterKind) 
 }
 
 fn deserialize_binary_thought_payload(payload: &[u8]) -> io::Result<Thought> {
+    deserialize_binary_thought(payload, true)
+}
+
+/// Decode one record payload. With `exact`, a schema-3 layout must consume the
+/// whole payload; without it, trailing bytes are allowed, which is what asking
+/// "does a complete record start here?" of a buffer holding several needs.
+fn deserialize_binary_thought(payload: &[u8], exact: bool) -> io::Result<Thought> {
+    let consumed_ok = |used: usize| !exact || used == payload.len();
     let (schema_version, _): (u32, usize) =
         bincode::decode_from_slice(payload, crate::decode_limits::thought_record_config())
             .map_err(|error| {
@@ -14762,7 +14788,7 @@ fn deserialize_binary_thought_payload(payload: &[u8]) -> io::Result<Thought> {
             if let Ok((mut thought, used)) =
                 bincode::serde::decode_from_slice::<Thought, _>(payload, config)
             {
-                if used == payload.len() {
+                if consumed_ok(used) {
                     thought.schema_version = MENTISDB_CURRENT_VERSION;
                     return Ok(thought);
                 }
@@ -14770,7 +14796,9 @@ fn deserialize_binary_thought_payload(payload: &[u8]) -> io::Result<Thought> {
             if let Ok((legacy, used)) =
                 bincode::serde::decode_from_slice::<LegacyThoughtV3b, _>(payload, config)
             {
-                if used == payload.len() {
+                if consumed_ok(used)
+                    && plausible_schema3_hashes(legacy.index, &legacy.prev_hash, &legacy.hash)
+                {
                     return Ok(Thought {
                         schema_version: MENTISDB_CURRENT_VERSION,
                         id: legacy.id,
@@ -14796,13 +14824,21 @@ fn deserialize_binary_thought_payload(payload: &[u8]) -> io::Result<Thought> {
                     });
                 }
             }
-            let (legacy, _): (LegacyThoughtV2, usize) =
+            let (legacy, used): (LegacyThoughtV2, usize) =
                 bincode::serde::decode_from_slice(payload, config).map_err(|error| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("Failed to deserialize thought: {error}"),
                     )
                 })?;
+            if !consumed_ok(used)
+                || !plausible_schema3_hashes(legacy.index, &legacy.prev_hash, &legacy.hash)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Failed to deserialize thought: the record matches no schema-3 layout",
+                ));
+            }
             Ok(Thought {
                 schema_version: MENTISDB_CURRENT_VERSION,
                 id: legacy.id,
