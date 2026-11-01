@@ -3559,7 +3559,7 @@ const VECTOR_DECAY_RATE: f32 = 3.0;
 ///
 /// The vector multiplier is `1 + 35 * exp(-x / r)` and decays as the lexical
 /// signal grows (under `Relative` it falls from 36x with no lexical match to
-/// about 8x at the best lexical match). The strategies differ in what `x / r` is.
+/// about 11x at the best lexical match). The strategies differ in what `x / r` is.
 ///
 /// * [`Absolute`](Self::Absolute): `x` is the raw BM25 score and `r = 3`. BM25
 ///   grows with the number of query terms, so a paraphrase question of ten
@@ -15053,7 +15053,7 @@ mod vector_fusion_tests {
     }
 
     /// The multiplier falls monotonically as the lexical share grows but stays
-    /// substantial at the best lexical hit (about 8x at the default decay), so
+    /// substantial at the best lexical hit (about 11x at the default decay), so
     /// the vector channel keeps refining the order among strong lexical matches.
     #[test]
     fn multiplier_decreases_with_lexical_share() {
