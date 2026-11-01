@@ -1140,10 +1140,11 @@ directory written by a newer release is refused rather than modified.
 The engine verifies before it rehashes, and refuses anything that does
 not verify. There is no override that accepts an unverifiable record. A
 schema 3 record is decoded with the layout that consumes its entire
-payload, so one layout's bytes are never read as another's fields.
-Releases through 0.10.10 decoded entity-only records with the base
-layout, which lost the entity type and blanked the hashes. The record is
-then accepted only if its stored hash equals one of three values:
+payload and yields well-formed hashes, so one layout's bytes, or a
+record cut short, are never read as another layout's fields. Releases
+through 0.10.10 decoded entity-only records with the base layout, which
+lost the entity type and blanked the hashes. The record is then accepted
+only if its stored hash equals one of three values:
 
 \begin{itemize}
 \tightlist
