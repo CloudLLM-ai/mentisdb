@@ -2,6 +2,15 @@ UNRELEASED
   - fix(daemon): a second daemon on a data directory that is already in use now refuses
     to start (it used to start without the directory lock and could append to the same
     chain files); the `--offline` operator commands rely on the same lock.
+  - fix(migration): chains from schemas 0 to 2 are now checked before their
+    hashes are rebuilt: the old stored hash links must be intact (a removed,
+    inserted or altered record is refused and the chain left untouched), and the
+    report counts the links verified. A migration that rewrites hashes also
+    removes the chain's signed `.verified.json` checkpoint, which is bound to the
+    old hashes.
+  - docs(storage): the durability table states what each setting survives (the
+    buffered queue holds up to 128 records, not 15; the default does not fsync
+    without MENTISDB_FSYNC=1).
   - feat(retrieval): cross-chain and branch lineage. A `Supersedes`, `Corrects` or
     `Invalidates` relation carrying a `chain_key` now applies wherever one read
     path sees both chains: server branch search (the branch plus its ancestors),

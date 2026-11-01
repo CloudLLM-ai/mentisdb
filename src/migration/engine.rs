@@ -234,6 +234,8 @@ pub struct MigrationReport {
     pub hash_changed: bool,
     /// Signed thoughts in the chain.
     pub signed: u64,
+    /// Pre-schema-3 records whose old hash links were verified before rebuilding.
+    pub legacy_links_verified: u64,
     /// Bytes of an incomplete final record dropped (kept in the backup).
     pub torn_tail_bytes: u64,
     /// Wall-clock milliseconds the staging pass took.
@@ -573,6 +575,7 @@ struct StageSummary {
     head_hash: String,
     hash_changed: bool,
     signed: u64,
+    legacy_links_verified: u64,
     steps: BTreeSet<&'static str>,
     from_schema: u32,
 }
@@ -693,6 +696,7 @@ fn stream_upgrade<W: Write>(
         head_hash: rebuilder.head_hash().to_owned(),
         hash_changed: rebuilder.hash_changed,
         signed: rebuilder.signed,
+        legacy_links_verified: rebuilder.legacy_links_verified,
         steps,
         from_schema: if thoughts == 0 {
             MENTISDB_CURRENT_VERSION
@@ -935,6 +939,7 @@ fn execute(
         steps: summary.steps.iter().map(|s| (*s).to_owned()).collect(),
         hash_changed: summary.hash_changed,
         signed: summary.signed,
+        legacy_links_verified: summary.legacy_links_verified,
         torn_tail_bytes: summary.torn_tail_bytes,
         elapsed_ms: started.elapsed().as_millis() as u64,
         backup_dir: Some(paths.backup_dir.clone()),
@@ -1086,6 +1091,7 @@ fn report_from_journal(paths: &MigrationPaths) -> Result<MigrationReport, Migrat
         steps: Vec::new(),
         hash_changed: journal.hash_changed,
         signed: 0,
+        legacy_links_verified: 0,
         torn_tail_bytes: 0,
         elapsed_ms: 0,
         backup_dir: Some(paths.backup_dir.clone()),
@@ -1477,6 +1483,7 @@ pub fn dry_run_chain(
         steps: summary.steps.iter().map(|s| (*s).to_owned()).collect(),
         hash_changed: summary.hash_changed,
         signed: summary.signed,
+        legacy_links_verified: summary.legacy_links_verified,
         torn_tail_bytes: summary.torn_tail_bytes,
         elapsed_ms: started.elapsed().as_millis() as u64,
         backup_dir: None,

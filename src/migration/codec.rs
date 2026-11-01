@@ -196,8 +196,9 @@ pub fn decode_and_upgrade(payload: &[u8]) -> Result<DecodedRecord, MigrationErro
     }
 }
 
-/// Schema 0/1 to schema 2: relations become three-field. Hashes are discarded
-/// because they were computed over a different canonical form.
+/// Schema 0/1 to schema 2: relations become three-field. The stored hashes are
+/// carried along so the rebuilder can check the old chain's linkage before
+/// they are replaced.
 fn step_v0_to_v2(legacy: LegacyThoughtV0, steps: &mut Vec<&'static str>) -> LegacyThoughtV1 {
     steps.push("relations-v0-to-v2");
     LegacyThoughtV1 {
@@ -226,8 +227,8 @@ fn step_v0_to_v2(legacy: LegacyThoughtV0, steps: &mut Vec<&'static str>) -> Lega
                 chain_key: None,
             })
             .collect(),
-        prev_hash: String::new(),
-        hash: String::new(),
+        prev_hash: legacy.prev_hash,
+        hash: legacy.hash,
     }
 }
 
@@ -303,6 +304,11 @@ pub struct HashRebuilder {
     pub hash_changed: bool,
     /// Number of thoughts that carry a signature.
     pub signed: u64,
+    /// Records from schemas 0 to 2 whose stored hash links were checked
+    /// (`prev_hash` equals the previous record's stored hash) before the
+    /// hashes were rebuilt. The old canonical form cannot be recomputed, but a
+    /// deleted, inserted, reordered or edited-link record is caught here.
+    pub legacy_links_verified: u64,
 }
 
 impl HashRebuilder {
@@ -341,6 +347,18 @@ impl HashRebuilder {
         thought.prev_hash = self.previous_new_hash.clone();
         let new_hash = compute_thought_hash(&thought);
 
+        if layout.hashes_untrusted() && !stored_hash.is_empty() {
+            if stored_prev != self.previous_stored_hash {
+                return Err(MigrationError::Integrity {
+                    index: thought.index,
+                    message: "the old chain's prev_hash does not link to the previous record's \
+                              stored hash; a record was removed, inserted or altered before \
+                              this migration"
+                        .to_string(),
+                });
+            }
+            self.legacy_links_verified += 1;
+        }
         if !layout.hashes_untrusted() {
             let current_ok = stored_hash == new_hash;
             let legacy_ok = stored_prev == self.previous_stored_hash && {
@@ -373,11 +391,7 @@ impl HashRebuilder {
         self.hash_changed |= layout.hashes_untrusted() || stored_hash != new_hash || prev_changed;
 
         thought.hash = new_hash.clone();
-        self.previous_stored_hash = if layout.hashes_untrusted() {
-            String::new()
-        } else {
-            stored_hash
-        };
+        self.previous_stored_hash = stored_hash;
         self.previous_new_hash = new_hash;
         self.next_index += 1;
         Ok(thought)

@@ -557,12 +557,18 @@ fn test_derived_files_are_invalidated_only_when_hashes_change() {
         let sidecar = dir.path().join(format!("{stem}.vectors.m.v1.8d.json"));
         let overlay = dir.path().join(format!("{stem}.auto_edges.bin"));
         let config = dir.path().join(format!("{stem}.vectors.managed.json"));
-        for file in [&sidecar, &overlay, &config] {
+        let checkpoint = dir.path().join(format!("{stem}.verified.json"));
+        for file in [&sidecar, &overlay, &config, &checkpoint] {
             std::fs::write(file, b"x").unwrap();
         }
         migrate(dir.path()).unwrap();
         assert_eq!(sidecar.exists(), !hashes_change, "{format:?} sidecar");
         assert_eq!(overlay.exists(), !hashes_change, "{format:?} overlay");
+        assert_eq!(
+            checkpoint.exists(),
+            !hashes_change,
+            "{format:?}: a signed verified-prefix checkpoint is bound to the old hashes and must go with them"
+        );
         assert!(
             config.exists(),
             "{format:?}: the sidecar configuration is always kept"
@@ -607,4 +613,49 @@ fn test_progress_reaches_one_hundred_percent() {
             .all(|w| w[0].1 <= w[1].1),
         "monotonic"
     );
+}
+
+/// Old chains (schemas 0 to 2) are verified before their hashes are rebuilt:
+/// their stored hash links must be intact, the verification is counted in the
+/// report, and a tampered link refuses the migration instead of being
+/// silently re-rooted.
+#[test]
+fn test_legacy_chain_links_are_verified_before_rehash() {
+    for format in [
+        FixtureFormat::Schema1,
+        FixtureFormat::Schema2,
+        FixtureFormat::JsonlSchema0,
+    ] {
+        let (dir, _) = fixture(format, 10);
+        let MigrationOutcome::Migrated(report) = migrate(dir.path()).unwrap() else {
+            panic!("should migrate");
+        };
+        assert_eq!(report.legacy_links_verified, 10, "{format:?}");
+    }
+
+    let (dir, path) = fixture(FixtureFormat::Schema1, 10);
+    let mut bytes = std::fs::read(&path).unwrap();
+    let needle = b"legacy-hash-2";
+    let mut hits = bytes
+        .windows(needle.len())
+        .enumerate()
+        .filter(|(_, w)| *w == needle);
+    let second = hits
+        .nth(1)
+        .expect("record 3 stores record 2's hash as prev")
+        .0;
+    bytes[second + needle.len() - 1] = b'9';
+    std::fs::write(&path, &bytes).unwrap();
+    let error = migrate(dir.path()).unwrap_err();
+    assert!(
+        matches!(error, MigrationError::Integrity { index: 3, .. }),
+        "{error:?}"
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        bytes,
+        "tampered chain untouched"
+    );
+    let dry = dry_run_chain(dir.path(), KEY, &MigrationOptions::default());
+    assert!(dry.is_err());
 }

@@ -210,6 +210,14 @@ pub fn expected_after_migration(format: FixtureFormat, thoughts: &[Thought]) -> 
     expected
 }
 
+/// Stand-in stored hash of record `index` in a pre-schema-3 fixture; chained
+/// (each record's `prev_hash` is the previous record's hash) like the real ones.
+fn legacy_link(index: Option<u64>) -> String {
+    index
+        .map(|i| format!("legacy-hash-{i}"))
+        .unwrap_or_default()
+}
+
 fn legacy_v0(thought: &Thought, schema_version: u32) -> LegacyThoughtV0 {
     LegacyThoughtV0 {
         schema_version,
@@ -236,8 +244,8 @@ fn legacy_v0(thought: &Thought, schema_version: u32) -> LegacyThoughtV0 {
                 target_id: r.target_id,
             })
             .collect(),
-        prev_hash: format!("legacy-prev-{}", thought.index),
-        hash: format!("legacy-hash-{}", thought.index),
+        prev_hash: legacy_link(thought.index.checked_sub(1)),
+        hash: legacy_link(Some(thought.index)),
     }
 }
 
@@ -268,8 +276,8 @@ fn legacy_v1(thought: &Thought) -> LegacyThoughtV1 {
                 chain_key: r.chain_key.clone(),
             })
             .collect(),
-        prev_hash: format!("legacy-prev-{}", thought.index),
-        hash: format!("legacy-hash-{}", thought.index),
+        prev_hash: legacy_link(thought.index.checked_sub(1)),
+        hash: legacy_link(Some(thought.index)),
     }
 }
 

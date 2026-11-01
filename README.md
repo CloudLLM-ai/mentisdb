@@ -538,9 +538,11 @@ and `cert` work on the data directory directly and do not need the daemon.
   - `true` (default): every `append_thought` returns only after its group commit has been
     written to the chain file. Survives a process crash; add `MENTISDB_FSYNC=1` to also
     survive power loss.
-  - `false`: writes are batched and flushed every 16 appends (`FLUSH_THRESHOLD`). Up to 15
-    thoughts may be lost on a hard crash or power failure, but write throughput increases
-    significantly for multi-agent hubs with many concurrent writers.
+  - `false`: appends are queued to a background writer (queue capacity 128 records, then
+    callers wait) and flushed every 16 appends (`FLUSH_THRESHOLD`). On a hard crash or power
+    failure everything still queued is lost: up to 128 records, not 15, because the flush
+    cadence is not the queue bound. Throughput rises significantly for multi-agent hubs with
+    many concurrent writers.
   Supported values: `1`, `0`, `true`, `false`. Has no effect on the `jsonl` adapter.
 - `MENTISDB_GROUP_COMMIT_MS`
   Group-commit window in milliseconds for the background binary writer.
@@ -687,6 +689,19 @@ MENTISDB_AUTO_FLUSH=true \
 MENTISDB_FSYNC=1 \
 cargo run --bin mentisdb
 ```
+
+#### What each durability setting really guarantees
+
+| Setting | Survives process crash (kill -9) | Survives power loss / OS crash |
+|---|---|---|
+| `MENTISDB_AUTO_FLUSH=true` (default), `MENTISDB_FSYNC` unset | Yes: the append returns after the write reaches the OS | No: bytes may sit in the OS cache; a torn tail is truncated on open, but acknowledged records after the last device sync can be lost |
+| `MENTISDB_AUTO_FLUSH=true`, `MENTISDB_FSYNC=1` | Yes | Yes (group commit is fsynced; roughly 4x append latency) |
+| `MENTISDB_AUTO_FLUSH=false` | No: up to 128 queued records are lost | No |
+
+`POST /v1/admin/flush`, clean shutdown and dropping a chain handle always fsync. Chain migrations
+always fsync their journal, staged file and directory renames, regardless of these settings. The
+default favours latency over power-loss durability; set `MENTISDB_FSYNC=1` on machines that can
+lose power or on shared hosts where the memory is the system of record.
 
 #### Durability and crash recovery (0.10.9)
 
