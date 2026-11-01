@@ -1047,6 +1047,7 @@ Current ranked-search behavior:
 - each ranked hit also includes a `vector` score component when semantic sidecars contribute to the ranking
 - graph-expanded hits also expose `graph_distance`, `graph_seed_paths`, `graph_relation_kinds`, and `graph_path` provenance so callers can explain why a supporting thought surfaced
 - grouped context delivery is available through `query_context_bundles`, which anchors supporting graph hits beneath lexical seeds in deterministic order
+- over MCP (`mentisdb_ranked_search`, `mentisdb_federated_search`) and REST (`/v1/ranked-search`, `/v1/federated-search`), `compact: true` returns each hit as `chain_key`, the total `score` and the thought, in the same order as the full form. The thought leaves out `hash`, `prev_hash`, `thought_signature`, `signing_key_id`, `schema_version`, `agent_name` and `agent_owner` (which repeat the agent registry) and any null or empty field; every other field, including `relations`, `concepts`, `refs` and `content`, is kept, and a field added to `Thought` later is kept by default. Version fields on the thought (`version_status`, `successors`, `current_version`, `successor_of`, `collapsed_duplicates`) are kept. Graph-expanded hits keep `graph_distance`, `graph_seed_paths`, `graph_relation_kinds` and `graph_path`. Score components, `matched_terms` and `match_sources` are left out. Responses are about a quarter smaller, and `cargo bench --bench search_compact` shows no measurable time cost
 
 Lexical ranked example:
 

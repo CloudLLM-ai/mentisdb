@@ -1,4 +1,17 @@
 UNRELEASED
+  - feat(search): ranked and federated search accept `compact: true` (MCP
+    `mentisdb_ranked_search` / `mentisdb_federated_search`, REST
+    `/v1/ranked-search` / `/v1/federated-search`). Each hit is returned as its
+    `chain_key`, total `score` and the thought without `hash`, `prev_hash`,
+    `thought_signature`, `signing_key_id`, `schema_version`, `agent_name`,
+    `agent_owner` and empty fields, in the same order as the full form;
+    graph-expanded hits keep their graph provenance, and version fields
+    (`version_status`, `successors`, `current_version`, `successor_of`,
+    `collapsed_duplicates`) stay on the thought. Fields are dropped by
+    name, so relations, concepts, refs, content and any field added later are
+    kept. On real chains the response was 25% smaller across 12 searches with
+    every relation, concept and graph link kept; `search_compact` benchmarks
+    show no time cost. The default response is unchanged.
   - fix(signing): a stored zero-length `thought_signature` is a placeholder, not a
     signature. Older clients sent an empty field and it was stored as `Some([])`,
     so `verify_signatures` reported each such thought as an invalid signature (43 of

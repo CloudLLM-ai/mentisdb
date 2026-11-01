@@ -89,6 +89,7 @@ Write **immediately** when any becomes true: LessonLearned (bug cause, framework
 Search **before replying** when the question touches the user's preferences, a past decision, a constraint, or how something was done before, or when the user says "again", "as I said", "remember", "last time", "we already". Startup context is a digest, not the whole chain.
 
 - `mentisdb_ranked_search(text="<question, paraphrased>", limit=10)`. Check every hit's `version_status`: `contested` or `superseded` means a newer thought exists (`successors`, `current_version`); read it and answer from it. Retry with `include_invalidated=true` only for history, never to find the current answer.
+- Pass `compact=true` to ranked or federated search to save tokens: hits keep their order, total score and every meaningful field (type, tags, concepts, refs, relations, content, `version_status` and successors, graph provenance) and drop hashes, signatures, agent display names, score components and match lists; the response is about a quarter smaller. Use `mentisdb_get_thought` for a hit's full record.
 - Before proposing a plan: search `thought_types=["Constraint","Decision"]` for the topic.
 - On "why did we…": ranked search with `graph={"max_depth":2}`, then follow `refs` / `relations`.
 - Never answer "I don't know your preference" without having searched.
