@@ -27,7 +27,7 @@ the user and the project regardless of age, next to the usual window of recent t
 None of this needs an external database, a network service or an LLM call.
 
 On the LoCoMo-10P benchmark the default pipeline reaches 75.2% Recall@10, and on
-LongMemEval it reaches 70.0% Recall@5, with a small local embedding model. On real project
+LongMemEval it reaches 70.0% Recall@5, with local embeddings only. On real project
 chains, an audit found no loss of recall with the age of a memory, but found that
 near-duplicate thoughts crowded results and that paraphrased queries recalled far less
 than verbatim ones. Length-independent vector fusion and result-time duplicate collapse
@@ -976,13 +976,33 @@ turn appear in the top *k* thoughts? Both harnesses are in the repository
 - **LongMemEval**: 500 questions over a chain of about 10,900 turns, scored at R@5, R@10
   and R@20.
 
-Both use the default embedding model (`fastembed` MiniLM, 384 dimensions) and the
-daemon's automatic thesaurus.
+All runs use the daemon's automatic thesaurus. The embedding model differs between runs
+and is stated with each result.
 
 ### 9.2 Results
 
-The current defaults were measured on master (November 2026) on the same benchmark
-chains, reporting LoCoMo-10P R@10 and LongMemEval R@5:
+The current defaults were measured on master on 2026-11-01 as an A/B against the previous
+defaults, on scratch copies of two already-ingested benchmark chains: a LoCoMo-10P chain of
+5882 thoughts with the dependency-free `local-text` embeddings (256 dimensions, graph
+expansion to depth 3), and a LongMemEval chain with MiniLM embeddings (384 dimensions).
+
+| Metric | Previous defaults | Current defaults |
+|---|---|---|
+| LoCoMo-10P R@10 | 73.1% | **75.2%** |
+| LoCoMo-10P single-hop R@10 | 77.0% | 79.0% |
+| LoCoMo-10P multi-hop R@10 | 58.9% | 61.5% |
+| LoCoMo-10P R@20 | 80.3% | 82.0% |
+| LongMemEval R@5 | 68.0% | **70.0%** |
+| LongMemEval R@10 | 73.2% | 75.8% |
+| LongMemEval R@20 | 79.2% | 81.8% |
+
+LongMemEval R@10 and R@20 are computed from the harness's per-type table weighted by the
+number of questions of each type. The largest LongMemEval gains were on multi-session
+questions (R@10 70.7% to 78.2%) and single-session preferences (R@5 20.0% to 30.0%),
+which are where wording differs most between question and evidence. Preference questions
+remain the weakest type by far.
+
+The decay rate of the relative fusion was chosen from a sweep on the same chains:
 
 | Configuration | LoCoMo-10P R@10 | LongMemEval R@5 |
 |---|---|---|
@@ -999,8 +1019,11 @@ Duplicate collapse alone, under the old fusion, moved LongMemEval R@5 from 68.0%
 and left LoCoMo unchanged, because the benchmark conversations contain few repeated
 turns. Its main effect is on real chains (Section 9.4).
 
-The last full run with all cutoffs is release 0.10.9.54 (October 2026), before
-valid-version retrieval, relative fusion and collapse:
+These chains and sidecars differ from those of the release runs below, so the two sets of
+numbers should not be compared directly; only the A/B within each set is meaningful.
+
+The last full benchmark protocol, with fresh ingestion and MiniLM embeddings, is release
+0.10.9.54 (October 2026), before valid-version retrieval, relative fusion and collapse:
 
 | Benchmark | Pipeline | R@5 | R@10 | R@20 |
 |---|---|---|---|---|
@@ -1021,7 +1044,7 @@ Earlier full runs show where the gains came from:
 | 0.8.9 | irregular lemmas | 71.9% | 66.8% |
 | 0.9.9 | automatic thesaurus, real embeddings | 72.6% | 66.8% |
 | 0.10.9.54 | stemmed thesaurus keys, damped synonyms, RRF fix | 73.5% | 68.0% |
-| master | relative vector fusion, duplicate collapse | 75.2% | 70.0% |
+| master | relative fusion and collapse (A/B chains, see above) | 75.2% | 70.0% |
 
 On a two-conversation LoCoMo subset, 0.8.1 reached 88.7% R@10. That number is for the
 subset only and should not be compared with full-benchmark results.
