@@ -26,9 +26,12 @@
 //! ```
 //!
 //! The legacy layouts are written with the same mirror structs the decoder
-//! uses, so for formats that matter most the repository also commits files
-//! produced by the real releases (see `tests/fixtures/`); this module is the
-//! generator for everything else and for large synthetic chains.
+//! uses. That proves the decoder and the generator agree, not that either
+//! matches what an old release actually wrote: the repository commits no files
+//! produced by real old releases. The layouts were checked by hand against the
+//! release sources, and the schema-4 alias and entity-only layout were found
+//! and verified on copies of real installations' chains (which are private and
+//! not committed). Treat fixtures from real old binaries as an open gap.
 
 use crate::{
     compute_thought_hash, compute_thought_hash_legacy, rehash_chain_to_bincode,
