@@ -483,9 +483,11 @@ pub fn documents_digest<'a>(
             hasher.update(value.to_le_bytes());
         }
         let one: [u8; 32] = hasher.finalize().into();
-        for (lane, chunk) in lanes.iter_mut().zip(one.chunks_exact(8)) {
-            let word = u64::from_le_bytes(chunk.try_into().expect("8-byte chunk"));
-            *lane = lane.wrapping_add(word);
+        for (index, lane) in lanes.iter_mut().enumerate() {
+            let chunk: [u8; 8] = one[index * 8..index * 8 + 8]
+                .try_into()
+                .expect("8-byte chunk");
+            *lane = lane.wrapping_add(u64::from_le_bytes(chunk));
         }
         count += 1;
     }

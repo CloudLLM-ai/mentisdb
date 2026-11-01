@@ -334,7 +334,7 @@ pub use webhooks::{WebhookManager, WebhookPayload, WebhookRegistration, WebhookT
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize, Serializer};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -4548,6 +4548,102 @@ struct ManagedSidecarEntry {
     /// enough to benefit from approximate search. While the build runs the
     /// cached index is an Exact placeholder so queries stay available.
     pending_hnsw_build: Option<PendingVectorBackendBuild>,
+    /// Indices of appended thoughts whose [`EmbedTicket`] has been issued but
+    /// whose [`EmbedOutcome`] has not been committed yet.
+    in_flight: BTreeSet<u64>,
+    /// Embedded vectors that arrived before an earlier thought's vector and
+    /// wait for the sidecar to reach their position.
+    parked: BTreeMap<u64, ParkedVector>,
+}
+
+/// Most embedded vectors held back waiting for an earlier thought's vector
+/// before the sidecar is declared out of step and rebuilt instead.
+const MAX_PARKED_VECTORS: usize = 64;
+
+/// A vector embedded outside the chain lock that cannot be appended to the
+/// sidecar yet because an earlier thought's vector is still in flight.
+struct ParkedVector {
+    id: Uuid,
+    hash: String,
+    prev_hash: String,
+    vector: Vec<f32>,
+}
+
+/// Embedding work for one freshly appended thought, meant to run **outside**
+/// the chain lock.
+///
+/// A server that holds the chain's write lock across [`MentisDb::append_thought`]
+/// would otherwise also hold it for the embedding model call (milliseconds for
+/// a local model, seconds for a remote one), stalling every reader and writer
+/// of that chain. The flow with tickets is:
+///
+/// 1. under the write lock: [`MentisDb::defer_next_embedding`], then
+///    [`MentisDb::append_thought`], then [`MentisDb::take_embed_tickets`];
+/// 2. with **no lock held**: [`EmbedTicket::embed`] for each ticket;
+/// 3. under a brief write lock: [`MentisDb::commit_embeddings`];
+/// 4. under a read lock: [`MentisDb::flush_pending_derived`].
+///
+/// The thought itself is durable after step 1. The vector is derived state:
+/// if the process dies between steps 1 and 3 the sidecar is merely behind the
+/// chain and is repaired by the background rebuild on the next open or append.
+/// Vectors are applied to the sidecar strictly in chain order even when
+/// concurrent appends finish embedding out of order.
+pub struct EmbedTicket {
+    metadata: crate::search::EmbeddingMetadata,
+    provider: Arc<dyn ManagedEmbeddingProvider>,
+    id: Uuid,
+    index: u64,
+    hash: String,
+    prev_hash: String,
+    text: String,
+}
+
+/// The result of running an [`EmbedTicket`]; hand it to
+/// [`MentisDb::commit_embeddings`].
+pub struct EmbedOutcome {
+    metadata: crate::search::EmbeddingMetadata,
+    id: Uuid,
+    index: u64,
+    hash: String,
+    prev_hash: String,
+    vector: io::Result<Vec<f32>>,
+}
+
+impl EmbedTicket {
+    /// Index of the thought this ticket embeds.
+    pub fn thought_index(&self) -> u64 {
+        self.index
+    }
+
+    /// Run the embedding model. Call this without holding any chain lock.
+    ///
+    /// A provider failure is carried inside the outcome rather than returned:
+    /// [`MentisDb::commit_embeddings`] reacts by scheduling a sidecar repair,
+    /// and the already-committed thought is unaffected.
+    pub fn embed(self) -> EmbedOutcome {
+        let vector = self
+            .provider
+            .embed_documents(&[crate::search::EmbeddingInput::new(
+                self.id.to_string(),
+                self.text,
+            )])
+            .and_then(|mut documents| {
+                documents
+                    .pop()
+                    .map(|document| document.vector)
+                    .ok_or_else(|| {
+                        io::Error::other("managed embedding provider returned no vectors")
+                    })
+            });
+        EmbedOutcome {
+            metadata: self.metadata,
+            id: self.id,
+            index: self.index,
+            hash: self.hash,
+            prev_hash: self.prev_hash,
+            vector,
+        }
+    }
 }
 
 impl ManagedSidecarEntry {
@@ -4575,6 +4671,8 @@ impl ManagedSidecarEntry {
             cached_sidecar: None,
             wal_uncompacted: 0,
             pending_hnsw_build: build_result.pending,
+            in_flight: BTreeSet::new(),
+            parked: BTreeMap::new(),
         }
     }
 
@@ -5303,6 +5401,11 @@ pub struct MentisDb {
     overlay_unsaved_appends: std::sync::atomic::AtomicUsize,
     /// When true, [`Self::append_thought`] skips [`Self::flush_pending_derived`].
     defer_derived_flush: bool,
+    /// When true, the next append queues [`EmbedTicket`]s instead of embedding
+    /// under the caller's lock.
+    defer_embedding: bool,
+    /// Tickets issued by deferred appends and not yet taken.
+    embed_tickets: Vec<EmbedTicket>,
     /// Cosine similarity threshold for auto-inferred edges.
     auto_edge_threshold: f32,
     /// Max neighbors per thought for auto-inferred edges.
@@ -5443,6 +5546,8 @@ impl MentisDb {
             pending_sidecar_rebuilds: Vec::new(),
             overlay_unsaved_appends: std::sync::atomic::AtomicUsize::new(0),
             defer_derived_flush: false,
+            defer_embedding: false,
+            embed_tickets: Vec::new(),
             auto_edge_threshold: std::env::var("MENTISDB_AUTO_EDGE_THRESHOLD")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -6135,7 +6240,12 @@ impl MentisDb {
         // instead of returning `Err` for a thought that *was* persisted, which
         // would make clients retry and duplicate it.
         let last_thought = self.thoughts.last().unwrap().clone();
-        if let Err(error) = self.sync_managed_vector_sidecars_for_append(&last_thought) {
+        let vector_result = if std::mem::take(&mut self.defer_embedding) {
+            self.queue_embed_tickets(&last_thought)
+        } else {
+            self.sync_managed_vector_sidecars_for_append(&last_thought)
+        };
+        if let Err(error) = vector_result {
             log_derived_failure("vector sidecar sync", &error);
         }
         self.sync_implicit_edge_overlay_for_append(&last_thought);
@@ -6260,6 +6370,294 @@ impl MentisDb {
     /// Clear a pending [`Self::defer_next_derived_flush`] after a failed append.
     pub fn cancel_deferred_derived_flush(&mut self) {
         self.defer_derived_flush = false;
+    }
+
+    /// Make the next [`Self::append_thought`] skip the embedding model call.
+    ///
+    /// Instead of embedding while the caller holds the chain's exclusive lock,
+    /// the append records one [`EmbedTicket`] per managed sidecar. Collect them
+    /// with [`Self::take_embed_tickets`], run [`EmbedTicket::embed`] with no
+    /// lock held, then pass the outcomes to [`Self::commit_embeddings`]. See
+    /// [`EmbedTicket`] for the full sequence and the durability argument.
+    ///
+    /// Callers that never call this keep the original behaviour: the vector is
+    /// embedded and queued synchronously inside the append.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use mentisdb::search::LocalTextEmbeddingProvider;
+    /// use mentisdb::{MentisDb, ThoughtInput, ThoughtType};
+    ///
+    /// # fn main() -> std::io::Result<()> {
+    /// let dir = tempfile::tempdir()?;
+    /// let mut chain = MentisDb::open_with_key(dir.path(), "demo")?;
+    /// chain.manage_vector_sidecar(LocalTextEmbeddingProvider::new()).expect("manage sidecar");
+    ///
+    /// // 1. under the write lock
+    /// chain.defer_next_embedding();
+    /// chain.append_thought("agent", ThoughtInput::new(ThoughtType::FactLearned, "hello"))?;
+    /// let tickets = chain.take_embed_tickets();
+    /// assert_eq!(tickets.len(), 1);
+    ///
+    /// // 2. no lock held
+    /// let outcomes: Vec<_> = tickets.into_iter().map(|t| t.embed()).collect();
+    ///
+    /// // 3. brief write lock, 4. read lock
+    /// chain.commit_embeddings(outcomes);
+    /// chain.flush_pending_derived()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn defer_next_embedding(&mut self) {
+        self.defer_embedding = true;
+    }
+
+    /// Clear a pending [`Self::defer_next_embedding`] after a failed append.
+    pub fn cancel_deferred_embedding(&mut self) {
+        self.defer_embedding = false;
+    }
+
+    /// Hand over the [`EmbedTicket`]s issued by deferred appends.
+    pub fn take_embed_tickets(&mut self) -> Vec<EmbedTicket> {
+        std::mem::take(&mut self.embed_tickets)
+    }
+
+    /// Record one ticket per auto-syncing managed sidecar for `thought`.
+    ///
+    /// Cheap and lock-friendly: no model call, no disk I/O. A sidecar with a
+    /// background rebuild in flight is skipped, exactly as the synchronous
+    /// path does; the adopted rebuild covers the thought.
+    fn queue_embed_tickets(&mut self, thought: &Thought) -> io::Result<()> {
+        self.poll_vector_backend_upgrades();
+        if self.persistence.is_none() {
+            return Ok(());
+        }
+        let text = self.thought_embedding_text(thought);
+        let metadata_keys: Vec<crate::search::EmbeddingMetadata> = self
+            .managed_vector_sidecars
+            .iter()
+            .filter(|(_, entry)| entry.auto_sync)
+            .map(|(metadata, _)| metadata.clone())
+            .collect();
+        for metadata in metadata_keys {
+            if self
+                .pending_sidecar_rebuilds
+                .iter()
+                .any(|pending| pending.metadata == metadata)
+            {
+                continue;
+            }
+            let Some(entry) = self.managed_vector_sidecars.get_mut(&metadata) else {
+                continue;
+            };
+            entry.in_flight.insert(thought.index);
+            self.embed_tickets.push(EmbedTicket {
+                provider: Arc::clone(&entry.provider),
+                metadata,
+                id: thought.id,
+                index: thought.index,
+                hash: thought.hash.clone(),
+                prev_hash: thought.prev_hash.clone(),
+                text: text.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Apply vectors embedded outside the lock to the managed sidecars.
+    ///
+    /// Run this under a short exclusive lock; it does no model calls and no
+    /// disk I/O beyond queueing WAL records for
+    /// [`Self::flush_pending_derived`]. Vectors are appended to a sidecar
+    /// strictly in chain order: one that arrives before an earlier thought's
+    /// vector is parked until the gap closes. If the chain moved on in a way
+    /// the sidecar cannot follow (a vector was lost, the sidecar was replaced)
+    /// the sidecar is handed to the background rebuild instead, so the race
+    /// costs a rebuild at worst and never a wrong or out-of-order vector. A
+    /// failed embedding schedules the same repair.
+    pub fn commit_embeddings(&mut self, mut outcomes: Vec<EmbedOutcome>) {
+        outcomes.sort_by_key(|outcome| outcome.index);
+        let mut touched: Vec<crate::search::EmbeddingMetadata> = Vec::new();
+        for outcome in outcomes {
+            let Some(entry) = self.managed_vector_sidecars.get_mut(&outcome.metadata) else {
+                continue;
+            };
+            entry.in_flight.remove(&outcome.index);
+            match outcome.vector {
+                Ok(vector) => {
+                    entry.parked.insert(
+                        outcome.index,
+                        ParkedVector {
+                            id: outcome.id,
+                            hash: outcome.hash,
+                            prev_hash: outcome.prev_hash,
+                            vector,
+                        },
+                    );
+                    if entry.parked.len() > MAX_PARKED_VECTORS {
+                        // An earlier ticket was dropped without being
+                        // committed (a cancelled caller). Waiting longer would
+                        // wedge the sidecar behind a vector that never comes,
+                        // so give up on in-order arrival and repair instead.
+                        entry.parked.clear();
+                        entry.in_flight.clear();
+                        self.schedule_repair_for(&outcome.metadata);
+                        continue;
+                    }
+                }
+                Err(error) => {
+                    log_derived_failure("vector sidecar embed", &error);
+                    entry.parked.clear();
+                    self.schedule_repair_for(&outcome.metadata);
+                    continue;
+                }
+            }
+            if !touched.contains(&outcome.metadata) {
+                touched.push(outcome.metadata);
+            }
+        }
+        for metadata in touched {
+            if let Err(error) = self.drain_parked_vectors(&metadata) {
+                log_derived_failure("vector sidecar sync", &error);
+            }
+        }
+    }
+
+    /// Queue a background rebuild of the sidecar for `metadata`, logging (not
+    /// returning) a scheduling failure.
+    fn schedule_repair_for(&mut self, metadata: &crate::search::EmbeddingMetadata) {
+        let Some(provider) = self
+            .managed_vector_sidecars
+            .get(metadata)
+            .map(|entry| Arc::clone(&entry.provider))
+        else {
+            return;
+        };
+        if let Err(error) =
+            self.schedule_sidecar_rebuild_job(metadata.clone(), move || Ok(provider))
+        {
+            log_derived_failure("vector sidecar repair scheduling", &error);
+        }
+    }
+
+    /// Append every parked vector that now directly follows the sidecar.
+    fn drain_parked_vectors(
+        &mut self,
+        metadata: &crate::search::EmbeddingMetadata,
+    ) -> io::Result<()> {
+        let Some(persistence) = &self.persistence else {
+            return Ok(());
+        };
+        let (dir, key, kind) = (
+            persistence.chain_dir.clone(),
+            persistence.chain_key.clone(),
+            persistence.storage_kind,
+        );
+        if self
+            .pending_sidecar_rebuilds
+            .iter()
+            .any(|pending| &pending.metadata == metadata)
+        {
+            // The adopted rebuild covers these thoughts.
+            if let Some(entry) = self.managed_vector_sidecars.get_mut(metadata) {
+                entry.parked.clear();
+            }
+            return Ok(());
+        }
+        let path = chain_vector_sidecar_path(&dir, &key, kind, metadata);
+        let cached = self
+            .managed_vector_sidecars
+            .get_mut(metadata)
+            .and_then(|entry| entry.cached_sidecar.take());
+        let Some(mut sidecar) =
+            cached.or_else(|| crate::search::VectorSidecar::load_from_path(&path).ok())
+        else {
+            if let Some(entry) = self.managed_vector_sidecars.get_mut(metadata) {
+                entry.parked.clear();
+            }
+            self.schedule_repair_for(metadata);
+            return Ok(());
+        };
+        let mut result = Ok(());
+        let mut needs_repair = false;
+        let mut applied: Vec<(Uuid, u64, String, Vec<f32>)> = Vec::new();
+        while let Some(entry) = self.managed_vector_sidecars.get_mut(metadata) {
+            let Some((&index, _)) = entry.parked.iter().next() else {
+                break;
+            };
+            let covered = sidecar.entries.len();
+            if (index as usize) < covered {
+                // Already covered (an adopted rebuild got there first).
+                entry.parked.remove(&index);
+                continue;
+            }
+            let parked = entry.parked.get(&index).expect("key just observed");
+            let prev = (!parked.prev_hash.is_empty()).then_some(parked.prev_hash.as_str());
+            let fresh = matches!(
+                sidecar.freshness(&key, index as usize, prev, metadata),
+                crate::search::VectorSidecarFreshness::Fresh
+            );
+            if !fresh {
+                if entry.in_flight.iter().any(|&earlier| earlier < index) {
+                    break; // an earlier vector is still being embedded; wait
+                }
+                entry.parked.clear();
+                needs_repair = true;
+                break;
+            }
+            let parked = entry.parked.remove(&index).expect("key just observed");
+            applied.push((parked.id, index, parked.hash.clone(), parked.vector.clone()));
+            let record = sidecar.extend_with_entry(
+                crate::search::VectorSidecarEntry::new(
+                    parked.id,
+                    index,
+                    parked.hash.clone(),
+                    parked.vector,
+                ),
+                index as usize + 1,
+                Some(parked.hash),
+            );
+            let record = match record {
+                Ok(record) => record,
+                Err(error) => {
+                    entry.parked.clear();
+                    needs_repair = true;
+                    result = Err(error);
+                    break;
+                }
+            };
+            if let Some(cached) = entry.cached_index.as_mut() {
+                if let Some(last) = sidecar.entries.last() {
+                    let document = crate::search::VectorDocument::new(
+                        last.thought_id.to_string(),
+                        last.vector.clone(),
+                    );
+                    if let Err(error) = cached.upsert_document(document) {
+                        eprintln!(
+                            "[mentisdb] commit_embeddings: failed to upsert into cached backend: {error}"
+                        );
+                    }
+                }
+            }
+            if let Err(error) = self.queue_sidecar_wal(&path, record, &mut sidecar, metadata) {
+                result = Err(error);
+                needs_repair = true;
+                break;
+            }
+        }
+        if let Some(entry) = self.managed_vector_sidecars.get_mut(metadata) {
+            entry.cached_sidecar = Some(sidecar);
+        }
+        if self.implicit_edge_overlay.is_some() {
+            for (id, index, hash, vector) in &applied {
+                self.apply_implicit_edges_for(metadata, *id, *index, hash, vector);
+            }
+        }
+        if needs_repair {
+            self.schedule_repair_for(metadata);
+        }
+        result
     }
 
     /// Verify the entire hash chain and sequence invariants.
@@ -8995,39 +9393,54 @@ impl MentisDb {
     }
 
     fn sync_implicit_edge_overlay_for_append(&mut self, thought: &Thought) {
-        if self.implicit_edge_overlay.is_none() {
+        if self.implicit_edge_overlay.is_none() || self.persistence.is_none() {
             return;
         }
-        let Some(persistence) = &self.persistence else {
-            return;
-        };
-
-        let metadata = self
+        let found = self
             .managed_vector_sidecars
             .iter()
-            .find(|(_, entry)| {
+            .find_map(|(metadata, entry)| {
                 entry
                     .cached_index
                     .as_ref()
                     .and_then(|idx| idx.get_vector(&thought.id.to_string()))
-                    .is_some()
-            })
-            .map(|(metadata, _)| metadata.clone());
-        let Some(metadata) = metadata else {
+                    .map(|vector| (metadata.clone(), vector))
+            });
+        let Some((metadata, new_vector)) = found else {
             return;
         };
-        let Some(entry) = self.managed_vector_sidecars.get(&metadata) else {
+        self.apply_implicit_edges_for(
+            &metadata,
+            thought.id,
+            thought.index,
+            &thought.hash,
+            &new_vector,
+        );
+    }
+
+    /// Add the implicit edges of one thought, comparing it only against the
+    /// thoughts that precede it in the managed sidecar, and advance the
+    /// overlay's coverage to that thought.
+    ///
+    /// Shared by the synchronous append path and by
+    /// [`Self::commit_embeddings`], where the chain may already have moved on,
+    /// so coverage is the thought's own position rather than the live length.
+    fn apply_implicit_edges_for(
+        &mut self,
+        metadata: &crate::search::EmbeddingMetadata,
+        id: Uuid,
+        index: u64,
+        hash: &str,
+        vector: &[f32],
+    ) {
+        let Some(persistence) = &self.persistence else {
+            return;
+        };
+        let Some(entry) = self.managed_vector_sidecars.get(metadata) else {
             return;
         };
         // Borrow the live sidecar; no per-append deep clone.
         let Some(sidecar) = entry.cached_sidecar.as_ref() else {
-            return;
-        };
-        let Some(new_vector) = entry
-            .cached_index
-            .as_ref()
-            .and_then(|idx| idx.get_vector(&thought.id.to_string()))
-        else {
             return;
         };
         let overlay_path = chain_auto_edges_path(
@@ -9038,8 +9451,15 @@ impl MentisDb {
         let Some(overlay) = self.implicit_edge_overlay.as_mut() else {
             return;
         };
-        overlay.add_thought(thought.id, &new_vector, sidecar);
-        overlay.set_coverage(self.thoughts.len(), &thought.hash);
+        overlay.add_thought_among(
+            id,
+            vector,
+            sidecar
+                .entries
+                .iter()
+                .filter(|other| other.thought_index < index),
+        );
+        overlay.set_coverage(index as usize + 1, hash);
 
         // The overlay file is rebuildable derived state, so it is persisted
         // every OVERLAY_PERSIST_INTERVAL appends (and on flush/drop) instead
@@ -9482,6 +9902,8 @@ impl MentisDb {
             .pop()
             .map(|document| document.vector)
             .ok_or_else(|| io::Error::other("managed embedding provider returned no vectors"))?;
+        // Coverage is the thought's own position, not the live chain head, so
+        // the same call is correct when the chain has already moved on.
         sidecar.extend_with_entry(
             crate::search::VectorSidecarEntry::new(
                 thought.id,
@@ -9489,8 +9911,8 @@ impl MentisDb {
                 thought.hash.clone(),
                 vector,
             ),
-            self.thoughts.len(),
-            self.head_hash().map(ToOwned::to_owned),
+            thought.index as usize + 1,
+            Some(thought.hash.clone()),
         )
     }
 

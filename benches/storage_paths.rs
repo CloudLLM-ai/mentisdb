@@ -4,6 +4,8 @@
 //!   document lexical index (per-query allocation cost of `scan`).
 //! - **`append_dedup`**: append latency with `dedup_threshold` set (the
 //!   per-append Jaccard scan over the last 64 thoughts) versus without.
+//! - **`append_lock_hold`**: time the chain write lock is held per append with
+//!   embedding inside versus outside the lock.
 //! - **`append_sidecar`**: append latency with a managed local-text vector
 //!   sidecar, where the embedding runs under the chain's write lock.
 
@@ -217,6 +219,118 @@ fn bench_append_sidecar(c: &mut Criterion) {
     group.finish();
 }
 
+/// An embedding provider that sleeps per call, standing in for a remote or
+/// heavyweight model, so the benchmark shows what the lock hold time costs
+/// when embedding is slow.
+struct SlowProvider {
+    inner: LocalTextEmbeddingProvider,
+    delay: std::time::Duration,
+}
+
+impl mentisdb::search::EmbeddingProvider for SlowProvider {
+    type Error = std::io::Error;
+
+    fn metadata(&self) -> &mentisdb::search::EmbeddingMetadata {
+        mentisdb::search::EmbeddingProvider::metadata(&self.inner)
+    }
+
+    fn embed_batch(
+        &self,
+        inputs: &[mentisdb::search::EmbeddingInput],
+    ) -> Result<Vec<mentisdb::search::EmbeddingVector>, Self::Error> {
+        std::thread::sleep(self.delay);
+        mentisdb::search::EmbeddingProvider::embed_batch(&self.inner, inputs)
+            .map_err(|error| std::io::Error::other(format!("{error}")))
+    }
+}
+
+/// How long an append holds the chain's exclusive lock.
+///
+/// `sync_*` is the original behaviour (embed inside the append). `deferred_*`
+/// is the lock-held part of the new flow: the append plus handing out tickets;
+/// the model call and the brief commit happen outside / after it
+/// (`deferred_*_commit`). With a 5 ms model the lock hold drops from about
+/// 5 ms to the append cost alone.
+fn bench_append_lock_hold(c: &mut Criterion) {
+    if !selected("append_lock_hold") {
+        return;
+    }
+    let mut group = c.benchmark_group("append_lock_hold");
+    group.sample_size(20);
+    for (label, delay_ms) in [("local", 0_u64), ("slow5ms", 5)] {
+        let make = |name: &str| {
+            let (mut chain, dir) = temp_chain(name);
+            chain
+                .manage_vector_sidecar(SlowProvider {
+                    inner: LocalTextEmbeddingProvider::new(),
+                    delay: std::time::Duration::from_millis(delay_ms),
+                })
+                .expect("manage sidecar");
+            populate(&mut chain, 200);
+            (chain, dir)
+        };
+        let (mut sync_chain, _sync_dir) = make("sync");
+        let mut n = 3_000_000_u64;
+        group.bench_function(format!("sync_{label}"), |b| {
+            b.iter(|| {
+                n += 1;
+                sync_chain
+                    .append_thought(
+                        "bench",
+                        ThoughtInput::new(ThoughtType::Finding, sentence(n, 40)),
+                    )
+                    .expect("append");
+            })
+        });
+        let (mut chain, _dir) = make("deferred");
+        let mut n = 4_000_000_u64;
+        let mut pending = Vec::new();
+        group.bench_function(format!("deferred_{label}"), |b| {
+            b.iter(|| {
+                n += 1;
+                chain.defer_next_embedding();
+                chain
+                    .append_thought(
+                        "bench",
+                        ThoughtInput::new(ThoughtType::Finding, sentence(n, 40)),
+                    )
+                    .expect("append");
+                pending.extend(chain.take_embed_tickets());
+            })
+        });
+        // Commit what the lock-held loop produced so the chain stays valid.
+        let outcomes: Vec<_> = pending.drain(..).map(|t| t.embed()).collect();
+        chain.commit_embeddings(outcomes);
+        let (mut commit_chain, _commit_dir) = make("commit");
+        let mut n = 5_000_000_u64;
+        group.bench_function(format!("deferred_{label}_commit"), |b| {
+            b.iter_custom(|iters| {
+                let mut held = std::time::Duration::ZERO;
+                for _ in 0..iters {
+                    n += 1;
+                    commit_chain.defer_next_embedding();
+                    commit_chain
+                        .append_thought(
+                            "bench",
+                            ThoughtInput::new(ThoughtType::Finding, sentence(n, 40)),
+                        )
+                        .expect("append");
+                    let outcomes: Vec<_> = commit_chain
+                        .take_embed_tickets()
+                        .into_iter()
+                        .map(|t| t.embed())
+                        .collect();
+                    let started = std::time::Instant::now();
+                    commit_chain.commit_embeddings(outcomes);
+                    held += started.elapsed();
+                }
+                held
+            })
+        });
+    }
+    group.finish();
+}
+
 /// One snapshot compaction of a managed vector sidecar: a full-corpus JSON
 /// serialization plus SHA-256 plus the snapshot write. The append path pays it
 /// every `VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD` appends.
@@ -266,6 +380,7 @@ criterion_group!(
     bench_append_dedup,
     bench_dedup_tokenization,
     bench_append_sidecar,
+    bench_append_lock_hold,
     bench_sidecar_compaction
 );
 criterion_main!(benches);

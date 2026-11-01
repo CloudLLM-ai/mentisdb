@@ -30,6 +30,17 @@ UNRELEASED
     include_invalidated retry advice is replaced by "read version_status".
   - test(retrieval): end-to-end regression for the policy scenario over library,
     REST and MCP for seven link styles, old wording and paraphrase.
+  - perf(storage): the embedding model call no longer runs under the chain's
+    exclusive write lock. A server append now issues an `EmbedTicket` under the
+    lock, embeds with no lock held, then commits the vector under a brief lock;
+    vectors are applied to the sidecar in chain order even when concurrent
+    appends finish out of order, a failed or lost embedding schedules the
+    background rebuild instead of wedging the sidecar, and the whole sequence
+    runs in a detached task so a dropped request cannot strand it. Lock hold per
+    append with a 5 ms model: about 9.5 ms before, about 0.33 ms plus a 0.15 ms
+    commit after (local model: about 4 ms before, about 0.4 ms plus 0.24 ms).
+    Library callers are unchanged unless they opt in with
+    `MentisDb::defer_next_embedding`. New `storage_paths/append_lock_hold` bench.
   - fix(storage): a persisted HNSW graph was trusted when its entry count
     matched the sidecar, so a same-size graph built from other vectors (or
     another model) was served. The graph file (format 2) now starts with a

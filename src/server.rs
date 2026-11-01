@@ -3009,21 +3009,61 @@ impl MentisDbService {
         // The append and the derived-state flush are synchronous disk I/O. Take
         // owned guards and run them on the blocking pool so async workers are
         // never stalled behind fsyncs while the chain lock is held.
-        let write_guard = chain.clone().write_owned().await;
+        // The whole sequence runs in a detached task: if the client disconnects
+        // and axum drops the request future mid-append, the embedding tickets
+        // must still be committed or the sidecar would wedge behind them.
+        let chain = chain.clone();
         let agent_id = agent_id.to_string();
-        let thought = tokio::task::spawn_blocking(move || {
+        tokio::spawn(async move { Self::append_thought_detached(chain, agent_id, input).await })
+            .await
+            .map_err(|error| format!("append task failed: {error}"))?
+    }
+
+    /// The body of [`Self::append_thought_released`], run to completion in its
+    /// own task so request cancellation cannot interrupt it half-way.
+    async fn append_thought_detached(
+        chain: Arc<RwLock<MentisDb>>,
+        agent_id: String,
+        input: ThoughtInput,
+    ) -> Result<Thought, Box<dyn Error + Send + Sync>> {
+        let write_guard = chain.clone().write_owned().await;
+        let (thought, tickets) = tokio::task::spawn_blocking(move || {
             let mut guard = write_guard;
             guard.defer_next_derived_flush();
+            // Embedding is the slowest step of an append and needs no chain
+            // state, so it runs after the lock is released (see `EmbedTicket`).
+            guard.defer_next_embedding();
             match guard.append_thought(&agent_id, input) {
-                Ok(thought) => Ok(thought.clone()),
+                Ok(thought) => {
+                    let thought = thought.clone();
+                    Ok((thought, guard.take_embed_tickets()))
+                }
                 Err(error) => {
                     guard.cancel_deferred_derived_flush();
+                    guard.cancel_deferred_embedding();
                     Err(error)
                 }
             }
         })
         .await
         .map_err(|error| format!("append task failed: {error}"))??;
+        if !tickets.is_empty() {
+            let outcomes = tokio::task::spawn_blocking(move || {
+                tickets
+                    .into_iter()
+                    .map(crate::EmbedTicket::embed)
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .map_err(|error| format!("embed task failed: {error}"))?;
+            let commit_guard = chain.clone().write_owned().await;
+            tokio::task::spawn_blocking(move || {
+                let mut guard = commit_guard;
+                guard.commit_embeddings(outcomes);
+            })
+            .await
+            .map_err(|error| format!("embedding commit task failed: {error}"))?;
+        }
         let read_guard = chain.clone().read_owned().await;
         tokio::task::spawn_blocking(move || read_guard.flush_pending_derived())
             .await
