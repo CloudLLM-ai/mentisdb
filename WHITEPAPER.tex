@@ -1307,11 +1307,12 @@ a little more recall but order results almost purely by vectors and lose
 lexical precision.
 
 Below 50,000 vectors the search is an exact scan. At or above that
-threshold (\passthrough{\lstinline!MENTISDB\_HNSW\_THRESHOLD!}) it
-switches to an HNSW graph (M 48, ef\_construction 400, ef\_search 128).
-A filtered HNSW search scans exactly when the allowed set is small (at
-most 4096 thoughts or under 5\% of the corpus) and otherwise
-oversamples, so filters do not lose matches the graph skipped.
+threshold it switches to an HNSW graph (M 48, ef\_construction 400,
+ef\_search 128); the threshold is set by
+\passthrough{\lstinline!MENTISDB\_HNSW\_THRESHOLD!}. A filtered HNSW
+search scans exactly when the allowed set is small (at most 4096
+thoughts or under 5\% of the corpus) and otherwise oversamples, so
+filters do not lose matches the graph skipped.
 
 \subsubsection{6.4 Graph Expansion}
 

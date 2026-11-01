@@ -779,9 +779,9 @@ old rule remains available as `MENTISDB_VECTOR_FUSION=absolute`. The decay rate 
 chosen from a sweep (Section 9.2): larger rates gain a little more recall but order
 results almost purely by vectors and lose lexical precision.
 
-Below 50,000 vectors the search is an exact scan. At or above that threshold
-(`MENTISDB_HNSW_THRESHOLD`) it switches to an HNSW graph (M 48, ef_construction 400,
-ef_search 128). A filtered HNSW search scans exactly when the allowed set is small (at most
+Below 50,000 vectors the search is an exact scan. At or above that threshold it switches
+to an HNSW graph (M 48, ef_construction 400, ef_search 128); the threshold is set by
+`MENTISDB_HNSW_THRESHOLD`. A filtered HNSW search scans exactly when the allowed set is small (at most
 4096 thoughts or under 5% of the corpus) and otherwise oversamples, so filters do not lose
 matches the graph skipped.
 
