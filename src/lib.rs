@@ -299,6 +299,10 @@
 //! We designed MentisDB to be infrastructure you can trust for years. Welcome.
 #![warn(missing_docs)]
 
+// Lets files that tests also compile through `#[path]` (the dashboard) name
+// this crate as `mentisdb::...` and resolve identically in both builds.
+extern crate self as mentisdb;
+
 pub mod access;
 pub mod audience;
 pub mod auth;
@@ -5855,6 +5859,7 @@ impl MentisDb {
                 }
                 if let Some(path) = chain.storage.storage_path() {
                     let kind = chain.storage.storage_kind();
+                    migration::preserve_before_rewrite(path);
                     persist_thoughts_to_path(path, kind, &chain.thoughts)?;
                 }
             } else {
@@ -5873,6 +5878,7 @@ impl MentisDb {
             // so future opens use the native format directly.
             if let Some(path) = chain.storage.storage_path() {
                 let kind = chain.storage.storage_kind();
+                migration::preserve_before_rewrite(path);
                 persist_thoughts_to_path(path, kind, &chain.thoughts)?;
             }
         }
@@ -13230,13 +13236,17 @@ pub fn deregister_chain<P: AsRef<Path>>(chain_dir: P, chain_key: &str) -> io::Re
 /// running daemon). Only writes the registry file when at least one entry changes.
 pub fn refresh_registered_chain_counts<P: AsRef<Path>>(chain_dir: P) -> io::Result<()> {
     let chain_dir = chain_dir.as_ref();
-    let mut registry = load_mentisdb_registry(chain_dir)?;
-    if registry.chains.is_empty() {
+    let snapshot = load_mentisdb_registry(chain_dir)?;
+    if snapshot.chains.is_empty() {
         return Ok(());
     }
-    let now = Utc::now();
-    let mut changed = false;
-    for entry in registry.chains.values_mut() {
+    // Counting walks every chain file, which can take a while on big chains.
+    // Do it without holding the registry lock, then re-read the registry under
+    // the lock and apply only the changes, so a daemon that is appending (and
+    // updating the same registry) in the meantime never loses an update. The
+    // daemon runs this on a background thread at startup for that reason.
+    let mut live: Vec<(String, u64, usize)> = Vec::new();
+    for entry in snapshot.chains.values() {
         let path = chain_dir.join(chain_storage_filename(
             &entry.chain_key,
             entry.storage_adapter,
@@ -13248,13 +13258,33 @@ pub fn refresh_registered_chain_counts<P: AsRef<Path>>(chain_dir: P) -> io::Resu
         let live_agents = load_agent_registry(chain_dir, &entry.chain_key, entry.storage_adapter)
             .ok()
             .map(|registry| registry.agents.len());
-        if let (Some(live_thoughts), Some(live_agents)) = (live_thoughts, live_agents) {
-            if entry.thought_count != live_thoughts || entry.agent_count != live_agents {
-                entry.thought_count = live_thoughts;
-                entry.agent_count = live_agents;
-                entry.updated_at = now;
-                changed = true;
-            }
+        if let (Some(thoughts), Some(agents)) = (live_thoughts, live_agents) {
+            live.push((entry.chain_key.clone(), thoughts, agents));
+        }
+    }
+    let _guard = CHAIN_REGISTRY_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut registry = load_mentisdb_registry(chain_dir)?;
+    let now = Utc::now();
+    let mut changed = false;
+    for (chain_key, thoughts, agents) in live {
+        let (Some(entry), Some(seen)) = (
+            registry.chains.get_mut(&chain_key),
+            snapshot.chains.get(&chain_key),
+        ) else {
+            continue;
+        };
+        // Someone (the daemon) updated this entry while we were counting; its
+        // value is newer than ours, so leave it.
+        if entry.thought_count != seen.thought_count || entry.agent_count != seen.agent_count {
+            continue;
+        }
+        if entry.thought_count != thoughts || entry.agent_count != agents {
+            entry.thought_count = thoughts;
+            entry.agent_count = agents;
+            entry.updated_at = now;
+            changed = true;
         }
     }
     if changed {
@@ -14608,6 +14638,13 @@ fn deserialize_binary_thought_payload(payload: &[u8]) -> io::Result<Thought> {
             })?;
 
     match schema_version {
+        v if v > MENTISDB_CURRENT_VERSION => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Unknown schema version {v}; this version of mentisdb supports up to schema {MENTISDB_CURRENT_VERSION}. \
+                 Please upgrade mentisdb to open this chain."
+            ),
+        )),
         v if v >= MENTISDB_CURRENT_VERSION => {
             match bincode::serde::decode_from_slice::<Thought, _>(
                 payload,

@@ -14,7 +14,7 @@ document.
 |---|---|---|
 | Memory and registry operations (`thought`, `search`, `chain`, `agent`, `entity-type`, `memory`, `skill`, `webhook`, `daemon health/flush`) | The running daemon's REST API (`--url`, default `http://127.0.0.1:9472`, bearer token from `--token` or `MENTISDB_BEARER_TOKEN`) | The daemon owns the chain cache and the file locks. A second process appending to the same chain files would race it. Going through REST also means the CLI uses the exact handlers (`MentisDbService::*`) that MCP and REST share, so there is no second implementation to drift. |
 | Dashboard-only operations (`chain info/delete`, `vectors enable/disable/sync`, `skill diff`, `agent copy`, `daemon version/restart/settings`) | The dashboard API (`--dashboard-url`, default `https://127.0.0.1:9475`, PIN from `--pin` or `MENTISDB_DASHBOARD_PIN`) | These actions only exist behind the PIN-gated dashboard on purpose (a bearer token must not be able to delete a chain). The CLI sends the PIN as `Authorization: Bearer` and the documented `X-MentisDB-Dashboard: 1` header. The dashboard certificate is self-signed, so verification is skipped for loopback hosts and requires `--insecure` for anything else. |
-| Local administration (`bearertoken`, `backup`, `restore`, `cert`, `setup`, `wizard`) | The data directory or config files directly (`--dir`, `MENTISDB_DIR`) | Unchanged: these work with the daemon stopped, or manage files the daemon does not own. |
+| Local administration (`bearertoken`, `backup`, `restore`, `cert`, `setup`, `wizard`, `migrate`) | The data directory or config files directly (`--dir`, `MENTISDB_DIR`) | Unchanged: these work with the daemon stopped, or manage files the daemon does not own. |
 
 Every remote command accepts `--json` (compact, one line, for pipes) and
 otherwise prints indented JSON; commands whose result is a document (memory
@@ -55,6 +55,7 @@ rejected with an error instead of silently falling back.
 | `mentisdb_context_bundles` | `POST /v1/context-bundles` | `search bundles` |
 | `mentisdb_summary_candidates` | `POST /v1/summary-candidates` | `thought candidates` |
 | `mentisdb_list_chains` | `GET /v1/chains` | `chain list` |
+| `mentisdb_migration_status` | `GET /v1/migrations` (and `POST /v1/migrations/retry`, `/skip`) | `migrate status` (offline, or `--url` for a running daemon), `migrate retry`, `migrate skip` |
 | `mentisdb_list_agents` | `POST /v1/agents` | `agent list` (and `agents`) |
 | `mentisdb_get_agent` | `POST /v1/agent` | `agent get` |
 | `mentisdb_list_agent_registry` | `POST /v1/agent-registry` | `agent registry` |

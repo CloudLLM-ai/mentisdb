@@ -100,6 +100,66 @@ pub fn check_format_stamp(chain_dir: &Path) -> Result<(), MigrationError> {
     }
 }
 
+/// Chain keys worth examining in `chain_dir`: registered chains, chain files
+/// on disk whose name maps back to a key, and chains with a migration journal.
+///
+/// # Examples
+///
+/// ```
+/// let dir = tempfile::tempdir().unwrap();
+/// assert!(mentisdb::migration::discover_chain_keys(dir.path()).is_empty());
+/// ```
+pub fn discover_chain_keys(chain_dir: &Path) -> BTreeSet<String> {
+    let dir = chain_dir;
+    let mut keys = BTreeSet::new();
+    if let Ok(registry) = crate::load_registered_chains(dir) {
+        keys.extend(registry.chains.keys().cloned());
+    }
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let Some(key) = crate::chain_key_from_storage_filename(name) else {
+                continue;
+            };
+            // Only keys that map back to this very file are addressable;
+            // others (sanitised keys) are known through the registry.
+            let matches = [StorageAdapterKind::Binary, StorageAdapterKind::Jsonl]
+                .into_iter()
+                .any(|kind| chain_storage_filename(&key, kind) == name);
+            if !key.is_empty() && matches {
+                keys.insert(key);
+            }
+        }
+    }
+    keys.extend(list_journals(dir).into_iter().map(|j| j.chain_key));
+    keys
+}
+
+/// Managers by storage directory, so surfaces that do not share the service
+/// (the dashboard opens chains itself) can find the manager of their directory.
+static MANAGERS: Mutex<BTreeMap<PathBuf, MigrationManager>> = Mutex::new(BTreeMap::new());
+
+fn registry_key(chain_dir: &Path) -> PathBuf {
+    fs::canonicalize(chain_dir).unwrap_or_else(|_| chain_dir.to_path_buf())
+}
+
+/// The migration manager started for `chain_dir` in this process, if any.
+///
+/// # Examples
+///
+/// ```
+/// let dir = tempfile::tempdir().unwrap();
+/// assert!(mentisdb::migration::manager_for_dir(dir.path()).is_none());
+/// ```
+pub fn manager_for_dir(chain_dir: &Path) -> Option<MigrationManager> {
+    MANAGERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&registry_key(chain_dir))
+        .cloned()
+}
+
 /// Where a chain is in the migration pipeline, as reported to operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -360,6 +420,10 @@ impl MigrationManager {
                 .map_err(MigrationError::Io)?;
         }
         write_format_stamp(&manager.inner.config.chain_dir)?;
+        MANAGERS.lock().unwrap_or_else(|e| e.into_inner()).insert(
+            registry_key(&manager.inner.config.chain_dir),
+            manager.clone(),
+        );
         Ok(manager)
     }
 
@@ -456,6 +520,10 @@ impl MigrationManager {
 
     /// Ask the workers to stop after their current chain.
     pub fn shutdown(&self) {
+        MANAGERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&registry_key(&self.inner.config.chain_dir));
         self.inner.shutdown.store(true, Ordering::SeqCst);
         self.inner.wake.notify_all();
     }
@@ -467,36 +535,8 @@ impl MigrationManager {
             .unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Chain keys worth examining: registered chains, chain files on disk, journals.
-    fn candidate_keys(&self) -> BTreeSet<String> {
-        let dir = &self.inner.config.chain_dir;
-        let mut keys = BTreeSet::new();
-        if let Ok(registry) = crate::load_registered_chains(dir) {
-            keys.extend(registry.chains.keys().cloned());
-        }
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.filter_map(Result::ok) {
-                let name = entry.file_name();
-                let Some(name) = name.to_str() else { continue };
-                let Some(key) = crate::chain_key_from_storage_filename(name) else {
-                    continue;
-                };
-                // Only keys that map back to this very file are addressable;
-                // others (sanitised keys) are known through the registry.
-                let matches = [StorageAdapterKind::Binary, StorageAdapterKind::Jsonl]
-                    .into_iter()
-                    .any(|kind| chain_storage_filename(&key, kind) == name);
-                if !key.is_empty() && matches {
-                    keys.insert(key);
-                }
-            }
-        }
-        keys.extend(list_journals(dir).into_iter().map(|j| j.chain_key));
-        keys
-    }
-
     fn scan_and_enqueue(&self) {
-        for key in self.candidate_keys() {
+        for key in discover_chain_keys(&self.inner.config.chain_dir) {
             self.consider(&key);
         }
     }

@@ -330,6 +330,7 @@
       justify-content: center; padding: 32px 16px; overflow-y: auto;
     }
     .modal-overlay.hidden { display: none; }
+    #migration-banner.hidden { display: none; }
     .modal {
       background: #161b22; border: 1px solid #30363d; border-radius: 8px;
       width: 100%; max-width: 700px; position: relative; margin: auto;
@@ -475,6 +476,8 @@
       <a href="#settings" id="nav-settings" style="color:#f0883e" title="Configure daemon environment variables and hot-reload settings">Settings</a>
     </div>
   </nav>
+  <div id="migration-banner" class="hidden" role="status" aria-live="polite"
+       style="padding:8px 16px;background:#9e6a03;color:#fff;font-size:0.85rem"></div>
   <main id="app"></main>
 
   <!-- Modal -->
@@ -1170,6 +1173,34 @@
     }
     return r.json();
   }
+
+  // Storage-format migration banner: shown while any chain is being migrated
+  // in the background or is quarantined. Text only (chain keys are user data).
+  async function pollMigrations() {
+    let delay = 30000;
+    try {
+      const data = await api('/dashboard/api/migrations');
+      const banner = document.getElementById('migration-banner');
+      const running = data.chains.filter(c => c.phase === 'pending' || c.phase === 'running');
+      const stuck = data.chains.filter(c => ['failed', 'skipped', 'rolled_back'].includes(c.phase));
+      const parts = [];
+      if (running.length) {
+        parts.push('Migrating ' + running.length + ' chain(s) to the new storage format in the background: ' +
+          running.map(c => c.chain_key + ' ' + c.percent + '%').join(', ') +
+          '. Those chains answer "retry later" until done.');
+        delay = 3000;
+      }
+      if (stuck.length) {
+        parts.push('Needs attention: ' + stuck.map(c => c.chain_key + ' (' + c.phase +
+          (c.error ? ': ' + c.error : '') + ')').join('; ') +
+          '. Run `mentisdb migrate status`; your data is untouched.');
+      }
+      banner.textContent = parts.join('  ');
+      banner.classList.toggle('hidden', parts.length === 0);
+    } catch (_) { /* the banner is best effort */ }
+    setTimeout(pollMigrations, delay);
+  }
+  pollMigrations();
 
   function showFeedback(el, ok, msg) {
     el.textContent = (ok ? '✓ ' : '✗ ') + msg;

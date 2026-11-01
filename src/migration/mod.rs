@@ -73,6 +73,7 @@ pub use codec::{
     decode_and_upgrade, decode_json_and_upgrade, peek_schema_version, DecodedRecord, HashRebuilder,
     RecordLayout, UpgradeStep, UPGRADE_STEPS,
 };
+pub(crate) use engine::preserve_before_rewrite;
 pub use engine::{
     detect_migration, dry_run_chain, purge_backups, quarantine_chain, recover_chain, retry_chain,
     rollback_chain, run_chain_migration, skip_chain, verify_chain_file, DryRunReport, JournalState,
@@ -80,8 +81,9 @@ pub use engine::{
     RecoveryOutcome, VerifyReport,
 };
 pub use manager::{
-    check_format_stamp, write_format_stamp, ChainMigrationStatus, MigrationBlock, MigrationConfig,
-    MigrationManager, MigrationPhase, FORMAT_STAMP_FILENAME,
+    check_format_stamp, discover_chain_keys, manager_for_dir, write_format_stamp,
+    ChainMigrationStatus, MigrationBlock, MigrationConfig, MigrationManager, MigrationPhase,
+    FORMAT_STAMP_FILENAME,
 };
 
 use serde::{Deserialize, Serialize};

@@ -173,6 +173,10 @@ pub enum CliCommand {
     Add(AddCommand),
     /// Print `mentisdb key` help.
     KeyHelp,
+    /// Print `mentisdb migrate` help.
+    MigrateHelp,
+    /// Inspect or drive chain format migrations.
+    Migrate(super::migrate::MigrateCommand),
     /// Generate or inspect a signing key.
     Key(super::key::KeyCommand),
     /// Print help text for a daemon command or group (from the command catalog).
@@ -229,6 +233,8 @@ where
         "cert" if has_help_flag => Ok(CliCommand::CertHelp),
         "key" if has_help_flag || parts.len() == 1 => Ok(CliCommand::KeyHelp),
         "key" => super::key::parse_key_args(&parts[1..]).map(CliCommand::Key),
+        "migrate" if has_help_flag || parts.len() == 1 => Ok(CliCommand::MigrateHelp),
+        "migrate" => super::migrate::parse_migrate_args(&parts[1..]).map(CliCommand::Migrate),
         "setup" => parse_setup(parts),
         "wizard" => parse_wizard(parts),
         "add" => parse_add(parts),
@@ -300,6 +306,7 @@ Usage:
   mentisdb bearertoken remove <alias> [--dir <path>]
   mentisdb key generate [--out <file>] [--force]
   mentisdb key show <file>
+  mentisdb migrate status|run|verify|retry|skip|rollback|purge-backups [options]   see 'mentisdb migrate --help'
   mentisdb cert [<ip-address-or-domain>] [--force] [--out-dir <path>] [--env-file <path>] [--no-env-update]
 
 Client transport (--mode):

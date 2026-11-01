@@ -63,6 +63,7 @@
 
 use crate::audience::Audience;
 use crate::auth::{bearer_token_access_from_env, BearerTokenScope, BearerTokenStore};
+use crate::migration::{MigrationBlock, MigrationManager};
 use crate::server_lens::{audience_for, scope_allows_chain};
 use crate::webhooks::{WebhookManager, WebhookRegistration};
 use crate::{
@@ -1464,10 +1465,27 @@ pub async fn start_https_rest_server(
 /// # Ok(())
 /// # }
 /// ```
-#[allow(unused_variables)]
 pub async fn start_servers(
     config: MentisDbServerConfig,
     tui_state: Option<Arc<std::sync::Mutex<crate::tui::TuiState>>>,
+) -> Result<MentisDbServerHandles, Box<dyn Error + Send + Sync>> {
+    start_servers_with_migrations(config, tui_state, None).await
+}
+
+/// Like [`start_servers`], with a background [`MigrationManager`] attached to
+/// the shared service.
+///
+/// While the manager is migrating a chain, every surface (MCP, REST, the
+/// dashboard) answers requests for that chain with a [`MigrationBlock`]
+/// (HTTP 503 with `Retry-After`); other chains are served normally, and
+/// `GET /v1/migrations` plus the `mentisdb_migration_status` tool report
+/// progress. Pass `None` to keep the library behaviour of upgrading a legacy
+/// chain in place when it is first opened.
+#[allow(unused_variables)]
+pub async fn start_servers_with_migrations(
+    config: MentisDbServerConfig,
+    tui_state: Option<Arc<std::sync::Mutex<crate::tui::TuiState>>>,
+    migrations: Option<MigrationManager>,
 ) -> Result<MentisDbServerHandles, Box<dyn Error + Send + Sync>> {
     use crate::dashboard::DashboardState;
 
@@ -1485,6 +1503,9 @@ pub async fn start_servers(
     // surface would not be visible on another until a disk reload, because
     // each service holds its own DashMap<chain_key, Arc<RwLock<MentisDb>>>.
     let service = Arc::new(MentisDbService::new(config.service.clone()));
+    if let Some(manager) = migrations {
+        service.set_migration_manager(manager);
+    }
 
     let (event_handler, broadcaster) = redacting_sse_handler(256);
 
@@ -1702,6 +1723,9 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         .route("/v1/vectors/rebuild", post(rest_rebuild_vectors_handler))
         .route("/v1/chains/merge", post(rest_merge_chains_handler))
         .route("/v1/admin/flush", post(rest_flush_handler))
+        .route("/v1/migrations", get(rest_migration_status_handler))
+        .route("/v1/migrations/retry", post(rest_migration_retry_handler))
+        .route("/v1/migrations/skip", post(rest_migration_skip_handler))
         .route("/v1/webhooks", get(rest_list_webhooks_handler))
         .route("/v1/webhooks", post(rest_register_webhook_handler))
         .route("/v1/webhooks/{id}", delete(rest_delete_webhook_handler))
@@ -1718,6 +1742,31 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         .layer(middleware::from_fn(
             crate::server_lens::read_auth_middleware,
         ))
+        .layer(middleware::map_response(retry_after_for_migrations))
+}
+
+/// Add a `Retry-After` header to a 503 whose body carries `retry_after_secs`
+/// (a chain that is being migrated), so generic HTTP clients back off.
+async fn retry_after_for_migrations(
+    response: axum::response::Response,
+) -> axum::response::Response {
+    if response.status() != StatusCode::SERVICE_UNAVAILABLE {
+        return response;
+    }
+    let (mut parts, body) = response.into_parts();
+    let bytes = match axum::body::to_bytes(body, 64 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => return axum::response::Response::from_parts(parts, axum::body::Body::empty()),
+    };
+    if let Some(seconds) = serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|body| body.get("retry_after_secs").and_then(Value::as_u64))
+    {
+        if let Ok(value) = axum::http::HeaderValue::from_str(&seconds.to_string()) {
+            parts.headers.insert(axum::http::header::RETRY_AFTER, value);
+        }
+    }
+    axum::response::Response::from_parts(parts, axum::body::Body::from(bytes))
 }
 
 /// Build the legacy CloudLLM-compatible MCP router without binding a socket.
@@ -1975,6 +2024,10 @@ pub struct MentisDbService {
     /// a process owns this data directory. Best effort: if another service in
     /// the same process or a second daemon holds it, this one runs without it.
     _data_dir_lock: Option<Arc<crate::operator::DataDirLock>>,
+    /// Background migration manager, when the daemon runs one. Set once at
+    /// startup; library users and tests that never set it keep the original
+    /// behaviour (a legacy chain is upgraded in place when first opened).
+    migrations: Arc<std::sync::OnceLock<MigrationManager>>,
 }
 
 #[derive(Debug)]
@@ -2096,6 +2149,7 @@ impl MentisDbMcpProtocol {
                 .await
             }
             "mentisdb_list_chains" => self.service.list_chains_json().await,
+            "mentisdb_migration_status" => Ok(self.service.migration_status_json()),
             "mentisdb_list_agents" => {
                 parse_and_call(parameters, |request| self.service.list_agents(request)).await
             }
@@ -2787,6 +2841,27 @@ pub const OPERATION_AUTH_TABLE: &[OperationAuthRule] = &[
         OperationAuth::GlobalOnly,
     ),
     rule(
+        "/v1/migrations",
+        "get",
+        "mentisdb_migration_status",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/migrations/retry",
+        "post",
+        "",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
+        "/v1/migrations/skip",
+        "post",
+        "",
+        OperationAuth::GlobalOnly,
+        OperationAuth::GlobalOnly,
+    ),
+    rule(
         "/v1/webhooks",
         "get",
         "mentisdb_list_webhooks",
@@ -3173,7 +3248,44 @@ impl MentisDbService {
                 .ok()
                 .flatten()
                 .map(Arc::new),
+            migrations: Arc::new(std::sync::OnceLock::new()),
         })
+    }
+
+    /// Attach the background migration manager. Requests for a chain it is
+    /// migrating, or has quarantined, are answered with a [`MigrationBlock`]
+    /// instead of opening the chain.
+    ///
+    /// Only the first call has an effect.
+    pub fn set_migration_manager(&self, manager: MigrationManager) {
+        let _ = self.migrations.set(manager);
+    }
+
+    /// The attached migration manager, if any.
+    pub fn migration_manager(&self) -> Option<&MigrationManager> {
+        self.migrations.get()
+    }
+
+    /// Refuse to serve a chain that is mid-migration or quarantined.
+    ///
+    /// A map lookup, cheap enough to run on every request. The error is a
+    /// [`MigrationBlock`], which the REST layer maps to HTTP 503 (with
+    /// `Retry-After` while a migration is running).
+    fn migration_gate(&self, chain_key: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+        match self.migrations.get().and_then(|m| m.gate(chain_key)) {
+            Some(block) => Err(Box::new(block)),
+            None => Ok(()),
+        }
+    }
+
+    /// Migration state of every chain that has, or had, work, as JSON.
+    fn migration_status_json(&self) -> Value {
+        let (active, chains) = self
+            .migrations
+            .get()
+            .map(|m| (m.is_active(), m.statuses()))
+            .unwrap_or_default();
+        json!({ "active": active, "chains": chains })
     }
 
     /// Return (or lazily open) the chain for `chain_key`.
@@ -3308,6 +3420,7 @@ impl MentisDbService {
     ) -> Result<Arc<RwLock<MentisDb>>, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(chain_key);
         validate_chain_key_shape(&chain_key)?;
+        self.migration_gate(&chain_key)?;
         if let Some(existing) = self.chains.get(&chain_key) {
             return Ok(self.repair_if_idle(&chain_key, existing.clone()));
         }
@@ -3329,6 +3442,7 @@ impl MentisDbService {
     ) -> Result<Arc<RwLock<MentisDb>>, Box<dyn Error + Send + Sync>> {
         let chain_key = self.resolve_chain_key(chain_key);
         validate_chain_key_shape(&chain_key)?;
+        self.migration_gate(&chain_key)?;
         if let Some(existing) = self.chains.get(&chain_key) {
             return Ok(self.repair_if_idle(&chain_key, existing.clone()));
         }
@@ -7998,6 +8112,60 @@ async fn rest_summary_candidates_handler(
     service_call(service.summary_candidates(request).await)
 }
 
+/// `GET /v1/migrations`: every chain that has, or had, migration work.
+async fn rest_migration_status_handler(State(service): State<Arc<MentisDbService>>) -> Json<Value> {
+    Json(service.migration_status_json())
+}
+
+/// Request body of `POST /v1/migrations/retry` and `/skip`.
+#[derive(Debug, Deserialize)]
+struct MigrationChainRequest {
+    chain_key: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// `POST /v1/migrations/retry`: clear a quarantine and queue the chain again.
+async fn rest_migration_retry_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<MigrationChainRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let result = migration_admin(&service, &request.chain_key, |manager, key| {
+        manager.retry(key)
+    });
+    service_call(result.map(|()| service.migration_status_json()))
+}
+
+/// `POST /v1/migrations/skip`: leave a chain untouched and unavailable.
+async fn rest_migration_skip_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<MigrationChainRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let reason = request
+        .reason
+        .clone()
+        .unwrap_or_else(|| "operator request".to_owned());
+    let result = migration_admin(&service, &request.chain_key, |manager, key| {
+        manager.skip(key, &reason)
+    });
+    service_call(result.map(|()| service.migration_status_json()))
+}
+
+fn migration_admin(
+    service: &MentisDbService,
+    chain_key: &str,
+    action: impl FnOnce(&MigrationManager, &str) -> Result<(), crate::migration::MigrationError>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let chain_key = normalize_chain_key(chain_key)?;
+    let manager = service
+        .migration_manager()
+        .ok_or_else(|| not_found_error("this daemon is not running the migration manager"))?;
+    action(manager, &chain_key).map_err(|error| match error {
+        crate::migration::MigrationError::Refused(message) => invalid_input_error(message),
+        other => Box::new(io::Error::other(other.to_string())) as Box<dyn Error + Send + Sync>,
+    })
+}
+
 async fn rest_list_chains_handler(
     State(service): State<Arc<MentisDbService>>,
 ) -> Result<Json<ListChainsResponse>, (StatusCode, Json<Value>)> {
@@ -8380,6 +8548,11 @@ pub fn validate_chain_key_shape(chain_key: &str) -> Result<(), Box<dyn Error + S
 /// generic 500 message and the detail (which may contain absolute paths) is
 /// logged server-side only.
 pub fn classify_service_error(error: &(dyn Error + 'static)) -> (StatusCode, String) {
+    // A chain that is migrating or quarantined is temporarily unavailable, not
+    // a client or server fault: 503 with an actionable message.
+    if let Some(block) = error.downcast_ref::<MigrationBlock>() {
+        return (StatusCode::SERVICE_UNAVAILABLE, block.to_string());
+    }
     if let Some(io_error) = error.downcast_ref::<io::Error>() {
         // An error carrying an OS errno came straight from a filesystem call
         // (missing sidecar/registry file, EACCES, ...): it is an internal
@@ -8461,7 +8634,14 @@ fn service_call<T: Serialize>(
 ) -> Result<Json<T>, (StatusCode, Json<Value>)> {
     result.map(Json).map_err(|error| {
         let (status, message) = classify_service_error(error.as_ref());
-        (status, Json(json!({ "error": message })))
+        let mut body = json!({ "error": message });
+        if let Some(block) = error.downcast_ref::<MigrationBlock>() {
+            body["migration"] = serde_json::to_value(block).unwrap_or(Value::Null);
+            if let Some(seconds) = block.retry_after_secs() {
+                body["retry_after_secs"] = json!(seconds);
+            }
+        }
+        (status, Json(body))
     })
 }
 
@@ -8688,6 +8868,10 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         ToolMetadata::new(
             "mentisdb_list_chains",
             "List the durable chain keys currently available in MentisDb storage, together with the server default chain key.",
+        ),
+        ToolMetadata::new(
+            "mentisdb_migration_status",
+            "Report the storage-format migration state of every chain that is, was, or failed to be migrated by the daemon: phase (pending, running, completed, failed, skipped, rolled_back), percent done, attempts and error text. A chain that is pending or running answers other tools with 'retry after N seconds'; a failed one is quarantined with its data untouched.",
         ),
         ToolMetadata::new(
             "mentisdb_list_agents",

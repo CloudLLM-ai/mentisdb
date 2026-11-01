@@ -1053,11 +1053,15 @@ fn remove_derived_files(paths: &MigrationPaths) -> Result<(), MigrationError> {
         .unwrap_or(&binary);
     let vectors = format!("{stem}.vectors.");
     let overlay = format!("{stem}.auto_edges.bin");
+    // The signed verified-prefix checkpoint is bound to the old hashes: a
+    // stale one would lock the chain, so it is removed with the derived files.
+    let checkpoint = format!("{stem}.verified.json");
     for entry in fs::read_dir(&paths.chain_dir)?.filter_map(Result::ok) {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        let derived =
-            (name.starts_with(&vectors) && !name.ends_with(".managed.json")) || name == overlay;
+        let derived = (name.starts_with(&vectors) && !name.ends_with(".managed.json"))
+            || name == overlay
+            || name == checkpoint;
         if derived && entry.path().is_file() {
             fs::remove_file(entry.path())?;
         }
@@ -1404,6 +1408,39 @@ pub fn purge_backups(chain_dir: &Path, older_than: Option<Duration>) -> io::Resu
         }
     }
     Ok(removed)
+}
+
+/// Keep a copy of a chain file that `MentisDb::open` is about to rewrite in place.
+///
+/// Library users who open a legacy chain directly (without the daemon's
+/// migration manager) still get the original preserved, under
+/// `migrations/backup/in-place/`. Only the first copy is kept, so the oldest
+/// original is never overwritten by a later rewrite. Best effort: a failure is
+/// logged and the open proceeds, as it always did.
+pub(crate) fn preserve_before_rewrite(path: &Path) {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return;
+    };
+    let backup_dir = dir.join("migrations").join("backup").join("in-place");
+    let target = backup_dir.join(name);
+    if target.exists() || !path.exists() {
+        return;
+    }
+    let result = fs::create_dir_all(&backup_dir).and_then(|()| {
+        fs::hard_link(path, &target).or_else(|_| fs::copy(path, &target).map(|_| ()))
+    });
+    match result {
+        Ok(()) => mig_log!(
+            info,
+            "preserved {} before rewriting it in place",
+            target.display()
+        ),
+        Err(error) => mig_log!(
+            warn,
+            "could not preserve {} before rewriting: {error}",
+            path.display()
+        ),
+    }
 }
 
 /// Rehearse a migration without writing anything.

@@ -34,19 +34,19 @@ use env_logger::Env;
 use mcp::ToolProtocol;
 use mentisdb::auth::MENTISDB_BEARER_TOKEN_ACCESS_ENV;
 use mentisdb::integrations::detect::{detect_integrations_with_environment, DetectionStatus};
+use mentisdb::migration::{MigrationConfig, MigrationManager, MigrationPhase};
 use mentisdb::paths::{HostPlatform, PathEnvironment};
 use mentisdb::server::{
-    adopt_legacy_default_mentisdb_dir, start_servers, LegacyDefaultStorageMigration,
-    MentisDbMcpProtocol, MentisDbServerConfig, MentisDbServerHandles, MentisDbService,
+    adopt_legacy_default_mentisdb_dir, start_servers_with_migrations,
+    LegacyDefaultStorageMigration, MentisDbMcpProtocol, MentisDbServerConfig,
+    MentisDbServerHandles, MentisDbService,
 };
 use mentisdb::tui::{self, AgentInfo, ChainInfo, SkillInfo, TuiState};
 #[cfg(feature = "startup-sound")]
 use mentisdb::ThoughtType;
 use mentisdb::{
-    cli::help_text as cli_help_text, load_registered_chains, migrate_chain_hash_algorithm,
-    migrate_registered_chains_with_adapter, migrate_skill_registry,
-    refresh_registered_chain_counts, MentisDb, MentisDbMigrationEvent, MentisDbMigrationReport,
-    SkillRegistry,
+    cli::help_text as cli_help_text, load_registered_chains, migrate_skill_registry,
+    refresh_registered_chain_counts, MentisDb, SkillRegistry,
 };
 use serde::Deserialize;
 use std::ffi::OsString;
@@ -125,7 +125,7 @@ type StartupData = (
     bool,
     FirstRunSetupStatus,
     String,
-    Vec<MentisDbMigrationReport>,
+    Option<MigrationManager>,
     String,
     Option<LegacyDefaultStorageMigration>,
 );
@@ -1327,6 +1327,85 @@ fn canonical_tool_name(name: &str) -> String {
     format!("mentisdb_{}", name)
 }
 
+/// Start the background chain migrations for the daemon's storage directory.
+///
+/// Returns immediately: chains that need work are migrated by a small worker
+/// pool while the servers come up, and requests for a chain still migrating get
+/// a "retry after N seconds" answer. Counts of chains are refreshed in the
+/// background too, so neither step can delay startup.
+///
+/// # Errors
+///
+/// Refuses (with a message naming the fix) when the directory was written by a
+/// newer mentisdb. Any other failure is logged and the daemon continues
+/// without the manager, which keeps the previous behaviour of upgrading a
+/// legacy chain in place when it is first opened.
+fn start_background_migrations(
+    config: &MentisDbServerConfig,
+) -> Result<Option<MigrationManager>, Box<dyn std::error::Error + Send + Sync>> {
+    let chain_dir = config.service.chain_dir.clone();
+    let manager = match MigrationManager::start(MigrationConfig::new(&chain_dir)) {
+        Ok(manager) => Some(manager),
+        Err(error @ mentisdb::migration::MigrationError::FutureSchema { .. }) => {
+            return Err(format!(
+                "{} was written by a newer mentisdb ({error}); refusing to start so nothing is \
+                 corrupted. Run the newer release, or restore a backup taken before the upgrade.",
+                chain_dir.display()
+            )
+            .into());
+        }
+        Err(error) => {
+            log::error!("could not start background chain migrations: {error}");
+            None
+        }
+    };
+    if let Some(manager) = &manager {
+        let pending = manager.statuses().len();
+        if pending > 0 {
+            log::info!(
+                "{pending} chain(s) need attention; migrating in the background while the \
+                 daemon serves (`mentisdb migrate status` shows progress)"
+            );
+        }
+    }
+    let counts_dir = chain_dir;
+    std::thread::spawn(move || {
+        if let Err(error) = refresh_registered_chain_counts(&counts_dir) {
+            log::warn!("Could not refresh chain registry counts: {error}");
+        }
+    });
+    Ok(manager)
+}
+
+/// One-line-per-fact summary of the migration manager for the operator TUI.
+fn migration_summary_lines(manager: &Option<MigrationManager>) -> Vec<String> {
+    let Some(manager) = manager else {
+        return vec!["Background chain migrations: not running.".to_string()];
+    };
+    let statuses = manager.statuses();
+    if statuses.is_empty() {
+        return vec!["No chain migrations required.".to_string()];
+    }
+    let mut lines = vec![format!(
+        "{} chain(s) migrating in the background; run `mentisdb migrate status` for progress.",
+        statuses.len()
+    )];
+    for status in statuses {
+        lines.push(match status.phase {
+            MigrationPhase::Failed | MigrationPhase::Skipped | MigrationPhase::RolledBack => {
+                format!(
+                    "  {}: {:?} - {}",
+                    status.chain_key,
+                    status.phase,
+                    status.error.unwrap_or_default()
+                )
+            }
+            phase => format!("  {}: {:?} {}%", status.chain_key, phase, status.percent),
+        });
+    }
+    lines
+}
+
 /// Headless HTTP server mode — starts servers without TUI.
 /// Used when the stdio proxy auto-launches a background daemon.
 async fn run_headless() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -1341,18 +1420,14 @@ async fn run_headless() -> Result<(), Box<dyn std::error::Error + Send + Sync>> 
     if std::env::var_os("MENTISDB_DIR").is_none() {
         let _ = adopt_legacy_default_mentisdb_dir();
     }
-    let _ = migrate_registered_chains_with_adapter(
-        &config.service.chain_dir,
-        config.service.default_storage_adapter,
-        |_| {}, // no-op event handler
-    );
+    let migrations = start_background_migrations(&config)?;
 
     // Install signal handlers before announcing readiness so a SIGTERM that
     // arrives immediately after startup is never lost to the default action.
     let shutdown_signal = wait_for_shutdown_signal();
 
     // Start servers
-    let mut handles = start_servers(config, None).await?;
+    let mut handles = start_servers_with_migrations(config, None, migrations).await?;
 
     eprintln!(
         "[mentisdb headless] MCP http://{} REST http://{}",
@@ -1495,7 +1570,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         is_first_run,
         _first_run_setup_status,
         primer_paste_line,
-        migration_reports,
+        migrations,
         skill_registry_msg,
         storage_root_migration,
     ) = startup_result;
@@ -1509,17 +1584,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         s.primer_text = primer_paste_line.clone();
         s.config_lines = build_config_lines(&config, &update_config);
 
-        if migration_reports.is_empty() {
-            s.migration_lines
-                .push("No chain migrations required.".to_string());
-        } else {
-            for report in &migration_reports {
-                s.migration_lines.push(format!(
-                    "Migrated chain {} from version {} to {} ({} thoughts)",
-                    report.chain_key, report.from_version, report.to_version, report.thought_count
-                ));
-            }
-        }
+        s.migration_lines
+            .extend(migration_summary_lines(&migrations));
         s.migration_lines.push(skill_registry_msg.clone());
 
         if let Some(report) = &storage_root_migration {
@@ -1769,95 +1835,12 @@ async fn run_startup_sequence(
         }
     }
 
-    // Migrations
+    // Migrations: recover interrupted ones and start the rest in the background.
     {
         let mut s = tui_state.lock().unwrap();
         s.startup_status = "Checking chains for migrations…".to_string();
     }
-
-    let migration_reports = migrate_registered_chains_with_adapter(
-        &config.service.chain_dir,
-        config.service.default_storage_adapter,
-        |event| match event {
-            MentisDbMigrationEvent::Started {
-                chain_key,
-                from_version,
-                to_version,
-                current,
-                total,
-            } => {
-                let msg = format!(
-                    "[{}/{}] Migrating chain {} from v{} to v{}",
-                    current, total, chain_key, from_version, to_version
-                );
-                log::info!("{}", msg);
-            }
-            MentisDbMigrationEvent::Completed {
-                chain_key,
-                from_version,
-                to_version,
-                current,
-                total,
-            } => {
-                let msg = format!(
-                    "[{}/{}] Migrated chain {} from v{} to v{}",
-                    current, total, chain_key, from_version, to_version
-                );
-                log::info!("{}", msg);
-            }
-            MentisDbMigrationEvent::StartedReconciliation {
-                chain_key,
-                from_storage_adapter,
-                to_storage_adapter,
-                current,
-                total,
-            } => {
-                let msg = format!(
-                    "[{}/{}] Reconciling chain {} from {} to {} storage",
-                    current, total, chain_key, from_storage_adapter, to_storage_adapter
-                );
-                log::info!("{}", msg);
-            }
-            MentisDbMigrationEvent::CompletedReconciliation {
-                chain_key,
-                from_storage_adapter,
-                to_storage_adapter,
-                current,
-                total,
-            } => {
-                let msg = format!(
-                    "[{}/{}] Reconciled chain {} from {} to {} storage",
-                    current, total, chain_key, from_storage_adapter, to_storage_adapter
-                );
-                log::info!("{}", msg);
-            }
-            MentisDbMigrationEvent::StartedHashRehash { .. }
-            | MentisDbMigrationEvent::CompletedHashRehash { .. } => {}
-        },
-    )?;
-
-    match migrate_chain_hash_algorithm(&config.service.chain_dir, |event| match event {
-        MentisDbMigrationEvent::StartedHashRehash {
-            chain_key,
-            current,
-            total,
-        } => log::info!(
-            "[{}/{}] Rehashing chain {} (legacy JSON → bincode)",
-            current,
-            total,
-            chain_key
-        ),
-        MentisDbMigrationEvent::CompletedHashRehash {
-            chain_key,
-            current,
-            total,
-        } => log::info!("[{}/{}] Rehashed chain {}", current, total, chain_key),
-        _ => {}
-    }) {
-        Ok(0) => {}
-        Ok(n) => log::info!("Hash algorithm migration complete: {n} chain(s) rehashed."),
-        Err(e) => log::warn!("Hash algorithm migration failed: {e}"),
-    }
+    let migrations = start_background_migrations(&config)?;
 
     let skill_registry_msg = match migrate_skill_registry(&config.service.chain_dir) {
         Ok(None) => "Skill registry: up to date, no migration required.".to_string(),
@@ -1869,12 +1852,12 @@ async fn run_startup_sequence(
             report.to_version,
             report.path.display()
         ),
-        Err(e) => panic!("Skill registry migration failed — cannot start server: {e}"),
+        Err(e) => {
+            return Err(
+                format!("Skill registry migration failed — cannot start server: {e}").into(),
+            )
+        }
     };
-
-    if let Err(e) = refresh_registered_chain_counts(&config.service.chain_dir) {
-        log::warn!("Could not refresh chain registry counts: {e}");
-    }
 
     #[cfg(feature = "startup-sound")]
     {
@@ -1895,7 +1878,9 @@ async fn run_startup_sequence(
         s.startup_status = "Starting servers…".to_string();
     }
 
-    let handles = start_servers(config.clone(), Some(tui_state.clone())).await?;
+    let handles =
+        start_servers_with_migrations(config.clone(), Some(tui_state.clone()), migrations.clone())
+            .await?;
 
     let first_run_setup_status = detect_first_run_setup_status(&config.service.chain_dir);
     let is_first_run = should_show_first_run_setup_notice(&first_run_setup_status);
@@ -1925,7 +1910,7 @@ async fn run_startup_sequence(
         is_first_run,
         first_run_setup_status,
         primer_paste_line,
-        migration_reports,
+        migrations,
         skill_registry_msg,
         storage_root_migration,
     ))
@@ -2050,7 +2035,7 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
         is_first_run,
         _first_run_setup_status,
         primer_paste_line,
-        migration_reports,
+        migrations,
         skill_registry_msg,
         storage_root_migration,
     ) = startup_result;
@@ -2064,17 +2049,8 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
         s.primer_text = primer_paste_line.clone();
         s.config_lines = build_config_lines(&config, &update_config);
 
-        if migration_reports.is_empty() {
-            s.migration_lines
-                .push("No chain migrations required.".to_string());
-        } else {
-            for report in &migration_reports {
-                s.migration_lines.push(format!(
-                    "Migrated chain {} from version {} to {} ({} thoughts)",
-                    report.chain_key, report.from_version, report.to_version, report.thought_count
-                ));
-            }
-        }
+        s.migration_lines
+            .extend(migration_summary_lines(&migrations));
         s.migration_lines.push(skill_registry_msg.clone());
 
         if let Some(report) = &storage_root_migration {

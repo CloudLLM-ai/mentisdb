@@ -156,12 +156,42 @@ UNRELEASED
     about 120 000 thoughts/s) into a staging file, re-verified end to end and
     swapped in with an atomic rename. A kill at any step is resumed or
     discarded on the next start; a chain interrupted three times is
+  - feat(migration): chain format upgrades are now background, journaled,
+    backed up and recoverable, and never block startup. The daemon comes up in
+    about a second (measured: 0.97 s with a 600 000-thought legacy chain, which
+    finished migrating 17 s later while the daemon served), migrates chains
+    through a bounded worker pool, and answers a request for a chain that is
+    still migrating with HTTP 503, `Retry-After` and the percent done instead
+    of stalling or reading a half-written file. Status is logged and exposed by
+    `GET /v1/migrations`, the `mentisdb_migration_status` MCP tool, a dashboard
+    banner, the TUI and `mentisdb migrate status`. Each chain migrates through
+    a durable journal (planned, backed up, staged, committed, finalized): the
+    original is hard-linked into `migrations/backup/` first (kept 14 days,
+    `MENTISDB_MIGRATION_BACKUP_RETENTION_DAYS`), the upgraded chain is streamed
+    (flat memory, about 120 000 thoughts/s) into a staging file, re-verified end
+    to end and swapped in with an atomic rename. A kill at any step is resumed
+    or discarded on the next start; a chain interrupted three times is
     quarantined instead of crash-looping. Records are upgraded one schema step
-    at a time; a trusted stored hash that does not verify (corruption or
+    at a time. A trusted stored hash that does not verify (corruption or
     tampering) and a migration that would invalidate a v2 signature both
-    refuse the migration and leave the chain untouched. Rollback, skip, retry,
-    dry run and backup purge are library calls (CLI and daemon wiring follow).
-    New `migration_record` and `migration_chain` fuzz targets.
+    refuse the migration and leave the chain byte-for-byte untouched; a failing
+    chain is quarantined and reported while the others and the daemon carry on.
+    New `mentisdb migrate status|run [--dry-run]|verify|retry|skip|rollback|
+    purge-backups` command. Upgrade note: the startup passes that migrated
+    chains synchronously (`migrate_registered_chains_with_adapter`,
+    `migrate_chain_hash_algorithm`) are no longer run by the daemon (they remain
+    as library functions); a data directory or chain written by a newer release
+    is now refused with a clear message instead of being half-read, and the
+    registry counts refresh runs on a background thread without losing
+    concurrent updates. Library users that open a legacy chain directly keep the
+    in-place upgrade, now with a one-time copy of the original under
+    `migrations/backup/in-place/`. New `migration_record` and `migration_chain`
+    fuzz targets.
+  - feat(server): `GET /v1/migrations`, `POST /v1/migrations/retry`,
+    `POST /v1/migrations/skip` (global tokens only) and the
+    `mentisdb_migration_status` MCP tool; a 503 response carries `Retry-After`
+    while a chain migrates. The dashboard refuses to open a chain the manager
+    owns.
   - fix(retrieval): an agent that saved a policy change linked to the old policy
     could later be handed the OLD policy. Measured on a real installation: none
     of 14 Correction/AssumptionInvalidated and none of ~90 Decision thoughts

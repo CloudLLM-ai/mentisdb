@@ -8,6 +8,7 @@ mod catalog;
 mod cert;
 mod client;
 pub mod key;
+pub mod migrate;
 mod prompt;
 pub mod remote;
 mod setup;
@@ -53,7 +54,15 @@ use std::process::ExitCode;
 pub fn is_subcommand(word: &str) -> bool {
     matches!(
         word,
-        "setup" | "wizard" | "add" | "backup" | "restore" | "bearertoken" | "cert" | "key"
+        "setup"
+            | "wizard"
+            | "add"
+            | "backup"
+            | "restore"
+            | "bearertoken"
+            | "cert"
+            | "key"
+            | "migrate"
     ) || remote::is_group(&catalog::commands(), word)
 }
 
@@ -92,6 +101,20 @@ where
         Ok(CliCommand::KeyHelp) => {
             let _ = write!(out, "{}", key::KEY_HELP);
             ExitCode::SUCCESS
+        }
+        Ok(CliCommand::MigrateHelp) => {
+            let _ = write!(out, "{}", migrate::MIGRATE_HELP);
+            ExitCode::SUCCESS
+        }
+        Ok(CliCommand::Migrate(command)) => {
+            match migrate::run_migrate(&command, resolve_mentisdb_dir, out) {
+                Ok(true) => ExitCode::SUCCESS,
+                Ok(false) => ExitCode::from(1),
+                Err(error) => {
+                    let _ = writeln!(err, "migrate failed: {error}");
+                    ExitCode::from(1)
+                }
+            }
         }
         Ok(CliCommand::Key(command)) => match key::run_key(&command, out) {
             Ok(()) => ExitCode::SUCCESS,

@@ -204,6 +204,8 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
         .route("/skills/{skill_id}/deprecate", post(api_deprecate_skill))
         // Version
         .route("/version", get(api_version))
+        // Background storage-format migrations
+        .route("/migrations", get(api_migrations))
         // Settings
         .route("/settings", get(api_settings).post(api_update_settings))
         .route("/restart", post(api_restart_daemon))
@@ -911,6 +913,20 @@ async fn open_chain_unchecked(
     state: &DashboardState,
     chain_key: &str,
 ) -> Result<Arc<RwLock<MentisDb>>, (StatusCode, Json<Value>)> {
+    // A chain the background migration is rewriting (or has quarantined) must
+    // not be opened here: opening would race the migration.
+    if let Some(block) = mentisdb::migration::manager_for_dir(&state.mentisdb_dir)
+        .and_then(|manager| manager.gate(chain_key))
+    {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": block.to_string(),
+                "migration": block,
+                "retry_after_secs": block.retry_after_secs(),
+            })),
+        ));
+    }
     let registry = load_registered_chains(&state.mentisdb_dir).map_err(internal_error)?;
     // Prefer the registry's recorded storage location when that file exists;
     // otherwise derive the path from the chain key.
@@ -2674,6 +2690,17 @@ async fn api_upload_skill(
 /// `GET /dashboard/api/version`
 ///
 /// Returns the crate version baked in at compile time.
+/// `GET /dashboard/api/migrations`
+///
+/// Migration state of every chain in this storage directory that has, or had,
+/// background migration work. The dashboard polls it to show the banner.
+async fn api_migrations(State(state): State<DashboardState>) -> Json<Value> {
+    let (active, chains) = mentisdb::migration::manager_for_dir(&state.mentisdb_dir)
+        .map(|manager| (manager.is_active(), manager.statuses()))
+        .unwrap_or_default();
+    Json(json!({ "active": active, "chains": chains }))
+}
+
 async fn api_version() -> Json<Value> {
     Json(json!({ "version": env!("CARGO_PKG_VERSION") }))
 }

@@ -429,10 +429,13 @@ When it starts, it serves:
 
 Before serving traffic, it:
 
-- migrates or reconciles discovered chains to the current schema and default storage adapter
-- verifies chain integrity and attempts repair from valid local sources when possible
+- refuses to start on a data directory written by a newer `mentisdb` (a downgrade), without touching it
+- recovers any chain migration the previous process died in (a journal lookup per chain)
 - migrates the skill registry from V1 to V2 format if needed (idempotent; safe to run repeatedly)
-- migrates chain relations from V2 to V3 format to add temporal edge validity (`valid_at`/`invalid_at`) if needed (idempotent; safe to run repeatedly)
+
+Chain format upgrades (legacy schemas, JSONL, the legacy hash algorithm) do **not** run before
+serving: the daemon comes up in about a second and migrates those chains in the background, a few
+at a time, while it serves every other chain. See [Upgrading and chain migrations](#upgrading-and-chain-migrations).
 
 Once startup completes, it prints:
 
@@ -551,6 +554,12 @@ and `cert` work on the data directory directly and do not need the daemon.
   (survives a process crash) but not forced to the device, because a per-commit fsync
   roughly quadruples append latency (`F_FULLFSYNC` on macOS). Explicit flushes
   (`POST /v1/admin/flush`), clean shutdown and dropping a chain handle always sync.
+- `MENTISDB_MIGRATION_CONCURRENCY`
+  How many chains the background migration manager rewrites at once. Default: `2`.
+  See [Upgrading and chain migrations](#upgrading-and-chain-migrations).
+- `MENTISDB_MIGRATION_BACKUP_RETENTION_DAYS`
+  How long the preserved original of a migrated chain is kept under
+  `<MENTISDB_DIR>/migrations/backup/`. Default: `14`; `0` keeps backups forever.
 - `MENTISDB_EMBEDDINGS`
   Process-wide embeddings mode for managed vector sidecars: `off` (lexical/graph only),
   `local-text` (built-in hashing embeddings, never loads ONNX) or `fastembed`. Unset
@@ -720,6 +729,69 @@ MENTISDB_AUTO_FLUSH=false \
 MENTISDB_BIND_HOST=0.0.0.0 \
 mentisdb
 ```
+
+### Upgrading and chain migrations
+
+A release may need to rewrite chain files (a newer thought layout, a better hash algorithm,
+JSONL to binary). `mentisdb` does that in the background, never blocks startup on it, tells you
+what it is doing, and can always go back.
+
+**What you will see**
+
+- The daemon starts and serves immediately. Chains that need work are queued and migrated by a
+  small worker pool (`MENTISDB_MIGRATION_CONCURRENCY`, default 2).
+- A request for a chain that is still migrating gets **HTTP 503** with a `Retry-After` header and
+  `{"retry_after_secs": 5, "migration": {"state": "migrating", "percent": 42, ...}}`; MCP clients get
+  the same text as a tool error. Every other chain is served normally. A chain that is not
+  migrating is never delayed by one that is.
+- Progress is logged (`[migration] chain 'x': migrating ...`), shown in the TUI, and listed by
+  `GET /v1/migrations`, the `mentisdb_migration_status` MCP tool, `mentisdb migrate status` and a
+  banner on the dashboard.
+
+**Why it is safe**
+
+- *Backup first.* Before anything is replaced the original chain file is hard-linked (or copied)
+  to `<MENTISDB_DIR>/migrations/backup/<chain>/`. It is kept `MENTISDB_MIGRATION_BACKUP_RETENTION_DAYS`
+  days (default 14, `0` keeps it forever).
+- *Journaled and resumable.* Each chain has a journal in `migrations/journal/`
+  (planned, backed up, staged, committed, finalized). The upgraded chain is streamed into
+  `migrations/staging/`, re-read and verified end to end, then swapped in with one atomic rename.
+  Kill the daemon at any instant (the test suite does, at every step) and the next start resumes
+  or discards the work. A chain interrupted three times is quarantined instead of crash-looping.
+- *Never launders corruption.* Records from schemas that stored trustworthy hashes must verify;
+  a chain whose stored hash is wrong (corruption or tampering), or whose migration would
+  invalidate a v2 signature, is **refused and left byte-for-byte untouched**.
+- *Failures are quarantined.* A failing chain is reported (state `failed`, with the error) and
+  answers requests with a 503 naming the fix. The other chains and the daemon are unaffected.
+- *Downgrades are refused.* A chain, or a data directory, written by a newer release is never
+  opened by an older one that has this check; it says so and exits.
+
+**Operator commands**
+
+```bash
+mentisdb migrate status                 # what needs, is in, or finished a migration
+mentisdb migrate run --dry-run          # rehearse: check hashes and signatures, write nothing
+mentisdb migrate run [--chain KEY]      # migrate now (resumes interrupted runs)
+mentisdb migrate verify                 # re-check every hash link of the live chains
+mentisdb migrate retry --chain KEY      # clear a quarantine; it is migrated on the next run
+mentisdb migrate skip --chain KEY       # leave a chain alone and unavailable until retried
+mentisdb migrate rollback --chain KEY   # restore the backup (stop the daemon first)
+mentisdb migrate purge-backups          # delete preserved originals of finished migrations
+```
+
+`status --url http://127.0.0.1:9472` asks a running daemon. `rollback` refuses once new thoughts
+were appended to the migrated chain unless you pass `--force`, which discards them; run it with the
+daemon stopped, because a running daemon holds the chain in memory. Everything under
+`migrations/` is plain files you can inspect.
+
+**Derived data** (vector sidecars, HNSW graphs, the implicit-edge overlay, lexical indexes) is
+never part of a migration's critical path: when a chain's hashes change they are deleted and
+rebuilt lazily in the background; otherwise they are kept.
+
+**Upgrade note (this release).** Chains in the current layout with current hashes are not touched.
+HNSW graph files gain a header (a magic and a SHA-256 digest of the embedding space and its
+documents); existing graphs are rebuilt once in the background. Nothing else changes on disk, so
+a migrated chain is still readable by the previous release.
 
 ### Automatic Update Check
 
@@ -1662,6 +1734,8 @@ The daemon currently exposes 44 MCP tools:
   Return deterministic summary source windows. It only selects candidates; it does not generate or append summaries.
 - `mentisdb_list_chains`
   List known chains with version, storage adapter, counts, and storage location.
+- `mentisdb_migration_status`
+  Report the background storage-format migration state of every chain that is, was, or failed to be migrated (phase, percent, attempts, error).
 - `mentisdb_merge_chains`
   Merge all thoughts from a source chain into a target chain, then permanently delete the source.
 - `mentisdb_branch_from`
@@ -1996,6 +2070,7 @@ share one authorization table, so the same rules apply on both surfaces.
 Operations that expose or change server-wide state require a **global** token:
 
 - listing chains (`GET /v1/chains`, `mentisdb_list_chains`)
+- migration status and control (`GET /v1/migrations`, `POST /v1/migrations/retry`, `POST /v1/migrations/skip`, `mentisdb_migration_status`)
 - listing and deleting webhooks (`GET /v1/webhooks`, `DELETE /v1/webhooks/{id}`, `mentisdb_list_webhooks`, `mentisdb_delete_webhook`)
 - skill registry mutations: upload, deprecate, revoke, delete (`/v1/skills/{upload,deprecate,revoke,delete}` and the matching MCP tools)
 - `POST /v1/admin/flush` (set `MENTISDB_BEARER_TOKEN` to a global token so `mentisdb backup` can flush; see Backup and Restore)
