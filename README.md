@@ -1600,7 +1600,7 @@ Returns `{"status": "flushed"}` on success. Iterates all open chains and calls `
 
 ## MCP Tool Catalog
 
-The daemon currently exposes 48 MCP tools:
+The daemon currently exposes 44 MCP tools:
 
 - `mentisdb_bootstrap`
   Create a chain if needed and write one bootstrap checkpoint when it is empty.

@@ -224,11 +224,12 @@ registry (`AgentRecord`): display name, owner, description, aliases, status (`Ac
 public key records its id, algorithm (Ed25519 is the only one), key bytes, and when it
 was added and revoked.
 
-A public key is accepted only if it is a valid, non-weak Ed25519 curve point and comes with
-a proof of possession: a signature by that key over a payload with domain
-`mentisdb/key-registration/v1` that names the chain, agent, key id, key and a timestamp
-within ten minutes of the server clock (`KeyRegistrationProof::verify` in
-`src/access.rs`). Nobody can register a key they do not hold.
+A public key must be a valid, non-weak Ed25519 curve point. Keys are registered and
+revoked, and agents disabled, only by the operator (Section 4.3), never through REST or
+MCP. Through the library API a key also needs a proof of possession: a signature by that
+key over a payload with domain `mentisdb/key-registration/v1` that names the chain, agent,
+key id, key and a timestamp within ten minutes (`KeyRegistrationProof::verify` in
+`src/access.rs`). When the operator registers a key, the operator vouches for it instead.
 
 The registry is a sidecar file, not part of the hash chain. Section 4.3 explains what that
 means for trust.
@@ -300,8 +301,9 @@ parent after the fork point appear in the branch's results too.
 Merging is a server operation. It re-appends the source chain's thoughts, unsigned, onto
 the target and then deregisters the source. It copies type, role, content, importance,
 confidence, tags and concepts, and maps agents by id. It drops relations, refs, sessions,
-entity types, source episodes, signatures and original timestamps, and it refuses targets
-that are not open-write chains. A merge therefore preserves what was remembered but not
+entity types, source episodes, signatures and original timestamps. It refuses targets that
+are not open-write chains, and sources that have private segments, governance records or
+signed thoughts, because merging them would publish private text and discard signatures. A merge therefore preserves what was remembered but not
 how it was connected or who signed it.
 
 ---
@@ -374,12 +376,20 @@ Each chain has a write policy (`AccessMode` in `src/access.rs`):
 
 The policy is not configuration. It lives in the chain as signed `AccessPolicy` thoughts,
 replayed at open. Each record holds the mode, the governor key set, an RFC 6962 Merkle
-root over that set, a sequence number and the hash of the previous policy record. A
-change after the first record must be signed by a current governor. The first record is
-trust-on-first-use: it is accepted only from an operator-authenticated entry point (the
-library, a global bearer token, or the dashboard PIN), and its signer becomes the first
-governor. An invalid record found on replay is ignored for enforcement and reported by
-`mentisdb chain access verify`.
+root over that set, a sequence number and the hash of the previous policy record. Every
+change must be signed by a current governor. An invalid record found on replay is ignored
+for enforcement and reported by `mentisdb chain access verify`.
+
+Access is administered by the *operator*: whoever can reach the dashboard behind its PIN,
+or run the local `mentisdb` command line with `--offline` against the data directory.
+Switching a chain between public and private, allowing and denying keys, registering and
+revoking agent keys and disabling agents happen only there. The REST routes for these
+answer 403 to every token, and the MCP tools for them are not offered. The operator signs
+governance records with a key kept in `<data dir>/operator/operator.key` (mode `0600`),
+which is a governor of every policy the operator writes. That key is the recovery path
+when every agent governor key is lost, and a record that would leave no governor is
+refused, so a policy cannot lock itself out. Filesystem access is the trust boundary:
+whoever has it already holds every byte of the chain.
 
 `Signed` chains trust the agent registry's key list, which is a sidecar outside the hash
 chain. `Allowlist` chains do not, because their allowed keys are committed in the chain.
@@ -415,7 +425,14 @@ verification reports.
 
 Writes respect the boundary too. An unsigned writer cannot link to, supersede or
 deduplicate against a thought in a private segment, and a refused write does not reveal
-which agents or keys exist.
+which agents or keys exist. Push channels respect it as well. Webhooks never receive
+private thoughts or governance records, and the MCP event stream carries only
+`tool_called` events (tool, chain, outcome and duration), never arguments or results.
+
+Some metadata stays public by design, so that the chain remains verifiable. A public
+reader can see that a chain has private segments and where they are, how many thoughts
+each gap holds (indices skip hidden positions), and the one `prev_hash` that links the
+first public thought after a gap to the hidden thought before it. Timing is not padded.
 
 The library defaults to the authorized audience, because an embedder that holds the
 chain directory already holds every byte of it. The daemon starts every request from the
@@ -439,7 +456,8 @@ signed bytes: "mentisdb/read-auth/v1\0" METHOD path_and_query sha256(body)
 The signature binds one method, one URL and one body, and therefore one chain key. The
 server accepts it when the timestamp is within 60 seconds of its clock and the nonce has
 not been seen in that window, so a captured request can be neither replayed nor turned
-into a different one. The proof only identifies the reader. Whether that key may read a
+into a different one. Invalid proofs are rate limited to 30 per minute per peer. The proof
+only identifies the reader. Whether that key may read a
 chain is decided per chain (`MentisDb::is_read_authorized`): the key must be active in
 the chain's registry with exactly that public key, and be in the policy's key set; in
 `Signed` mode every active registered key qualifies, because each may already write. The
@@ -616,8 +634,9 @@ later, such as an `AccessPolicy` record, cannot be read by an older MentisDB.
 A backup is a ZIP file named `mentisdb-YYYY-MM-DD-HH-MM-SS.mentis` holding a manifest with
 the SHA-256 and size of each file, the registries, chain files and sidecars, skills,
 webhooks and optionally the TLS material. Restore checks the manifest before writing,
-bounds sizes and file counts, rejects symlinks and zip bombs, and never splices raw records
-into a chain with a `Signed` or `Allowlist` policy; such a backup is imported as a
+bounds sizes and file counts, and rejects symlinks and zip bombs. A backup that extends a
+governed chain fast-forwards it only after every new record verifies against the policy
+in force at its position (`verify_governed_suffix`); otherwise it is imported as a
 separate, renamed chain.
 
 ---
@@ -879,10 +898,11 @@ themselves.
 
 **MCP.** The daemon serves the Model Context Protocol over streamable HTTP. A stdio mode
 lets clients that only speak stdio connect through a local proxy that starts the daemon if
-needed. The server exposes 48 tools covering bootstrap, append and retrospectives, filter
+needed. The server exposes 44 tools covering bootstrap, append and retrospectives, filter
 and ranked search, standing and recent context, context bundles, traversal, federated
-search across chains, branches and merges, agents and keys, access policies and signature
-verification, entity types, import and export, vectors, webhooks and the skill registry.
+search across chains, branches and merges, agent registry reads and descriptions, access
+policy reads and signature verification, entity types, import and export, vectors,
+webhooks and the skill registry. Key and policy administration is not among them.
 
 **REST.** A versioned API under `/v1/` mirrors the tools with 51 routes and can be
 embedded in another server with `rest_router`.
@@ -900,7 +920,9 @@ mentisdb chain access verify --chain myproj
 ```
 
 **Dashboard.** A local HTTPS web interface browses chains, thoughts, agents, skills and
-access policies, and manages settings behind its PIN.
+access policies, manages settings, and is one of the two operator surfaces for access
+administration. Without a PIN it neither administers access nor shows chains with
+private segments.
 
 **Skill registry.** Agent instruction bundles are versioned in `mentisdb-skills.bin`. The
 first version is stored whole and later versions as diffs. A skill can be deprecated or
@@ -1094,7 +1116,8 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
   hashes.
 - **Read control covers private segments only.** Public segments are readable by
   anyone who can reach the API, and bearer tokens are off by default. Private segments
-  are not encrypted at rest, and a key that can read is also a key that can write.
+  are not encrypted at rest, a key that can read is also a key that can write, and a
+  public reader still learns where private segments are and how large they are.
 - **Blocking migrations.** Until the background migration manager is wired into the
   daemon, schema and hash migrations still run before a chain serves and rewrite the
   whole file.
@@ -1112,9 +1135,6 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
 - **Better paraphrase recall:** retune vector fusion so long queries keep their vector
   signal, evaluate larger local encoders, and embed long thoughts in chunks.
 - **Per-field document frequency** as the default once benchmarked.
-- **Operator-only key administration:** changes to a private chain's allowlist only
-  through the dashboard PIN or the local CLI, never through REST or MCP, and refusal to
-  merge or copy governed chains.
 - **Background migrations in the daemon:** wire the migration manager into startup, the
   CLI and the API, and extend hash coverage to every field.
 - **Anchoring head hashes** externally so that a full rewrite of a chain becomes
