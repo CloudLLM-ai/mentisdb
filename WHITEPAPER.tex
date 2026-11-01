@@ -1575,16 +1575,17 @@ that users have to repeat themselves.
 \textbf{MCP.} The daemon serves the Model Context Protocol over
 streamable HTTP. A stdio mode lets clients that only speak stdio connect
 through a local proxy that starts the daemon if needed. The server
-exposes 44 tools covering bootstrap, append and retrospectives, filter
+exposes 45 tools covering bootstrap, append and retrospectives, filter
 and ranked search, standing and recent context, context bundles,
 traversal, federated search across chains, branches and merges, agent
 registry reads and descriptions, access policy reads and signature
-verification, entity types, import and export, vectors, webhooks and the
-skill registry. Key and policy administration is not among them.
+verification, entity types, import and export, vectors, webhooks,
+migration status and the skill registry. Key and policy administration
+is not among them.
 
 \textbf{REST.} A versioned API under \passthrough{\lstinline!/v1/!}
-mirrors the tools with 51 routes and can be embedded in another server
-with \passthrough{\lstinline!rest\_router!}.
+mirrors the tools with about fifty routes and can be embedded in another
+server with \passthrough{\lstinline!rest\_router!}.
 
 \textbf{CLI.} The \passthrough{\lstinline!mentisdb!} binary is also a
 client for every MCP tool, REST route and dashboard action, with typed

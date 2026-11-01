@@ -965,13 +965,14 @@ themselves.
 
 **MCP.** The daemon serves the Model Context Protocol over streamable HTTP. A stdio mode
 lets clients that only speak stdio connect through a local proxy that starts the daemon if
-needed. The server exposes 44 tools covering bootstrap, append and retrospectives, filter
+needed. The server exposes 45 tools covering bootstrap, append and retrospectives, filter
 and ranked search, standing and recent context, context bundles, traversal, federated
 search across chains, branches and merges, agent registry reads and descriptions, access
 policy reads and signature verification, entity types, import and export, vectors,
-webhooks and the skill registry. Key and policy administration is not among them.
+webhooks, migration status and the skill registry. Key and policy administration is not
+among them.
 
-**REST.** A versioned API under `/v1/` mirrors the tools with 51 routes and can be
+**REST.** A versioned API under `/v1/` mirrors the tools with about fifty routes and can be
 embedded in another server with `rest_router`.
 
 **CLI.** The `mentisdb` binary is also a client for every MCP tool, REST route and
