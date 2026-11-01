@@ -587,3 +587,28 @@ async fn compact_keeps_collapsed_duplicates() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Both search tools advertise `compact` and tell an agent that provenance is
+/// kept, when to leave the flag off, and where the full record is.
+#[tokio::test]
+async fn mcp_tool_schema_describes_what_compact_keeps_and_when_to_skip_it() {
+    let dir = temp_dir("schema");
+    let mcp = mcp_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        "default",
+        StorageAdapterKind::Binary,
+    ));
+    let (_, listing) = post(&mcp, "/tools/list", &json!({}), false).await;
+    let tools = listing["tools"]
+        .as_array()
+        .or(listing["result"]["tools"].as_array())
+        .expect("tool list");
+    for name in ["mentisdb_ranked_search", "mentisdb_federated_search"] {
+        let tool = tools.iter().find(|t| t["name"] == name).expect(name);
+        let schema = tool["parameters"].to_string();
+        for needle in ["compact", "provenance", "mentisdb_get_thought", "verify"] {
+            assert!(schema.contains(needle), "{name} schema lacks {needle}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

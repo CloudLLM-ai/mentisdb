@@ -6598,20 +6598,23 @@ impl RankedSearchResults {
     }
 }
 
-/// Removes [`COMPACT_DROPPED_THOUGHT_FIELDS`] and every null or empty field
-/// (empty string, array or object) from a serialized thought. A value that is
-/// not a JSON object is returned unchanged.
+/// Description of the `compact` parameter on the ranked and federated search
+/// MCP tools. Shared so the two tool schemas cannot drift apart.
+const COMPACT_PARAMETER_DESCRIPTION: &str = "When true, return compact hits to save tokens on routine recall: chain key, total score and the thought minus its hash, prev_hash, thought_signature, signing_key_id, schema_version, agent_name and agent_owner, with empty fields left out. The thought's provenance (segment, signed, signature, verified_agent, trust), version fields (version_status, successors, current_version, successor_of, collapsed_duplicates), relations, concepts, refs and content are always kept, and graph-expanded hits keep their graph provenance. Score components and match lists (matched_terms, match_sources) are left out. About a quarter smaller. Leave it off when you need hashes or signatures to verify a thought yourself or per-component score debugging; mentisdb_get_thought returns the full record. Default false.";
+
+/// Removes [`COMPACT_DROPPED_THOUGHT_FIELDS`] and every top-level null or empty
+/// field (empty string, array or object) from a serialized thought, in place.
+/// Only the thought's own keys are filtered: nested values, notably the
+/// `provenance` object with its `null` `verified_agent` and `signature_version`,
+/// are kept whole. A value that is not a JSON object is returned unchanged.
 fn compact_thought_json(thought: Value) -> Value {
-    let Value::Object(fields) = thought else {
+    let Value::Object(mut fields) = thought else {
         return thought;
     };
-    let compact = fields
-        .into_iter()
-        .filter(|(key, value)| {
-            !COMPACT_DROPPED_THOUGHT_FIELDS.contains(&key.as_str()) && !is_empty_json(value)
-        })
-        .collect();
-    Value::Object(compact)
+    fields.retain(|key, value| {
+        !COMPACT_DROPPED_THOUGHT_FIELDS.contains(&key.as_str()) && !is_empty_json(value)
+    });
+    Value::Object(fields)
 }
 
 /// True for JSON null and for an empty string, array or object.
@@ -8906,7 +8909,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("vector_fusion", ToolParameterType::String).with_description("Vector/lexical blend: relative (default, query-length independent) or absolute (raw BM25 decay)."))
         .with_parameter(ToolParameter::new("resolve_successors", ToolParameterType::Boolean).with_description("Replace superseded hits by their live successor and promote the thought contesting a contested hit. Default true."))
         .with_parameter(ToolParameter::new("synonym_weight", ToolParameterType::Number).with_description("Weight of automatic thesaurus synonym expansion; 0 disables it. Default 0.3."))
-        .with_parameter(ToolParameter::new("compact", ToolParameterType::Boolean).with_description("When true, return compact hits: chain key, total score and the full thought minus its hashes, signature, signing key, schema version and agent name and owner, with empty fields left out; graph-expanded hits keep their graph provenance, and version fields such as version_status and successors stay on the thought. Score components and match lists (matched_terms, match_sources) are left out. Relations, concepts, refs and content are always kept. About a quarter smaller. Default false.")),
+        .with_parameter(ToolParameter::new("compact", ToolParameterType::Boolean).with_description(COMPACT_PARAMETER_DESCRIPTION)),
         ToolMetadata::new(
             "mentisdb_federated_search",
             "Run federated ranked retrieval over multiple chains simultaneously and return a single merged, ranked result list. Useful for multi-agent hubs or cross-organizational memory aggregation.",
@@ -8939,7 +8942,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("vector_fusion", ToolParameterType::String).with_description("Vector/lexical blend: relative (default, query-length independent) or absolute (raw BM25 decay)."))
         .with_parameter(ToolParameter::new("resolve_successors", ToolParameterType::Boolean).with_description("Replace superseded hits by their live successor and promote the thought contesting a contested hit. Default true."))
         .with_parameter(ToolParameter::new("synonym_weight", ToolParameterType::Number).with_description("Weight of automatic thesaurus synonym expansion; 0 disables it. Default 0.3."))
-        .with_parameter(ToolParameter::new("compact", ToolParameterType::Boolean).with_description("When true, return compact hits: chain key, total score and the full thought minus its hashes, signature, signing key, schema version and agent name and owner, with empty fields left out; graph-expanded hits keep their graph provenance, and version fields such as version_status and successors stay on the thought. Score components and match lists (matched_terms, match_sources) are left out. Relations, concepts, refs and content are always kept. About a quarter smaller. Default false.")),
+        .with_parameter(ToolParameter::new("compact", ToolParameterType::Boolean).with_description(COMPACT_PARAMETER_DESCRIPTION)),
         ToolMetadata::new(
             "mentisdb_context_bundles",
             "Return deterministic seed-anchored grouped context bundles over query_context_bundles. Use this when you want supporting context grouped beneath the best lexical seed thoughts.",
@@ -10475,6 +10478,24 @@ mod compact_search_tests {
             compact,
             json!({"importance": 0.0, "flag": false, "index": 0})
         );
+    }
+
+    #[test]
+    fn keeps_provenance_whole_including_its_nulls() {
+        let provenance = json!({
+            "segment": "public",
+            "signed": false,
+            "signature": "unsigned",
+            "signature_version": null,
+            "verified_agent": null,
+            "trust": "untrusted_data"
+        });
+        let compact = compact_thought_json(json!({
+            "content": "x",
+            "provenance": provenance.clone(),
+            "session_id": null
+        }));
+        assert_eq!(compact, json!({"content": "x", "provenance": provenance}));
     }
 
     #[test]
