@@ -44,3 +44,8 @@ jobs:
 
       - name: cargo clippy (deny warnings)
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: cargo doc (deny warnings, broken intra-doc links)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --all-features

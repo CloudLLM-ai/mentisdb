@@ -1139,7 +1139,7 @@ fn report_from_journal(paths: &MigrationPaths) -> Result<MigrationReport, Migrat
 /// - `Committed`: finalization is repeated.
 /// - Terminal states: nothing to do.
 ///
-/// A chain interrupted [`MAX_ATTEMPTS`] times is quarantined instead.
+/// A chain interrupted `MAX_ATTEMPTS` (3) times is quarantined instead.
 ///
 /// # Errors
 ///

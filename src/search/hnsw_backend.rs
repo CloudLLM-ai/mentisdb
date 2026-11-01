@@ -11,9 +11,9 @@
 //!
 //! [`hnsw`] 0.11 is built around an unsigned-integer metric (see
 //! [`space::Metric`]). Cosine similarity lives in `[-1.0, 1.0]`, which is
-//! not a metric space. [`HnswBackend`] therefore encodes the *distance*
+//! not a metric space. `HnswBackend` therefore encodes the *distance*
 //! `1.0 - cosine_similarity` as a non-negative `f32` in `[0.0, 2.0]`,
-//! scales it by [`DISTANCE_SCALE`] (`1_000_000.0`), and truncates to a
+//! scales it by `DISTANCE_SCALE` (`1_000_000.0`), and truncates to a
 //! `u32`. The scaled integer preserves order (larger distance = larger
 //! integer), the triangle inequality is satisfied up to `f32` rounding
 //! noise on normalized inputs, and nearest-neighbor queries are answered
@@ -100,7 +100,7 @@ const HNSW_M0: usize = HNSW_M * 2;
 const DISTANCE_SCALE: f32 = 1_000_000.0;
 
 /// Cosine-distance metric that encodes `1.0 - cosine_similarity` as a `u32`.
-/// See the module rustdoc and [`DISTANCE_SCALE`] for the trade-off.
+/// See the module rustdoc and `DISTANCE_SCALE` for the trade-off.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 struct CosineDistance;
 
@@ -119,11 +119,11 @@ impl Metric<Vec<f32>> for CosineDistance {
     }
 }
 
-/// HNSW backend for [`VectorIndex`].
+/// HNSW backend for [`VectorIndex`](super::vector::VectorIndex).
 ///
-/// Built on `hnsw` 0.11 with the [`CosineDistance`] metric. Selected
+/// Built on `hnsw` 0.11 with a private cosine-distance metric (`CosineDistance`). Selected
 /// automatically by [`super::vector::select_backend_kind`] once the corpus
-/// crosses [`DEFAULT_EXACT_TO_HNSW_THRESHOLD`].
+/// crosses [`DEFAULT_EXACT_TO_HNSW_THRESHOLD`](super::vector::DEFAULT_EXACT_TO_HNSW_THRESHOLD).
 #[derive(Serialize, Deserialize)]
 pub struct HnswBackend {
     metadata: EmbeddingMetadata,

@@ -1,7 +1,7 @@
 //! Who is reading: the per-request [`ReadAuthority`] and the [`Audience`] it
 //! yields for each chain.
 //!
-//! The REST and MCP routers wrap every request in [`read_auth_middleware`].
+//! The REST and MCP routers wrap every request in `read_auth_middleware` (in `server`).
 //! When the request carries a valid read proof ([`crate::read_auth`]) the
 //! verified key becomes the request's authority for the duration of the
 //! handler; otherwise the authority is empty. Handlers never look at headers.

@@ -21,7 +21,7 @@
 //! WAL is pending the head is the last record's incremental digest; after a
 //! compaction it is the full-corpus digest stored in the snapshot, so the
 //! in-memory sidecar adopts that digest via
-//! [`VectorSidecar::refresh_snapshot_integrity`] before any further append.
+//! `VectorSidecar::refresh_snapshot_integrity` before any further append.
 
 use crate::search::EmbeddingMetadata;
 use chrono::{DateTime, Utc};
@@ -233,7 +233,7 @@ impl VectorSidecar {
     /// Integrity is chained as `SHA-256(prev_digest || entry bytes)` so a later
     /// compact can rewrite the JSON snapshot without hashing the whole corpus
     /// on every append. After [`VectorSidecar::compact_to_path`] the chain head
-    /// is the snapshot digest, which [`VectorSidecar::refresh_snapshot_integrity`]
+    /// is the snapshot digest, which `VectorSidecar::refresh_snapshot_integrity`
     /// adopts; callers that compact out of band must adopt it too before
     /// appending.
     pub fn extend_with_entry(

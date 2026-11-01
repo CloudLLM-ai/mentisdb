@@ -369,8 +369,8 @@ struct Inner {
 
 /// Runs and tracks chain migrations in the background.
 ///
-/// Cheap to clone; all clones share one state. See the [module
-/// documentation](self).
+/// Cheap to clone; all clones share one state. See the [`migration`](crate::migration) module
+/// documentation.
 #[derive(Clone)]
 pub struct MigrationManager {
     inner: Arc<Inner>,

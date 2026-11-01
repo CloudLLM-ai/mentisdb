@@ -3843,8 +3843,8 @@ pub struct RankedSearchQuery {
     pub thesaurus: bool,
     /// Which document frequency the lexical stop-word gate compares against.
     ///
-    /// Defaults to [`DfScope::from_env`] (`MENTISDB_DF_SCOPE`), which is
-    /// [`DfScope::Global`] unless the operator opts in. See
+    /// Defaults to [`DfScope::from_env`](crate::search::lexical::DfScope::from_env) (`MENTISDB_DF_SCOPE`), which is
+    /// [`DfScope::Global`](crate::search::lexical::DfScope::Global) unless the operator opts in. See
     /// [`Bm25DfCutoffs`](crate::search::lexical::Bm25DfCutoffs) for what the
     /// gate does.
     pub df_scope: crate::search::lexical::DfScope,
