@@ -547,6 +547,7 @@ $MENTISDB_DIR/                         (default ~/.cloudllm/mentisdb)
   <stem>.auto_edges.bin                implicit-edge overlay
   <stem>.verified.json                 operator-signed verification checkpoint
   operator/operator.key                operator signing key (0600)
+  mentisdb.lock                        advisory lock held by the daemon
   migrations/vX_to_vY/                 archived pre-migration files
 ```
 
@@ -575,7 +576,10 @@ The agent registry is not rewritten on every append. Its counters are recomputed
 chain at open, so only identity changes (a new agent, a rename, a learned owner) are
 written immediately, and counters are saved every 16 appends and at shutdown.
 
-One writer process per data directory is assumed. There is no cross-process file lock.
+One writer process per data directory is assumed. The daemon takes an advisory lock on
+`mentisdb.lock` in the data directory, and the offline operator CLI refuses to run while
+it is held. A second daemon that finds the lock taken starts anyway, and library
+embedders do not take it, so the assumption is enforced only for the operator CLI.
 
 ### 5.4 Crash Recovery
 
@@ -1221,7 +1225,8 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
   daemon, schema and hash migrations still run before a chain serves and rewrite the
   whole file.
 - **Merges lose structure.** A merge drops relations, signatures and timestamps.
-- **Single writer.** Two processes writing one data directory are not detected.
+- **Single writer.** Only the offline operator CLI respects the daemon's data-directory
+  lock. A second daemon or an embedding process can still append to the same chain.
 - **No general rate limiting.** Only dashboard logins and invalid read proofs are rate
   limited. A client that can reach the API can issue expensive queries freely.
 - **Benchmarks measure retrieval, not answers.** Recall at *k* says whether the evidence
