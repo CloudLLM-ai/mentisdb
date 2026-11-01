@@ -1502,18 +1502,65 @@ opening of the target's nearest semantic neighbour among thoughts
 sharing few of its words).
 
 The audit ran on 2026-10-31 against copies of three real project chains
-of one user, with 750, 525 and 86 thoughts, at commit 9944a6e with
-default settings (300 targets per query kind, seed 7, queries of at most
-32 words). Its findings:
+of one user, with 750, 525 and 86 thoughts written by 23, 23 and 5
+agents over two to ten weeks. It used release 0.10.10.55 scoring,
+unchanged, with the daemon's thesaurus expansion, 300 targets per query
+kind, seed 7 and queries of at most 32 words.
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.5513}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.1538}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.1538}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.1410}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Probe kind
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+750 thoughts
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+525 thoughts
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+86 thoughts
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\passthrough{\lstinline!drop50!}: half the target's words & 76 / 100 &
+95 / 99 & 87 / 100 \\
+\passthrough{\lstinline!rare!}: the six rarest words & 77 / 100 & 94 /
+99 & 90 / 100 \\
+\passthrough{\lstinline!ref!}: opening of a later thought citing it & 19
+/ 65 & 20 / 49 & 100 / 100 \\
+\passthrough{\lstinline!sem!}: same topic, few shared words & 6 / 43 & 9
+/ 55 & 24 / 84 \\
+\passthrough{\lstinline!tail!}: words beyond the 512-token window & 76 /
+100 & 80 / 93 & none \\
+\end{longtable}
+}
+
+The cells are hybrid R@1 / R@10 in percent. Lexical-only ranking was
+within one point everywhere except the 15 tail probes of the 525-thought
+chain, so vectors added almost nothing at these query lengths. The
+findings:
 
 \begin{enumerate}
 \def\labelenumi{\arabic{enumi}.}
 \tightlist
 \item
-  \textbf{No age effect.} Recall did not fall with the age of the
-  target. Older memories are found as reliably as recent ones once the
-  query reaches them. Ranking does not bury the past; startup loading
-  did, which standing context addresses.
+  \textbf{No age effect on recall at ten.} On the two large chains,
+  \passthrough{\lstinline!drop50!} and \passthrough{\lstinline!rare!}
+  probes reached R@10 of 98\% to 100\% in every age decile, and
+  \passthrough{\lstinline!sem!} recall was the same for the older and
+  newer halves (46\% against 40\%, and 56\% against 54\%). Rank 1 did
+  depend on age: on the 750-thought chain, the older half reached R@1 of
+  56\% against 94\% for the newer half. That gap is a duplicate effect,
+  described below, not forgetting. Ranking does not bury the past;
+  loading only recent context at startup did, which standing context
+  addresses. The 86-thought chain showed a real
+  \passthrough{\lstinline!sem!} gap between halves (74\% against 97\%),
+  but on fewer than 40 probes per half.
 \item
   \textbf{Paraphrase is the weak spot.} On \passthrough{\lstinline!sem!}
   probes the hybrid ranker recalled the target in the top ten for 43\%
@@ -1528,12 +1575,18 @@ default settings (300 targets per query kind, seed 7, queries of at most
   \textbf{Duplicates and dominant thoughts crowd results.} None of the
   chains had automatic deduplication on, and only one
   \passthrough{\lstinline!Supersedes!} edge existed among them. On the
-  525-thought chain a 13-member cluster restating one build rule, each
-  copy at importance 0.95, took rank 1 in 14 probes meant for other
-  thoughts. On the 750-thought chain single high-importance thoughts
-  took rank 1 in up to 7 probes each. Turning on RRF cut the rank-1
-  misses caused by a newer near-duplicate from 140 to 9 on that chain,
-  but it only reorders ties and does not change recall at ten.
+  750-thought chain, 301 of 749 live thoughts sat in 145 clusters of
+  near-copies (token Jaccard of 0.85 or more). Most were exact copies
+  re-recorded about 128 positions later, outside the 64-thought dedup
+  window; 149 of the 172 duplicate pairs lay beyond it. The newer copy
+  wins rank 1 by its recency bonus of about 0.009, which explains the
+  rank-1 age gap above. On the 525-thought chain a 13-member cluster
+  restating one build rule, each copy at importance 0.95, took rank 1 in
+  14 probes meant for other thoughts. On the 750-thought chain single
+  high-importance thoughts took rank 1 in up to 7 probes each. Turning
+  on RRF cut the rank-1 misses caused by a newer near-duplicate from 140
+  to 9 on that chain, but it only reorders ties and does not change
+  recall at ten.
 \item
   \textbf{The document-frequency gate is not what limits recall.} It
   removed 0.4\% to 1.5\% of the vocabulary, mostly generic words, and a

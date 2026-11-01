@@ -887,12 +887,30 @@ opening of a later thought that refers to the target, and `sem`: the opening of 
 target's nearest semantic neighbour among thoughts sharing few of its words).
 
 The audit ran on 2026-10-31 against copies of three real project chains of one user,
-with 750, 525 and 86 thoughts, at commit 9944a6e with default settings (300 targets per
-query kind, seed 7, queries of at most 32 words). Its findings:
+with 750, 525 and 86 thoughts written by 23, 23 and 5 agents over two to ten weeks. It used
+release 0.10.10.55 scoring, unchanged, with the daemon's thesaurus expansion, 300 targets
+per query kind, seed 7 and queries of at most 32 words.
 
-1. **No age effect.** Recall did not fall with the age of the target. Older memories are
-   found as reliably as recent ones once the query reaches them. Ranking does not bury the
-   past; startup loading did, which standing context addresses.
+| Probe kind | 750 thoughts | 525 thoughts | 86 thoughts |
+|---|---|---|---|
+| `drop50`: half the target's words | 76 / 100 | 95 / 99 | 87 / 100 |
+| `rare`: the six rarest words | 77 / 100 | 94 / 99 | 90 / 100 |
+| `ref`: opening of a later thought citing it | 19 / 65 | 20 / 49 | 100 / 100 |
+| `sem`: same topic, few shared words | 6 / 43 | 9 / 55 | 24 / 84 |
+| `tail`: words beyond the 512-token window | 76 / 100 | 80 / 93 | none |
+
+The cells are hybrid R@1 / R@10 in percent. Lexical-only ranking was within one point
+everywhere except the 15 tail probes of the 525-thought chain, so vectors added almost
+nothing at these query lengths. The findings:
+
+1. **No age effect on recall at ten.** On the two large chains, `drop50` and `rare` probes
+   reached R@10 of 98% to 100% in every age decile, and `sem` recall was the same for the
+   older and newer halves (46% against 40%, and 56% against 54%). Rank 1 did depend on
+   age: on the 750-thought chain, the older half reached R@1 of 56% against 94% for the
+   newer half. That gap is a duplicate effect, described below, not forgetting. Ranking
+   does not bury the past; loading only recent context at startup did, which standing
+   context addresses. The 86-thought chain showed a real `sem` gap between halves (74%
+   against 97%), but on fewer than 40 probes per half.
 2. **Paraphrase is the weak spot.** On `sem` probes the hybrid ranker recalled the target
    in the top ten for 43% of queries on the 750-thought chain and 55% on the 525-thought
    chain. Vector similarity alone did better, at 57% and 59%. The reason is the fusion
@@ -901,7 +919,11 @@ query kind, seed 7, queries of at most 32 words). Its findings:
    signal. With 8-word queries the hybrid ranker matched or beat vectors alone.
 3. **Duplicates and dominant thoughts crowd results.** None of the chains had automatic
    deduplication on, and only one `Supersedes` edge existed among them. On the
-   525-thought chain a 13-member cluster restating one build rule, each copy at importance
+   750-thought chain, 301 of 749 live thoughts sat in 145 clusters of near-copies (token
+   Jaccard of 0.85 or more). Most were exact copies re-recorded about 128 positions
+   later, outside the 64-thought dedup window; 149 of the 172 duplicate pairs lay beyond
+   it. The newer copy wins rank 1 by its recency bonus of about 0.009, which explains the
+   rank-1 age gap above. On the 525-thought chain a 13-member cluster restating one build rule, each copy at importance
    0.95, took rank 1 in 14 probes meant for other thoughts. On the 750-thought chain
    single high-importance thoughts took rank 1 in up to 7 probes each. Turning on RRF cut
    the rank-1 misses caused by a newer near-duplicate from 140 to 9 on that chain, but it
