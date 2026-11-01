@@ -26,8 +26,10 @@ with the contester ranked above it. A *standing context* query returns what is d
 the user and the project regardless of age, next to the usual window of recent thoughts.
 None of this needs an external database, a network service or an LLM call.
 
-On the LoCoMo-10P benchmark the default pipeline reaches 75.2% Recall@10, and on
-LongMemEval it reaches 70.0% Recall@5, with local embeddings only. On real project
+In the last full benchmark run (release 0.10.9.54, local MiniLM embeddings) the pipeline
+reached 73.5% Recall@10 on LoCoMo-10P and 68.0% Recall@5 on LongMemEval. A provisional
+A/B of the current defaults against the previous ones moved these from 73.1% to 75.2% and
+from 68.0% to 70.0% on existing benchmark chains. On real project
 chains, an audit found no loss of recall with the age of a memory, but found that
 near-duplicate thoughts crowded results and that paraphrased queries recalled far less
 than verbatim ones. Length-independent vector fusion and result-time duplicate collapse
@@ -981,8 +983,21 @@ and is stated with each result.
 
 ### 9.2 Results
 
-The current defaults were measured on master on 2026-11-01 as an A/B against the previous
-defaults, on scratch copies of two already-ingested benchmark chains: a LoCoMo-10P chain of
+The last full benchmark protocol, with fresh ingestion and MiniLM embeddings, is release
+0.10.9.54 (October 2026), before valid-version retrieval, relative fusion and collapse.
+These are the reference numbers until the full protocol is re-run on the current defaults:
+
+| Benchmark | Pipeline | R@5 | R@10 | R@20 |
+|---|---|---|---|---|
+| LoCoMo-10P | default | 63.9% | 73.5% | |
+| LoCoMo-10P | with RRF | 66.0% | 74.1% | |
+| LongMemEval | default | 68.0% | 72.8% | 78.8% |
+| LongMemEval | with RRF | 68.6% | | |
+
+Query throughput was then about 384 queries per second on both.
+
+**Provisional A/B of the current defaults.** The current defaults were compared with the
+previous ones on master on 2026-11-01, on scratch copies of two already-ingested benchmark chains: a LoCoMo-10P chain of
 5882 thoughts with the dependency-free `local-text` embeddings (256 dimensions, graph
 expansion to depth 3), and a LongMemEval chain with MiniLM embeddings (384 dimensions).
 
@@ -1019,20 +1034,9 @@ Duplicate collapse alone, under the old fusion, moved LongMemEval R@5 from 68.0%
 and left LoCoMo unchanged, because the benchmark conversations contain few repeated
 turns. Its main effect is on real chains (Section 9.4).
 
-These chains and sidecars differ from those of the release runs below, so the two sets of
-numbers should not be compared directly; only the A/B within each set is meaningful.
-
-The last full benchmark protocol, with fresh ingestion and MiniLM embeddings, is release
-0.10.9.54 (October 2026), before valid-version retrieval, relative fusion and collapse:
-
-| Benchmark | Pipeline | R@5 | R@10 | R@20 |
-|---|---|---|---|---|
-| LoCoMo-10P | default | 63.9% | 73.5% | |
-| LoCoMo-10P | with RRF | 66.0% | 74.1% | |
-| LongMemEval | default | 68.0% | 72.8% | 78.8% |
-| LongMemEval | with RRF | 68.6% | | |
-
-Query throughput was then about 384 queries per second on both.
+These chains and sidecars differ from those of the release run above, so the A/B shows
+the size of the change, not a new absolute result; it is not comparable with the
+0.10.9.54 table. The full protocol has not yet been re-run on the current defaults.
 
 Earlier full runs show where the gains came from:
 
@@ -1044,7 +1048,7 @@ Earlier full runs show where the gains came from:
 | 0.8.9 | irregular lemmas | 71.9% | 66.8% |
 | 0.9.9 | automatic thesaurus, real embeddings | 72.6% | 66.8% |
 | 0.10.9.54 | stemmed thesaurus keys, damped synonyms, RRF fix | 73.5% | 68.0% |
-| master | relative fusion and collapse (A/B chains, see above) | 75.2% | 70.0% |
+| master (provisional A/B, other chains) | relative fusion and collapse | 73.1% to 75.2% | 68.0% to 70.0% |
 
 On a two-conversation LoCoMo subset, 0.8.1 reached 88.7% R@10. That number is for the
 subset only and should not be compared with full-benchmark results.
