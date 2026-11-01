@@ -476,6 +476,13 @@ fn ranked_flags() -> Vec<Flag> {
             "N",
             "How many top results to rerank.",
         ),
+        Flag::opt(
+            "compact",
+            "compact",
+            Kind::Switch,
+            "",
+            "Return compact hits (chain, total score and the thought without hashes, signatures, schema version and agent name and owner; provenance and version fields are kept) to save tokens; about a quarter smaller. Leave it off to verify hashes or signatures or to read score components.",
+        ),
     ]);
     flags
 }

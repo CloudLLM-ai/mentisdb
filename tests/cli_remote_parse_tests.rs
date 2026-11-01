@@ -164,6 +164,20 @@ fn test_double_dash_allows_mode_named_queries() {
     );
 }
 
+/// `--compact` is a switch on `search` and `search federated` that lands on the
+/// REST/MCP `compact` field; it is absent unless given, and `search bundles`
+/// (whose request has no such field) does not offer it.
+#[test]
+fn test_compact_flag_on_ranked_and_federated_search() {
+    assert!(body(&["search", "q"]).get("compact").is_none());
+    assert_eq!(body(&["search", "q", "--compact"])["compact"], true);
+    let federated = body(&["search", "federated", "q", "-c", "a", "--compact"]);
+    assert_eq!(federated["compact"], true);
+    assert_eq!(federated["chain_keys"], json!(["a"]));
+    let argv = ["mentisdb", "search", "bundles", "q", "--compact"];
+    assert!(parse_args(argv.iter().copied()).is_err());
+}
+
 /// Dotted fields nest, and `--include-anchor` takes an explicit boolean.
 #[test]
 fn test_nested_and_boolean_fields() {
