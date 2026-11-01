@@ -1,4 +1,7 @@
 UNRELEASED
+  - fix(daemon): a second daemon on a data directory that is already in use now refuses
+    to start (it used to start without the directory lock and could append to the same
+    chain files); the `--offline` operator commands rely on the same lock.
   - feat(retrieval): cross-chain and branch lineage. A `Supersedes`, `Corrects` or
     `Invalidates` relation carrying a `chain_key` now applies wherever one read
     path sees both chains: server branch search (the branch plus its ancestors),

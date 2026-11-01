@@ -1408,6 +1408,33 @@ fn migration_summary_lines(manager: &Option<MigrationManager>) -> Vec<String> {
 
 /// Headless HTTP server mode — starts servers without TUI.
 /// Used when the stdio proxy auto-launches a background daemon.
+/// Claim the data directory for this daemon for the life of the process.
+///
+/// Two daemons appending to the same chain files corrupt the hash chain, and the
+/// `--offline` operator commands rely on the same lock, so a second daemon on a
+/// directory that is in use refuses to start.
+fn claim_data_dir(
+    config: &MentisDbServerConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    static DAEMON_LOCK: std::sync::OnceLock<mentisdb::operator::DataDirLock> =
+        std::sync::OnceLock::new();
+    if DAEMON_LOCK.get().is_some() {
+        return Ok(());
+    }
+    let dir = &config.service.chain_dir;
+    match mentisdb::operator::DataDirLock::try_acquire(dir)? {
+        Some(lock) => {
+            let _ = DAEMON_LOCK.set(lock);
+            Ok(())
+        }
+        None => Err(format!(
+            "another mentisdb process is using {}; two processes must not write the same chains. Stop it or set MENTISDB_DIR",
+            dir.display()
+        )
+        .into()),
+    }
+}
+
 async fn run_headless() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "server")]
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -1415,6 +1442,7 @@ async fn run_headless() -> Result<(), Box<dyn std::error::Error + Send + Sync>> 
     init_logger();
 
     let config = MentisDbServerConfig::from_env();
+    claim_data_dir(&config)?;
 
     // Run migrations silently
     if std::env::var_os("MENTISDB_DIR").is_none() {
@@ -1755,6 +1783,7 @@ async fn run_startup_sequence(
     };
     #[cfg_attr(not(feature = "startup-sound"), allow(unused_mut))]
     let mut config = MentisDbServerConfig::from_env();
+    claim_data_dir(&config)?;
 
     // Update check
     {
