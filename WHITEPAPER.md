@@ -463,7 +463,8 @@ not encrypted at rest. Anyone who can read the files can read them.
 ### 4.5 Read Authentication
 
 A reader proves possession of an authorized key with one header per HTTP request,
-signed locally by the client process (the CLI, the stdio MCP proxy or an SDK), so the
+signed locally by the client process (the CLI, the stdio MCP proxy, or an SDK such as
+the Python client's `ReadSigner`, pinned to the Rust signer by a shared test vector), so the
 private key never travels and never enters a model's context (`src/read_auth.rs`):
 
 ```
@@ -1221,6 +1222,8 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
   whole file.
 - **Merges lose structure.** A merge drops relations, signatures and timestamps.
 - **Single writer.** Two processes writing one data directory are not detected.
+- **No general rate limiting.** Only dashboard logins and invalid read proofs are rate
+  limited. A client that can reach the API can issue expensive queries freely.
 - **Benchmarks measure retrieval, not answers.** Recall at *k* says whether the evidence
   was retrieved, not whether the agent used it well.
 
