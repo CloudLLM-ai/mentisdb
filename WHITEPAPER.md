@@ -712,7 +712,7 @@ field whose cutoff it respects. Details that matter in practice:
   of that agent's thoughts. On one real 750-thought chain, project words that occur in 2%
   to 9% of the content were gated out of it by registry text alone.
 - A per-field scope that counts each field separately exists as an opt-in
-  (`MENTISDB_DF_SCOPE=field`, or `df_scope` on the library query). It is not the default
+  (`MENTISDB_DF_SCOPE=field`, or `df_scope` per query). It is not the default
   because it brought no gain: under the current defaults both scopes score the same on
   LoCoMo and LongMemEval, and on a real chain it moved citation-style probes by two
   points in opposite directions at rank 1 and rank 10.
@@ -724,10 +724,11 @@ Registry text is part of the index, so when an agent's description, owner, displ
 or aliases change, the lexical index is rebuilt and older thoughts become findable by the
 new text.
 
-**Synonyms.** The daemon expands query terms with a built-in thesaurus of 895 headwords,
-keyed by stem so inflected forms expand too. Each term gets at most three synonyms at
-weight 0.3 (`apply_thesaurus_if_text` in `src/server.rs`). The library does not expand by
-default; embedders pass synonyms explicitly.
+**Synonyms.** Query terms are expanded with a built-in thesaurus of 895 headwords, keyed by
+stem so inflected forms expand too. Each term gets at most three synonyms at weight 0.3,
+in the library and the daemon alike. On the A/B chains of Section 9.2, turning synonyms
+off scored 75.3% LoCoMo R@10 and 69.6% LongMemEval R@5, weight 0.3 scored 75.2% and 70.0%,
+and the older weight 0.7 scored 74.8% and 68.2%.
 
 ### 6.3 Vector Signal and Fusion
 
@@ -888,12 +889,19 @@ block delimited by `=== STANDING CONTEXT ===` that the agent loads at startup, n
 recent-context block. It is available as an MCP tool, a REST route
 (`POST /v1/standing-context`) and a CLI command (`mentisdb thought standing`).
 
-### 6.11 What Is Not in the Default Path
+### 6.11 Tuning Per Query
+
+Every retrieval default in this section can be overridden per query, on REST, MCP and the
+CLI as well as in the library: successor redirection, duplicate collapse, vector fusion,
+synonym weight, document-frequency scope and the per-field cutoffs. Environment variables
+set the process-wide defaults.
+
+### 6.12 What Is Not in the Default Path
 
 The crate contains components that ranked search does not use by default, and this paper
 makes no claim based on them: personalized PageRank (`src/search/ppr.rs`), pseudo-relevance
-feedback (`query_expansion.rs`), a query-intent classifier (`query_intent.rs`), embedding
-synonyms, and an `llm_rerank` flag that nothing reads. LLM memory extraction (`src/llm.rs`)
+feedback (`query_expansion.rs`), a query-intent classifier (`query_intent.rs`) and embedding
+synonyms. Personalized PageRank and the LLM-reranking fields are deprecated no-ops. LLM memory extraction (`src/llm.rs`)
 exists as an explicit, opt-in operation that writes `LLMExtracted` thoughts.
 
 ---

@@ -1214,11 +1214,11 @@ Details that matter in practice:
 \item
   A per-field scope that counts each field separately exists as an
   opt-in (\passthrough{\lstinline!MENTISDB\_DF\_SCOPE=field!}, or
-  \passthrough{\lstinline!df\_scope!} on the library query). It is not
-  the default because it brought no gain: under the current defaults
-  both scopes score the same on LoCoMo and LongMemEval, and on a real
-  chain it moved citation-style probes by two points in opposite
-  directions at rank 1 and rank 10.
+  \passthrough{\lstinline!df\_scope!} per query). It is not the default
+  because it brought no gain: under the current defaults both scopes
+  score the same on LoCoMo and LongMemEval, and on a real chain it moved
+  citation-style probes by two points in opposite directions at rank 1
+  and rank 10.
 \item
   Gating is off for chains under 20 thoughts.
   \passthrough{\lstinline!N!} counts every committed thought, including
@@ -1230,12 +1230,12 @@ Registry text is part of the index, so when an agent's description,
 owner, display name or aliases change, the lexical index is rebuilt and
 older thoughts become findable by the new text.
 
-\textbf{Synonyms.} The daemon expands query terms with a built-in
-thesaurus of 895 headwords, keyed by stem so inflected forms expand too.
-Each term gets at most three synonyms at weight 0.3
-(\passthrough{\lstinline!apply\_thesaurus\_if\_text!} in
-\passthrough{\lstinline!src/server.rs!}). The library does not expand by
-default; embedders pass synonyms explicitly.
+\textbf{Synonyms.} Query terms are expanded with a built-in thesaurus of
+895 headwords, keyed by stem so inflected forms expand too. Each term
+gets at most three synonyms at weight 0.3, in the library and the daemon
+alike. On the A/B chains of Section 9.2, turning synonyms off scored
+75.3\% LoCoMo R@10 and 69.6\% LongMemEval R@5, weight 0.3 scored 75.2\%
+and 70.0\%, and the older weight 0.7 scored 74.8\% and 68.2\%.
 
 \subsubsection{6.3 Vector Signal and Fusion}
 
@@ -1478,17 +1478,25 @@ at startup, next to the recent-context block. It is available as an MCP
 tool, a REST route (\passthrough{\lstinline!POST /v1/standing-context!})
 and a CLI command (\passthrough{\lstinline!mentisdb thought standing!}).
 
-\subsubsection{6.11 What Is Not in the Default Path}
+\subsubsection{6.11 Tuning Per Query}
+
+Every retrieval default in this section can be overridden per query, on
+REST, MCP and the CLI as well as in the library: successor redirection,
+duplicate collapse, vector fusion, synonym weight, document-frequency
+scope and the per-field cutoffs. Environment variables set the
+process-wide defaults.
+
+\subsubsection{6.12 What Is Not in the Default Path}
 
 The crate contains components that ranked search does not use by
 default, and this paper makes no claim based on them: personalized
 PageRank (\passthrough{\lstinline!src/search/ppr.rs!}), pseudo-relevance
 feedback (\passthrough{\lstinline!query\_expansion.rs!}), a query-intent
-classifier (\passthrough{\lstinline!query\_intent.rs!}), embedding
-synonyms, and an \passthrough{\lstinline!llm\_rerank!} flag that nothing
-reads. LLM memory extraction (\passthrough{\lstinline!src/llm.rs!})
-exists as an explicit, opt-in operation that writes
-\passthrough{\lstinline!LLMExtracted!} thoughts.
+classifier (\passthrough{\lstinline!query\_intent.rs!}) and embedding
+synonyms. Personalized PageRank and the LLM-reranking fields are
+deprecated no-ops. LLM memory extraction
+(\passthrough{\lstinline!src/llm.rs!}) exists as an explicit, opt-in
+operation that writes \passthrough{\lstinline!LLMExtracted!} thoughts.
 
 
 \subsection{7. The Agent Protocol}
