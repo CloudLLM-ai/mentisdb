@@ -656,7 +656,7 @@ planned, backed up, staged, committed and finalized. The original file is hard-l
 `migrations/backup/` first and kept for 14 days
 (`MENTISDB_MIGRATION_BACKUP_RETENTION_DAYS`). Records are then streamed through one
 upgrade step per schema version into a staging file, at about 120,000 thoughts per second
-with flat memory. The staged file is re-verified end to end and swapped in with an atomic
+with flat memory (150,000 thoughts, 30 MiB, in 1.2 seconds). The staged file is re-verified end to end and swapped in with an atomic
 rename. A migration killed at any step is resumed or discarded on the next start. A chain
 interrupted three times, or one that fails, is quarantined untouched while the others and
 the daemon carry on. An advisory lock keeps two processes off one chain, and a chain or
@@ -680,11 +680,23 @@ engine checks the stored hash links before rehashing, refusing a chain with a re
 inserted or reordered record, though not one whose content was edited while its stored
 hash was kept. When a library opens a chain containing schema-4 records in place, the
 loader applies the same rule: each alias record must verify in its stored form, and every
-other record against the chain rebuilt under schema 3, or the open fails. A migration that would change the `prev_hash` a v2 signature is bound to is
-refused. A migration that rewrites hashes deletes the chain's signed verification
-checkpoint, which is bound to the old hashes. On copies of two real chains written by the
-schema-4 builds, with 525 and 66 thoughts, every record verified and migrated with
-identical content, head hash and entity types.
+other record against the chain rebuilt under schema 3, or the open fails.
+
+Signed and governed chains get extra care. No upgrade in this release rewrites the hashes
+of chains already in the current layout, and layout-only upgrades keep both hashes and v2
+signatures, which tests confirm. A step that would change the `prev_hash` a v2 signature
+is bound to is refused (`SignatureWouldBreak`): the chain is quarantined untouched and
+reported, never silently skipped. A migration that does rewrite hashes deletes the
+chain's operator-signed verification checkpoint (Section 4.4), which is bound to the old
+hashes, rather than re-issuing it, so the next open verifies the chain in full.
+
+The engine was rehearsed on copies of the author's data directory: 16 chains, 48 MB.
+Fourteen were already current and verified; a dry run over all of them took 0.8 seconds
+and verification 0.16 seconds. The two chains written by the schema-4 builds, with 525
+and 66 thoughts, verified record by record and migrated with identical content, head hash
+and entity types. Tests build each historical format from mirror structs of the old
+layouts rather than from files written by old release binaries, so the rehearsal on real
+chains is the main evidence that the decoders match what old releases actually wrote.
 
 Operators drive and inspect migrations with the `mentisdb migrate` command (`status`,
 `run` with an optional `--dry-run`, `verify`, `retry`, `skip`, `rollback` and
@@ -1267,6 +1279,11 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
   anyone who can reach the API, and bearer tokens are off by default. Private segments
   are not encrypted at rest, a key that can read is also a key that can write, and a
   public reader still learns where private segments are and how large they are.
+- **Opening a chain costs O(n).** Every open recomputes every hash; only governed chains
+  have a checkpoint that lets later opens skip the verified prefix, and a hash-changing
+  migration deletes that checkpoint instead of re-issuing it.
+- **Unexplained invalid signatures.** One real chain carries 43 signatures that do not
+  verify, both before and after migration. The cause is under investigation.
 - **Migrations make a chain briefly unavailable.** A chain being migrated answers 503
   until it finishes, and library code that opens a legacy chain directly still migrates
   it in place, blocking that open.
@@ -1288,8 +1305,10 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
   chains with the correction audit (`examples/correction_audit.rs`).
 - **Better paraphrase recall:** evaluate larger local encoders and embed long thoughts in
   chunks.
-- **Hash coverage of every field**, through a schema version that brings `entity_type`
+- **Hash coverage of every field**, through schema V5, which will bring `entity_type`
   and `source_episode` under the record hash.
+- **A persisted verified prefix for every chain**, so opens stop recomputing every hash,
+  and re-issuing the signed checkpoint after a hash-changing migration.
 - **Anchoring head hashes** externally so that a full rewrite of a chain becomes
   detectable.
 - **Answer-level evaluation** with an LLM reader, alongside recall.
