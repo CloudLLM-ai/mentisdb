@@ -3,19 +3,28 @@
 //! that nothing was tampered with on the way.
 //!
 //! The decoders here mirror the layouts of every release that ever wrote a
-//! chain file. A record is dispatched on its leading `schema_version` varint
-//! and then walked through [`UPGRADE_STEPS`] until it is the current
-//! [`Thought`] layout, so adding schema 4 later means adding one decoder arm
-//! and one step, not touching the existing ones.
+//! chain file, including the three layouts that all carry `schema_version` 3
+//! (base, with `entity_type`, current) and the alias `schema_version` 4 that
+//! March and April 2026 builds stamped on schema-3 records
+//! ([`crate::MENTISDB_LEGACY_SCHEMA_V4_ALIAS`]). A record is dispatched on its
+//! leading `schema_version` varint, each layout must consume the whole payload
+//! and carry plausible hashes (a torn record can otherwise decode as another
+//! layout with shifted fields), and the record is then walked through
+//! [`UPGRADE_STEPS`] until it is the current [`Thought`] layout. The next thought
+//! schema is 5: add a decoder arm and a step, leaving the existing ones alone.
 //!
 //! Hash handling is deliberately strict. A record from schema 3 (the first
-//! layout that stored trustworthy hashes) must hash to exactly what it stored,
-//! under either the current bincode algorithm or the legacy JSON one;
-//! otherwise [`MigrationError::Integrity`] is returned and the migration is
-//! refused. A migration therefore can never launder a corrupted or tampered
-//! chain into a freshly valid one. Records from schemas 0 to 2 stored hashes
-//! under older rules that cannot be checked, so they are rebuilt (exactly what
-//! the in-place upgrade on open always did).
+//! layout that stored trustworthy hashes) must verify under the rule that
+//! produced it: the current bincode algorithm over the rebuilt chain, the
+//! legacy JSON algorithm over the stored links, or, for records stamped with the
+//! alias, the current algorithm with the *stored* `schema_version` over the
+//! stored links. Anything else is [`MigrationError::Integrity`] and the migration
+//! is refused. Records from schemas 0 to 2 stored hashes under older canonical
+//! forms that cannot be recomputed, so their stored links (each `prev_hash`
+//! equals the previous record's stored hash) are verified before the hashes are
+//! rebuilt; an edit that keeps a record's stored hash is not detectable there. A
+//! migration therefore never turns a removed, inserted or reordered record, or
+//! a corrupted trusted record, into a freshly valid chain.
 
 use super::MigrationError;
 use crate::signing::{SignatureVersion, StoredSignature};
