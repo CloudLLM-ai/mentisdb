@@ -887,7 +887,7 @@ opening of a later thought that refers to the target, and `sem`: the opening of 
 target's nearest semantic neighbour among thoughts sharing few of its words).
 
 The audit ran on 2026-10-31 against copies of three real project chains of one user,
-with 750, 525 and 86 thoughts written by 23, 23 and 5 agents over two to ten weeks. It used
+with 750, 525 and 86 thoughts written by 23, 23 and 5 agents over five to ten weeks. It used
 release 0.10.10.55 scoring, unchanged, with the daemon's thesaurus expansion, 300 targets
 per query kind, seed 7 and queries of at most 32 words.
 
