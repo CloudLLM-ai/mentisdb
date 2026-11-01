@@ -61,8 +61,10 @@
 //! - `POST /v1/extract-memories`
 //! - `POST /v1/admin/flush`
 
+use crate::audience::Audience;
 use crate::auth::{bearer_token_access_from_env, BearerTokenScope, BearerTokenStore};
 use crate::search::thesaurus;
+use crate::server_lens::{audience_for, scope_allows_chain};
 use crate::webhooks::{WebhookManager, WebhookRegistration};
 use crate::{
     chain_storage_filename, deregister_chain, load_registered_chains, AgentPublicKey, AgentRecord,
@@ -1666,6 +1668,9 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
             service,
             browser_guard_middleware,
         ))
+        .layer(middleware::from_fn(
+            crate::server_lens::read_auth_middleware,
+        ))
 }
 
 /// Build the legacy CloudLLM-compatible MCP router without binding a socket.
@@ -1731,6 +1736,9 @@ pub fn mcp_router(config: MentisDbServiceConfig) -> Router {
         .layer(middleware::from_fn_with_state(
             service,
             browser_guard_middleware,
+        ))
+        .layer(middleware::from_fn(
+            crate::server_lens::read_auth_middleware,
         ))
 }
 
@@ -2313,6 +2321,7 @@ async fn inject_single_chain_bearer_scope_middleware(
         let request = Request::from_parts(parts, Body::from(body_bytes));
         return next.run(request).await;
     };
+    let request_scope = scope.clone();
 
     let body_bytes = match serde_json::from_slice::<Value>(&body_bytes) {
         Ok(mut payload) => {
@@ -2338,7 +2347,7 @@ async fn inject_single_chain_bearer_scope_middleware(
     };
 
     let request = Request::from_parts(parts, Body::from(body_bytes));
-    next.run(request).await
+    crate::server_lens::with_request_scope(Some(request_scope), next.run(request)).await
 }
 
 fn extract_explicit_chain_keys(parameters: &Value) -> BTreeSet<String> {
@@ -2645,6 +2654,9 @@ fn standard_and_legacy_mcp_router(
     .layer(middleware::from_fn_with_state(
         service.clone(),
         browser_guard_middleware,
+    ))
+    .layer(middleware::from_fn(
+        crate::server_lens::read_auth_middleware,
     ));
     standard_mcp_only_router(
         service,
@@ -2688,6 +2700,9 @@ fn standard_mcp_only_router(
         .layer(middleware::from_fn_with_state(
             service,
             browser_guard_middleware,
+        ))
+        .layer(middleware::from_fn(
+            crate::server_lens::read_auth_middleware,
         ))
 }
 
@@ -3001,6 +3016,29 @@ impl MentisDbService {
     /// chain keys do not block each other.  The `or_try_insert_with` call is
     /// atomic at the shard level, so at most one caller opens a given chain
     /// even under high concurrency.
+    /// [`Self::append_thought_released`] for a request-facing handler: when the
+    /// chain has private segments and the caller has not proved read access, a
+    /// refused write reports only [`AccessError::NotAccepted`]. The detailed
+    /// reasons would let an unauthenticated caller enumerate registered agents,
+    /// key ids and the allowed key set.
+    async fn append_for_caller(
+        chain: &Arc<RwLock<MentisDb>>,
+        agent_id: &str,
+        input: ThoughtInput,
+    ) -> Result<Thought, Box<dyn Error + Send + Sync>> {
+        let audience = audience_for(&*chain.read().await);
+        let result = Self::append_thought_released(chain, agent_id, input).await;
+        let Err(error) = result else { return result };
+        let masked = error
+            .downcast_ref::<io::Error>()
+            .and_then(crate::access::AccessError::from_io)
+            .is_some_and(crate::access::AccessError::is_probe_sensitive);
+        if masked && audience.is_public() {
+            return Err(Box::new(crate::access::AccessError::NotAccepted.into_io()));
+        }
+        Err(error)
+    }
+
     async fn append_thought_released(
         chain: &Arc<RwLock<MentisDb>>,
         agent_id: &str,
@@ -3304,7 +3342,7 @@ impl MentisDbService {
                 } else {
                     input
                 };
-                let thought = Self::append_thought_released(&chain, &agent_id, input).await?;
+                let thought = Self::append_for_caller(&chain, &agent_id, input).await?;
                 let guard = chain.read().await;
                 self.log_interaction(InteractionLogEntry {
                     access: "write",
@@ -3331,10 +3369,12 @@ impl MentisDbService {
 
         let (thought_count, head_hash) = {
             let guard = chain.read().await;
-            (
-                guard.thoughts().len(),
-                guard.head_hash().map(ToOwned::to_owned),
-            )
+            let audience = audience_for(&guard);
+            let head_hash = guard
+                .visible_thoughts(audience)
+                .next_back()
+                .map(|thought| thought.hash.clone());
+            (guard.visible_thought_count(audience), head_hash)
         };
 
         self.ensure_skill_registry_fresh().await?;
@@ -3432,16 +3472,19 @@ impl MentisDbService {
             input = input.with_entity_type(entity_type);
         }
 
-        let thought = Self::append_thought_released(&chain, &agent_id, input).await?;
+        let thought = Self::append_for_caller(&chain, &agent_id, input).await?;
         // Snapshot what the response and log need, then release the chain lock
         // before doing any interaction-log I/O.
         let (metadata, thought_value, head_hash, warnings) = {
             let guard = chain.read().await;
+            // The response goes to the writer: show it only what the writer's
+            // own key may read.
+            let writer = guard.signer_audience(&thought);
             (
                 InteractionMetadata::from_chain_thought(&guard, &thought),
-                thought_to_json(&guard, &thought),
+                thought_to_json(&guard, &thought, writer),
                 guard.head_hash().map(ToOwned::to_owned),
-                guard.append_advice(&thought),
+                guard.append_advice_for(&thought, writer),
             )
         };
         self.log_interaction(InteractionLogEntry {
@@ -3511,7 +3554,7 @@ impl MentisDbService {
             input = input.with_confidence(confidence);
         }
 
-        let thought = Self::append_thought_released(&chain, &agent_id, input).await?;
+        let thought = Self::append_for_caller(&chain, &agent_id, input).await?;
         let guard = chain.read().await;
         self.log_interaction(InteractionLogEntry {
             access: "write",
@@ -3526,10 +3569,11 @@ impl MentisDbService {
             let tt = thought.thought_type;
             tokio::task::spawn_blocking(move || cb(tt));
         }
+        let writer = guard.signer_audience(&thought);
         Ok(AppendThoughtResponse {
-            thought: thought_to_json(&guard, &thought),
+            thought: thought_to_json(&guard, &thought, writer),
             head_hash: guard.head_hash().map(ToOwned::to_owned),
-            warnings: guard.append_advice(&thought),
+            warnings: guard.append_advice_for(&thought, writer),
         })
     }
 
@@ -3540,7 +3584,8 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
-        let query = build_query(&request)?;
+        let audience = audience_for(&chain);
+        let query = build_query(&request)?.with_audience(audience);
         let matched = chain.query(&query);
         self.log_interaction(InteractionLogEntry {
             access: "read",
@@ -3552,7 +3597,7 @@ impl MentisDbService {
         });
         let thoughts = matched
             .into_iter()
-            .map(|thought| thought_to_json(&chain, thought))
+            .map(|thought| thought_to_json(&chain, thought, audience))
             .collect::<Vec<_>>();
         Ok(SearchResponse { thoughts })
     }
@@ -3564,6 +3609,7 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
+        let audience = audience_for(&chain);
         let filter = build_query(&SearchRequest {
             chain_key: Some(chain_key.clone()),
             text: None,
@@ -3581,7 +3627,8 @@ impl MentisDbService {
             limit: None,
             entity_type: None,
             include_invalidated: None,
-        })?;
+        })?
+        .with_audience(audience);
         let offset = request.offset.unwrap_or(0);
         let page_size = request.limit.unwrap_or(50);
         let ranked_limit = offset.saturating_add(page_size).max(1);
@@ -3598,7 +3645,7 @@ impl MentisDbService {
             .skip(offset)
             .take(page_size)
             .map(|hit| LexicalSearchResult {
-                thought: chain.hit_json(&hit),
+                thought: chain.hit_json_for(&hit, audience),
                 score: hit.score.lexical,
                 matched_terms: hit.matched_terms,
                 match_sources: hit
@@ -3623,7 +3670,14 @@ impl MentisDbService {
         // The requested chain must exist (404 otherwise); ancestors that fail
         // to open are skipped below.
         self.get_chain(Some(&chain_key), None).await?;
-        let ancestor_keys = self.discover_ancestor_chain_keys(&chain_key).await;
+        // A token scoped to one chain must not read that chain's ancestors:
+        // they are other chains it was never granted.
+        let ancestor_keys: Vec<String> = self
+            .discover_ancestor_chain_keys(&chain_key)
+            .await
+            .into_iter()
+            .filter(|key| scope_allows_chain(key))
+            .collect();
         let chain_keys_to_search: Vec<String> = std::iter::once(chain_key.clone())
             .chain(ancestor_keys)
             .collect();
@@ -3639,7 +3693,9 @@ impl MentisDbService {
                 Err(_) => continue,
             };
             let chain = chain.read().await;
-            let filter = build_ranked_filter_query(&request, search_key.clone())?;
+            let audience = audience_for(&chain);
+            let filter =
+                build_ranked_filter_query(&request, search_key.clone())?.with_audience(audience);
             let mut ranked_query = RankedSearchQuery::new()
                 .with_filter(filter)
                 .with_limit(ranked_limit);
@@ -3682,7 +3738,7 @@ impl MentisDbService {
                 all_hits.push((
                     search_key.clone(),
                     RankedSearchHitOwned {
-                        thought: chain.hit_json(&hit),
+                        thought: chain.hit_json_for(&hit, audience),
                         score: RankedSearchScoreResponse {
                             lexical: hit.score.lexical,
                             vector: hit.score.vector,
@@ -3859,12 +3915,13 @@ impl MentisDbService {
         }
         ranked_query = apply_include_invalidated(ranked_query, request.include_invalidated);
 
-        // Collect all chain arcs
-        let mut chain_arcs: Vec<(String, Arc<RwLock<MentisDb>>)> = Vec::new();
+        // Collect all chain arcs, each with the audience the caller has on it.
+        let mut chain_arcs: Vec<(String, Arc<RwLock<MentisDb>>, Audience)> = Vec::new();
         for chain_key in &request.chain_keys {
             match self.get_chain(Some(chain_key), None).await {
                 Ok(arc) => {
-                    chain_arcs.push((chain_key.clone(), arc));
+                    let audience = audience_for(&*arc.read().await);
+                    chain_arcs.push((chain_key.clone(), arc, audience));
                 }
                 Err(_) => {
                     // Silently skip unknown chains per the design spec
@@ -3884,11 +3941,11 @@ impl MentisDbService {
         #[allow(clippy::type_complexity)]
         let (_other_chain_keys_for_task, chain_arcs_for_task): (
             Vec<String>,
-            Vec<(String, Arc<RwLock<MentisDb>>)>,
+            Vec<(String, Arc<RwLock<MentisDb>>, Audience)>,
         ) = {
-            let arcs: Vec<(String, Arc<RwLock<MentisDb>>)> = chain_arcs
+            let arcs: Vec<(String, Arc<RwLock<MentisDb>>, Audience)> = chain_arcs
                 .iter()
-                .map(|(k, arc)| (k.clone(), Arc::clone(arc)))
+                .map(|(k, arc, audience)| (k.clone(), Arc::clone(arc), *audience))
                 .collect();
             (Vec::new(), arcs)
         };
@@ -3917,9 +3974,11 @@ impl MentisDbService {
             let mut total_candidates = 0usize;
             let mut best_backend = RankedSearchBackend::Heuristic;
 
-            for (chain_key_str, arc) in &chain_arcs_for_task {
+            for (chain_key_str, arc, audience) in &chain_arcs_for_task {
                 let chain = arc.blocking_read();
-                let ranked_result = chain.query_ranked(&query_for_task);
+                let mut chain_query = query_for_task.clone();
+                chain_query.filter.audience = *audience;
+                let ranked_result = chain.query_ranked(&chain_query);
                 total_candidates += ranked_result.total_candidates;
                 if ranked_result.backend != RankedSearchBackend::Heuristic
                     && best_backend == RankedSearchBackend::Heuristic
@@ -3930,7 +3989,7 @@ impl MentisDbService {
                 for hit in ranked_result.hits {
                     all_hits.push((
                         chain_key_str.clone(),
-                        chain.hit_json(&hit),
+                        chain.hit_json_for(&hit, *audience),
                         hit.score,
                         hit.graph_distance,
                         hit.graph_seed_paths,
@@ -4078,7 +4137,9 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
-        let filter = build_ranked_filter_query(&request, chain_key.clone())?;
+        let audience = audience_for(&chain);
+        let filter =
+            build_ranked_filter_query(&request, chain_key.clone())?.with_audience(audience);
         let offset = request.offset.unwrap_or(0);
         let page_size = request.limit.unwrap_or(50).max(1);
         let bundle_limit = offset.saturating_add(page_size).max(1);
@@ -4126,7 +4187,7 @@ impl MentisDbService {
             .into_iter()
             .map(|bundle| {
                 let seed_locator = transport_locator(&bundle.seed.locator);
-                let seed_thought = thought_json_for_locator(&chain, &bundle.seed.locator);
+                let seed_thought = thought_json_for_locator(&chain, &bundle.seed.locator, audience);
                 let support = bundle
                     .support
                     .into_iter()
@@ -4134,7 +4195,11 @@ impl MentisDbService {
                         let locator = transport_locator(&support_hit.locator);
                         ContextBundleHitResponse {
                             locator,
-                            thought: thought_json_for_locator(&chain, &support_hit.locator),
+                            thought: thought_json_for_locator(
+                                &chain,
+                                &support_hit.locator,
+                                audience,
+                            ),
                             depth: support_hit.depth,
                             seed_path_count: support_hit.seed_path_count,
                             relation_kinds: support_hit
@@ -4173,12 +4238,13 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
+        let audience = audience_for(&chain);
         let config = parse_summary_build_config(request.config.as_ref());
         let candidates = if summary_candidates_has_filter(&request) {
-            let filter = build_summary_candidates_filter_query(&request)?;
+            let filter = build_summary_candidates_filter_query(&request)?.with_audience(audience);
             chain.summary_candidates_matching(&filter, config)
         } else {
-            chain.summary_candidates(config)
+            chain.summary_candidates_for(config, audience)
         };
         let total = candidates.len();
         let offset = request.offset.unwrap_or(0).min(total);
@@ -4224,6 +4290,15 @@ impl MentisDbService {
             })
             .collect();
 
+        // Counts must not reveal how much of a chain is private, and whether a
+        // chain has private segments is only known once it is open: bring every
+        // registered chain into memory (idempotent, cached) before counting.
+        for chain_key in registry.chains.keys() {
+            if !self.chains.contains_key(chain_key) {
+                let _ = self.get_chain(Some(chain_key), None).await;
+            }
+        }
+
         // Collect open chains without holding any async lock — DashMap iteration
         // takes a short-lived shard read lock per entry.
         let open_chains: Vec<(String, Arc<RwLock<MentisDb>>)> = self
@@ -4235,21 +4310,29 @@ impl MentisDbService {
         for (chain_key, chain) in open_chains {
             chain_keys.insert(chain_key.clone());
             let chain = chain.read().await;
-            let storage_location = chain.storage_location();
+            let audience = audience_for(&chain);
+            let hidden = audience.is_public() && chain.segments().has_private();
+            let storage_location = if hidden {
+                String::new()
+            } else {
+                chain.storage_location()
+            };
+            let thought_count = chain.visible_thought_count(audience) as u64;
+            let agent_count = chain.visible_agent_records(audience).len();
             chains_by_key
                 .entry(chain_key.clone())
                 .and_modify(|summary| {
                     summary.version = MENTISDB_CURRENT_VERSION;
-                    summary.thought_count = chain.thoughts().len() as u64;
-                    summary.agent_count = chain.agent_registry().agents.len();
+                    summary.thought_count = thought_count;
+                    summary.agent_count = agent_count;
                     summary.storage_location = storage_location.clone();
                 })
                 .or_insert_with(|| ChainSummary {
                     chain_key: chain_key.clone(),
                     version: MENTISDB_CURRENT_VERSION,
-                    storage_adapter: infer_storage_adapter_name(&storage_location),
-                    thought_count: chain.thoughts().len() as u64,
-                    agent_count: chain.agent_registry().agents.len(),
+                    storage_adapter: infer_storage_adapter_name(&chain.storage_location()),
+                    thought_count,
+                    agent_count,
                     storage_location: storage_location.clone(),
                 });
         }
@@ -4297,10 +4380,10 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
-        let agents = chain
-            .agent_registry()
-            .agents
-            .values()
+        let audience = audience_for(&chain);
+        let agents: Vec<AgentIdentitySummary> = chain
+            .visible_agent_records(audience)
+            .iter()
             .map(|record| AgentIdentitySummary {
                 agent_id: record.agent_id.clone(),
                 agent_name: record.display_name.clone(),
@@ -4312,8 +4395,11 @@ impl MentisDbService {
             access: "read",
             operation: "list_agents",
             chain_key: chain_key.clone(),
-            metadata: InteractionMetadata::from_chain_thoughts(&chain, chain.thoughts().iter()),
-            result_count: Some(chain.agent_registry().agents.len()),
+            metadata: InteractionMetadata::from_chain_thoughts(
+                &chain,
+                chain.visible_thoughts(audience),
+            ),
+            result_count: Some(agents.len()),
             note: None,
         });
         Ok(ListAgentsResponse { chain_key, agents })
@@ -4326,15 +4412,20 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
-        let agent = chain.get_agent(&request.agent_id).cloned().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!(
-                    "No agent '{}' is registered in chain '{}'",
-                    request.agent_id, chain_key
-                ),
-            )
-        })?;
+        let audience = audience_for(&chain);
+        let agent = chain
+            .visible_agent_records(audience)
+            .into_iter()
+            .find(|record| record.agent_id == request.agent_id)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "No agent '{}' is registered in chain '{}'",
+                        request.agent_id, chain_key
+                    ),
+                )
+            })?;
         self.log_interaction(InteractionLogEntry {
             access: "read",
             operation: "get_agent",
@@ -4353,11 +4444,8 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
-        let agents = chain
-            .list_agent_registry()
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>();
+        let audience = audience_for(&chain);
+        let agents = chain.visible_agent_records(audience);
         self.log_interaction(InteractionLogEntry {
             access: "read",
             operation: "list_agent_registry",
@@ -4577,25 +4665,24 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
+        let audience = audience_for(&chain);
         let last_n = request.last_n.unwrap_or(12);
         let include_invalidated = request.include_invalidated.unwrap_or(false);
         let thoughts: Vec<&crate::Thought> = if let Some(ref agent_id) = request.agent_id {
             let mut filtered: Vec<&crate::Thought> = chain
-                .thoughts()
-                .iter()
+                .visible_thoughts(audience)
                 .rev()
                 .filter(|t| t.agent_id == *agent_id)
-                .filter(|t| include_invalidated || !chain.is_invalidated(t.id))
+                .filter(|t| include_invalidated || !chain.is_invalidated_for(t.id, audience))
                 .take(last_n)
                 .collect();
             filtered.reverse();
             filtered
         } else {
             chain
-                .thoughts()
-                .iter()
+                .visible_thoughts(audience)
                 .rev()
-                .filter(|t| include_invalidated || !chain.is_invalidated(t.id))
+                .filter(|t| include_invalidated || !chain.is_invalidated_for(t.id, audience))
                 .take(last_n)
                 .collect::<Vec<_>>()
                 .into_iter()
@@ -4622,8 +4709,10 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
+        let audience = audience_for(&chain);
         let mut query = crate::StandingContextQuery::new()
-            .with_include_invalidated(request.include_invalidated.unwrap_or(false));
+            .with_include_invalidated(request.include_invalidated.unwrap_or(false))
+            .with_audience(audience);
         query.agent_id = request.agent_id;
         query.since = request.since;
         query.as_of = request.as_of;
@@ -4667,7 +4756,8 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
-        let query = build_markdown_query(&request)?;
+        let audience = audience_for(&chain);
+        let query = build_markdown_query(&request)?.with_audience(audience);
         // Always go through query() so invalidated thoughts are excluded by default.
         let matched = chain.query(&query);
         self.log_interaction(InteractionLogEntry {
@@ -4678,7 +4768,7 @@ impl MentisDbService {
             result_count: Some(matched.len()),
             note: None,
         });
-        let markdown = if query_is_empty(&query) {
+        let markdown = if query_is_empty(&query) && !audience.is_public() {
             chain.to_memory_markdown(None)
         } else {
             chain.to_memory_markdown(Some(&query))
@@ -4723,13 +4813,14 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
+        let audience = audience_for(&chain);
         let locator = build_required_anchor(
             request.thought_id,
             request.thought_hash,
             request.thought_index,
             None,
         )?;
-        let thought = chain.get_thought(&locator).ok_or_else(|| {
+        let thought = chain.get_thought_for(&locator, audience).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 "No thought matched the requested locator",
@@ -4745,7 +4836,7 @@ impl MentisDbService {
         });
         Ok(ThoughtResponse {
             chain_key,
-            thought: Some(thought_to_json(&chain, thought)),
+            thought: Some(thought_to_json(&chain, thought, audience)),
         })
     }
 
@@ -4756,7 +4847,8 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
-        let thought = chain.genesis_thought();
+        let audience = audience_for(&chain);
+        let thought = chain.get_thought_for(&ThoughtTraversalAnchor::Genesis, audience);
         self.log_interaction(InteractionLogEntry {
             access: "read",
             operation: "get_genesis_thought",
@@ -4769,7 +4861,7 @@ impl MentisDbService {
         });
         Ok(ThoughtResponse {
             chain_key,
-            thought: thought.map(|thought| thought_to_json(&chain, thought)),
+            thought: thought.map(|thought| thought_to_json(&chain, thought, audience)),
         })
     }
 
@@ -4780,7 +4872,8 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
-        let query = build_traversal_query(&request)?;
+        let audience = audience_for(&chain);
+        let query = build_traversal_query(&request)?.with_audience(audience);
         let direction = request.direction.unwrap_or_default();
         let anchor = build_optional_anchor(
             request.anchor_id,
@@ -4821,7 +4914,7 @@ impl MentisDbService {
             thoughts: page
                 .thoughts
                 .into_iter()
-                .map(|thought| thought_to_json(&chain, thought))
+                .map(|thought| thought_to_json(&chain, thought, audience))
                 .collect(),
             has_more: page.has_more,
             next_cursor: page.next_cursor,
@@ -5234,28 +5327,31 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
+        let audience = audience_for(&chain);
+        // A public reader's head is the newest public thought, and the count is
+        // the number of public thoughts.
+        let latest = chain.visible_thoughts(audience).next_back();
         self.log_interaction(InteractionLogEntry {
             access: "read",
             operation: "head",
             chain_key: chain_key.clone(),
-            metadata: chain
-                .thoughts()
-                .last()
+            metadata: latest
                 .map(|thought| InteractionMetadata::from_chain_thought(&chain, thought))
                 .unwrap_or_default(),
-            result_count: Some(chain.thoughts().len()),
+            result_count: Some(chain.visible_thought_count(audience)),
             note: None,
         });
         Ok(HeadResponse {
             chain_key,
-            thought_count: chain.thoughts().len(),
-            head_hash: chain.head_hash().map(ToOwned::to_owned),
-            latest_thought: chain
-                .thoughts()
-                .last()
-                .map(|thought| thought_to_json(&chain, thought)),
+            thought_count: chain.visible_thought_count(audience),
+            head_hash: latest.map(|thought| thought.hash.clone()),
+            latest_thought: latest.map(|thought| thought_to_json(&chain, thought, audience)),
             integrity_ok: chain.verify_integrity(),
-            storage_location: chain.storage_location(),
+            storage_location: if audience.is_public() && chain.segments().has_private() {
+                String::new()
+            } else {
+                chain.storage_location()
+            },
         })
     }
 
@@ -5266,6 +5362,7 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
+        let audience = audience_for(&chain);
         self.log_interaction(InteractionLogEntry {
             access: "read",
             operation: "access_policy",
@@ -5274,7 +5371,11 @@ impl MentisDbService {
             result_count: Some(chain.access_policy().keys.len()),
             note: None,
         });
-        Ok(json!({ "chain_key": chain_key, "policy": chain.access_policy() }))
+        Ok(json!({
+            "chain_key": chain_key,
+            "audience": audience.as_str(),
+            "policy": chain.access_policy().for_audience(audience),
+        }))
     }
 
     async fn set_access_policy(
@@ -5314,7 +5415,7 @@ impl MentisDbService {
         });
         Ok(json!({
             "chain_key": chain_key,
-            "thought": thought_to_json(&chain, &thought),
+            "thought": thought_to_json(&chain, &thought, Audience::Authorized),
             "policy": chain.access_policy(),
         }))
     }
@@ -5326,7 +5427,8 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
-        let report = chain.verify_signatures();
+        let audience = audience_for(&chain);
+        let report = chain.verify_signatures_for(audience);
         self.log_interaction(InteractionLogEntry {
             access: "read",
             operation: "verify_signatures",
@@ -5532,6 +5634,22 @@ impl MentisDbService {
             .get_chain(Some(&request.source_chain_key), None)
             .await?;
         let source = source.read_owned().await;
+        // A thought the caller may not see is reported like one that does not exist.
+        if source
+            .get_thought_for(
+                &ThoughtTraversalAnchor::Id(branch_thought_id),
+                audience_for(&source),
+            )
+            .is_none()
+        {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "Thought {branch_thought_id} not found in chain '{}'",
+                    request.source_chain_key
+                ),
+            )));
+        }
         let branch = tokio::task::spawn_blocking(move || {
             source.branch_into(branch_thought_id, &branch_chain_key)
         })
@@ -5595,6 +5713,12 @@ impl MentisDbService {
             return Err(Box::new(
                 crate::access::AccessError::SignatureRequired.into_io(),
             ));
+        }
+
+        if let Some(reason) = source_arc.read().await.merge_blocker() {
+            return Err(invalid_input_error(format!(
+                "cannot merge '{source_key}': {reason}"
+            )));
         }
 
         // Collect agent thought counts on the target chain for tie-breaking.
@@ -7455,7 +7579,7 @@ pub(crate) async fn rest_bearer_auth_middleware(
     }
 
     let reconstructed = axum::http::Request::from_parts(parts, axum::body::Body::from(body_bytes));
-    next.run(reconstructed).await
+    crate::server_lens::with_request_scope(scope, next.run(reconstructed)).await
 }
 
 /// Routes whose handlers name every chain explicitly (`source_chain_key`,
@@ -9470,29 +9594,31 @@ fn infer_storage_adapter_name(storage_location: &str) -> String {
     }
 }
 
-fn thought_to_json(chain: &MentisDb, thought: &Thought) -> Value {
-    chain.thought_json(thought)
+/// JSON for one thought as `audience` may see it: pointers into hidden
+/// segments removed, a `provenance` object attached.
+fn thought_to_json(chain: &MentisDb, thought: &Thought, audience: Audience) -> Value {
+    chain.thought_json_for(thought, audience)
 }
 
 fn thought_json_for_locator(
     chain: &MentisDb,
     locator: &crate::search::ThoughtLocator,
+    audience: Audience,
 ) -> Option<Value> {
     if locator.chain_key.is_some() {
         return None;
     }
-    if let Some(index) = locator.thought_index {
-        if let Some(thought) = chain.thoughts().get(index as usize) {
-            if thought.id == locator.thought_id {
-                return Some(thought_to_json(chain, thought));
-            }
-        }
-    }
+    let thought = match locator
+        .thought_index
+        .and_then(|index| chain.thoughts().get(index as usize))
+        .filter(|thought| thought.id == locator.thought_id)
+    {
+        Some(thought) => thought,
+        None => chain.get_thought_by_id(locator.thought_id)?,
+    };
     chain
-        .thoughts()
-        .iter()
-        .find(|thought| thought.id == locator.thought_id)
-        .map(|thought| thought_to_json(chain, thought))
+        .is_visible(thought, audience)
+        .then(|| thought_to_json(chain, thought, audience))
 }
 
 fn transport_locator(locator: &crate::search::ThoughtLocator) -> TransportThoughtLocator {

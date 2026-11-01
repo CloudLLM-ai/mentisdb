@@ -93,7 +93,8 @@ struct Fixture {
     ids: std::collections::BTreeMap<&'static str, Uuid>,
 }
 
-/// index 0-1 public, 2 policy(private), 3-4 private, 5 policy(open), 6-7 public.
+/// index 0-1 public, 2 policy(private), 3-4 private, 5 policy(open; closes the
+/// private segment and is itself private), 6-7 public.
 fn fixture(name: &str) -> Fixture {
     fixture_with(
         name,
@@ -181,12 +182,15 @@ fn segments_are_derived_from_records() {
     );
     assert_eq!(
         (segments[1].start_index, segments[1].kind),
-        (5, SegmentKind::Public)
+        (6, SegmentKind::Public)
     );
+    // Governance records are private even when they open a public segment.
+    assert_eq!(f.chain.segments().records(), &[2, 5]);
     assert!(f.chain.is_visible_index(1, PUB));
     assert!(!f.chain.is_visible_index(2, PUB));
     assert!(!f.chain.is_visible_index(4, PUB));
-    assert!(f.chain.is_visible_index(5, PUB));
+    assert!(!f.chain.is_visible_index(5, PUB));
+    assert!(f.chain.is_visible_index(6, PUB));
     assert!(f.chain.is_visible_index(4, ALL));
     let _ = std::fs::remove_dir_all(&f.dir);
 }
@@ -207,7 +211,7 @@ fn segments_survive_reopen() {
 fn query_hides_private_thoughts() {
     let f = fixture("query");
     let public = f.chain.query(&ThoughtQuery::new().with_audience(PUB));
-    assert_eq!(indices(public), vec![0, 1, 5, 6, 7]);
+    assert_eq!(indices(public), vec![0, 1, 6, 7]);
     let all = f.chain.query(&ThoughtQuery::new());
     assert_eq!(all.len(), 8);
     let _ = std::fs::remove_dir_all(&f.dir);
@@ -416,7 +420,7 @@ fn traversal_skips_private_thoughts_and_private_anchors() {
             filter: ThoughtQuery::new().with_audience(PUB),
         })
         .unwrap();
-    assert_eq!(indices(page.thoughts.iter().copied()), vec![0, 1, 5, 6, 7]);
+    assert_eq!(indices(page.thoughts.iter().copied()), vec![0, 1, 6, 7]);
     let private = &f.chain.thoughts()[3];
     let page = f
         .chain
@@ -440,7 +444,7 @@ fn traversal_skips_private_thoughts_and_private_anchors() {
             filter: ThoughtQuery::new().with_audience(PUB),
         })
         .unwrap();
-    assert_eq!(indices(page.thoughts.iter().copied()), vec![7, 6, 5, 1, 0]);
+    assert_eq!(indices(page.thoughts.iter().copied()), vec![7, 6, 1, 0]);
     let _ = std::fs::remove_dir_all(&f.dir);
 }
 

@@ -846,7 +846,7 @@ async fn test_chain_access_workflow_through_the_cli() {
     )
     .await;
     assert!(
-        !denied.ok && denied.err.contains("allowed key set"),
+        !denied.ok && denied.err.contains("did not accept"),
         "{}",
         denied.err
     );
@@ -951,16 +951,30 @@ async fn test_chain_access_workflow_through_the_cli() {
         ],
     )
     .await;
-    assert!(
-        !hijack.ok && hijack.err.contains("not a governor"),
-        "{}",
-        hijack.err
-    );
+    // The stranger cannot even read the current policy (it is shown only to
+    // keys that may read the chain), let alone replace it.
+    assert!(!hijack.ok, "{}", hijack.err);
 
     // Every signature in the chain re-verifies.
-    let report = run(&d, &["chain", "access", "verify", "--chain", "vault"])
-        .await
-        .json();
+    // (verification covers private thoughts, so it needs a key that may read them)
+    let report = run(
+        &d,
+        &[
+            "chain",
+            "access",
+            "verify",
+            "--chain",
+            "vault",
+            "--read-key-file",
+            &admin_key,
+            "--read-agent",
+            "admin",
+            "--read-key-id",
+            "a1",
+        ],
+    )
+    .await
+    .json();
     assert_eq!(report["invalid"], 0);
     assert_eq!(report["policy"]["seq"], 2);
     assert!(report["valid"].as_u64().unwrap() >= 5, "{report}");

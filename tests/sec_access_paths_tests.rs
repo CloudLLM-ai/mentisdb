@@ -115,10 +115,11 @@ async fn merge(dir: &Path, source: &str, target: &str) -> (StatusCode, Value) {
     )
 }
 
-/// A governed source used to abort the merge half-way: its `AccessPolicy`
-/// record is refused by `append_thought`, after earlier thoughts had landed.
+/// A governed source cannot be merged away. Merging would publish its private
+/// thoughts to another chain, discard their signatures and delete the originals,
+/// so it is refused up front and nothing is copied or deleted.
 #[tokio::test]
-async fn merging_a_governed_source_into_an_open_target_completes() {
+async fn merging_a_governed_source_is_refused_and_leaves_both_chains_untouched() {
     let dir = fresh_dir("merge_src");
     let mut target = MentisDb::open_with_key(&dir, "target").unwrap();
     target
@@ -131,24 +132,16 @@ async fn merging_a_governed_source_into_an_open_target_completes() {
         .unwrap();
     govern(&mut source);
     append_signed(&mut source, "after policy");
+    let source_len = source.thoughts().len();
     drop(source);
 
     let (status, body) = merge(&dir, "source", "target").await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(status.is_client_error(), "{status} {body}");
+    assert!(body.to_string().contains("cannot merge"), "{body}");
     let target = MentisDb::open_with_key(&dir, "target").unwrap();
-    assert!(
-        target
-            .thoughts()
-            .iter()
-            .all(|t| t.thought_type != ThoughtType::AccessPolicy),
-        "governance records are not copied"
-    );
-    let copied = target
-        .thoughts()
-        .iter()
-        .filter(|t| t.content == "before policy" || t.content == "after policy")
-        .count();
-    assert_eq!(copied, 2, "both ordinary thoughts arrive");
+    assert_eq!(target.thoughts().len(), 1, "nothing was copied");
+    let source = MentisDb::open_with_key(&dir, "source").unwrap();
+    assert_eq!(source.thoughts().len(), source_len, "the source survives");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

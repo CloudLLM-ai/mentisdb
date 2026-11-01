@@ -74,8 +74,43 @@ async fn register(router: &Router, chain: &str, agent: &str, key_id: &str, key: 
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
+/// POST as the chain's administrator (agent `admin`, key `a1`, seed 1): the
+/// head of a private chain is shown only to a key that proves it may read it.
+async fn post_as_admin(router: &Router, uri: &str, body: Value) -> (StatusCode, Value) {
+    let text = body.to_string();
+    let header = mentisdb::read_auth::sign_request(
+        &[1u8; 32],
+        "admin",
+        "a1",
+        "POST",
+        uri,
+        text.as_bytes(),
+        chrono::Utc::now().timestamp(),
+        &mentisdb::read_auth::fresh_nonce(),
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::post(uri)
+                .header("content-type", "application/json")
+                .header("x-mentis-auth", header)
+                .body(Body::from(text))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
 async fn head(router: &Router, chain: &str) -> String {
-    let (_, body) = post(router, "/v1/head", json!({"chain_key": chain})).await;
+    let (_, body) = post_as_admin(router, "/v1/head", json!({"chain_key": chain})).await;
     body["head_hash"].as_str().unwrap_or("").to_string()
 }
 
@@ -177,7 +212,7 @@ async fn test_rest_policy_lifecycle() {
     let (status, body) =
         signed_append(&router, "c", "stranger", "s1", &stranger, "let me in").await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert!(body["error"].as_str().unwrap().contains("allowed key set"));
+    assert!(body["error"].as_str().unwrap().contains("did not accept"));
     let (status, body) = signed_append(&router, "c", "admin", "a1", &admin, "welcome").await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
@@ -185,7 +220,11 @@ async fn test_rest_policy_lifecycle() {
     let (status, _) = post(&router, "/v1/thoughts", json!({"chain_key": "c", "agent_id": "admin", "thought_type": "AccessPolicy", "content": "{}"})).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
-    let (_, shown) = post(&router, "/v1/access/policy", json!({"chain_key": "c"})).await;
+    // The key list is shown only to a key that may read the chain.
+    let (_, anonymous) = post(&router, "/v1/access/policy", json!({"chain_key": "c"})).await;
+    assert_eq!(anonymous["policy"]["keys"], json!([]));
+    assert_eq!(anonymous["policy"]["mode"], "allowlist");
+    let (_, shown) = post_as_admin(&router, "/v1/access/policy", json!({"chain_key": "c"})).await;
     assert_eq!(shown["policy"]["keys"][0]["key_id"], "a1");
     assert_eq!(shown["policy"]["keys_root"].as_str().unwrap().len(), 64);
 }
@@ -307,7 +346,7 @@ async fn test_merge_into_a_restricted_chain_keeps_the_source() {
             .any(|k| k == "src"),
         "the source chain must survive"
     );
-    let (_, shown) = post(&router, "/v1/head", json!({"chain_key": "locked"})).await;
+    let (_, shown) = post_as_admin(&router, "/v1/head", json!({"chain_key": "locked"})).await;
     assert_eq!(shown["thought_count"], 1, "only the policy record");
 }
 

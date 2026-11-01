@@ -40,12 +40,12 @@
 //!
 //! let map = SegmentMap::from_segments(vec![
 //!     Segment { start_index: 10, kind: SegmentKind::Private, seq: 0 },
-//!     Segment { start_index: 50, kind: SegmentKind::Public, seq: 1 },
+//!     Segment { start_index: 51, kind: SegmentKind::Public, seq: 1 },
 //! ]);
 //! assert!(map.is_visible(9, Audience::Public));
 //! assert!(!map.is_visible(10, Audience::Public));
-//! assert!(!map.is_visible(49, Audience::Public));
-//! assert!(map.is_visible(50, Audience::Public));
+//! assert!(!map.is_visible(50, Audience::Public));
+//! assert!(map.is_visible(51, Audience::Public));
 //! assert!(map.is_visible(10, Audience::Authorized));
 //! ```
 
@@ -113,13 +113,14 @@ impl SegmentKind {
 
 /// One stretch of a chain that is entirely public or entirely private.
 ///
-/// A segment starts at the thought index of the governance record that opened
-/// it and lasts until the next valid record. The implicit first segment of a
-/// chain (everything before any record) is public and is not listed.
+/// A private segment starts at the governance record that opened it. A public
+/// segment starts at the thought after the record that closed the private one
+/// (the record itself stays private). Either lasts until the next valid
+/// record. The implicit first segment of a chain (everything before any
+/// record) is public and is not listed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Segment {
-    /// Index of the first thought of the segment: the governance record that
-    /// opened it.
+    /// Index of the first thought of the segment.
     pub start_index: u64,
     /// Whether the segment is public or private.
     pub kind: SegmentKind,
@@ -154,6 +155,8 @@ pub struct Segment {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SegmentMap {
     segments: Vec<Segment>,
+    /// Indices of valid governance records, in order. Always private.
+    records: Vec<u64>,
 }
 
 impl SegmentMap {
@@ -165,7 +168,24 @@ impl SegmentMap {
         segments.reverse();
         segments.dedup_by_key(|segment| segment.start_index);
         segments.reverse();
-        Self { segments }
+        Self {
+            segments,
+            records: Vec::new(),
+        }
+    }
+
+    /// Record that the thought at `index` is a valid governance record. Such a
+    /// thought is private whatever segment its position falls in.
+    pub fn push_record(&mut self, index: u64) {
+        if self.records.last().is_none_or(|last| index > *last) {
+            self.records.push(index);
+        }
+    }
+
+    /// Indices of the valid governance records.
+    #[must_use]
+    pub fn records(&self) -> &[u64] {
+        &self.records
     }
 
     /// The listed segments in position order (the implicit leading public
@@ -194,14 +214,19 @@ impl SegmentMap {
     /// needed.
     #[must_use]
     pub fn has_private(&self) -> bool {
-        self.segments
-            .iter()
-            .any(|segment| segment.kind == SegmentKind::Private)
+        !self.records.is_empty()
+            || self
+                .segments
+                .iter()
+                .any(|segment| segment.kind == SegmentKind::Private)
     }
 
     /// Kind of the segment the thought at `index` belongs to.
     #[must_use]
     pub fn kind_at(&self, index: u64) -> SegmentKind {
+        if self.records.binary_search(&index).is_ok() {
+            return SegmentKind::Private;
+        }
         match self
             .segments
             .partition_point(|segment| segment.start_index <= index)

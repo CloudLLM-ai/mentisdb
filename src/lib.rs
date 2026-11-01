@@ -318,6 +318,8 @@ pub mod read_auth;
 pub mod search;
 #[cfg(feature = "server")]
 pub mod server;
+#[cfg(feature = "server")]
+pub mod server_lens;
 pub mod signing;
 mod skills;
 pub mod standing;
@@ -7180,24 +7182,33 @@ impl MentisDb {
     /// when the thought carries a signature of a key that may read the private
     /// segments, otherwise [`audience::Audience::Public`].
     fn writer_audience(&self, agent_id: &str, input: &ThoughtInput) -> audience::Audience {
-        let (Some(signature), Some(key_id)) = (&input.thought_signature, &input.signing_key_id)
-        else {
+        if input.thought_signature.is_none() {
+            return audience::Audience::Public;
+        }
+        self.signer_audience_of(agent_id, input.signing_key_id.as_deref())
+    }
+
+    /// The audience of whoever signed the stored `thought`: what the writer of
+    /// a thought just appended may be shown in the response (advice, links).
+    pub fn signer_audience(&self, thought: &Thought) -> audience::Audience {
+        if thought.thought_signature.is_none() {
+            return audience::Audience::Public;
+        }
+        self.signer_audience_of(&thought.agent_id, thought.signing_key_id.as_deref())
+    }
+
+    fn signer_audience_of(&self, agent_id: &str, key_id: Option<&str>) -> audience::Audience {
+        let Some(key_id) = key_id.map(str::trim) else {
             return audience::Audience::Public;
         };
-        let _ = signature;
         let public_key = self
             .agent_registry
             .agents
             .get(agent_id)
-            .and_then(|agent| {
-                agent
-                    .public_keys
-                    .iter()
-                    .find(|key| key.key_id == key_id.trim())
-            })
+            .and_then(|agent| agent.public_keys.iter().find(|key| key.key_id == key_id))
             .and_then(|key| <[u8; 32]>::try_from(key.public_key_bytes.as_slice()).ok());
         match public_key {
-            Some(pk) if self.is_read_authorized(agent_id, key_id.trim(), &pk) => {
+            Some(pk) if self.is_read_authorized(agent_id, key_id, &pk) => {
                 audience::Audience::Authorized
             }
             _ => audience::Audience::Public,
@@ -7233,6 +7244,93 @@ impl MentisDb {
             return Err(access::AccessError::PrivateTarget);
         }
         Ok(())
+    }
+
+    /// The agent records `audience` may see.
+    ///
+    /// An authorized reader sees the whole registry. A public reader sees only
+    /// agents that wrote at least one visible thought, and for those the
+    /// activity fields (`thought_count`, first and last seen) are recomputed
+    /// from visible thoughts, so the registry cannot be used to count or time
+    /// private writes or to learn that an agent who only wrote privately exists.
+    pub fn visible_agent_records(&self, audience: audience::Audience) -> Vec<AgentRecord> {
+        if !audience.is_public() || !self.segments().has_private() {
+            return self.agent_registry.agents.values().cloned().collect();
+        }
+        let mut activity: BTreeMap<&str, (u64, &Thought, &Thought)> = BTreeMap::new();
+        for thought in self.visible_thoughts(audience) {
+            activity
+                .entry(thought.agent_id.as_str())
+                .and_modify(|(count, _, last)| {
+                    *count += 1;
+                    *last = thought;
+                })
+                .or_insert((1, thought, thought));
+        }
+        self.agent_registry
+            .agents
+            .values()
+            .filter_map(|record| {
+                let (count, first, last) = activity.get(record.agent_id.as_str())?;
+                let mut record = record.clone();
+                record.thought_count = *count;
+                record.first_seen_index = Some(first.index);
+                record.last_seen_index = Some(last.index);
+                record.first_seen_at = Some(first.timestamp);
+                record.last_seen_at = Some(last.timestamp);
+                Some(record)
+            })
+            .collect()
+    }
+
+    /// Why the thoughts of this chain cannot be merged or copied into another
+    /// chain without losing something, or `None` when they can.
+    ///
+    /// Merging and copying re-append thoughts unsigned under the target chain's
+    /// key. That would publish private-segment thoughts to a chain with other
+    /// readers, drop the signatures (which bind the source chain and position)
+    /// and, for a merge, delete the originals. Callers refuse instead of doing
+    /// any of that silently.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::{MentisDb, StorageAdapterKind, ThoughtType};
+    ///
+    /// let dir = std::env::temp_dir().join(format!("mentisdb_doc_blocker_{}", std::process::id()));
+    /// let mut chain = MentisDb::open_with_key_and_storage_kind(&dir, "doc", StorageAdapterKind::Binary).unwrap();
+    /// chain.append("alice", ThoughtType::Insight, "plain").unwrap();
+    /// assert!(chain.merge_blocker().is_none());
+    /// # let _ = std::fs::remove_dir_all(&dir);
+    /// ```
+    pub fn merge_blocker(&self) -> Option<&'static str> {
+        Self::thoughts_merge_blocker(self, self.thoughts.iter())
+    }
+
+    /// [`MentisDb::merge_blocker`] for a chosen subset of this chain's thoughts
+    /// (copying one agent's memories, for example).
+    pub fn thoughts_merge_blocker<'a>(
+        &self,
+        thoughts: impl IntoIterator<Item = &'a Thought>,
+    ) -> Option<&'static str> {
+        for thought in thoughts {
+            if thought.thought_type == ThoughtType::AccessPolicy {
+                return Some(
+                    "the source holds access-policy records, which are bound to its chain key and cannot be carried to another chain",
+                );
+            }
+            if !self.is_visible(thought, audience::Audience::Public) {
+                return Some(
+                    "the source has private segments; merging or copying would publish them to a chain with other readers",
+                );
+            }
+            if thought.thought_signature.is_some() {
+                return Some(
+                    "the source holds signed thoughts; a signature binds its chain and position, so merging or copying would discard it",
+                );
+            }
+        }
+        None
     }
 
     /// Whether `audience` may see the thought at append-order `index`.
@@ -7408,11 +7506,17 @@ impl MentisDb {
     /// # let _ = std::fs::remove_dir_all(&dir);
     /// ```
     pub fn verify_signatures(&self) -> access::SignatureReport {
+        self.verify_signatures_for(audience::Audience::Authorized)
+    }
+
+    /// [`MentisDb::verify_signatures`] as seen by `audience`: only thoughts the
+    /// audience may see are listed and counted, and the policy is reduced with
+    /// [`access::AccessPolicy::for_audience`].
+    pub fn verify_signatures_for(&self, audience: audience::Audience) -> access::SignatureReport {
         use access::{SignatureCheck, SignatureStatus};
         let policy = access::AccessPolicy::replay(self.chain_key(), &self.thoughts);
         let checks: Vec<SignatureCheck> = self
-            .thoughts
-            .iter()
+            .visible_thoughts(audience)
             .map(|thought| {
                 let (version, status) = self.verify_stored_signature(thought, &policy);
                 SignatureCheck {
@@ -7432,7 +7536,7 @@ impl MentisDb {
         let invalid = count(|s| matches!(s, SignatureStatus::Invalid(_)));
         access::SignatureReport {
             chain_key: self.chain_key().to_string(),
-            policy,
+            policy: policy.for_audience(audience),
             signed: valid + invalid,
             valid,
             unsigned,

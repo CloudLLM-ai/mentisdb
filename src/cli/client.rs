@@ -1,7 +1,7 @@
 //! HTTP execution and output rendering for remote CLI commands.
 
 use super::remote::{
-    HttpMethod, RemoteInvocation, Render, Secret, SignWith, Transport, DASHBOARD_PIN_ENV,
+    HttpMethod, ReadKey, RemoteInvocation, Render, Secret, SignWith, Transport, DASHBOARD_PIN_ENV,
 };
 use serde_json::Value;
 use std::io::{BufRead, Write};
@@ -93,7 +93,12 @@ fn sign_key_registration(
 }
 
 /// POST `path` (relative to the REST base of `invocation`) and return the JSON reply.
-fn fetch_json(invocation: &RemoteInvocation, path: &str, body: Value) -> Result<Value, String> {
+fn fetch_json(
+    invocation: &RemoteInvocation,
+    path: &str,
+    body: Value,
+    signer: Option<ReadKey>,
+) -> Result<Value, String> {
     let base = invocation
         .url
         .find("/v1/")
@@ -103,17 +108,27 @@ fn fetch_json(invocation: &RemoteInvocation, path: &str, body: Value) -> Result<
     derived.url = format!("{base}{path}");
     derived.body = Some(body);
     derived.secret = None;
+    if derived.read_key.is_none() {
+        derived.read_key = signer;
+    }
     match send(&derived)? {
         Reply::Json(value) => Ok(value),
         Reply::Text(_) => Err(format!("unexpected non-JSON reply from {path}")),
     }
 }
 
-fn current_head(invocation: &RemoteInvocation, chain_key: &str) -> Result<String, String> {
+/// The chain head a signature must name. A signer proves with its own key that
+/// it may read the chain: on a private chain the head is not shown to anyone else.
+fn current_head(
+    invocation: &RemoteInvocation,
+    chain_key: &str,
+    signer: Option<ReadKey>,
+) -> Result<String, String> {
     let head = fetch_json(
         invocation,
         "/v1/head",
         serde_json::json!({ "chain_key": chain_key }),
+        signer,
     )?;
     Ok(head["head_hash"].as_str().unwrap_or_default().to_string())
 }
@@ -127,7 +142,12 @@ fn sign_thought(
     let chain = body_text(body, "chain_key");
     let agent = body_text(body, "agent_id");
     let input = thought_input_from_body(body, invocation.command == "thought retro")?;
-    let head = current_head(invocation, &chain)?;
+    let signer = ReadKey {
+        seed: secret.clone(),
+        agent_id: agent.clone(),
+        key_id: body_text(body, "signing_key_id"),
+    };
+    let head = current_head(invocation, &chain, Some(signer))?;
     let payload = crate::signing::thought_payload_v2(&chain, &agent, &head, &input);
     let signature = SigningKey::from_bytes(&secret.0).sign(&payload).to_bytes();
     body.remove("thought_signature");
@@ -265,10 +285,16 @@ fn sign_access_policy(
     let signing = SigningKey::from_bytes(&secret.0);
     let own_public = signing.verifying_key().to_bytes();
 
+    let signer = ReadKey {
+        seed: secret.clone(),
+        agent_id: agent.clone(),
+        key_id: key_id.clone(),
+    };
     let shown = fetch_json(
         invocation,
         "/v1/access/policy",
         serde_json::json!({ "chain_key": chain }),
+        Some(signer.clone()),
     )?;
     let current: crate::access::AccessPolicy = serde_json::from_value(shown["policy"].clone())
         .map_err(|e| format!("cannot read the current policy: {e}"))?;
@@ -328,7 +354,7 @@ fn sign_access_policy(
     let seq = current.seq.map_or(0, |s| s + 1);
     let prev = current.head_record_hash.clone().unwrap_or_default();
     let record = PolicyRecord::new(seq, mode, keys, &prev).map_err(|e| e.to_string())?;
-    let head = current_head(invocation, &chain)?;
+    let head = current_head(invocation, &chain, Some(signer))?;
     let payload =
         crate::signing::thought_payload_v2(&chain, &agent, &head, &policy_thought_input(&record));
     body.insert(
@@ -422,11 +448,20 @@ fn send(invocation: &RemoteInvocation) -> Result<Reply, String> {
     let url = invocation.url.as_str();
     let auth = credential(invocation);
     let response = match invocation.method {
-        HttpMethod::Get => with_headers(agent.get(url), invocation, &auth).call(),
-        HttpMethod::Delete => with_headers(agent.delete(url), invocation, &auth).call(),
+        HttpMethod::Get => {
+            let request = with_headers(agent.get(url), invocation, &auth);
+            with_read_proof(request, invocation, "GET", &[]).call()
+        }
+        HttpMethod::Delete => {
+            let request = with_headers(agent.delete(url), invocation, &auth);
+            with_read_proof(request, invocation, "DELETE", &[]).call()
+        }
         HttpMethod::Post => {
             let body = invocation.body.clone().unwrap_or(Value::Null);
-            with_headers(agent.post(url), invocation, &auth).send_json(&body)
+            let bytes = serde_json::to_vec(&body).map_err(|e| e.to_string())?;
+            let request = with_headers(agent.post(url), invocation, &auth)
+                .header("Content-Type", "application/json");
+            with_read_proof(request, invocation, "POST", &bytes).send(&bytes[..])
         }
     }
     .map_err(|e| format!("cannot reach {url}: {e} (is the daemon running? use --url)"))?;
@@ -464,6 +499,39 @@ fn send(invocation: &RemoteInvocation) -> Result<Reply, String> {
     } else {
         Ok(Reply::Text(text))
     }
+}
+
+/// Add the read proof for this exact request when a read key is configured.
+///
+/// Only REST requests carry it; the dashboard authenticates with its PIN. The
+/// signature covers method, path and query, and the body bytes that are sent.
+fn with_read_proof<B>(
+    request: ureq::RequestBuilder<B>,
+    invocation: &RemoteInvocation,
+    method: &str,
+    body: &[u8],
+) -> ureq::RequestBuilder<B> {
+    let (Some(key), Transport::Rest) = (&invocation.read_key, invocation.transport) else {
+        return request;
+    };
+    let Ok(parsed) = url::Url::parse(&invocation.url) else {
+        return request;
+    };
+    let target = match parsed.query() {
+        Some(query) => format!("{}?{query}", parsed.path()),
+        None => parsed.path().to_string(),
+    };
+    let header = crate::read_auth::sign_request(
+        &key.seed.0,
+        &key.agent_id,
+        &key.key_id,
+        method,
+        &target,
+        body,
+        chrono::Utc::now().timestamp(),
+        &crate::read_auth::fresh_nonce(),
+    );
+    request.header(crate::read_auth::READ_AUTH_HEADER, header)
 }
 
 fn with_headers<B>(

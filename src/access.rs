@@ -81,6 +81,11 @@ pub enum AccessError {
         /// Key id that was named.
         key_id: String,
     },
+    /// The chain's policy refused the write. Sent in place of the detailed
+    /// reasons (unknown agent or key, revoked, not allowed, bad signature) to a
+    /// caller who has not proved read access to the chain, so rejected writes
+    /// cannot be used to probe which agents and keys are registered or allowed.
+    NotAccepted,
     /// An unauthorized writer pointed at a thought of a private segment
     /// (`refs` or a relation target). Only a signer who may read the private
     /// segments can link to them.
@@ -97,6 +102,23 @@ pub enum AccessError {
 }
 
 impl AccessError {
+    /// Whether this error names registry or policy details that only a
+    /// caller who may read the chain should learn.
+    #[must_use]
+    pub fn is_probe_sensitive(&self) -> bool {
+        matches!(
+            self,
+            Self::UnknownAgent(_)
+                | Self::UnknownKey { .. }
+                | Self::KeyRevoked { .. }
+                | Self::KeyNotAllowed { .. }
+                | Self::BadSignature(_)
+                | Self::StaleHead
+                | Self::AgentDisabled { .. }
+                | Self::SignatureVersionNotAllowed(_)
+        )
+    }
+
     /// The `io::ErrorKind` this error maps to.
     #[must_use]
     pub fn kind(&self) -> io::ErrorKind {
@@ -167,6 +189,9 @@ impl fmt::Display for AccessError {
             Self::KeyNotAllowed { agent_id, key_id } => write!(
                 f,
                 "key '{key_id}' of agent '{agent_id}' is not in this chain's allowed key set"
+            ),
+            Self::NotAccepted => f.write_str(
+                "this chain's access policy did not accept the write: it needs a valid signature by an authorized key",
             ),
             Self::PrivateTarget => f.write_str(
                 "this thought links to a private segment of the chain; only a signer authorized to read it may do that",
@@ -648,6 +673,38 @@ impl AccessPolicy {
             .any(|k| k.matches(agent_id, key_id, public_key))
     }
 
+    /// The policy as `audience` may see it.
+    ///
+    /// An authorized reader gets everything. A public reader gets the mode,
+    /// `seq`, the key-set commitment `keys_root` and the segment boundaries,
+    /// which is what they need to know that signatures are required and which
+    /// index ranges they cannot read. The key list, the record hashes and the
+    /// list of rejected records are withheld: they would name who may read the
+    /// private segments and point at thoughts the reader cannot see.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::access::AccessPolicy;
+    /// use mentisdb::audience::Audience;
+    ///
+    /// let policy = AccessPolicy::default();
+    /// assert_eq!(policy.for_audience(Audience::Public), policy);
+    /// ```
+    #[must_use]
+    pub fn for_audience(&self, audience: crate::audience::Audience) -> Self {
+        if !audience.is_public() {
+            return self.clone();
+        }
+        Self {
+            keys: Vec::new(),
+            genesis_hash: None,
+            head_record_hash: None,
+            invalid_records: Vec::new(),
+            ..self.clone()
+        }
+    }
+
     /// Check a proposed record against the current state and the signer's authority.
     ///
     /// `payload` is the v2 signing payload of the governance thought and
@@ -710,9 +767,18 @@ impl AccessPolicy {
         if record.seq == 0 {
             self.genesis_hash = Some(hash.to_string());
         }
+        // The record itself is always private. A record that opens a private
+        // segment is its first thought; one that opens a public segment closes
+        // the private one, and the public segment starts after it.
+        self.segments.push_record(index);
+        let kind = record.mode.segment_kind();
         self.segments.push(Segment {
-            start_index: index,
-            kind: record.mode.segment_kind(),
+            start_index: if kind == SegmentKind::Private {
+                index
+            } else {
+                index + 1
+            },
+            kind,
             seq: record.seq,
         });
         self.mode = record.mode;

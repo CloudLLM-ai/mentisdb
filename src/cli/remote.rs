@@ -111,6 +111,26 @@ impl std::fmt::Debug for Secret {
     }
 }
 
+/// The key a command uses to prove it may read the private segments of a
+/// chain: the seed stays here, only a signature per request is sent
+/// (see [`crate::read_auth`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadKey {
+    /// Ed25519 seed (never sent).
+    pub seed: Secret,
+    /// Agent the key is registered to.
+    pub agent_id: String,
+    /// Key id within the agent.
+    pub key_id: String,
+}
+
+/// Environment variable naming the seed file used to prove read access.
+pub const READ_KEY_FILE_ENV: &str = "MENTISDB_READ_KEY_FILE";
+/// Environment variable naming the agent of the read key.
+pub const READ_AGENT_ENV: &str = "MENTISDB_READ_AGENT_ID";
+/// Environment variable naming the key id of the read key.
+pub const READ_KEY_ID_ENV: &str = "MENTISDB_READ_KEY_ID";
+
 /// Read a hex-encoded 32-byte Ed25519 seed from `path`.
 ///
 /// # Errors
@@ -334,6 +354,10 @@ pub struct RemoteInvocation {
     pub stdin_field: Option<String>,
     /// Seed to sign with (from `--private-key-file`); never sent.
     pub secret: Option<Secret>,
+    /// Key that proves read access to private segments on every REST request
+    /// (`--read-key-file`, `--read-agent`, `--read-key-id`); signing commands
+    /// fall back to their own signing key.
+    pub read_key: Option<ReadKey>,
     /// Local signing to perform before sending.
     pub sign: Option<SignWith>,
     /// Arguments the CLI uses itself and never sends (for example the key set to
@@ -358,6 +382,10 @@ Connection options (every command):
   --dashboard-url <URL>  Dashboard base URL for dashboard commands (default https://127.0.0.1:9475)
   --token <TOKEN>        Bearer token for the REST API (default: $MENTISDB_BEARER_TOKEN)
   --pin <PIN>            Dashboard PIN for dashboard commands (default: $MENTISDB_DASHBOARD_PIN)
+  --read-key-file <FILE> Seed file of a key authorized to read private segments; every
+                         REST request is signed locally with it (the key is never sent)
+  --read-agent <ID>      Agent the read key belongs to (default: $MENTISDB_READ_AGENT_ID)
+  --read-key-id <ID>     Key id of the read key (default: $MENTISDB_READ_KEY_ID)
   --insecure             Skip TLS certificate verification (always skipped for loopback)
   --json                 Print compact single-line JSON instead of the default presentation
   -h, --help             Show this help
@@ -482,6 +510,9 @@ struct Collected {
 
 #[derive(Default)]
 struct Common {
+    read_key_file: Option<String>,
+    read_agent: Option<String>,
+    read_key_id: Option<String>,
     url: Option<String>,
     dashboard_url: Option<String>,
     credential: Option<String>,
@@ -501,6 +532,7 @@ fn build(command: &Command, rest: &[String]) -> Result<RemoteInvocation, String>
             .unwrap_or(DEFAULT_DASHBOARD_URL),
     };
     let url = build_url(base, command.route, &collected)?;
+    let read_key = resolve_read_key(&common)?;
     let body = (command.method == HttpMethod::Post).then_some(Value::Object(collected.body));
     let invocation = RemoteInvocation {
         command: name,
@@ -514,12 +546,40 @@ fn build(command: &Command, rest: &[String]) -> Result<RemoteInvocation, String>
         insecure: common.insecure,
         stdin_field: collected.stdin_field,
         secret: collected.secret,
+        read_key,
         sign: command.sign,
         local: collected.local,
         fail_on_invalid: command.fail_on_invalid,
     };
     check_signing_inputs(command, &invocation)?;
     Ok(invocation)
+}
+
+/// Build the read key from the flags, falling back to the environment.
+fn resolve_read_key(common: &Common) -> Result<Option<ReadKey>, String> {
+    let pick = |flag: &Option<String>, env: &str| {
+        flag.clone()
+            .or_else(|| std::env::var(env).ok())
+            .filter(|v| !v.trim().is_empty())
+    };
+    let Some(file) = pick(&common.read_key_file, READ_KEY_FILE_ENV) else {
+        return Ok(None);
+    };
+    let (Some(agent_id), Some(key_id)) = (
+        pick(&common.read_agent, READ_AGENT_ENV),
+        pick(&common.read_key_id, READ_KEY_ID_ENV),
+    ) else {
+        return Err(
+            "--read-key-file also needs --read-agent and --read-key-id (or MENTISDB_READ_AGENT_ID and MENTISDB_READ_KEY_ID)"
+                .to_string(),
+        );
+    };
+    let seed = read_secret_key_file(&file).map_err(|why| format!("--read-key-file: {why}"))?;
+    Ok(Some(ReadKey {
+        seed,
+        agent_id,
+        key_id,
+    }))
 }
 
 /// Reject a signing command that has neither a key file nor the manual fields.
@@ -621,6 +681,9 @@ fn split_args<'a>(
                     Some(base_url("--dashboard-url", take_value("--dashboard-url")?)?)
             }
             "--token" | "--pin" => common.credential = Some(take_value(&key)?),
+            "--read-key-file" => common.read_key_file = Some(take_value("--read-key-file")?),
+            "--read-agent" => common.read_agent = Some(take_value("--read-agent")?),
+            "--read-key-id" => common.read_key_id = Some(take_value("--read-key-id")?),
             _ => {
                 let flag = find_flag(command, &key).ok_or_else(|| {
                     format!(
