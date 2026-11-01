@@ -1502,13 +1502,20 @@ impl AgentRecord {
         }
     }
 
+    /// Fold one observed thought into the record.
+    ///
+    /// Returns `true` when an *identity* field (display name, aliases, owner)
+    /// changed. The activity counters (`thought_count`, `last_seen_*`) always
+    /// move but are derived from the chain on every open, so callers only
+    /// need to rewrite the registry file for identity changes.
     fn observe(
         &mut self,
         display_name: Option<&str>,
         owner: Option<&str>,
         index: u64,
         timestamp: DateTime<Utc>,
-    ) {
+    ) -> bool {
+        let mut identity_changed = false;
         if let Some(display_name) = display_name
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -1521,6 +1528,7 @@ impl AgentRecord {
             {
                 self.aliases.push(self.display_name.clone());
                 self.display_name = display_name.to_string();
+                identity_changed = true;
             }
         }
 
@@ -1529,11 +1537,13 @@ impl AgentRecord {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned);
+            identity_changed |= self.owner.is_some();
         }
 
         self.last_seen_index = Some(index);
         self.last_seen_at = Some(timestamp);
         self.thought_count += 1;
+        identity_changed
     }
 
     fn set_display_name(&mut self, display_name: &str) {
@@ -1617,6 +1627,10 @@ pub struct AgentRegistry {
 }
 
 impl AgentRegistry {
+    /// Fold one observed thought into the registry; returns `true` when the
+    /// registry gained an agent or an agent's identity changed (see
+    /// [`AgentRecord::observe`]), i.e. when the file on disk is out of date in
+    /// a way a reload cannot reconstruct.
     fn observe(
         &mut self,
         agent_id: &str,
@@ -1624,13 +1638,14 @@ impl AgentRegistry {
         owner: Option<&str>,
         index: u64,
         timestamp: DateTime<Utc>,
-    ) {
+    ) -> bool {
         match self.agents.get_mut(agent_id) {
             Some(record) => record.observe(display_name, owner, index, timestamp),
             None => {
                 let display_name = display_name.unwrap_or(agent_id);
                 let record = AgentRecord::new(agent_id, display_name, owner, index, timestamp);
                 self.agents.insert(agent_id.to_string(), record);
+                true
             }
         }
     }
@@ -6076,7 +6091,7 @@ impl MentisDb {
 
         self.storage.append_thought(&thought)?;
 
-        self.agent_registry.observe(
+        let agent_identity_changed = self.agent_registry.observe(
             agent_id,
             display_name.as_deref(),
             owner.as_deref(),
@@ -6124,9 +6139,14 @@ impl MentisDb {
             log_derived_failure("vector sidecar sync", &error);
         }
         self.sync_implicit_edge_overlay_for_append(&last_thought);
-        self.mark_agent_registry_dirty();
+        // Only an identity change (new agent, renamed agent, newly learned
+        // owner) forces a rewrite. The per-agent counters move on every append
+        // but are recomputed from the chain at open, so they ride along with
+        // the next identity write, the flush threshold, `flush` or `Drop`
+        // instead of rewriting and renaming the file once per append.
+        self.mark_agent_registry_dirty(agent_identity_changed);
         if let Err(error) = self.maybe_flush_agent_registry(
-            self.auto_flush || self.thoughts.len() == 1 || agent_count_changed,
+            agent_identity_changed || self.thoughts.len() == 1 || agent_count_changed,
         ) {
             log_derived_failure("agent registry persist", &error);
         }
@@ -10699,7 +10719,9 @@ impl MentisDb {
         Ok(())
     }
 
-    fn mark_agent_registry_dirty(&mut self) {
+    /// Record that the agent registry changed in memory. `identity` is `true`
+    /// when the change cannot be reconstructed from the chain on reload.
+    fn mark_agent_registry_dirty(&mut self, _identity: bool) {
         if self.persistence.is_some() {
             self.pending_agent_registry_sync = true;
             self.pending_agent_registry_updates =
@@ -10711,10 +10733,7 @@ impl MentisDb {
         if !self.pending_agent_registry_sync {
             return Ok(());
         }
-        if force
-            || self.auto_flush
-            || self.pending_agent_registry_updates >= AGENT_REGISTRY_FLUSH_THRESHOLD
-        {
+        if force || self.pending_agent_registry_updates >= AGENT_REGISTRY_FLUSH_THRESHOLD {
             self.persist_agent_registry()?;
             self.pending_agent_registry_sync = false;
             self.pending_agent_registry_updates = 0;
@@ -10778,7 +10797,7 @@ impl MentisDb {
     }
 
     fn persist_registries(&mut self) -> io::Result<()> {
-        self.mark_agent_registry_dirty();
+        self.mark_agent_registry_dirty(true);
         self.maybe_flush_agent_registry(true)?;
         self.mark_entity_type_registry_dirty();
         self.maybe_flush_entity_type_registry(true)?;

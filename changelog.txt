@@ -30,6 +30,12 @@ UNRELEASED
     include_invalidated retry advice is replaced by "read version_status".
   - test(retrieval): end-to-end regression for the policy scenario over library,
     REST and MCP for seven link styles, old wording and paraphrase.
+  - perf(storage): appends no longer rewrite and rename `*.agents.json` once
+    per thought. The per-agent counters (`thought_count`, `last_seen_*`) were
+    already recomputed from the chain at every open, so only an identity change
+    (new agent, rename, learned owner) is written immediately; counters ride
+    along every 16 appends, on `Drop` and on `set_auto_flush(true)`. A killed
+    daemon loses nothing. No format change.
   - fix(security): dashboard responses now carry a Content-Security-Policy
     (`frame-ancestors 'none'`, `base-uri 'none'`, same-origin connections),
     `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and
