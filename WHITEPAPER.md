@@ -32,8 +32,8 @@ pipeline reaches 76.7% Recall@10 on LoCoMo-10P and 69.8% Recall@5 on LongMemEval
 chains, an audit found no loss of recall with the age of a memory, but found that
 near-duplicate thoughts crowded results and that paraphrased queries recalled far less
 than verbatim ones. Length-independent vector fusion and result-time duplicate collapse
-were built in response, and they raised rank-1 recall on the most duplicated chain from
-75% to 98%. This paper describes the design as it is implemented, states
+were built in response. On the most duplicated chain they raised rank-1 recall from 75%
+to 98%, counting a target folded into a surviving copy as found. This paper describes the design as it is implemented, states
 each default exactly, and lists what is still weak.
 
 ---
@@ -98,8 +98,9 @@ embedded directly. The binary runs a daemon and also serves as the command-line 
   | MentisDb core (library)                                       |
   |   append path: validate -> access policy -> sign check ->     |
   |                relations/dedup -> hash -> writer thread       |
-  |   read path:   candidates (invalidation, as_of, filters) ->   |
-  |                BM25 + vectors + graph + cohesion -> rank      |
+  |   read path:   candidates (audience, invalidation, as_of,     |
+  |                filters) -> BM25 + vectors + graph + cohesion  |
+  |                -> rank -> successors, collapse duplicates     |
   |   standing context, recent context, context bundles           |
   |   agent registry, entity types, skill registry, webhooks      |
   +-------------------------------+-------------------------------+
@@ -309,8 +310,9 @@ the target and then deregisters the source. It copies type, role, content, impor
 confidence, tags and concepts, and maps agents by id. It drops relations, refs, sessions,
 entity types, source episodes, signatures and original timestamps. It refuses targets that
 are not open-write chains, and sources that have private segments, governance records or
-signed thoughts, because merging them would publish private text and discard signatures. A merge therefore preserves what was remembered but not
-how it was connected or who signed it.
+signed thoughts, because merging them would publish private text and discard signatures.
+A merge therefore preserves what was remembered but not how it was connected or who
+signed it.
 
 ---
 
@@ -463,8 +465,8 @@ not encrypted at rest. Anyone who can read the files can read them.
 ### 4.5 Read Authentication
 
 A reader proves possession of an authorized key with one header per HTTP request,
-signed locally by the client process (the CLI, the stdio MCP proxy, or an SDK such as
-the Python client's `ReadSigner`, pinned to the Rust signer by a shared test vector), so the
+signed locally by the client process (the CLI, the stdio MCP proxy, or an SDK such as the
+Python client's `ReadSigner`, pinned to the Rust signer by a shared test vector). The
 private key never travels and never enters a model's context (`src/read_auth.rs`):
 
 ```
@@ -478,8 +480,7 @@ The signature binds one method, one URL and one body, and therefore one chain ke
 server accepts it when the timestamp is within 60 seconds of its clock and the nonce has
 not been seen in that window, so a captured request can be neither replayed nor turned
 into a different one. Invalid proofs are rate limited to 30 per minute per peer. The proof
-only identifies the reader. Whether that key may read a
-chain is decided per chain (`MentisDb::is_read_authorized`): the key must be active in
+only identifies the reader. Whether that key may read a chain is decided per chain (`MentisDb::is_read_authorized`): the key must be active in
 the chain's registry with exactly that public key, and be in the policy's key set; in
 `Signed` mode every active registered key qualifies, because each may already write. The
 proof authenticates but does not encrypt, so private chains should be served over TLS.
@@ -507,8 +508,8 @@ frame-denial headers, and guards state-changing calls against cross-site request
 
 Several authorization bypasses have been found and fixed, in 0.10.9 and again in the
 unreleased changes, including decoy chain-key fields that let a chain-scoped token read
-another chain and a fail-open default for unlisted MCP tools. Deployments that expose the daemon beyond loopback should run current
-master and enable tokens.
+another chain and a fail-open default for unlisted MCP tools. Deployments that expose the
+daemon beyond loopback should run current master and enable tokens.
 
 ---
 
@@ -548,7 +549,8 @@ $MENTISDB_DIR/                         (default ~/.cloudllm/mentisdb)
   <stem>.verified.json                 operator-signed verification checkpoint
   operator/operator.key                operator signing key (0600)
   mentisdb.lock                        advisory lock held by the daemon
-  migrations/vX_to_vY/                 archived pre-migration files
+  migrations/journal/, staging/        migration state machine and staged files
+  migrations/backup/                   originals kept after migration (14 days)
 ```
 
 ### 5.3 Write Path and Durability Modes
@@ -654,9 +656,10 @@ stored, under either hash algorithm, and a migration that would invalidate a v2 
 is refused, so a migration can never turn a tampered chain into a freshly valid one. Only
 schemas 0 to 2, whose stored hashes cannot be checked, are rehashed.
 
-Operators drive and inspect migrations with `mentisdb migrate status|run|verify|retry|
-skip|rollback|purge-backups` (with `--dry-run` for `run`), `GET /v1/migrations`, the
-`mentisdb_migration_status` MCP tool, a dashboard banner and the TUI. Retry and skip
+Operators drive and inspect migrations with the `mentisdb migrate` command (`status`,
+`run` with an optional `--dry-run`, `verify`, `retry`, `skip`, `rollback` and
+`purge-backups`), `GET /v1/migrations`, the `mentisdb_migration_status` MCP tool, a
+dashboard banner and the TUI. Retry and skip
 through the API need a global token. Library code that opens a legacy chain directly still
 upgrades it in place on open, now after copying the original to
 `migrations/backup/in-place/`.
@@ -687,12 +690,13 @@ defaults as of current master.
 
 ### 6.1 Candidates
 
-Ranking starts from a candidate set (`retrieval_candidates`). It removes invalidated
-thoughts unless `include_invalidated` is set, applies `as_of` (Section 3.6), and applies
-filters on type, role, agent, tags, concepts, scope, entity type, session and time range.
-Filters only restrict; they never add score. After scoring, superseded thoughts that
-would have ranked are replaced by their live successors and contested thoughts are
-preceded by their contesters (Section 3.6).
+Ranking starts from a candidate set (`retrieval_candidates`). It removes thoughts the
+reader's audience may not see (Section 4.4) and invalidated thoughts unless
+`include_invalidated` is set, applies `as_of` (Section 3.6), and applies filters on type,
+role, agent, tags, concepts, scope, entity type, session and time range. Filters only
+restrict; they never add score. After scoring, superseded thoughts that would have ranked
+are replaced by their live successors, contested thoughts are preceded by their
+contesters (Section 3.6), and near-duplicates are collapsed (Section 6.9).
 
 ### 6.2 Lexical Signal: BM25 with Document-Frequency Gating
 
@@ -900,9 +904,9 @@ collapses restatements, and caps the result:
 Only user-scoped or unscoped thoughts are standing. Within a group, restatements with
 Jaccard similarity of 0.85 or more collapse to the newest. A superseded constraint or
 decision is replaced by its live successor, even when the successor is not itself a
-standing type such as a `Correction`, and contested entries are flagged in the prompt. The result is a compact prompt
-block delimited by `=== STANDING CONTEXT ===` that the agent loads at startup, next to the
-recent-context block. It is available as an MCP tool, a REST route
+standing type such as a `Correction`, and contested entries are flagged in the prompt.
+The result is a compact prompt block delimited by `=== STANDING CONTEXT ===` that the
+agent loads at startup, next to the recent-context block. It is available as an MCP tool, a REST route
 (`POST /v1/standing-context`) and a CLI command (`mentisdb thought standing`).
 
 ### 6.11 Tuning Per Query
@@ -914,11 +918,12 @@ set the process-wide defaults.
 
 ### 6.12 What Is Not in the Default Path
 
-The crate contains components that ranked search does not use by default, and this paper
-makes no claim based on them: personalized PageRank (`src/search/ppr.rs`), pseudo-relevance
-feedback (`query_expansion.rs`), a query-intent classifier (`query_intent.rs`) and embedding
-synonyms. Personalized PageRank and the LLM-reranking fields are deprecated no-ops. LLM memory extraction (`src/llm.rs`)
-exists as an explicit, opt-in operation that writes `LLMExtracted` thoughts.
+The crate contains components that ranked search does not use, and this paper makes no
+claim based on them: pseudo-relevance feedback (`query_expansion.rs`), a query-intent
+classifier (`query_intent.rs`) and embedding synonyms. Personalized PageRank
+(`src/search/ppr.rs`) and the LLM-reranking fields are deprecated no-ops. LLM memory
+extraction (`src/llm.rs`) exists as an explicit, opt-in operation that writes
+`LLMExtracted` thoughts.
 
 ---
 
@@ -1114,9 +1119,9 @@ opening of a later thought that refers to the target, and `sem`: the opening of 
 target's nearest semantic neighbour among thoughts sharing few of its words).
 
 The audit ran on 2026-10-31 against copies of three real project chains of one user,
-with 750, 525 and 86 thoughts written by 23, 23 and 5 agents over five to ten weeks. It used
-release 0.10.10.55 scoring, unchanged, with the daemon's thesaurus expansion, 300 targets
-per query kind, seed 7 and queries of at most 32 words.
+with 750, 525 and 86 thoughts written by 23, 23 and 5 agents over five to ten weeks. It
+used release 0.10.10.55 scoring, unchanged, with the daemon's thesaurus expansion, 300
+targets per query kind, seed 7 and queries of at most 32 words.
 
 | Probe kind | 750 thoughts | 525 thoughts | 86 thoughts |
 |---|---|---|---|
@@ -1141,17 +1146,17 @@ nothing at these query lengths. The findings:
 2. **Paraphrase is the weak spot.** On `sem` probes the hybrid ranker recalled the target
    in the top ten for 43% of queries on the 750-thought chain and 55% on the 525-thought
    chain. Vector similarity alone did better, at 57% and 59%. The reason was the
-   absolute fusion rule then in force (Section 6.3): a long query that shares a few words with many thoughts earns a
-   moderate lexical score, and `exp(-lexical / 3)` then removes almost all of the vector
-   signal. With 8-word queries the hybrid ranker matched or beat vectors alone.
+   absolute fusion rule then in force (Section 6.3): a long query that shares a few words
+   with many thoughts earns a moderate lexical score, and `exp(-lexical / 3)` then removes
+   almost all of the vector signal. With 8-word queries the hybrid ranker matched or beat vectors alone.
 3. **Duplicates and dominant thoughts crowd results.** None of the chains had automatic
    deduplication on, and only one `Supersedes` edge existed among them. On the
    750-thought chain, 301 of 749 live thoughts sat in 145 clusters of near-copies (token
    Jaccard of 0.85 or more). Most were exact copies re-recorded about 128 positions
    later, outside the 64-thought dedup window; 149 of the 172 duplicate pairs lay beyond
    it. The newer copy wins rank 1 by its recency bonus of about 0.009, which explains the
-   rank-1 age gap above. On the 525-thought chain a 13-member cluster restating one build rule, each copy at importance
-   0.95, took rank 1 in 14 probes meant for other thoughts. On the 750-thought chain
+   rank-1 age gap above. On the 525-thought chain a 13-member cluster restating one build
+   rule, each copy at importance 0.95, took rank 1 in 14 probes meant for other thoughts. On the 750-thought chain
    single high-importance thoughts took rank 1 in up to 7 probes each. Turning on RRF cut
    the rank-1 misses caused by a newer near-duplicate from 140 to 9 on that chain, but it
    only reorders ties and does not change recall at ten.
@@ -1249,9 +1254,8 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
   cleanly.
 - **Measuring valid-version retrieval** on benchmarks with changing facts, and on real
   chains with the correction audit (`examples/correction_audit.rs`).
-- **Better paraphrase recall:** evaluate larger local encoders, embed long thoughts in
+- **Better paraphrase recall:** evaluate larger local encoders and embed long thoughts in
   chunks.
-- **Per-field document frequency** as the default once benchmarked.
 - **Hash coverage of every field**, through a schema version that brings `entity_type`
   and `source_episode` under the record hash.
 - **Anchoring head hashes** externally so that a full rewrite of a chain becomes

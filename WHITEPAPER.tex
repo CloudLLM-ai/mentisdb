@@ -155,10 +155,11 @@ dimensions), the pipeline reaches 76.7\% Recall@10 on LoCoMo-10P and
 found no loss of recall with the age of a memory, but found that
 near-duplicate thoughts crowded results and that paraphrased queries
 recalled far less than verbatim ones. Length-independent vector fusion
-and result-time duplicate collapse were built in response, and they
-raised rank-1 recall on the most duplicated chain from 75\% to 98\%.
-This paper describes the design as it is implemented, states each
-default exactly, and lists what is still weak.
+and result-time duplicate collapse were built in response. On the most
+duplicated chain they raised rank-1 recall from 75\% to 98\%, counting a
+target folded into a surviving copy as found. This paper describes the
+design as it is implemented, states each default exactly, and lists what
+is still weak.
 \end{abstract}
 
 \subsection{1. The Problem and the Requirements}
@@ -239,8 +240,9 @@ runs a daemon and also serves as the command-line client.
   | MentisDb core (library)                                       |
   |   append path: validate -> access policy -> sign check ->     |
   |                relations/dedup -> hash -> writer thread       |
-  |   read path:   candidates (invalidation, as_of, filters) ->   |
-  |                BM25 + vectors + graph + cohesion -> rank      |
+  |   read path:   candidates (audience, invalidation, as_of,     |
+  |                filters) -> BM25 + vectors + graph + cohesion  |
+  |                -> rank -> successors, collapse duplicates     |
   |   standing context, recent context, context bundles           |
   |   agent registry, entity types, skill registry, webhooks      |
   +-------------------------------+-------------------------------+
@@ -831,7 +833,7 @@ A reader proves possession of an authorized key with one header per HTTP
 request, signed locally by the client process (the CLI, the stdio MCP
 proxy, or an SDK such as the Python client's
 \passthrough{\lstinline!ReadSigner!}, pinned to the Rust signer by a
-shared test vector), so the private key never travels and never enters a
+shared test vector). The private key never travels and never enters a
 model's context (\passthrough{\lstinline!src/read\_auth.rs!}):
 
 \begin{lstlisting}
@@ -932,7 +934,8 @@ $MENTISDB_DIR/                         (default ~/.cloudllm/mentisdb)
   <stem>.verified.json                 operator-signed verification checkpoint
   operator/operator.key                operator signing key (0600)
   mentisdb.lock                        advisory lock held by the daemon
-  migrations/vX_to_vY/                 archived pre-migration files
+  migrations/journal/, staging/        migration state machine and staged files
+  migrations/backup/                   originals kept after migration (14 days)
 \end{lstlisting}
 
 \subsubsection{5.3 Write Path and Durability Modes}
@@ -1118,10 +1121,13 @@ that would invalidate a v2 signature is refused, so a migration can
 never turn a tampered chain into a freshly valid one. Only schemas 0 to
 2, whose stored hashes cannot be checked, are rehashed.
 
-Operators drive and inspect migrations with
-\passthrough{\lstinline!mentisdb migrate status|run|verify|retry| skip|rollback|purge-backups!}
-(with \passthrough{\lstinline!--dry-run!} for
-\passthrough{\lstinline!run!}),
+Operators drive and inspect migrations with the
+\passthrough{\lstinline!mentisdb migrate!} command
+(\passthrough{\lstinline!status!}, \passthrough{\lstinline!run!} with an
+optional \passthrough{\lstinline!--dry-run!},
+\passthrough{\lstinline!verify!}, \passthrough{\lstinline!retry!},
+\passthrough{\lstinline!skip!}, \passthrough{\lstinline!rollback!} and
+\passthrough{\lstinline!purge-backups!}),
 \passthrough{\lstinline!GET /v1/migrations!}, the
 \passthrough{\lstinline!mentisdb\_migration\_status!} MCP tool, a
 dashboard banner and the TUI. Retry and skip through the API need a
@@ -1162,15 +1168,15 @@ of current master.
 \subsubsection{6.1 Candidates}
 
 Ranking starts from a candidate set
-(\passthrough{\lstinline!retrieval\_candidates!}). It removes
-invalidated thoughts unless
-\passthrough{\lstinline!include\_invalidated!} is set, applies
+(\passthrough{\lstinline!retrieval\_candidates!}). It removes thoughts
+the reader's audience may not see (Section 4.4) and invalidated thoughts
+unless \passthrough{\lstinline!include\_invalidated!} is set, applies
 \passthrough{\lstinline!as\_of!} (Section 3.6), and applies filters on
 type, role, agent, tags, concepts, scope, entity type, session and time
 range. Filters only restrict; they never add score. After scoring,
 superseded thoughts that would have ranked are replaced by their live
-successors and contested thoughts are preceded by their contesters
-(Section 3.6).
+successors, contested thoughts are preceded by their contesters (Section
+3.6), and near-duplicates are collapsed (Section 6.9).
 
 \subsubsection{6.2 Lexical Signal: BM25 with Document-Frequency Gating}
 
@@ -1510,13 +1516,13 @@ process-wide defaults.
 
 \subsubsection{6.12 What Is Not in the Default Path}
 
-The crate contains components that ranked search does not use by
-default, and this paper makes no claim based on them: personalized
-PageRank (\passthrough{\lstinline!src/search/ppr.rs!}), pseudo-relevance
-feedback (\passthrough{\lstinline!query\_expansion.rs!}), a query-intent
+The crate contains components that ranked search does not use, and this
+paper makes no claim based on them: pseudo-relevance feedback
+(\passthrough{\lstinline!query\_expansion.rs!}), a query-intent
 classifier (\passthrough{\lstinline!query\_intent.rs!}) and embedding
-synonyms. Personalized PageRank and the LLM-reranking fields are
-deprecated no-ops. LLM memory extraction
+synonyms. Personalized PageRank
+(\passthrough{\lstinline!src/search/ppr.rs!}) and the LLM-reranking
+fields are deprecated no-ops. LLM memory extraction
 (\passthrough{\lstinline!src/llm.rs!}) exists as an explicit, opt-in
 operation that writes \passthrough{\lstinline!LLMExtracted!} thoughts.
 
@@ -2045,10 +2051,8 @@ append cost.
   facts, and on real chains with the correction audit
   (\passthrough{\lstinline!examples/correction\_audit.rs!}).
 \item
-  \textbf{Better paraphrase recall:} evaluate larger local encoders,
+  \textbf{Better paraphrase recall:} evaluate larger local encoders and
   embed long thoughts in chunks.
-\item
-  \textbf{Per-field document frequency} as the default once benchmarked.
 \item
   \textbf{Hash coverage of every field}, through a schema version that
   brings \passthrough{\lstinline!entity\_type!} and
