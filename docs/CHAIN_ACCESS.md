@@ -527,6 +527,28 @@ command bodies and key specs) and `segment_map` (a public reader sees a subset o
 authorized reader's view and never a governance record). Run one with
 `cd fuzz && cargo +nightly fuzz run read_auth_header`.
 
+## One writer per data directory
+
+Two processes appending to the same hash chain corrupt it, and a second writer
+would also bypass every check in this document. The daemon therefore takes an
+operating-system exclusive lock on `<data dir>/mentisdb.lock` for its whole life.
+The lock is released by the OS when the process exits or is killed, so a crash
+leaves no stale lock to clean up. The file also holds the holder's PID, so a
+refused process can name it.
+
+| Process | While another process holds the directory |
+|---|---|
+| second `mentisdb` daemon | refuses to start, nonzero exit, message names the pid and directory |
+| `--offline` operator commands | refuse with the same message; nothing is written |
+| `restore` | refuses before touching any file |
+| `migrate run` (not `--dry-run`), `retry`, `skip`, `rollback`, `purge-backups` | refuse; the daemon runs its own migrations inside the process that holds the lock |
+| `migrate status`, `migrate verify`, `migrate run --dry-run` | read-only, always allowed |
+
+To change a running daemon's keys, use the dashboard (`--pin`). To use an
+offline command, stop the daemon first. The lock is advisory: it protects
+against mentisdb processes, not against another program that ignores it, and
+network filesystems may not honor it, so keep the data directory on a local disk.
+
 ## Residual risk
 
 * A public reader learns the existence and rough size of private segments and one

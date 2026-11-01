@@ -2,6 +2,11 @@ UNRELEASED
   - fix(daemon): a second daemon on a data directory that is already in use now refuses
     to start (it used to start without the directory lock and could append to the same
     chain files); the `--offline` operator commands rely on the same lock.
+    The refusal names the holder's pid and the directory, and now also covers
+    `restore` and the mutating `migrate` subcommands (run, retry, skip, rollback,
+    purge-backups); `migrate status`, `verify` and `run --dry-run` stay read-only.
+    The lock is an OS lock, so a killed daemon releases it. See
+    docs/CHAIN_ACCESS.md "One writer per data directory".
   - fix(migration): chains from schemas 0 to 2 are now checked before their
     hashes are rebuilt: the old stored hash links must be intact (a removed,
     inserted or reordered record, or a broken link, is refused and the chain

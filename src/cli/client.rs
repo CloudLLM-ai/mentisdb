@@ -67,13 +67,7 @@ fn run_offline(invocation: &RemoteInvocation, out: &mut dyn Write) -> Result<(),
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("MENTISDB_DIR").map(std::path::PathBuf::from))
         .unwrap_or_else(crate::paths::default_mentisdb_dir);
-    let Some(_lock) = crate::operator::DataDirLock::try_acquire(&dir).map_err(|e| e.to_string())?
-    else {
-        return Err(format!(
-            "a mentisdb process is using {}: two processes must not write one chain. Use the dashboard route (--pin) or stop the daemon first",
-            dir.display()
-        ));
-    };
+    let _lock = crate::operator::DataDirLock::claim(&dir).map_err(|e| e.to_string())?;
     let registered = crate::load_registered_chains(&dir).map_err(|e| e.to_string())?;
     if !registered.chains.contains_key(&chain_key) {
         return Err(format!(

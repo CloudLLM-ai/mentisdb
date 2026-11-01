@@ -235,16 +235,60 @@ impl DataDirLock {
     /// I/O errors creating or locking the file.
     pub fn try_acquire(data_dir: &Path) -> io::Result<Option<Self>> {
         std::fs::create_dir_all(data_dir)?;
-        let file = std::fs::OpenOptions::new()
+        let mut file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .open(data_dir.join("mentisdb.lock"))?;
         match file.try_lock() {
-            Ok(()) => Ok(Some(Self { _file: file })),
+            Ok(()) => {
+                // Name the holder for whoever is refused later. Best effort: the
+                // lock itself is the authority, the PID is only a courtesy.
+                use std::io::Write;
+                let _ = file.set_len(0);
+                let _ = write!(file, "{}", std::process::id());
+                Ok(Some(Self { _file: file }))
+            }
             Err(std::fs::TryLockError::WouldBlock) => Ok(None),
             Err(std::fs::TryLockError::Error(error)) => Err(error),
         }
+    }
+
+    /// PID of the process that holds the lock, when it recorded one.
+    #[must_use]
+    pub fn holder(data_dir: &Path) -> Option<u32> {
+        std::fs::read_to_string(data_dir.join("mentisdb.lock"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    /// Take the lock or explain who has it.
+    ///
+    /// This is what the daemon and every command that writes chain files
+    /// directly (`--offline`, `restore`) use: two writers on one hash chain
+    /// corrupt it, so the second one refuses instead of waiting or sharing.
+    /// The lock is an operating-system advisory lock on the open file, so it is
+    /// released when the holder exits or is killed, with no stale lock file to
+    /// clean up.
+    ///
+    /// # Errors
+    ///
+    /// `WouldBlock` naming the data directory and, when known, the holder's PID;
+    /// other I/O errors from creating or locking the file.
+    pub fn claim(data_dir: &Path) -> io::Result<Self> {
+        Self::try_acquire(data_dir)?.ok_or_else(|| {
+            let holder = Self::holder(data_dir)
+                .map_or_else(String::new, |pid| format!(" (pid {pid})"));
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!(
+                    "another mentisdb process{holder} is using {}: two processes must not write the same chains. Stop it, use its dashboard route, or choose another MENTISDB_DIR",
+                    data_dir.display()
+                ),
+            )
+        })
     }
 }
 

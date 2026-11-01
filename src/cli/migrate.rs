@@ -261,6 +261,9 @@ pub fn run_migrate(
             dry_run,
         } => {
             let dir = default_dir(dir);
+            // A real run rewrites chain files: not while a daemon owns them
+            // (the daemon runs its own migrations). A dry run only reads.
+            let _lock = (!*dry_run).then(|| claim(&dir)).transpose()?;
             let keys: Vec<String> = match chain {
                 Some(key) => vec![key.clone()],
                 None => discover_chain_keys(&dir).into_iter().collect(),
@@ -301,7 +304,9 @@ pub fn run_migrate(
             Ok(all_ok)
         }
         MigrateCommand::Retry { dir, chain } => {
-            retry_chain(&default_dir(dir), chain).map_err(|e| e.to_string())?;
+            let dir = default_dir(dir);
+            let _lock = claim(&dir)?;
+            retry_chain(&dir, chain).map_err(|e| e.to_string())?;
             writeln!(
                 out,
                 "{chain}: quarantine cleared; it will be migrated on the next run"
@@ -310,7 +315,9 @@ pub fn run_migrate(
             Ok(true)
         }
         MigrateCommand::Skip { dir, chain, reason } => {
-            skip_chain(&default_dir(dir), chain, reason).map_err(|e| e.to_string())?;
+            let dir = default_dir(dir);
+            let _lock = claim(&dir)?;
+            skip_chain(&dir, chain, reason).map_err(|e| e.to_string())?;
             writeln!(
                 out,
                 "{chain}: skipped; it stays untouched until `migrate retry`"
@@ -319,7 +326,9 @@ pub fn run_migrate(
             Ok(true)
         }
         MigrateCommand::Rollback { dir, chain, force } => {
-            rollback_chain(&default_dir(dir), chain, *force).map_err(|e| e.to_string())?;
+            let dir = default_dir(dir);
+            let _lock = claim(&dir)?;
+            rollback_chain(&dir, chain, *force).map_err(|e| e.to_string())?;
             writeln!(out, "{chain}: restored from the pre-migration backup").map_err(w)?;
             Ok(true)
         }
@@ -328,11 +337,19 @@ pub fn run_migrate(
             older_than_days,
         } => {
             let age = older_than_days.map(|days| Duration::from_secs(days * 86_400));
-            let removed = purge_backups(&default_dir(dir), age).map_err(|e| e.to_string())?;
+            let dir = default_dir(dir);
+            let _lock = claim(&dir)?;
+            let removed = purge_backups(&dir, age).map_err(|e| e.to_string())?;
             writeln!(out, "removed {removed} backup(s)").map_err(w)?;
             Ok(true)
         }
     }
+}
+
+/// Commands that change migration state or chain files take the data-directory
+/// lock, so they refuse while a daemon (or another writer) owns the directory.
+fn claim(dir: &std::path::Path) -> Result<crate::operator::DataDirLock, String> {
+    crate::operator::DataDirLock::claim(dir).map_err(|e| e.to_string())
 }
 
 fn run_one(

@@ -572,6 +572,8 @@ fn run_restore(
         }
     }
 
+    // Restoring writes chain files: never while a daemon owns the directory.
+    let _lock = crate::operator::DataDirLock::claim(&target_dir).map_err(|e| e.to_string())?;
     restore_backup(
         archive_path,
         target_dir.clone(),
