@@ -586,7 +586,9 @@ on `mentisdb.lock`, held by the daemon for its whole life and released by the sy
 it exits or is killed, so no stale lock is left behind. A second daemon refuses to start
 and names the holder's process id. The offline operator commands, restore and the
 mutating `migrate` subcommands take the same lock and refuse while a daemon holds it;
-read-only migration status, verification and dry runs do not need it. An in-process
+read-only migration status, verification and dry runs do not need it. Tests that launch
+the real binary pin each of these behaviours, including a restart right after the first
+daemon is killed (`tests/daemon_lock_binary_tests.rs`). An in-process
 service embedded through the library takes the lock only if it is free, so embedders
 that bypass the daemon binary are not protected, and the lock is advisory and may not be
 honoured on network filesystems.
