@@ -3,6 +3,7 @@
 #   * MENTISDB_SKILL.md   (include_str! from src/server.rs and src/bin/mentisdb.rs)
 #   * benches/            (Cargo.toml declares [[bench]] targets; cargo refuses to
 #                          load the manifest when their files are missing)
+#   * examples/recall_audit.rs  (Cargo.toml declares it as an [[example]]; same reason)
 # Do NOT add any of the above to this file.
 # Secrets: never send local env files or keys into the build context.
 .env
@@ -18,7 +19,8 @@ target/
 .fastembed_cache/
 data/
 docs/
-examples/
+examples/*
+!examples/recall_audit.rs
 tests/
 lme-benches/
 locomo-benches/
