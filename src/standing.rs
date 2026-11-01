@@ -448,14 +448,14 @@ impl MentisDb {
             let Some(group) = StandingGroup::for_thought(thought, wanted.is_some()) else {
                 continue;
             };
-            let superseded =
-                !query.include_invalidated && self.invalidated_at(thought.id, query.as_of);
+            let superseded = !query.include_invalidated
+                && self.invalidated_at(thought.id, query.as_of, query.audience);
             let mut subjects: Vec<&Thought> = Vec::new();
             if superseded {
-                subjects.extend(self.live_successor(thought.id, query.as_of));
+                subjects.extend(self.live_successor(thought.id, query.as_of, query.audience));
             } else {
                 subjects.push(thought);
-                subjects.extend(self.live_contester(thought.id, query.as_of));
+                subjects.extend(self.live_contester(thought.id, query.as_of, query.audience));
             }
             for subject in subjects {
                 if !seen.insert(subject.id) {
@@ -495,7 +495,7 @@ impl MentisDb {
                 content: c.thought.content.clone(),
             })
             .collect();
-        let prompt = self.render_standing_prompt(&selected);
+        let prompt = self.render_standing_prompt(&selected, query.audience);
         StandingContext {
             entries,
             duplicates_collapsed,
@@ -505,7 +505,11 @@ impl MentisDb {
 
     /// Render the grouped `=== STANDING CONTEXT ===` block; empty when there
     /// is nothing selected.
-    fn render_standing_prompt(&self, selected: &[(StandingGroup, Candidate<'_>)]) -> String {
+    fn render_standing_prompt(
+        &self,
+        selected: &[(StandingGroup, Candidate<'_>)],
+        audience: crate::audience::Audience,
+    ) -> String {
         if selected.is_empty() {
             return String::new();
         }
@@ -526,7 +530,7 @@ impl MentisDb {
                     self.agent_label_for(t),
                     t.timestamp.format("%Y-%m-%d"),
                     t.content,
-                    self.contested_suffix(t)
+                    self.contested_suffix(t, audience)
                 ));
             }
         }

@@ -4494,6 +4494,9 @@ fn branch_parent_key(genesis: &Thought) -> Option<String> {
 /// a thought, with the timestamps that decide whether it is in force at a
 /// given point in time.
 struct InvalidatingEdge {
+    /// Append-order index of the thought that carries the relation, so a
+    /// reader who may not see that thought can ignore the edge.
+    source_index: u64,
     /// Timestamp of the thought that carries the relation.
     source_timestamp: DateTime<Utc>,
     valid_at: Option<DateTime<Utc>>,
@@ -4525,6 +4528,7 @@ fn observe_invalidating_relations(
                 .entry(relation.target_id)
                 .or_default()
                 .push(InvalidatingEdge {
+                    source_index: thought.index,
                     source_timestamp: thought.timestamp,
                     valid_at: relation.valid_at,
                     invalid_at: relation.invalid_at,
@@ -7849,6 +7853,31 @@ impl MentisDb {
 
     /// Render a JSON representation of a thought with resolved agent metadata.
     pub fn thought_json(&self, thought: &Thought) -> serde_json::Value {
+        self.thought_json_for(thought, audience::Audience::Authorized)
+    }
+
+    /// [`MentisDb::thought_json`] as seen by `audience`.
+    ///
+    /// Pointers (`refs`, `relations`, lineage) into segments the audience may
+    /// not see are removed, and a `provenance` object tells the reading agent
+    /// where the thought came from: which segment it belongs to, whether it
+    /// carries a signature and whether that signature verifies. Treat the
+    /// `content` as untrusted data either way; see `docs/CHAIN_ACCESS.md`.
+    pub fn thought_json_for(
+        &self,
+        thought: &Thought,
+        audience: audience::Audience,
+    ) -> serde_json::Value {
+        // Provenance is computed on the stored thought: redaction would change
+        // the signed bytes and make every redacted signature look invalid.
+        let original = thought;
+        let redacted;
+        let thought = if audience.is_public() && self.segments().has_private() {
+            redacted = self.redact_for(thought, audience);
+            &redacted
+        } else {
+            thought
+        };
         let agent_record = self.agent_record_for(&thought.agent_id);
         let mut json = serde_json::json!({
             "schema_version": thought.schema_version,
@@ -7875,8 +7904,57 @@ impl MentisDb {
             "entity_type": thought.entity_type,
             "source_episode": thought.source_episode,
         });
-        self.annotate_thought_json(thought, &mut json);
+        self.annotate_thought_json(thought, &mut json, audience);
+        if let serde_json::Value::Object(map) = &mut json {
+            map.insert("provenance".into(), self.provenance_json(original));
+        }
         json
+    }
+
+    /// Where a thought came from, for the agent that reads it.
+    ///
+    /// `segment` is `public` or `private`; `signed` says whether a signature
+    /// is stored; `signature` is `valid`, `invalid` or `unsigned` (verified now,
+    /// against this chain's registry and policy); `verified_agent` is the
+    /// agent id when the signature is valid and the signing key is currently
+    /// active, otherwise `null`; `trust` is always `untrusted_data`: stored
+    /// thoughts are data to weigh, never instructions to follow.
+    fn provenance_json(&self, thought: &Thought) -> serde_json::Value {
+        use access::SignatureStatus;
+        let (version, status) = if thought.thought_signature.is_some() {
+            self.verify_stored_signature(thought, &self.access_policy)
+        } else {
+            (None, SignatureStatus::Unsigned)
+        };
+        let valid = matches!(status, SignatureStatus::Valid);
+        let key_active = thought
+            .signing_key_id
+            .as_deref()
+            .and_then(|key_id| {
+                self.agent_registry
+                    .agents
+                    .get(&thought.agent_id)
+                    .map(|agent| {
+                        agent.status != AgentStatus::Revoked
+                            && agent
+                                .public_keys
+                                .iter()
+                                .any(|key| key.key_id == key_id && key.revoked_at.is_none())
+                    })
+            })
+            .unwrap_or(false);
+        serde_json::json!({
+            "segment": self.segments().kind_at(thought.index).as_str(),
+            "signed": thought.thought_signature.is_some(),
+            "signature": match &status {
+                SignatureStatus::Unsigned => "unsigned",
+                SignatureStatus::Valid => "valid",
+                SignatureStatus::Invalid(_) => "invalid",
+            },
+            "signature_version": version,
+            "verified_agent": (valid && key_active).then(|| thought.agent_id.clone()),
+            "trust": "untrusted_data",
+        })
     }
 
     /// Query the chain using semantic filters.
@@ -7923,7 +8001,8 @@ impl MentisDb {
                 if !self.is_visible(thought, query.audience) {
                     return false;
                 }
-                if !query.include_invalidated && self.is_invalidated(thought.id) {
+                if !query.include_invalidated && self.is_invalidated_for(thought.id, query.audience)
+                {
                     return false;
                 }
                 let thought_matches = if indexed_filters_applied {
@@ -11065,12 +11144,57 @@ impl MentisDb {
     /// that point-in-time query. Thoughts never present in the live
     /// invalidation set are never considered invalidated.
     pub fn is_invalidated_as_of(&self, thought_id: Uuid, as_of: DateTime<Utc>) -> bool {
-        if !self.is_invalidated(thought_id) {
+        self.is_invalidated_as_of_for(thought_id, as_of, audience::Audience::Authorized)
+    }
+
+    /// [`MentisDb::is_invalidated`] as seen by `audience`.
+    ///
+    /// A thought superseded only by a thought the audience may not see is
+    /// current for that audience: its disappearance would otherwise reveal
+    /// that a hidden thought replaced it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::audience::Audience;
+    /// use mentisdb::{MentisDb, StorageAdapterKind, ThoughtType};
+    ///
+    /// let dir = std::env::temp_dir().join(format!("mentisdb_doc_invfor_{}", std::process::id()));
+    /// let mut chain = MentisDb::open_with_key_and_storage_kind(&dir, "doc", StorageAdapterKind::Binary).unwrap();
+    /// let id = chain.append("alice", ThoughtType::Insight, "hello").unwrap().id;
+    /// assert!(!chain.is_invalidated_for(id, Audience::Public));
+    /// # let _ = std::fs::remove_dir_all(&dir);
+    /// ```
+    pub fn is_invalidated_for(&self, thought_id: Uuid, audience: audience::Audience) -> bool {
+        if !audience.is_public() || !self.segments().has_private() {
+            return self.is_invalidated(thought_id);
+        }
+        self.invalidating_edges
+            .get(&thought_id)
+            .is_some_and(|edges| {
+                edges
+                    .iter()
+                    .any(|edge| self.is_visible_index(edge.source_index, audience))
+            })
+    }
+
+    /// [`MentisDb::is_invalidated_as_of`] as seen by `audience`.
+    pub fn is_invalidated_as_of_for(
+        &self,
+        thought_id: Uuid,
+        as_of: DateTime<Utc>,
+        audience: audience::Audience,
+    ) -> bool {
+        if !self.is_invalidated_for(thought_id, audience) {
             return false;
         }
         self.invalidating_edges
             .get(&thought_id)
-            .is_some_and(|edges| edges.iter().any(|edge| edge.in_force_at(as_of)))
+            .is_some_and(|edges| {
+                edges.iter().any(|edge| {
+                    edge.in_force_at(as_of) && self.is_visible_index(edge.source_index, audience)
+                })
+            })
     }
 
     /// Select retrieval candidates with shared invalidation and optional
@@ -11111,7 +11235,7 @@ impl MentisDb {
                 if include_invalidated {
                     return true;
                 }
-                !self.is_invalidated_as_of(thought.id, as_of)
+                !self.is_invalidated_as_of_for(thought.id, as_of, filter.audience)
             })
             .collect()
     }

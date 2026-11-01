@@ -621,7 +621,10 @@ fn dedup_never_supersedes_a_private_thought() {
         .chain
         .append_thought(
             "pub",
-            ThoughtInput::new(ThoughtType::Constraint, "SECRET never reveal the zebra plan"),
+            ThoughtInput::new(
+                ThoughtType::Constraint,
+                "SECRET never reveal the zebra plan",
+            ),
         )
         .unwrap()
         .clone();
@@ -648,5 +651,124 @@ fn read_authorization_follows_policy_and_registry() {
     assert!(!f.chain.is_read_authorized("nobody", "gov-1", &pk));
     f.chain.revoke_agent_key("gov", "gov-1").unwrap();
     assert!(!f.chain.is_read_authorized("gov", "gov-1", &pk));
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+// ── lineage: superseding, contesting and advice never cross the boundary ────
+
+/// public decision D, private decision S that supersedes it, chain reopened.
+fn lineage_fixture(name: &str) -> (MentisDb, std::path::PathBuf, Uuid, Uuid) {
+    let dir = std::env::temp_dir().join(format!("mentisdb_aud_lin_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut chain =
+        MentisDb::open_with_key_and_storage_kind(&dir, "c", StorageAdapterKind::Binary).unwrap();
+    let d = chain
+        .append(
+            "pub",
+            ThoughtType::Decision,
+            "deploy the walrus service on fridays",
+        )
+        .unwrap()
+        .id;
+    set_mode(&mut chain, AccessMode::Allowlist);
+    signed(
+        &mut chain,
+        ThoughtInput::new(
+            ThoughtType::Decision,
+            "PRIVATE-REPLACEMENT never deploy the walrus service on fridays",
+        )
+        .with_relations(vec![ThoughtRelation::new(
+            ThoughtRelationKind::Supersedes,
+            d,
+        )]),
+    );
+    let s = chain.thoughts().last().unwrap().id;
+    set_mode(&mut chain, AccessMode::Open);
+    (chain, dir, d, s)
+}
+
+#[test]
+fn public_reader_still_sees_a_thought_superseded_only_by_a_private_one() {
+    let (chain, dir, d, s) = lineage_fixture("super");
+    assert!(chain.is_invalidated(d));
+    assert!(!chain.is_invalidated_for(d, PUB));
+    assert!(chain.is_invalidated_for(d, ALL));
+    let ranked = |audience| {
+        chain.query_ranked(
+            &RankedSearchQuery::new()
+                .with_filter(ThoughtQuery::new().with_audience(audience))
+                .with_text("walrus fridays")
+                .with_limit(10),
+        )
+    };
+    let public = ranked(PUB);
+    assert_eq!(public.hits.len(), 1);
+    assert_eq!(public.hits[0].thought.id, d);
+    let json = chain.hit_json_for(&public.hits[0], PUB).to_string();
+    assert!(
+        !json.contains(&s.to_string()),
+        "private successor leaked: {json}"
+    );
+    assert!(!json.contains("PRIVATE-REPLACEMENT"));
+    assert!(chain
+        .version_info_for(&chain.thoughts()[0], None, PUB)
+        .is_plain());
+    // The authorized reader is redirected to the replacement.
+    let all = ranked(ALL);
+    assert!(all.hits.iter().any(|h| h.thought.id == s));
+    assert!(all.hits.iter().all(|h| h.thought.id != d));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn standing_context_for_public_reader_ignores_private_supersession() {
+    let (chain, dir, d, _s) = lineage_fixture("standing");
+    let standing =
+        |audience| chain.standing_context(&StandingContextQuery::new().with_audience(audience));
+    let public = standing(PUB);
+    assert!(public.entries.iter().any(|e| e.id == d));
+    assert!(!public.prompt.contains("PRIVATE-REPLACEMENT"));
+    let all = standing(ALL);
+    assert!(all.prompt.contains("PRIVATE-REPLACEMENT"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn append_advice_does_not_quote_private_thoughts_to_a_public_writer() {
+    let (mut chain, dir, _d, _s) = lineage_fixture("advice");
+    let fix = chain
+        .append_thought(
+            "pub",
+            ThoughtInput::new(
+                ThoughtType::Correction,
+                "deploying the walrus service on fridays PRIVATE-REPLACEMENT was wrong",
+            ),
+        )
+        .unwrap()
+        .clone();
+    let public = serde_json::to_string(&chain.append_advice_for(&fix, PUB)).unwrap();
+    assert!(
+        !public.contains("PRIVATE-REPLACEMENT"),
+        "private excerpt leaked through append advice: {public}"
+    );
+    let all = serde_json::to_string(&chain.append_advice_for(&fix, ALL)).unwrap();
+    assert!(all.contains("PRIVATE-REPLACEMENT"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn provenance_marks_segment_and_signature() {
+    let f = fixture("provenance");
+    let public = f.chain.thought_json_for(&f.chain.thoughts()[0], PUB);
+    assert_eq!(public["provenance"]["segment"], "public");
+    assert_eq!(public["provenance"]["signed"], false);
+    assert_eq!(public["provenance"]["trust"], "untrusted_data");
+    let private = f.chain.thought_json_for(&f.chain.thoughts()[3], ALL);
+    assert_eq!(private["provenance"]["segment"], "private");
+    assert_eq!(private["provenance"]["signature"], "valid");
+    assert_eq!(private["provenance"]["verified_agent"], "gov");
+    // A redacted public view of a signed thought still verifies.
+    let p6 = f.chain.thought_json_for(&f.chain.thoughts()[6], PUB);
+    assert_eq!(p6["provenance"]["signature"], "valid");
     let _ = std::fs::remove_dir_all(&f.dir);
 }

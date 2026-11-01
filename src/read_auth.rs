@@ -224,7 +224,9 @@ impl ReadAuthHeader {
                 .next()
                 .and_then(|field| field.strip_prefix(name))
                 .and_then(|field| field.strip_prefix('='))
-                .ok_or(Malformed("fields must be agent, key, pk, ts, nonce, sig in order"))
+                .ok_or(Malformed(
+                    "fields must be agent, key, pk, ts, nonce, sig in order",
+                ))
         };
         let agent_id = pct_decode(take("agent")?)?;
         let key_id = pct_decode(take("key")?)?;
@@ -275,23 +277,23 @@ impl ReadAuthHeader {
 /// The bytes a read proof signs.
 ///
 /// `method` is upper-cased; `target` is the request path plus `?query` exactly as
-/// sent; `body` is the full request body (empty for `GET`).
+/// sent; `body` is the full request body (empty for `GET`). The identity,
+/// timestamp and nonce come from `header`; its signature is not part of the
+/// preimage.
 #[must_use]
 pub fn read_auth_payload(
     method: &str,
     target: &str,
     body: &[u8],
-    agent_id: &str,
-    key_id: &str,
-    public_key: &[u8; 32],
-    timestamp: i64,
-    nonce: &str,
+    header: &ReadAuthHeader,
 ) -> Vec<u8> {
     let mut p = Payload::new(READ_AUTH_DOMAIN);
     p.str(&method.to_ascii_uppercase()).str(target);
     p.raw(&Sha256::digest(body));
-    p.str(agent_id).str(key_id).raw(public_key);
-    p.i64(timestamp).str(nonce);
+    p.str(&header.agent_id)
+        .str(&header.key_id)
+        .raw(&header.public_key);
+    p.i64(header.timestamp).str(&header.nonce);
     p.0
 }
 
@@ -326,23 +328,24 @@ pub fn sign_request(
     assert!(!agent_id.is_empty() && !key_id.is_empty(), "empty id");
     assert!(
         READ_AUTH_NONCE_HEX.contains(&nonce.len())
-            && nonce.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+            && nonce
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
         "nonce must be 16 to 64 lowercase hex characters"
     );
     let secret = SigningKey::from_bytes(seed);
-    let public_key = secret.verifying_key().to_bytes();
-    let payload = read_auth_payload(
-        method, target, body, agent_id, key_id, &public_key, timestamp, nonce,
-    );
-    ReadAuthHeader {
+    let mut header = ReadAuthHeader {
         agent_id: agent_id.to_string(),
         key_id: key_id.to_string(),
-        public_key,
+        public_key: secret.verifying_key().to_bytes(),
         timestamp,
         nonce: nonce.to_string(),
-        signature: secret.sign(&payload).to_bytes(),
-    }
-    .to_header_value()
+        signature: [0; 64],
+    };
+    header.signature = secret
+        .sign(&read_auth_payload(method, target, body, &header))
+        .to_bytes();
+    header.to_header_value()
 }
 
 /// Verify a header against the request it arrived on.
@@ -364,19 +367,10 @@ pub fn verify_request(
 ) -> Result<ReadAuthHeader, ReadAuthError> {
     let header = ReadAuthHeader::parse(header_value)?;
     let skew_secs = now_unix_secs.saturating_sub(header.timestamp);
-    if skew_secs.abs() > READ_AUTH_WINDOW_SECS {
+    if skew_secs.unsigned_abs() > READ_AUTH_WINDOW_SECS.unsigned_abs() {
         return Err(ReadAuthError::Stale { skew_secs });
     }
-    let payload = read_auth_payload(
-        method,
-        target,
-        body,
-        &header.agent_id,
-        &header.key_id,
-        &header.public_key,
-        header.timestamp,
-        &header.nonce,
-    );
+    let payload = read_auth_payload(method, target, body, &header);
     verify_ed25519_signature(&header.public_key, &payload, &header.signature)
         .map_err(|_| ReadAuthError::BadSignature)?;
     Ok(header)
@@ -445,7 +439,7 @@ impl NonceCache {
                 return Err(ReadAuthError::CacheFull);
             }
         }
-        seen.insert(id, now_unix_secs + 2 * READ_AUTH_WINDOW_SECS);
+        seen.insert(id, now_unix_secs.saturating_add(2 * READ_AUTH_WINDOW_SECS));
         Ok(())
     }
 

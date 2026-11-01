@@ -75,6 +75,7 @@
 //! # }
 //! ```
 
+use crate::audience::Audience;
 use crate::{
     is_invalidating_relation_kind, MentisDb, RankedSearchHit, RankedSearchQuery,
     RankedSearchResult, Thought, ThoughtRelationKind, ThoughtType,
@@ -485,12 +486,30 @@ impl LineageIndex {
 }
 
 impl MentisDb {
-    /// Whether `id` is invalidated now, or at `as_of` for point-in-time reads.
-    pub(crate) fn invalidated_at(&self, id: Uuid, as_of: Option<DateTime<Utc>>) -> bool {
+    /// Whether `id` is invalidated now, or at `as_of` for point-in-time reads,
+    /// counting only invalidations `audience` may see.
+    pub(crate) fn invalidated_at(
+        &self,
+        id: Uuid,
+        as_of: Option<DateTime<Utc>>,
+        audience: Audience,
+    ) -> bool {
         match as_of {
-            Some(t) => self.is_invalidated_as_of(id, t),
-            None => self.is_invalidated(id),
+            Some(t) => self.is_invalidated_as_of_for(id, t, audience),
+            None => self.is_invalidated_for(id, audience),
         }
+    }
+
+    /// Successor edges into `target` whose source `audience` may see.
+    fn visible_edges(
+        &self,
+        target: Uuid,
+        as_of: Option<DateTime<Utc>>,
+        audience: Audience,
+    ) -> impl Iterator<Item = &SuccessorEdge> {
+        self.lineage
+            .edges(target, as_of)
+            .filter(move |edge| self.is_visible_index(edge.source_index, audience))
     }
 
     /// Return whether `thought_id` is current, contested or superseded.
@@ -499,13 +518,18 @@ impl MentisDb {
     ///
     /// See the [module example](crate::lineage).
     pub fn version_status(&self, thought_id: Uuid) -> VersionStatus {
-        self.version_status_at(thought_id, None)
+        self.version_status_at(thought_id, None, Audience::Authorized)
     }
 
-    fn version_status_at(&self, id: Uuid, as_of: Option<DateTime<Utc>>) -> VersionStatus {
-        if self.invalidated_at(id, as_of) {
+    fn version_status_at(
+        &self,
+        id: Uuid,
+        as_of: Option<DateTime<Utc>>,
+        audience: Audience,
+    ) -> VersionStatus {
+        if self.invalidated_at(id, as_of, audience) {
             VersionStatus::Superseded
-        } else if self.lineage.edges(id, as_of).next().is_some() {
+        } else if self.visible_edges(id, as_of, audience).next().is_some() {
             VersionStatus::Contested
         } else {
             VersionStatus::Current
@@ -522,13 +546,14 @@ impl MentisDb {
     ///
     /// See the [module example](crate::lineage).
     pub fn current_version(&self, thought_id: Uuid) -> Option<&Thought> {
-        self.live_successor(thought_id, None)
+        self.live_successor(thought_id, None, Audience::Authorized)
     }
 
     pub(crate) fn live_successor(
         &self,
         id: Uuid,
         as_of: Option<DateTime<Utc>>,
+        audience: Audience,
     ) -> Option<&Thought> {
         let mut best: Option<&Thought> = None;
         let mut visited: HashSet<Uuid> = HashSet::new();
@@ -540,14 +565,13 @@ impl MentisDb {
                 continue;
             }
             for edge in self
-                .lineage
-                .edges(current, as_of)
+                .visible_edges(current, as_of, audience)
                 .filter(|e| e.kind.is_strong())
             {
                 let Some(source) = self.get_thought_by_id(edge.source_id) else {
                     continue;
                 };
-                if self.invalidated_at(source.id, as_of) {
+                if self.invalidated_at(source.id, as_of, audience) {
                     frontier.push(source.id);
                 } else if best
                     .is_none_or(|b| (source.timestamp, source.index) > (b.timestamp, b.index))
@@ -564,12 +588,12 @@ impl MentisDb {
         &self,
         id: Uuid,
         as_of: Option<DateTime<Utc>>,
+        audience: Audience,
     ) -> Option<&Thought> {
-        self.lineage
-            .edges(id, as_of)
+        self.visible_edges(id, as_of, audience)
             .filter(|e| !e.kind.is_strong())
             .filter_map(|e| self.get_thought_by_id(e.source_id))
-            .filter(|t| !self.invalidated_at(t.id, as_of))
+            .filter(|t| !self.invalidated_at(t.id, as_of, audience))
             .max_by_key(|t| (t.timestamp, t.index))
     }
 
@@ -577,15 +601,26 @@ impl MentisDb {
     ///
     /// `as_of` restricts the view to links in force at that instant.
     pub fn version_info(&self, thought: &Thought, as_of: Option<DateTime<Utc>>) -> VersionInfo {
-        let status = self.version_status_at(thought.id, as_of);
+        self.version_info_for(thought, as_of, Audience::Authorized)
+    }
+
+    /// [`MentisDb::version_info`] as seen by `audience`: successors, the
+    /// current version and the status are computed from thoughts the audience
+    /// may see only.
+    pub fn version_info_for(
+        &self,
+        thought: &Thought,
+        as_of: Option<DateTime<Utc>>,
+        audience: Audience,
+    ) -> VersionInfo {
+        let status = self.version_status_at(thought.id, as_of, audience);
         let mut successors: Vec<SuccessorNote> = self
-            .lineage
-            .edges(thought.id, as_of)
+            .visible_edges(thought.id, as_of, audience)
             .map(SuccessorEdge::note)
             .collect();
         successors.sort_by_key(|n| (n.timestamp, n.index));
         let current_version = (status == VersionStatus::Superseded)
-            .then(|| self.live_successor(thought.id, as_of))
+            .then(|| self.live_successor(thought.id, as_of, audience))
             .flatten()
             .map(|t| SuccessorNote {
                 thought_id: t.id,
@@ -616,7 +651,7 @@ impl MentisDb {
         let explicit = request.include_invalidated || request.filter.include_invalidated;
         if !request.resolve_successors || explicit || request.limit == 0 {
             let mut result = self.query_ranked_raw(request);
-            self.annotate_hits(&mut result.hits, request.as_of);
+            self.annotate_hits(&mut result.hits, request.as_of, request.filter.audience);
             return result;
         }
         let mut wide = request.clone();
@@ -629,15 +664,22 @@ impl MentisDb {
         result
     }
 
-    fn annotate_hits(&self, hits: &mut [RankedSearchHit<'_>], as_of: Option<DateTime<Utc>>) {
+    fn annotate_hits(
+        &self,
+        hits: &mut [RankedSearchHit<'_>],
+        as_of: Option<DateTime<Utc>>,
+        audience: Audience,
+    ) {
         for hit in hits {
-            let mut info = self.version_info(hit.thought, as_of);
+            let mut info = self.version_info_for(hit.thought, as_of, audience);
             info.successor_of = std::mem::take(&mut hit.version.successor_of);
             hit.version = info;
         }
     }
 
     fn successor_allowed(&self, thought: &Thought, request: &RankedSearchQuery) -> bool {
+        // `query_matches_registry` repeats the audience check, so a successor in
+        // a segment the reader may not see is never offered.
         request.filter.matches(thought) && self.query_matches_registry(thought, &request.filter)
     }
 
@@ -647,6 +689,7 @@ impl MentisDb {
         request: &RankedSearchQuery,
     ) -> Vec<RankedSearchHit<'a>> {
         let as_of = request.as_of;
+        let audience = request.filter.audience;
         let by_id: HashMap<Uuid, usize> = raw
             .iter()
             .enumerate()
@@ -684,9 +727,9 @@ impl MentisDb {
             if placed.contains_key(&id) {
                 continue;
             }
-            if self.invalidated_at(id, as_of) {
+            if self.invalidated_at(id, as_of, audience) {
                 if let Some(succ) = self
-                    .live_successor(id, as_of)
+                    .live_successor(id, as_of, audience)
                     .filter(|t| self.successor_allowed(t, request))
                 {
                     place(&mut out, &mut placed, hit, succ, id, 0.0);
@@ -694,7 +737,7 @@ impl MentisDb {
                 continue;
             }
             if let Some(contester) = self
-                .live_contester(id, as_of)
+                .live_contester(id, as_of, audience)
                 .filter(|t| self.successor_allowed(t, request))
             {
                 place(
@@ -710,7 +753,7 @@ impl MentisDb {
             out.push(hit.clone());
         }
         out.truncate(request.limit);
-        self.annotate_hits(&mut out, as_of);
+        self.annotate_hits(&mut out, as_of, audience);
         out
     }
 
@@ -740,6 +783,14 @@ impl MentisDb {
     /// # }
     /// ```
     pub fn append_advice(&self, thought: &Thought) -> Vec<AppendAdvice> {
+        self.append_advice_for(thought, Audience::Authorized)
+    }
+
+    /// [`MentisDb::append_advice`] for a writer who may see `audience`: suggested
+    /// targets (and their excerpts) come only from thoughts that audience may
+    /// read. The server passes the audience of the *writer*; an unsigned writer
+    /// on a chain with private segments must not be handed excerpts of them.
+    pub fn append_advice_for(&self, thought: &Thought, audience: Audience) -> Vec<AppendAdvice> {
         if thought
             .relations
             .iter()
@@ -756,9 +807,9 @@ impl MentisDb {
             }
             _ => return Vec::new(),
         };
-        let mut targets = self.linked_live_targets(thought);
+        let mut targets = self.linked_live_targets(thought, audience);
         if targets.is_empty() && code == AdviceCode::CorrectionWithoutInvalidatingRelation {
-            targets = self.similar_live_targets(thought);
+            targets = self.similar_live_targets(thought, audience);
         }
         if targets.is_empty() {
             return Vec::new();
@@ -798,7 +849,7 @@ impl MentisDb {
 
     /// Live thoughts the new thought already links to through `refs` or
     /// untyped relations.
-    fn linked_live_targets(&self, thought: &Thought) -> Vec<SuggestedTarget> {
+    fn linked_live_targets(&self, thought: &Thought, audience: Audience) -> Vec<SuggestedTarget> {
         let mut seen = HashSet::new();
         let by_relation = thought
             .relations
@@ -811,7 +862,11 @@ impl MentisDb {
             .filter_map(|&i| self.get_thought_by_index(i));
         by_relation
             .chain(by_ref)
-            .filter(|t| t.id != thought.id && !self.is_invalidated(t.id))
+            .filter(|t| {
+                t.id != thought.id
+                    && self.is_visible(t, audience)
+                    && !self.is_invalidated_for(t.id, audience)
+            })
             .filter(|t| {
                 contest_kind(thought.thought_type, None, t.thought_type).is_some()
                     || thought.thought_type == ThoughtType::Correction
@@ -824,9 +879,10 @@ impl MentisDb {
 
     /// Live thoughts lexically closest to the new thought, for corrections
     /// that carry no link at all.
-    fn similar_live_targets(&self, thought: &Thought) -> Vec<SuggestedTarget> {
+    fn similar_live_targets(&self, thought: &Thought, audience: Audience) -> Vec<SuggestedTarget> {
         let text: String = thought.content.chars().take(ADVICE_QUERY_CHARS).collect();
         let query = RankedSearchQuery::new()
+            .with_filter(crate::ThoughtQuery::new().with_audience(audience))
             .with_text(text)
             .with_limit(ADVICE_MAX_TARGETS + 2)
             .with_resolve_successors(false);
@@ -894,8 +950,13 @@ impl MentisDb {
     /// Add `version_status`, `successors` and `current_version` to a thought's
     /// JSON when it is anything but plainly current. Plain thoughts get no
     /// extra keys, which keeps responses compact and backward compatible.
-    pub(crate) fn annotate_thought_json(&self, thought: &Thought, json: &mut serde_json::Value) {
-        let info = self.version_info(thought, None);
+    pub(crate) fn annotate_thought_json(
+        &self,
+        thought: &Thought,
+        json: &mut serde_json::Value,
+        audience: Audience,
+    ) {
+        let info = self.version_info_for(thought, None, audience);
         if info.is_plain() {
             return;
         }
@@ -913,7 +974,13 @@ impl MentisDb {
     /// JSON for a ranked hit: [`MentisDb::thought_json`] plus `successor_of`
     /// when the hit was surfaced in place of, or above, older thoughts.
     pub fn hit_json(&self, hit: &RankedSearchHit<'_>) -> serde_json::Value {
-        let mut json = self.thought_json(hit.thought);
+        self.hit_json_for(hit, Audience::Authorized)
+    }
+
+    /// [`MentisDb::hit_json`] as seen by `audience`: pointers into hidden
+    /// segments are removed and lineage is computed from visible thoughts only.
+    pub fn hit_json_for(&self, hit: &RankedSearchHit<'_>, audience: Audience) -> serde_json::Value {
+        let mut json = self.thought_json_for(hit.thought, audience);
         if !hit.version.successor_of.is_empty() {
             if let serde_json::Value::Object(map) = &mut json {
                 map.insert(
@@ -928,9 +995,9 @@ impl MentisDb {
 
 impl MentisDb {
     /// Prompt suffix naming the thought that contests `thought`, or empty.
-    pub(crate) fn contested_suffix(&self, thought: &Thought) -> String {
-        match self.live_contester(thought.id, None) {
-            Some(c) if !self.is_invalidated(thought.id) => format!(
+    pub(crate) fn contested_suffix(&self, thought: &Thought, audience: Audience) -> String {
+        match self.live_contester(thought.id, None, audience) {
+            Some(c) if !self.is_invalidated_for(thought.id, audience) => format!(
                 "  [CONTESTED: newer {:?} #{} may replace this; read it]",
                 c.thought_type, c.index
             ),
