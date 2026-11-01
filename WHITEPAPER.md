@@ -346,8 +346,11 @@ prefix locks the chain instead of passing unnoticed.
 
 Two gaps are known. First, `entity_type` and `source_episode` are not covered by the
 record hash, so they can be edited in the file without breaking the chain (v2 signatures
-do cover them). Second, migrating a chain from schema V0 to V2 recomputes all hashes
-without checking the old ones, so tamper evidence does not extend across that migration.
+do cover them). Second, the hashes stored by schemas 0 to 2 were computed under rules
+that can no longer be reproduced. Migrating such a chain checks that each stored
+`prev_hash` equals the previous record's stored hash, which catches a removed, inserted
+or reordered record, but it cannot detect a record whose content was edited while its
+stored hash was left alone. Tamper evidence for those old records is therefore partial.
 
 ### 4.2 Signatures
 
@@ -654,8 +657,12 @@ data directory written by a newer release is refused rather than modified.
 
 The engine is strict about integrity. A schema 3 record must hash to exactly what it
 stored, under either hash algorithm, and a migration that would invalidate a v2 signature
-is refused, so a migration can never turn a tampered chain into a freshly valid one. Only
-schemas 0 to 2, whose stored hashes cannot be checked, are rehashed.
+is refused, so a migration can never turn a tampered chain into a freshly valid one.
+Schemas 0 to 2 stored hashes that cannot be recomputed. For them the engine checks the
+stored hash links before rehashing, refusing a chain with a removed, inserted or
+reordered record, though not one with an edited record whose stored hash was kept. A
+migration that rewrites hashes also deletes the chain's signed verification checkpoint,
+which is bound to the old hashes.
 
 Operators drive and inspect migrations with the `mentisdb migrate` command (`status`,
 `run` with an optional `--dry-run`, `verify`, `retry`, `skip`, `rollback` and
@@ -1229,8 +1236,9 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
   edges hide an old version. Untyped replacements are detected by a type-based rule and
   only marked contested, and a replacement with no link at all is caught only by the
   append-time warning.
-- **Integrity gaps.** Two fields are outside the record hash, legacy migration rehashes
-  without checking, and the agent registry is outside the chain, so `Signed` chains trust
+- **Integrity gaps.** Two fields are outside the record hash, migration of schema 0 to 2
+  chains can check only their hash links and not their content, and the agent registry
+  is outside the chain, so `Signed` chains trust
   a sidecar. Integrity is local: there is no consensus, and only governed chains anchor
   their head hash, in a checkpoint signed by a key on the same host.
 - **Read control covers private segments only.** Public segments are readable by
