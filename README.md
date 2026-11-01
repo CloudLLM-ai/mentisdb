@@ -12,7 +12,7 @@ It stores semantically typed thoughts in an append-only, hash-chained memory log
 
 **Harness Swapping** — the same durable memory works across every AI coding environment. Connect Claude Code, OpenAI Codex, GitHub Copilot CLI, Qwen Code, Cursor, VS Code, or any MCP-capable host to the same `mentisdb` daemon and your agents share one brain, regardless of which tool you picked up today.
 
-**Zero Knowledge Loss Across Context Boundaries** — when an agent's context window fills, it writes a `Summary` checkpoint to MentisDB, compacts, reloads `mentisdb_recent_context`, and continues without losing a single decision. Chat history is ephemeral. MentisDB is permanent.
+**Zero Knowledge Loss Across Context Boundaries** — when an agent's context window fills, it writes a `Summary` checkpoint to MentisDB, compacts, reloads `mentisdb_standing_context` (what is durably true, at any age) and `mentisdb_recent_context` (where it left off), and continues. Chat history is ephemeral. MentisDB is permanent.
 
 **Fleet Orchestration at Scale** — one project manager agent decomposes work, dispatches a parallel fleet of specialists, each pre-warmed with shared memory, and synthesizes results wave by wave. MentisDB is the coordination substrate: every agent reads from the same chain and writes its lessons back. The fleet's collective intelligence compounds.
 
@@ -20,7 +20,7 @@ It stores semantically typed thoughts in an append-only, hash-chained memory log
 
 **Session Resurrection** — any agent can call `mentisdb_recent_context` and immediately know exactly where the project stands, what decisions were made, what traps were already hit, and what comes next — without re-reading code, re-running exploratory searches, or asking the human to re-explain context that was earned through hours of work.
 
-**Self-Improving Agent Fleets** — agents upload updated skill files after learning something new. A skill checked in at the start of a project is better by the end of it. Combine with Ed25519 signing to create a verifiable, tamper-evident record of which agent authored which version of institutional knowledge.
+**Self-Improving Agent Fleets** — agents upload updated skill files after learning something new. A skill checked in at the start of a project is better by the end of it. Agents with registered Ed25519 keys must sign their uploads, so each skill version records which agent authored it. (The skill registry is integrity-checked as a file; unlike thought chains, it is not hash-chained.)
 
 **Multi-Agent Shared Brain** — multiple agents, multiple roles, multiple owners can write to the same chain key simultaneously. Every thought carries a stable `agent_id`. Queries filter by agent identity, thought type, role, tags, concepts, importance, and time windows. The chain represents the full collective intelligence of an entire orchestration system, not just one session.
 
@@ -1095,7 +1095,7 @@ Starting in 0.8.7, ranked search adds:
 
 Starting in 0.8.6, ranked search adds three features:
 
-- **Irregular verb lemma expansion** — the query tokenizer maps irregular past-tense verbs to their base form (e.g. "went" → "go", "gave" → "give", "ran" → "run"). About 170 mappings. Indexed content is not modified — expansion is query-time only.
+- **Irregular verb lemma expansion** — the query tokenizer maps irregular past-tense verbs to their base form (e.g. "went" → "go", "gave" → "give", "ran" → "run"). About 325 mappings onto 219 base forms. Indexed content is not modified — expansion is query-time only.
 - **Reciprocal Rank Fusion (RRF)** — an opt-in reranking pass. When `enable_reranking=true` is set on a ranked search query, the engine produces separate lexical-only, vector-only, and graph-only rankings over the top `rerank_k` candidates (default 50), merges them via `1/(k + rank)` with `k=60`, and adds a scaled consensus bonus to the additive total. Use when lexical and vector signals disagree on top candidates. (Before 0.10.9 the RRF total replaced the additive total, which badly degraded results; see below.)
 - **Per-field BM25 DF cutoffs** — `Bm25DfCutoffs` on `LexicalQuery` allows configuring separate document-frequency cutoff ratios per field (content, tags, concepts, agent_id, agent_registry). Terms whose global DF exceeds the cutoff for a given field are skipped for that field only. Default cutoffs match the original behavior (content=0.30, tags=0.30, concepts=0.30, agent_id=0.70, agent_registry=0.60).
 
@@ -1573,7 +1573,7 @@ Returns `{"status": "flushed"}` on success. Iterates all open chains and calls `
 
 ## MCP Tool Catalog
 
-The daemon currently exposes 42 MCP tools:
+The daemon currently exposes 48 MCP tools:
 
 - `mentisdb_bootstrap`
   Create a chain if needed and write one bootstrap checkpoint when it is empty.
@@ -1589,6 +1589,8 @@ The daemon currently exposes 42 MCP tools:
   Return flat ranked lexical, graph-aware, or heuristic results with additive score breakdowns. Supports `as_of` for point-in-time queries and `scope` for memory scope filtering.
 - `mentisdb_context_bundles`
   Return seed-anchored grouped support context beneath the best lexical seeds.
+- `mentisdb_summary_candidates`
+  Return deterministic summary source windows. It only selects candidates; it does not generate or append summaries.
 - `mentisdb_list_chains`
   List known chains with version, storage adapter, counts, and storage location.
 - `mentisdb_merge_chains`
@@ -1613,6 +1615,12 @@ The daemon currently exposes 42 MCP tools:
   Revoke one previously registered public key.
 - `mentisdb_disable_agent`
   Disable one agent by marking its registry status as revoked.
+- `mentisdb_get_access_policy`
+  Return a chain's write-access policy (mode, governor keys, Merkle root, sequence, genesis hash).
+- `mentisdb_set_access_policy`
+  Submit a signed `AccessPolicy` governance record (needs a global token for the first record and a governor signature after that).
+- `mentisdb_verify_signatures`
+  Re-verify every signed thought and policy record of a chain and report failures.
 - `mentisdb_standing_context`
   Render durable, age-independent memory (preferences, constraints, decisions, goals, lessons, user traits, newest handoff and checkpoint) into a prompt block; load it at session start before recent context.
 - `mentisdb_recent_context`
