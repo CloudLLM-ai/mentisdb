@@ -1157,6 +1157,12 @@ The run applied the built-in thesaurus transparently on every `ranked_search` ca
 - **Filtered HNSW recall** — when filters are active, the HNSW backend switches to an exact scan over the filtered set or oversamples, so filtered vector searches no longer lose matches the approximate graph skipped.
 - **Benchmarks (0.10.9.54 vs the 0.10.8 code line, `fastembed-minilm`)** — LoCoMo-10P default R@5/R@10 63.8/72.7% → 63.9/73.5%; LoCoMo rerank R@5/R@10 3.6/5.9% → 66.0/74.1%; LongMemEval default R@5/R@10/R@20 66.8/72.0/78.2% → 68.0/72.8/78.8%; LongMemEval rerank R@5 2.8% → 68.6%; query throughput about 206/159 → 384/385 queries/s (LoCoMo/LongMemEval).
 
+### Search Scoring (current master, unreleased)
+
+- **Valid-version retrieval** — a superseded hit is replaced by its live successor, a thought a newer correction or decision only references is shown as `contested` with the newer one ranked above it, and every hit carries `version_status`.
+- **Relative vector fusion** (`MENTISDB_VECTOR_FUSION=relative`, decay 0.8) and **result-time duplicate collapse** (Jaccard 0.9).
+- **Full-protocol benchmarks (2026-11-01, `fastembed-minilm`, fresh ingest, same scripts as 0.10.9.54)** — LoCoMo-10P default R@5/R@10/R@20 67.9/76.7/83.4%; LongMemEval default R@5/R@10/R@20 69.8/75.6/81.4%; about 428/371 queries/s. Raw outputs: `results/benchmarks/2026-11-01-full-protocol/`.
+
 ### Vector Sidecars
 
 MentisDB now exposes an additive Phase 3 vector sidecar surface for direct crate use:
