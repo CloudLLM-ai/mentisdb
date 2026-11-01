@@ -1,4 +1,12 @@
 UNRELEASED
+  - fix(signing): a stored zero-length `thought_signature` is a placeholder, not a
+    signature. Older clients sent an empty field and it was stored as `Some([])`,
+    so `verify_signatures` reported each such thought as an invalid signature (43 of
+    them in one real chain, which holds no signed thoughts at all). They now count
+    as unsigned everywhere: verification, provenance, open-time checks, merge/copy
+    blocking and audience. New writes normalize an empty signature to none (library
+    and REST/MCP); empty hex is still a 400. Stored bytes are not rewritten, the
+    hash covers them. New `Thought::signature_bytes`.
   - fix(storage): real chains written in March and April 2026 (the oldest chain
     of at least one installation: 365 records, then 160 more) stamp
     `schema_version = 4` on schema-3 records and hash them with that stored

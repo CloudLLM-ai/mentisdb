@@ -810,8 +810,7 @@ impl AccessPolicy {
     pub fn apply_thought(&mut self, chain_key: &str, thought: &Thought) -> Result<(), AccessError> {
         let record = PolicyRecord::parse(&thought.content)?;
         let signature = thought
-            .thought_signature
-            .as_deref()
+            .signature_bytes()
             .ok_or(AccessError::SignatureRequired)?;
         let key_id = thought
             .signing_key_id

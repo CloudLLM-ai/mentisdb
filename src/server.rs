@@ -8605,8 +8605,9 @@ fn resolve_optional_bytes(
     if array.is_none() && hex.is_none() {
         return Ok(None);
     }
+    // An empty signature means "not supplied", not a zero-length signature.
     crate::access::bytes_from_array_or_hex(array, hex, field)
-        .map(Some)
+        .map(|bytes| Some(bytes).filter(|bytes| !bytes.is_empty()))
         .map_err(client_input_error)
 }
 

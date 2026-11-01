@@ -3086,6 +3086,38 @@ pub struct Thought {
     pub hash: String,
 }
 
+impl Thought {
+    /// The detached signature bytes, or `None` when the thought is unsigned.
+    ///
+    /// A stored zero-length signature is not a signature: older clients sent
+    /// an empty `thought_signature` as a placeholder and it was stored as
+    /// `Some(vec![])`. Every verifier, provenance report and audience check
+    /// reads the signature through this method so such a thought counts as
+    /// unsigned instead of as a signature that fails to verify. The stored
+    /// bytes are never rewritten, because the hash covers them.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::{MentisDb, ThoughtType};
+    ///
+    /// let dir = std::env::temp_dir().join(format!("mentisdb_doc_sigbytes_{}", std::process::id()));
+    /// let mut chain = MentisDb::open(&dir, "doc-agent", "Doc", None, None).unwrap();
+    /// let thought = chain.append("doc-agent", ThoughtType::Insight, "plain").unwrap();
+    /// assert!(thought.signature_bytes().is_none());
+    /// let mut placeholder = thought.clone();
+    /// placeholder.thought_signature = Some(Vec::new());
+    /// assert!(placeholder.signature_bytes().is_none());
+    /// # let _ = std::fs::remove_dir_all(&dir);
+    /// ```
+    #[must_use]
+    pub fn signature_bytes(&self) -> Option<&[u8]> {
+        self.thought_signature
+            .as_deref()
+            .filter(|bytes| !bytes.is_empty())
+    }
+}
+
 /// Retrieval filter for semantic memory queries.
 ///
 /// `ThoughtQuery` lets callers ask for slices of memory without replaying the
@@ -6299,7 +6331,7 @@ impl MentisDb {
             return Err(AccessError::ReservedThoughtType);
         }
         let mode = self.access_policy.mode;
-        let Some(raw) = input.thought_signature.as_deref() else {
+        let Some(raw) = input.thought_signature.as_deref().filter(|b| !b.is_empty()) else {
             return match mode {
                 access::AccessMode::Open => Ok(()),
                 _ => Err(AccessError::SignatureRequired),
@@ -6404,6 +6436,8 @@ impl MentisDb {
         mut input: ThoughtInput,
         governance: bool,
     ) -> io::Result<&Thought> {
+        // An empty signature is no signature (see `Thought::signature_bytes`).
+        input.thought_signature.take_if(|bytes| bytes.is_empty());
         if !governance {
             self.check_append_access(agent_id, &input)
                 .map_err(access::AccessError::into_io)?;
@@ -7588,7 +7622,11 @@ impl MentisDb {
     /// when the thought carries a signature of a key that may read the private
     /// segments, otherwise [`audience::Audience::Public`].
     fn writer_audience(&self, agent_id: &str, input: &ThoughtInput) -> audience::Audience {
-        if input.thought_signature.is_none() {
+        if input
+            .thought_signature
+            .as_deref()
+            .is_none_or(<[u8]>::is_empty)
+        {
             return audience::Audience::Public;
         }
         self.signer_audience_of(agent_id, input.signing_key_id.as_deref())
@@ -7597,7 +7635,7 @@ impl MentisDb {
     /// The audience of whoever signed the stored `thought`: what the writer of
     /// a thought just appended may be shown in the response (advice, links).
     pub fn signer_audience(&self, thought: &Thought) -> audience::Audience {
-        if thought.thought_signature.is_none() {
+        if thought.signature_bytes().is_none() {
             return audience::Audience::Public;
         }
         self.signer_audience_of(&thought.agent_id, thought.signing_key_id.as_deref())
@@ -7730,7 +7768,7 @@ impl MentisDb {
                     "the source has private segments; merging or copying would publish them to a chain with other readers",
                 );
             }
-            if thought.thought_signature.is_some() {
+            if thought.signature_bytes().is_some() {
                 return Some(
                     "the source holds signed thoughts; a signature binds its chain and position, so merging or copying would discard it",
                 );
@@ -7802,8 +7840,7 @@ impl MentisDb {
                 continue;
             }
             let stored = match thought
-                .thought_signature
-                .as_deref()
+                .signature_bytes()
                 .map(signing::StoredSignature::parse)
                 .transpose()
             {
@@ -8273,7 +8310,7 @@ impl MentisDb {
     ) -> (Option<u8>, access::SignatureStatus) {
         use access::SignatureStatus::{Invalid, Unsigned, Valid};
         use signing::{SignatureVersion, StoredSignature};
-        let Some(raw) = thought.thought_signature.as_deref() else {
+        let Some(raw) = thought.signature_bytes() else {
             return (None, Unsigned);
         };
         let Ok(stored) = StoredSignature::parse(raw) else {
@@ -8747,7 +8784,7 @@ impl MentisDb {
     /// thoughts are data to weigh, never instructions to follow.
     fn provenance_json(&self, thought: &Thought) -> serde_json::Value {
         use access::SignatureStatus;
-        let (version, status) = if thought.thought_signature.is_some() {
+        let (version, status) = if thought.signature_bytes().is_some() {
             self.verify_stored_signature(thought, &self.access_policy)
         } else {
             (None, SignatureStatus::Unsigned)
@@ -8771,7 +8808,7 @@ impl MentisDb {
             .unwrap_or(false);
         serde_json::json!({
             "segment": self.segments().kind_at(thought.index).as_str(),
-            "signed": thought.thought_signature.is_some(),
+            "signed": thought.signature_bytes().is_some(),
             "signature": match &status {
                 SignatureStatus::Unsigned => "unsigned",
                 SignatureStatus::Valid => "valid",
