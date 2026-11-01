@@ -4032,6 +4032,7 @@ impl MentisDbService {
         &self,
         request: RankedSearchRequest,
     ) -> Result<RankedSearchResponse, Box<dyn Error + Send + Sync>> {
+        let compact = request.compact.unwrap_or(false);
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let offset = request.offset.unwrap_or(0);
         let page_size = request.limit.unwrap_or(50).max(1);
@@ -4218,7 +4219,7 @@ impl MentisDbService {
         Ok(RankedSearchResponse {
             backend: best_backend,
             total: total_candidates,
-            results,
+            results: RankedSearchResults::new(results, compact),
         })
     }
 
@@ -4233,6 +4234,7 @@ impl MentisDbService {
     ) -> Result<RankedSearchResponse, Box<dyn Error + Send + Sync>> {
         use crate::search::ranked::RRF_SCORE_SCALE;
         use std::collections::BTreeMap;
+        let compact = request.compact.unwrap_or(false);
 
         type FederatedHit = (
             String,
@@ -4267,7 +4269,7 @@ impl MentisDbService {
             return Ok(RankedSearchResponse {
                 backend: String::new(),
                 total: 0,
-                results: Vec::new(),
+                results: RankedSearchResults::new(Vec::new(), compact),
             });
         }
 
@@ -4301,6 +4303,7 @@ impl MentisDbService {
             entity_type: request.entity_type.clone(),
             include_invalidated: request.include_invalidated,
             knobs: request.knobs.clone(),
+            compact: None,
         };
         let filter = build_ranked_filter_query(&ranked_req, primary_chain_key.clone())?;
         let mut ranked_query = RankedSearchQuery::new()
@@ -4351,7 +4354,7 @@ impl MentisDbService {
             return Ok(RankedSearchResponse {
                 backend: String::new(),
                 total: 0,
-                results: Vec::new(),
+                results: RankedSearchResults::new(Vec::new(), compact),
             });
         }
 
@@ -4578,7 +4581,7 @@ impl MentisDbService {
         Ok(RankedSearchResponse {
             backend: best_backend.as_str().to_string(),
             total: total_candidates,
-            results,
+            results: RankedSearchResults::new(results, compact),
         })
     }
 
@@ -6445,6 +6448,12 @@ struct RankedSearchRequest {
     /// Ranking knobs shared by every ranked surface, see [`RankingKnobs`].
     #[serde(flatten)]
     knobs: RankingKnobs,
+    /// When true, return compact hits: the chain key, the total score and the
+    /// thought without the fields in `COMPACT_DROPPED_THOUGHT_FIELDS` or empty
+    /// values, plus graph provenance on graph-expanded hits. Score components
+    /// and match lists are left out. Defaults to false.
+    #[serde(default)]
+    compact: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -6513,7 +6522,107 @@ struct RankedSearchHitResponse {
 struct RankedSearchResponse {
     backend: String,
     total: usize,
-    results: Vec<RankedSearchHitResponse>,
+    results: RankedSearchResults,
+}
+
+/// Ranked search hits, in the full form or the compact form a request asks
+/// for with `compact: true`. The compact form drops score components,
+/// match lists, empty fields and the thought fields named in
+/// [`COMPACT_DROPPED_THOUGHT_FIELDS`], and keeps every other field. Untagged,
+/// so each form serializes as a plain array under `results`.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum RankedSearchResults {
+    Full(Vec<RankedSearchHitResponse>),
+    Compact(Vec<CompactRankedSearchHit>),
+}
+
+/// One compact ranked hit: where it came from, its total score, the thought
+/// without its integrity, signing and display fields, and, for a hit reached
+/// through graph expansion, how it was reached.
+#[derive(Debug, Serialize)]
+struct CompactRankedSearchHit {
+    chain_key: String,
+    score: f32,
+    thought: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    graph_distance: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    graph_seed_paths: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    graph_relation_kinds: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    graph_path: Option<TransportGraphPath>,
+}
+
+/// Thought fields left out of a compact hit: chain integrity (`hash`,
+/// `prev_hash`), signing (`thought_signature`, `signing_key_id`), the record's
+/// `schema_version`, and `agent_name` / `agent_owner`, which repeat the agent
+/// registry entry for `agent_id`. Every other field is kept, so a field added
+/// to [`Thought`] later appears in compact hits by default. The full record
+/// stays available through `mentisdb_get_thought`.
+const COMPACT_DROPPED_THOUGHT_FIELDS: [&str; 7] = [
+    "hash",
+    "prev_hash",
+    "thought_signature",
+    "signing_key_id",
+    "schema_version",
+    "agent_name",
+    "agent_owner",
+];
+
+impl RankedSearchResults {
+    /// Wraps ranked hits in the form the request asked for.
+    fn new(hits: Vec<RankedSearchHitResponse>, compact: bool) -> Self {
+        if !compact {
+            return Self::Full(hits);
+        }
+        Self::Compact(
+            hits.into_iter()
+                .map(|hit| {
+                    // Graph provenance stays only on hits that graph expansion
+                    // reached; plain lexical or vector hits carry none.
+                    let expanded = hit.graph_distance.is_some() || hit.graph_path.is_some();
+                    CompactRankedSearchHit {
+                        chain_key: hit.chain_key,
+                        score: hit.score.total,
+                        thought: compact_thought_json(hit.thought),
+                        graph_distance: hit.graph_distance,
+                        graph_seed_paths: expanded.then_some(hit.graph_seed_paths),
+                        graph_relation_kinds: expanded.then_some(hit.graph_relation_kinds),
+                        graph_path: hit.graph_path,
+                    }
+                })
+                .collect(),
+        )
+    }
+}
+
+/// Removes [`COMPACT_DROPPED_THOUGHT_FIELDS`] and every null or empty field
+/// (empty string, array or object) from a serialized thought. A value that is
+/// not a JSON object is returned unchanged.
+fn compact_thought_json(thought: Value) -> Value {
+    let Value::Object(fields) = thought else {
+        return thought;
+    };
+    let compact = fields
+        .into_iter()
+        .filter(|(key, value)| {
+            !COMPACT_DROPPED_THOUGHT_FIELDS.contains(&key.as_str()) && !is_empty_json(value)
+        })
+        .collect();
+    Value::Object(compact)
+}
+
+/// True for JSON null and for an empty string, array or object.
+fn is_empty_json(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::String(text) => text.is_empty(),
+        Value::Array(items) => items.is_empty(),
+        Value::Object(fields) => fields.is_empty(),
+        Value::Bool(_) | Value::Number(_) => false,
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -6622,6 +6731,12 @@ struct FederatedSearchRequest {
     /// Ranking knobs shared by every ranked surface, see [`RankingKnobs`].
     #[serde(flatten)]
     knobs: RankingKnobs,
+    /// When true, return compact hits: the chain key, the total score and the
+    /// thought without the fields in `COMPACT_DROPPED_THOUGHT_FIELDS` or empty
+    /// values, plus graph provenance on graph-expanded hits. Score components
+    /// and match lists are left out. Defaults to false.
+    #[serde(default)]
+    compact: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -8790,7 +8905,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("df_cutoffs", ToolParameterType::Object).with_description("Optional gate cutoff overrides (ratios 0..1): content, tags, concepts, agent_id, agent_registry."))
         .with_parameter(ToolParameter::new("vector_fusion", ToolParameterType::String).with_description("Vector/lexical blend: relative (default, query-length independent) or absolute (raw BM25 decay)."))
         .with_parameter(ToolParameter::new("resolve_successors", ToolParameterType::Boolean).with_description("Replace superseded hits by their live successor and promote the thought contesting a contested hit. Default true."))
-        .with_parameter(ToolParameter::new("synonym_weight", ToolParameterType::Number).with_description("Weight of automatic thesaurus synonym expansion; 0 disables it. Default 0.3.")),
+        .with_parameter(ToolParameter::new("synonym_weight", ToolParameterType::Number).with_description("Weight of automatic thesaurus synonym expansion; 0 disables it. Default 0.3."))
+        .with_parameter(ToolParameter::new("compact", ToolParameterType::Boolean).with_description("When true, return compact hits: chain key, total score and the full thought minus its hashes, signature, signing key, schema version and agent name and owner, with empty fields left out; graph-expanded hits keep their graph provenance, and version fields such as version_status and successors stay on the thought. Score components and match lists (matched_terms, match_sources) are left out. Relations, concepts, refs and content are always kept. About a quarter smaller. Default false.")),
         ToolMetadata::new(
             "mentisdb_federated_search",
             "Run federated ranked retrieval over multiple chains simultaneously and return a single merged, ranked result list. Useful for multi-agent hubs or cross-organizational memory aggregation.",
@@ -8822,7 +8938,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("df_cutoffs", ToolParameterType::Object).with_description("Optional gate cutoff overrides (ratios 0..1): content, tags, concepts, agent_id, agent_registry."))
         .with_parameter(ToolParameter::new("vector_fusion", ToolParameterType::String).with_description("Vector/lexical blend: relative (default, query-length independent) or absolute (raw BM25 decay)."))
         .with_parameter(ToolParameter::new("resolve_successors", ToolParameterType::Boolean).with_description("Replace superseded hits by their live successor and promote the thought contesting a contested hit. Default true."))
-        .with_parameter(ToolParameter::new("synonym_weight", ToolParameterType::Number).with_description("Weight of automatic thesaurus synonym expansion; 0 disables it. Default 0.3.")),
+        .with_parameter(ToolParameter::new("synonym_weight", ToolParameterType::Number).with_description("Weight of automatic thesaurus synonym expansion; 0 disables it. Default 0.3."))
+        .with_parameter(ToolParameter::new("compact", ToolParameterType::Boolean).with_description("When true, return compact hits: chain key, total score and the full thought minus its hashes, signature, signing key, schema version and agent name and owner, with empty fields left out; graph-expanded hits keep their graph provenance, and version fields such as version_status and successors stay on the thought. Score components and match lists (matched_terms, match_sources) are left out. Relations, concepts, refs and content are always kept. About a quarter smaller. Default false.")),
         ToolMetadata::new(
             "mentisdb_context_bundles",
             "Return deterministic seed-anchored grouped context bundles over query_context_bundles. Use this when you want supporting context grouped beneath the best lexical seed thoughts.",
@@ -10283,5 +10400,86 @@ fn merge_chains_jaccard(src_chars: &std::collections::HashSet<char>, target: &st
         1.0
     } else {
         intersection as f64 / union as f64
+    }
+}
+
+#[cfg(test)]
+mod compact_search_tests {
+    use super::{compact_thought_json, COMPACT_DROPPED_THOUGHT_FIELDS};
+    use serde_json::json;
+
+    #[test]
+    fn drops_only_listed_and_empty_fields() {
+        let mut thought = json!({
+            "id": "6f1c",
+            "index": 7,
+            "content": "Keep the quokka survey monthly.",
+            "relations": [{"kind": "Supersedes", "target_id": "a1b2"}],
+            "concepts": ["survey"],
+            "confidence": 0.8,
+            "source_episode": "episode-12",
+            "session_id": null,
+            "tags": [],
+            "entity_type": "",
+            "metadata": {}
+        });
+        for key in COMPACT_DROPPED_THOUGHT_FIELDS {
+            thought[key] = json!("dropped");
+        }
+        let compact = compact_thought_json(thought);
+        assert_eq!(
+            compact,
+            json!({
+                "id": "6f1c",
+                "index": 7,
+                "content": "Keep the quokka survey monthly.",
+                "relations": [{"kind": "Supersedes", "target_id": "a1b2"}],
+                "concepts": ["survey"],
+                "confidence": 0.8,
+                "source_episode": "episode-12"
+            })
+        );
+    }
+
+    #[test]
+    fn keeps_fields_it_does_not_know() {
+        let compact = compact_thought_json(json!({
+            "content": "x",
+            "a_future_field": {"weight": 2},
+            "hash": "abc"
+        }));
+        assert_eq!(
+            compact,
+            json!({"content": "x", "a_future_field": {"weight": 2}})
+        );
+    }
+
+    #[test]
+    fn keeps_version_fields() {
+        let version = json!({
+            "content": "x",
+            "version_status": "superseded",
+            "successors": [{"thought_id": "b2", "kind": "Supersedes"}],
+            "current_version": {"thought_id": "b2", "kind": "Supersedes"},
+            "successor_of": ["a1"],
+            "successor_of_chain": "other",
+            "collapsed_duplicates": [{"thought_id": "c3"}]
+        });
+        assert_eq!(compact_thought_json(version.clone()), version);
+    }
+
+    #[test]
+    fn keeps_zero_and_false() {
+        let compact = compact_thought_json(json!({"importance": 0.0, "flag": false, "index": 0}));
+        assert_eq!(
+            compact,
+            json!({"importance": 0.0, "flag": false, "index": 0})
+        );
+    }
+
+    #[test]
+    fn returns_non_objects_unchanged() {
+        assert_eq!(compact_thought_json(json!(null)), json!(null));
+        assert_eq!(compact_thought_json(json!("text")), json!("text"));
     }
 }
