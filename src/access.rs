@@ -17,6 +17,7 @@
 //! assert_eq!(AccessError::from_io(&io_error), Some(&AccessError::SignatureRequired));
 //! ```
 
+use crate::audience::{Segment, SegmentKind, SegmentMap};
 use crate::signing::{
     access_key_leaf, from_hex, merkle_root, thought_payload_v2_stored, to_hex,
     verify_ed25519_signature, SignatureVersion, SigningError, StoredSignature,
@@ -283,6 +284,9 @@ pub const MAX_POLICY_KEYS: usize = 1024;
 ///
 /// assert_eq!(AccessMode::default(), AccessMode::Open);
 /// assert_eq!("allowlist".parse::<AccessMode>().unwrap(), AccessMode::Allowlist);
+/// // `public` and `private` are the user-facing names of `open` and `allowlist`.
+/// assert_eq!("public".parse::<AccessMode>().unwrap(), AccessMode::Open);
+/// assert_eq!("private".parse::<AccessMode>().unwrap(), AccessMode::Allowlist);
 /// assert_eq!(AccessMode::Signed.to_string(), "signed");
 /// assert!("closed".parse::<AccessMode>().is_err());
 /// ```
@@ -311,6 +315,26 @@ impl AccessMode {
             Self::Allowlist => "allowlist",
         }
     }
+
+    /// The kind of segment a record with this mode opens: `open` is public,
+    /// `signed` and `allowlist` are private. See [`crate::audience`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::access::AccessMode;
+    /// use mentisdb::audience::SegmentKind;
+    ///
+    /// assert_eq!(AccessMode::Open.segment_kind(), SegmentKind::Public);
+    /// assert_eq!(AccessMode::Allowlist.segment_kind(), SegmentKind::Private);
+    /// ```
+    #[must_use]
+    pub fn segment_kind(self) -> SegmentKind {
+        match self {
+            Self::Open => SegmentKind::Public,
+            Self::Signed | Self::Allowlist => SegmentKind::Private,
+        }
+    }
 }
 
 impl fmt::Display for AccessMode {
@@ -327,7 +351,7 @@ impl fmt::Display for ParseAccessModeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "unknown access mode '{}'; expected open, signed or allowlist",
+            "unknown access mode '{}'; expected public (open), private (allowlist) or signed",
             self.0
         )
     }
@@ -339,6 +363,11 @@ impl FromStr for AccessMode {
     type Err = ParseAccessModeError;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "public" => return Ok(Self::Open),
+            "private" => return Ok(Self::Allowlist),
+            _ => {}
+        }
         Self::ALL
             .into_iter()
             .find(|mode| mode.as_str().eq_ignore_ascii_case(input.trim()))
@@ -590,6 +619,9 @@ pub struct AccessPolicy {
     pub head_record_hash: Option<String>,
     /// Hashes of policy thoughts found in the chain that failed validation and are ignored.
     pub invalid_records: Vec<String>,
+    /// Public and private segments opened by the valid records, in position
+    /// order. See [`crate::audience`].
+    pub segments: SegmentMap,
 }
 
 impl AccessPolicy {
@@ -656,11 +688,18 @@ impl AccessPolicy {
             .map_err(AccessError::BadSignature)
     }
 
-    /// Replace the state with `record`, committed as the thought with `hash`.
-    pub fn commit_record(&mut self, record: PolicyRecord, hash: &str) {
+    /// Replace the state with `record`, committed as the thought with `hash`
+    /// at chain position `index`. The record opens a new segment starting at
+    /// `index`.
+    pub fn commit_record(&mut self, record: PolicyRecord, hash: &str, index: u64) {
         if record.seq == 0 {
             self.genesis_hash = Some(hash.to_string());
         }
+        self.segments.push(Segment {
+            start_index: index,
+            kind: record.mode.segment_kind(),
+            seq: record.seq,
+        });
         self.mode = record.mode;
         self.seq = Some(record.seq);
         self.keys = record.keys;
@@ -686,7 +725,7 @@ impl AccessPolicy {
             .ok_or(AccessError::MissingSigningKeyId)?;
         let payload = thought_payload_v2_stored(chain_key, thought);
         self.check_record(&record, &thought.agent_id, key_id, signature, &payload)?;
-        self.commit_record(record, &thought.hash);
+        self.commit_record(record, &thought.hash, thought.index);
         Ok(())
     }
 

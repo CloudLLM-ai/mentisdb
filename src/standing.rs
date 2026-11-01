@@ -202,6 +202,11 @@ pub struct StandingContextQuery {
     /// latest-checkpoint slots do not count. Default
     /// [`DEFAULT_STANDING_TOTAL_CAP`].
     pub total_cap: usize,
+    /// Which segments of the chain the selection may draw from. Default
+    /// [`crate::audience::Audience::Authorized`]; the server sets it from the
+    /// caller's proof. A public reader gets standing context made only of
+    /// public-segment thoughts.
+    pub audience: crate::audience::Audience,
 }
 
 impl Default for StandingContextQuery {
@@ -214,6 +219,7 @@ impl Default for StandingContextQuery {
             include_invalidated: false,
             per_type_cap: DEFAULT_STANDING_PER_TYPE_CAP,
             total_cap: DEFAULT_STANDING_TOTAL_CAP,
+            audience: crate::audience::Audience::default(),
         }
     }
 }
@@ -223,6 +229,12 @@ impl StandingContextQuery {
     /// [`DEFAULT_STANDING_PER_TYPE_CAP`] and [`DEFAULT_STANDING_TOTAL_CAP`].
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Select as `audience` (see [`StandingContextQuery::audience`]).
+    pub fn with_audience(mut self, audience: crate::audience::Audience) -> Self {
+        self.audience = audience;
+        self
     }
 
     /// Restrict to one agent id.
@@ -413,6 +425,7 @@ impl MentisDb {
         let mut filter = ThoughtQuery::new();
         filter.agent_ids = query.agent_id.clone().map(|id| vec![id]);
         filter.since = query.since;
+        filter.audience = query.audience;
         let wanted = query.types.as_deref();
         // Superseded thoughts are fetched too so that each can be replaced by
         // its live successor: dropping them would leave the digest with no

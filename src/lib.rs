@@ -300,6 +300,7 @@
 #![warn(missing_docs)]
 
 pub mod access;
+pub mod audience;
 pub mod auth;
 pub mod backup;
 #[cfg(feature = "server")]
@@ -3067,9 +3068,30 @@ pub struct ThoughtQuery {
     /// assert!(audit.include_invalidated);
     /// ```
     pub include_invalidated: bool,
+    /// Which segments of the chain the query may see. Defaults to
+    /// [`audience::Audience::Authorized`] (every segment); the server sets it
+    /// from the caller's proof. With [`audience::Audience::Public`] only
+    /// thoughts of public segments can match, on every path that takes a
+    /// query (plain, ranked, traversal, context bundles, summaries, standing
+    /// context). See [`audience`].
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mentisdb::{audience::Audience, ThoughtQuery};
+    /// let query = ThoughtQuery::new().with_audience(Audience::Public);
+    /// assert_eq!(query.audience, Audience::Public);
+    /// ```
+    pub audience: audience::Audience,
 }
 
 impl ThoughtQuery {
+    /// Restrict the query to what `audience` may see. See [`ThoughtQuery::audience`].
+    pub fn with_audience(mut self, audience: audience::Audience) -> Self {
+        self.audience = audience;
+        self
+    }
+
     /// Create an empty query that matches every thought.
     pub fn new() -> Self {
         Self::default()
@@ -6268,14 +6290,34 @@ impl MentisDb {
     ///
     /// Traversal follows both explicit `refs` and typed relations.
     pub fn resolve_context(&self, target_index: u64) -> Vec<&Thought> {
+        self.resolve_context_for(target_index, audience::Audience::Authorized)
+    }
+
+    /// [`MentisDb::resolve_context`] as seen by `audience`: the walk never
+    /// enters a thought the audience may not see, so context cannot leak
+    /// through a link from a public thought into a private one.
+    pub fn resolve_context_for(
+        &self,
+        target_index: u64,
+        audience: audience::Audience,
+    ) -> Vec<&Thought> {
         let Some(target) = self.thoughts.get(target_index as usize) else {
             return Vec::new();
         };
-        self.resolve_context_by_id(target.id)
+        self.resolve_context_by_id_for(target.id, audience)
     }
 
     /// Resolve all context reachable from the target thought id.
     pub fn resolve_context_by_id(&self, target_id: Uuid) -> Vec<&Thought> {
+        self.resolve_context_by_id_for(target_id, audience::Audience::Authorized)
+    }
+
+    /// [`MentisDb::resolve_context_by_id`] as seen by `audience`.
+    pub fn resolve_context_by_id_for(
+        &self,
+        target_id: Uuid,
+        audience: audience::Audience,
+    ) -> Vec<&Thought> {
         let mut visited = HashSet::new();
         let mut stack = vec![target_id];
 
@@ -6286,6 +6328,10 @@ impl MentisDb {
 
             if let Some(&position) = self.id_to_index.get(&id) {
                 let thought = &self.thoughts[position];
+                if !self.is_visible(thought, audience) {
+                    visited.remove(&id);
+                    continue;
+                }
                 for relation in &thought.relations {
                     if relation.chain_key.is_some() {
                         continue;
@@ -6644,6 +6690,96 @@ impl MentisDb {
         &self.access_policy
     }
 
+    /// The public and private segments of this chain, derived from its
+    /// governance records. See [`audience`].
+    pub fn segments(&self) -> &audience::SegmentMap {
+        &self.access_policy.segments
+    }
+
+    /// Whether `audience` may see the thought at append-order `index`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::audience::Audience;
+    /// use mentisdb::{MentisDb, StorageAdapterKind, ThoughtType};
+    ///
+    /// let dir = std::env::temp_dir().join(format!("mentisdb_doc_vis_{}", std::process::id()));
+    /// let mut chain = MentisDb::open_with_key_and_storage_kind(&dir, "doc", StorageAdapterKind::Binary).unwrap();
+    /// chain.append("alice", ThoughtType::Insight, "hello").unwrap();
+    /// // A chain without governance records is one public segment.
+    /// assert!(chain.is_visible_index(0, Audience::Public));
+    /// # let _ = std::fs::remove_dir_all(&dir);
+    /// ```
+    pub fn is_visible_index(&self, index: u64, audience: audience::Audience) -> bool {
+        self.access_policy.segments.is_visible(index, audience)
+    }
+
+    /// Whether `audience` may see `thought`.
+    pub fn is_visible(&self, thought: &Thought, audience: audience::Audience) -> bool {
+        self.is_visible_index(thought.index, audience)
+    }
+
+    /// Thoughts `audience` may see, in append order (double ended).
+    pub fn visible_thoughts(
+        &self,
+        audience: audience::Audience,
+    ) -> impl DoubleEndedIterator<Item = &Thought> + '_ {
+        self.thoughts
+            .iter()
+            .filter(move |thought| self.is_visible(thought, audience))
+    }
+
+    /// Number of thoughts `audience` may see.
+    pub fn visible_thought_count(&self, audience: audience::Audience) -> usize {
+        if !audience.is_public() || !self.segments().has_private() {
+            return self.thoughts.len();
+        }
+        self.visible_thoughts(audience).count()
+    }
+
+    /// [`MentisDb::get_thought`] as seen by `audience`.
+    ///
+    /// A thought outside the audience's segments is reported exactly like a
+    /// thought that does not exist. For a public reader `Genesis` and `Head`
+    /// mean the first and last public thought.
+    pub fn get_thought_for(
+        &self,
+        anchor: &ThoughtTraversalAnchor,
+        audience: audience::Audience,
+    ) -> Option<&Thought> {
+        let thought = match anchor {
+            ThoughtTraversalAnchor::Genesis => self.visible_thoughts(audience).next(),
+            ThoughtTraversalAnchor::Head => self.visible_thoughts(audience).next_back(),
+            other => self.get_thought(other),
+        }?;
+        self.is_visible(thought, audience).then_some(thought)
+    }
+
+    /// A copy of `thought` with every pointer into segments `audience` may not
+    /// see removed: `refs` to hidden thoughts, relations whose target is hidden
+    /// and, for a public reader, relations that point into other chains (their
+    /// visibility cannot be decided here).
+    ///
+    /// For [`audience::Audience::Authorized`], or a chain with no private
+    /// segment, this is a plain clone.
+    pub fn redact_for(&self, thought: &Thought, audience: audience::Audience) -> Thought {
+        let mut copy = thought.clone();
+        if !audience.is_public() || !self.segments().has_private() {
+            return copy;
+        }
+        copy.refs
+            .retain(|index| self.is_visible_index(*index, audience));
+        copy.relations.retain(|relation| {
+            relation.chain_key.is_none()
+                && self
+                    .id_to_index
+                    .get(&relation.target_id)
+                    .is_some_and(|position| self.is_visible_index(*position as u64, audience))
+        });
+        copy
+    }
+
     /// Commit a signed access-policy record to the chain and apply it.
     ///
     /// `record` is the new policy, `agent_id` / `signing_key_id` name the signer
@@ -6706,7 +6842,9 @@ impl MentisDb {
             .append_thought_inner(agent_id, input, true)?
             .hash
             .clone();
-        self.access_policy.commit_record(record.clone(), &hash);
+        let index = self.thoughts.last().map_or(0, |t| t.index);
+        self.access_policy
+            .commit_record(record.clone(), &hash, index);
         Ok(self.thoughts.last().expect("just appended"))
     }
 
@@ -6950,6 +7088,11 @@ impl MentisDb {
     }
 
     fn query_matches_registry(&self, thought: &Thought, query: &ThoughtQuery) -> bool {
+        // Every query path ends here; the audience check is repeated so a path
+        // that forgets its own cannot leak a private segment.
+        if !self.is_visible(thought, query.audience) {
+            return false;
+        }
         if let Some(agent_names) = &query.agent_names {
             let Some(record) = self.agent_record_for(&thought.agent_id) else {
                 return false;
@@ -7024,11 +7167,15 @@ impl MentisDb {
     }
 
     fn thought_matches_query(&self, thought: &Thought, query: &ThoughtQuery) -> bool {
-        query.matches(thought) && self.query_matches_registry(thought, query)
+        self.is_visible(thought, query.audience)
+            && query.matches(thought)
+            && self.query_matches_registry(thought, query)
     }
 
     fn thought_matches_indexed_query(&self, thought: &Thought, query: &ThoughtQuery) -> bool {
-        query.matches_post_index_filters(thought) && self.query_matches_registry(thought, query)
+        self.is_visible(thought, query.audience)
+            && query.matches_post_index_filters(thought)
+            && self.query_matches_registry(thought, query)
     }
 
     fn resolve_traversal_anchor_position(
@@ -7038,8 +7185,26 @@ impl MentisDb {
         if self.thoughts.is_empty() {
             return None;
         }
-
-        self.locate_thought_position(&request.anchor)
+        let audience = request.filter.audience;
+        if !self.segments().has_private() || !audience.is_public() {
+            return self.locate_thought_position(&request.anchor);
+        }
+        // A public reader's chain starts at the first public thought and ends
+        // at the last one; an anchor that names a private thought is
+        // indistinguishable from one that does not exist.
+        let position = match &request.anchor {
+            ThoughtTraversalAnchor::Genesis => self
+                .thoughts
+                .iter()
+                .position(|t| self.is_visible(t, audience)),
+            ThoughtTraversalAnchor::Head => self
+                .thoughts
+                .iter()
+                .rposition(|t| self.is_visible(t, audience)),
+            other => self.locate_thought_position(other),
+        }?;
+        self.is_visible(&self.thoughts[position], audience)
+            .then_some(position)
     }
 
     fn locate_thought_position(&self, anchor: &ThoughtTraversalAnchor) -> Option<usize> {
@@ -7221,6 +7386,9 @@ impl MentisDb {
 
         let mut results: Vec<&Thought> = candidate_thoughts
             .filter(|thought| {
+                if !self.is_visible(thought, query.audience) {
+                    return false;
+                }
                 if !query.include_invalidated && self.is_invalidated(thought.id) {
                     return false;
                 }
@@ -7295,7 +7463,7 @@ impl MentisDb {
             .unwrap_or_default();
         let graph_scores = match (ranked_text, request.graph.as_ref(), lexical_scan.as_ref()) {
             (Some(_), Some(graph), Some(scan)) => {
-                self.expand_ranked_candidates(&candidates, graph, scan)
+                self.expand_ranked_candidates(&candidates, request.filter.audience, graph, scan)
             }
             _ => HashMap::new(),
         };
@@ -7312,6 +7480,8 @@ impl MentisDb {
                 RankedSearchBackend::Heuristic
             };
 
+        let newest_index = self.newest_visible_index(request.filter.audience);
+
         // Phase 1: score-only pass. No per-hit strings or paths are built here.
         let mut scored: Vec<ScoredCandidate<'_>> = if ranked_text.is_some() {
             let mut positions: Vec<usize> = lexical_scan
@@ -7327,6 +7497,7 @@ impl MentisDb {
                 .filter_map(|position| {
                     let thought = self.thoughts.get(position)?;
                     self.score_candidate(
+                        newest_index,
                         thought,
                         true,
                         lexical_scan.as_ref().and_then(|scan| scan.score(position)),
@@ -7338,7 +7509,9 @@ impl MentisDb {
         } else {
             candidates
                 .iter()
-                .filter_map(|thought| self.score_candidate(thought, false, None, 0.0, None))
+                .filter_map(|thought| {
+                    self.score_candidate(newest_index, thought, false, None, 0.0, None)
+                })
                 .collect()
         };
 
@@ -7415,7 +7588,14 @@ impl MentisDb {
         let graph_hits = request
             .graph
             .as_ref()
-            .map(|graph| self.expand_ranked_candidate_paths(&candidates, graph, &lexical_scores))
+            .map(|graph| {
+                self.expand_ranked_candidate_paths(
+                    &candidates,
+                    request.filter.audience,
+                    graph,
+                    &lexical_scores,
+                )
+            })
             .unwrap_or_default();
 
         crate::search::build_context_bundles(
@@ -7434,8 +7614,19 @@ impl MentisDb {
         &self,
         config: crate::search::SummaryBuildConfig,
     ) -> Vec<crate::search::SummaryCandidate> {
-        let thoughts = self.thoughts.iter().collect::<Vec<_>>();
-        self.summary_candidates_from_thoughts(&thoughts, config)
+        self.summary_candidates_for(config, audience::Audience::Authorized)
+    }
+
+    /// [`MentisDb::summary_candidates`] as seen by `audience`: windows are
+    /// built only from visible thoughts, and only visible summaries count as
+    /// coverage.
+    pub fn summary_candidates_for(
+        &self,
+        config: crate::search::SummaryBuildConfig,
+        audience: audience::Audience,
+    ) -> Vec<crate::search::SummaryCandidate> {
+        let thoughts = self.visible_thoughts(audience).collect::<Vec<_>>();
+        self.summary_candidates_from_thoughts(&thoughts, config, audience)
     }
 
     /// Build read-only summary candidates after applying a [`ThoughtQuery`] filter.
@@ -7449,13 +7640,14 @@ impl MentisDb {
         config: crate::search::SummaryBuildConfig,
     ) -> Vec<crate::search::SummaryCandidate> {
         let thoughts = self.query(query);
-        self.summary_candidates_from_thoughts(&thoughts, config)
+        self.summary_candidates_from_thoughts(&thoughts, config, query.audience)
     }
 
     fn summary_candidates_from_thoughts(
         &self,
         thoughts: &[&Thought],
         config: crate::search::SummaryBuildConfig,
+        audience: audience::Audience,
     ) -> Vec<crate::search::SummaryCandidate> {
         let thought_ids = thoughts
             .iter()
@@ -7479,14 +7671,16 @@ impl MentisDb {
                 },
             )
             .collect::<Vec<_>>();
-        let coverage = self.summary_coverage();
+        let coverage = self.summary_coverage(audience);
         crate::search::build_summary_candidates(&sources, config, &coverage)
     }
 
-    fn summary_coverage(&self) -> Vec<crate::search::SummaryCoverage> {
+    fn summary_coverage(
+        &self,
+        audience: audience::Audience,
+    ) -> Vec<crate::search::SummaryCoverage> {
         let summarized_ids = self
-            .thoughts
-            .iter()
+            .visible_thoughts(audience)
             .flat_map(|thought| thought.relations.iter())
             .filter(|relation| {
                 relation.kind == ThoughtRelationKind::Summarizes && relation.chain_key.is_none()
@@ -7610,6 +7804,9 @@ impl MentisDb {
                     let mut fallback = RankedSearchQuery::new();
                     fallback.limit = self_query.limit;
                     fallback.filter = self_query.filter.clone();
+                    // The audience is per chain and the caller named none for
+                    // this one: fail closed.
+                    fallback.filter.audience = audience::Audience::Public;
                     fallback.as_of = self_query.as_of;
                     fallback.scope = self_query.scope;
                     fallback.enable_reranking = self_query.enable_reranking;
@@ -9381,6 +9578,7 @@ impl MentisDb {
     /// vector, or graph signal at all.
     fn score_candidate<'a>(
         &self,
+        newest_index: usize,
         thought: &'a Thought,
         has_text: bool,
         lexical: Option<f32>,
@@ -9417,7 +9615,7 @@ impl MentisDb {
             (thought.importance - 0.5) * 0.1
         };
         let confidence = thought.confidence.unwrap_or_default() * 0.1;
-        let recency = self.recency_score(thought);
+        let recency = Self::recency_score(newest_index, thought);
         // Vector-lexical fusion: when there is no lexical signal at all,
         // vector gets a large boost (VECTOR_ONLY_BOOST) so semantically-matched
         // thoughts surface. When lexical is present, the boost decays
@@ -9508,7 +9706,11 @@ impl MentisDb {
         request: &RankedSearchQuery,
     ) -> crate::search::lexical::LexicalScan {
         use crate::search::lexical::{LexicalCandidates, LexicalQuery};
-        let mut query = LexicalQuery::new(text).with_df_scope(request.df_scope);
+        let mut query = LexicalQuery::new(text)
+            .with_df_scope(request.df_scope)
+            .with_isolated_corpus(
+                request.filter.audience.is_public() && self.segments().has_private(),
+            );
         if let Some(cutoffs) = &request.df_cutoffs {
             query = query.with_df_cutoffs(cutoffs.clone());
         }
@@ -9650,10 +9852,12 @@ impl MentisDb {
     fn expand_ranked_candidates(
         &self,
         candidates: &[&Thought],
+        audience: audience::Audience,
         graph: &RankedSearchGraph,
         lexical_scan: &crate::search::lexical::LexicalScan,
     ) -> HashMap<usize, RankedGraphHit> {
-        let raw_hits = self.expand_ranked_candidate_paths(candidates, graph, lexical_scan);
+        let raw_hits =
+            self.expand_ranked_candidate_paths(candidates, audience, graph, lexical_scan);
         let mut aggregates = HashMap::<usize, RankedGraphHit>::new();
 
         for hit in raw_hits {
@@ -9695,6 +9899,7 @@ impl MentisDb {
     fn expand_ranked_candidate_paths(
         &self,
         candidates: &[&Thought],
+        candidates_audience: audience::Audience,
         graph: &RankedSearchGraph,
         lexical_scan: &crate::search::lexical::LexicalScan,
     ) -> Vec<crate::search::GraphExpansionHit> {
@@ -9703,6 +9908,10 @@ impl MentisDb {
         }
 
         const MAX_GRAPH_SEEDS: usize = 20;
+        // Hidden thoughts are blocked, not passed through: a path over a
+        // private thought would reveal that it exists and what links it.
+        let audience = candidates_audience;
+        let hide_private = audience.is_public() && self.segments().has_private();
         let adjacency = self.cached_adjacency_index();
         let mut candidate_mask = vec![false; self.thoughts.len()];
         for thought in candidates {
@@ -9736,6 +9945,9 @@ impl MentisDb {
                 let Some(position) = locator.thought_index.map(|index| index as usize) else {
                     return ExpansionNodeRole::PassThrough;
                 };
+                if hide_private && !self.is_visible_index(position as u64, audience) {
+                    return ExpansionNodeRole::Blocked;
+                }
                 if !candidate_mask.get(position).copied().unwrap_or(false) {
                     ExpansionNodeRole::PassThrough
                 } else if seed_positions.contains(&position) && Some(position) != seed_position {
@@ -9832,8 +10044,21 @@ impl MentisDb {
                         && candidate.locator < current.locator)))
     }
 
-    fn recency_score(&self, thought: &Thought) -> f32 {
-        let newest_index = self.thoughts.len().saturating_sub(1);
+    /// Index of the newest thought `audience` may see: the anchor of the
+    /// recency score. A public reader's recency must not move when private
+    /// thoughts are appended.
+    fn newest_visible_index(&self, audience: audience::Audience) -> usize {
+        if audience.is_public() && self.segments().has_private() {
+            return self
+                .thoughts
+                .iter()
+                .rposition(|t| self.is_visible(t, audience))
+                .unwrap_or(0);
+        }
+        self.thoughts.len().saturating_sub(1)
+    }
+
+    fn recency_score(newest_index: usize, thought: &Thought) -> f32 {
         if newest_index == 0 {
             return 0.05;
         }

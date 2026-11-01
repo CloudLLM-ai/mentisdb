@@ -184,6 +184,9 @@ impl GraphExpansionResult {
 
         for seed in dedupe_seed_order(&query.seeds) {
             let role = classify(&seed);
+            if role == ExpansionNodeRole::Blocked {
+                continue;
+            }
             if role.counts() && counted >= query.max_visited {
                 stats.truncated = true;
                 break;
@@ -227,6 +230,9 @@ impl GraphExpansionResult {
                         continue;
                     }
                     let role = classify(next_locator);
+                    if role == ExpansionNodeRole::Blocked {
+                        continue;
+                    }
                     if role.counts() {
                         if counted >= query.max_visited {
                             stats.truncated = true;
@@ -271,6 +277,9 @@ impl GraphExpansionResult {
                             continue;
                         }
                         let role = classify(neighbor_locator);
+                        if role == ExpansionNodeRole::Blocked {
+                            continue;
+                        }
                         if role.counts() {
                             if counted >= query.max_visited {
                                 stats.truncated = true;
@@ -335,11 +344,16 @@ pub enum ExpansionNodeRole {
     /// excluded by a candidate filter). Bounded by
     /// [`PASS_THROUGH_BUDGET_FACTOR`].
     PassThrough,
+    /// Never entered: the node is not visited, counted, emitted or traversed
+    /// through, so no path can pass over it. Used for thoughts the reader may
+    /// not see (private segments), where even a path *through* a hidden node
+    /// would reveal that it exists.
+    Blocked,
 }
 
 impl ExpansionNodeRole {
     fn counts(self) -> bool {
-        !matches!(self, Self::PassThrough)
+        !matches!(self, Self::PassThrough | Self::Blocked)
     }
 }
 

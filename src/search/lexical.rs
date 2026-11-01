@@ -241,6 +241,16 @@ pub struct LexicalQuery {
     pub synonyms: std::collections::HashMap<String, Vec<String>>,
     /// Weight applied to synonym matches relative to original term matches.
     pub synonym_weight: f32,
+    /// When `true` and the scan is restricted to a candidate subset, the
+    /// corpus statistics behind the score (document count, document
+    /// frequency, field length averages) are computed over that subset only.
+    ///
+    /// Scores otherwise depend on the whole chain, so a reader who may not see
+    /// part of it could learn from score differences how common a term is in
+    /// the hidden part. Set by [`crate::MentisDb::query_ranked`] for a
+    /// [`crate::audience::Audience::Public`] reader of a chain with private
+    /// segments. Defaults to `false`.
+    pub isolate_corpus: bool,
     /// Normalized (stemmed) synonym terms keyed by normalized query term,
     /// built once by [`LexicalQuery::with_synonyms`].
     normalized_synonyms: Option<HashMap<String, Vec<String>>>,
@@ -302,8 +312,16 @@ impl LexicalQuery {
             df_scope: DfScope::default(),
             synonyms: std::collections::HashMap::new(),
             synonym_weight: 0.7,
+            isolate_corpus: false,
             normalized_synonyms: None,
         }
+    }
+
+    /// Compute corpus statistics over the candidate subset only. See
+    /// [`LexicalQuery::isolate_corpus`].
+    pub fn with_isolated_corpus(mut self, isolate: bool) -> Self {
+        self.isolate_corpus = isolate;
+        self
     }
 
     /// Enable synonym expansion with a custom map and weight.
@@ -1015,7 +1033,35 @@ impl LexicalIndex {
             }
         };
 
-        let doc_count = doc_total as f32;
+        // Isolated corpus: statistics of the allowed subset alone.
+        let isolated = query.isolate_corpus && restrict.is_some();
+        let mut isolated_averages = [0.0_f32; 5];
+        let mut isolated_total = 0usize;
+        if isolated {
+            let mut sums = [0u64; 5];
+            for (position, &allowed_flag) in scratch.allowed.iter().enumerate() {
+                if !allowed_flag {
+                    continue;
+                }
+                let Some(stats) = self.document_stats.get(position) else {
+                    continue;
+                };
+                isolated_total += 1;
+                for (i, field) in LEXICAL_FIELDS.iter().enumerate() {
+                    sums[i] += u64::from(stats.field_len(*field));
+                }
+            }
+            if isolated_total > 0 {
+                for (average, sum) in isolated_averages.iter_mut().zip(sums) {
+                    *average = sum as f32 / isolated_total as f32;
+                }
+            }
+        }
+        let doc_count = if isolated {
+            isolated_total as f32
+        } else {
+            doc_total as f32
+        };
         let mut touched = Vec::new();
         let ScanScratch {
             scores,
@@ -1025,13 +1071,17 @@ impl LexicalIndex {
         } = &mut scratch;
         let scoring = &query.scoring;
         let cutoffs = &query.df_cutoffs;
-        let averages = [
-            self.average_content_len,
-            self.average_tag_len,
-            self.average_concept_len,
-            self.average_agent_id_len,
-            self.average_agent_registry_len,
-        ];
+        let averages = if isolated {
+            isolated_averages
+        } else {
+            [
+                self.average_content_len,
+                self.average_tag_len,
+                self.average_concept_len,
+                self.average_agent_id_len,
+                self.average_agent_registry_len,
+            ]
+        };
         let weights = [
             scoring.content_weight,
             scoring.tag_weight,
@@ -1051,7 +1101,16 @@ impl LexicalIndex {
             let Some(postings) = self.postings.get(term) else {
                 continue;
             };
-            let global_df = postings.len() as f32;
+            let visible_postings =
+                |posting: &&LexicalPosting| !isolated || allowed[posting.doc_position];
+            let global_df = if isolated {
+                postings.iter().filter(visible_postings).count() as f32
+            } else {
+                postings.len() as f32
+            };
+            if global_df == 0.0 {
+                continue;
+            }
             let global_df_ratio = global_df / doc_count;
             let field_allowed: [bool; 5] = match query.df_scope {
                 DfScope::Global => {
@@ -1059,7 +1118,7 @@ impl LexicalIndex {
                 }
                 DfScope::PerField => {
                     let mut field_df = [0_u32; 5];
-                    for posting in postings {
+                    for posting in postings.iter().filter(visible_postings) {
                         for (i, field) in LEXICAL_FIELDS.iter().enumerate() {
                             field_df[i] += u32::from(posting.term_frequency(*field) > 0);
                         }
