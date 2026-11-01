@@ -630,27 +630,36 @@ Derived files make search fast, and each one can be rebuilt from the log.
 | V2 | `Reframe` type, `Supersedes` relation, cross-chain `chain_key` on relations |
 | V3 | `valid_at` and `invalid_at` on relations; later `entity_type` and `source_episode` were appended without a version bump |
 
-The loader tries the current layout first and falls back record by record to the legacy
-layouts, so a file with mixed versions still loads. When the daemon starts it migrates
-registered chains before serving: it writes the new file beside the old one, archives the
-old file under `migrations/`, and renames the new file into place. A chain written with
-the older JSON-based hash is rehashed with the bincode hash on open. Both steps skip work
-that is already done, so running them twice is harmless. Both also block: a large chain
-is unavailable until its migration finishes.
+Upgrading a chain's format runs in the background and never blocks startup
+(`src/migration/`). When the daemon starts, a migration manager reads only the first
+record of each chain to decide whether it needs work, and returns. In a measured run the
+daemon was serving within 0.97 seconds next to a 600,000-thought legacy chain, which
+finished migrating 17 seconds later. A bounded pool of workers then migrates chains one
+by one. A request for a chain that is still migrating gets HTTP 503 with `Retry-After`
+and the percentage done, rather than a stall or a half-written file.
 
-A journaled migration engine (`src/migration/`) replaces this pass but is not yet wired
-into the daemon. It runs each chain through a durable state machine (planned, backed up,
-staged, committed, finalized) recorded in `migrations/journal/`, keeps the original file
-under `migrations/backup/`, and streams records through one upgrade step per schema
-version, so memory stays flat for any chain size. It is stricter than the current pass.
-A schema 3 record must hash to exactly what it stored, under either hash algorithm, or
-the migration is refused, so a migration can never turn a tampered chain into a freshly
-valid one. Only schemas 0 to 2, whose stored hashes cannot be checked, are rehashed. A
-killed migration resumes or is discarded on the next start, a failing chain is
-quarantined untouched while the others proceed, an advisory lock keeps two processes off
-one chain, and a chain written by a newer release is refused rather than modified. Its
-manager runs on a small worker pool after startup and answers requests for a chain still
-migrating with HTTP 503, `Retry-After` and the percentage done.
+Each chain moves through a durable state machine recorded in `migrations/journal/`:
+planned, backed up, staged, committed and finalized. The original file is hard-linked into
+`migrations/backup/` first and kept for 14 days
+(`MENTISDB_MIGRATION_BACKUP_RETENTION_DAYS`). Records are then streamed through one
+upgrade step per schema version into a staging file, at about 120,000 thoughts per second
+with flat memory. The staged file is re-verified end to end and swapped in with an atomic
+rename. A migration killed at any step is resumed or discarded on the next start. A chain
+interrupted three times, or one that fails, is quarantined untouched while the others and
+the daemon carry on. An advisory lock keeps two processes off one chain, and a chain or
+data directory written by a newer release is refused rather than modified.
+
+The engine is strict about integrity. A schema 3 record must hash to exactly what it
+stored, under either hash algorithm, and a migration that would invalidate a v2 signature
+is refused, so a migration can never turn a tampered chain into a freshly valid one. Only
+schemas 0 to 2, whose stored hashes cannot be checked, are rehashed.
+
+Operators drive and inspect migrations with `mentisdb migrate status|run|verify|retry|
+skip|rollback|purge-backups` (with `--dry-run` for `run`), `GET /v1/migrations`, the
+`mentisdb_migration_status` MCP tool, a dashboard banner and the TUI. Retry and skip
+through the API need a global token. Library code that opens a legacy chain directly still
+upgrades it in place on open, now after copying the original to
+`migrations/backup/in-place/`.
 
 Because bincode encodes enum variants by position, new variants must be appended at the
 end of an enum and existing ones never reordered. A chain that contains a variant added
@@ -1221,9 +1230,9 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
   anyone who can reach the API, and bearer tokens are off by default. Private segments
   are not encrypted at rest, a key that can read is also a key that can write, and a
   public reader still learns where private segments are and how large they are.
-- **Blocking migrations.** Until the background migration manager is wired into the
-  daemon, schema and hash migrations still run before a chain serves and rewrite the
-  whole file.
+- **Migrations make a chain briefly unavailable.** A chain being migrated answers 503
+  until it finishes, and library code that opens a legacy chain directly still migrates
+  it in place, blocking that open.
 - **Merges lose structure.** A merge drops relations, signatures and timestamps.
 - **Single writer.** Only the offline operator CLI respects the daemon's data-directory
   lock. A second daemon or an embedding process can still append to the same chain.
@@ -1242,8 +1251,8 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
 - **Better paraphrase recall:** evaluate larger local encoders, embed long thoughts in
   chunks.
 - **Per-field document frequency** as the default once benchmarked.
-- **Background migrations in the daemon:** wire the migration manager into startup, the
-  CLI and the API, and extend hash coverage to every field.
+- **Hash coverage of every field**, through a schema version that brings `entity_type`
+  and `source_episode` under the record hash.
 - **Anchoring head hashes** externally so that a full rewrite of a chain becomes
   detectable.
 - **Answer-level evaluation** with an LLM reader, alongside recall.
