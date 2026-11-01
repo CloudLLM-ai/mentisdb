@@ -776,3 +776,56 @@ fn provenance_marks_segment_and_signature() {
     assert_eq!(p6["provenance"]["signature"], "valid");
     let _ = std::fs::remove_dir_all(&f.dir);
 }
+
+/// Federated hits and the Markdown export annotate lineage, and must do so for
+/// the audience of the query: a public reader is told nothing about a private
+/// successor or contester.
+#[test]
+fn federated_hits_and_export_do_not_name_private_successors_or_contesters() {
+    let (chain, dir, d, s) = lineage_fixture("federated_lineage");
+    let query = |audience| {
+        RankedSearchQuery::new()
+            .with_filter(ThoughtQuery::new().with_audience(audience))
+            .with_text("walrus fridays")
+            .with_limit(10)
+    };
+    let other_queries = std::collections::BTreeMap::new();
+    let public = chain.query_federated("vault", &[], &query(PUB), &other_queries, 10, 0);
+    let hit = public
+        .hits
+        .iter()
+        .find(|h| h.thought.id == d)
+        .expect("public hit");
+    let text = format!("{:?}", hit.version);
+    assert!(
+        !text.contains(&s.to_string()),
+        "private successor leaked: {text}"
+    );
+    assert!(hit.version.is_plain(), "{text}");
+    let all = chain.query_federated("vault", &[], &query(ALL), &other_queries, 10, 0);
+    assert!(
+        all.hits.iter().all(|h| h.thought.id != d),
+        "authorized readers are redirected"
+    );
+
+    // A weak link (a plain reference from a private Decision) contests D.
+    let mut chain = chain;
+    let head = chain.thoughts().last().unwrap().hash.clone();
+    let _ = head;
+    set_mode(&mut chain, AccessMode::Allowlist);
+    signed(
+        &mut chain,
+        ThoughtInput::new(
+            ThoughtType::Decision,
+            "PRIVATE-CONTESTER maybe revisit the walrus rule",
+        )
+        .with_refs(vec![0]),
+    );
+    set_mode(&mut chain, AccessMode::Open);
+    let public_md = chain.to_memory_markdown(Some(&ThoughtQuery::new().with_audience(PUB)));
+    assert!(!public_md.contains("contested by"), "{public_md}");
+    assert!(!public_md.contains("PRIVATE-CONTESTER"));
+    let full_md = chain.to_memory_markdown(Some(&ThoughtQuery::new().with_audience(ALL)));
+    assert!(full_md.contains("PRIVATE-CONTESTER"), "{full_md}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

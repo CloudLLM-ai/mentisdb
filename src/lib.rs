@@ -9062,8 +9062,17 @@ impl MentisDb {
                             .find(|(key, _)| *key == chain_key)
                             .map(|(_, chain)| *chain)
                     };
+                    // Lineage is shown as the audience of this chain's own query
+                    // may see it (a chain nobody named a query for is public).
+                    let audience = if chain_key == self_chain_key {
+                        self_query.filter.audience
+                    } else {
+                        other_queries
+                            .get(chain_key)
+                            .map_or(audience::Audience::Public, |q| q.filter.audience)
+                    };
                     let version = owner
-                        .map(|chain| chain.version_info(thought, None))
+                        .map(|chain| chain.version_info_for(thought, None, audience))
                         .unwrap_or_default();
                     FederatedSearchHit {
                         chain_key,
@@ -11484,6 +11493,7 @@ impl MentisDb {
                 .collect()
         });
 
+        let export_audience = query.map_or(audience::Audience::Authorized, |q| q.audience);
         let mut markdown = String::from("# MEMORY\n\n");
         markdown.push_str(&format!(
             "Generated from `{}` with {} thought(s).\n\n",
@@ -11493,6 +11503,7 @@ impl MentisDb {
 
         append_memory_section(
             &mut markdown,
+            export_audience,
             self,
             "Identity",
             &thoughts,
@@ -11504,6 +11515,7 @@ impl MentisDb {
         );
         append_memory_section(
             &mut markdown,
+            export_audience,
             self,
             "Knowledge",
             &thoughts,
@@ -11518,6 +11530,7 @@ impl MentisDb {
         );
         append_memory_section(
             &mut markdown,
+            export_audience,
             self,
             "Constraints And Decisions",
             &thoughts,
@@ -11531,6 +11544,7 @@ impl MentisDb {
         );
         append_memory_section(
             &mut markdown,
+            export_audience,
             self,
             "Corrections",
             &thoughts,
@@ -11544,6 +11558,7 @@ impl MentisDb {
         );
         append_memory_section(
             &mut markdown,
+            export_audience,
             self,
             "Open Threads",
             &thoughts,
@@ -11556,6 +11571,7 @@ impl MentisDb {
         );
         append_memory_section(
             &mut markdown,
+            export_audience,
             self,
             "Execution State",
             &thoughts,
@@ -13783,6 +13799,7 @@ fn parse_memory_markdown_line(line: &str) -> Option<MarkdownThoughtLine> {
 
 fn append_memory_section(
     markdown: &mut String,
+    audience: audience::Audience,
     chain: &MentisDb,
     title: &str,
     thoughts: &[&Thought],
@@ -13809,9 +13826,7 @@ fn append_memory_section(
             metadata.push(format!("role {:?}", thought.role));
         }
         metadata.push(format!("importance {:.2}", thought.importance));
-        if let Some(contester) =
-            chain.live_contester(thought.id, None, crate::audience::Audience::Authorized)
-        {
+        if let Some(contester) = chain.live_contester(thought.id, None, audience) {
             metadata.push(format!("contested by #{}", contester.index));
         }
         if let Some(confidence) = thought.confidence {
