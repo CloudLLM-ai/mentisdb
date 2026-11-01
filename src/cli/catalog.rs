@@ -18,6 +18,8 @@ const ROLES: &[&str] = &[
     "Retrospective",
 ];
 const SCOPES: &[&str] = &["user", "session", "agent"];
+const DF_SCOPES: &[&str] = &["global", "field"];
+const VECTOR_FUSIONS: &[&str] = &["relative", "absolute"];
 const GRAPH_MODES: &[&str] = &["outgoing", "incoming", "bidirectional"];
 const BOUNDARIES: &[&str] = &["genesis", "head"];
 const DIRECTIONS: &[&str] = &["forward", "backward"];
@@ -356,6 +358,56 @@ fn include_invalidated() -> Flag {
     )
 }
 
+/// Ranking knobs shared by `search`, `search federated` and `search bundles`.
+/// Each maps one-to-one onto a REST/MCP request field of the same name.
+fn ranking_flags() -> Vec<Flag> {
+    let cutoff = |flag: &'static str, field: &'static str, help: &'static str| {
+        Flag::opt(flag, field, Kind::Score, "RATIO", help)
+    };
+    vec![
+        Flag::opt(
+            "resolve-successors",
+            "resolve_successors",
+            Kind::Bool,
+            "BOOL",
+            "Replace a superseded hit by its live successor and promote the thought contesting a contested hit (default true).",
+        ),
+        Flag::opt(
+            "collapse-duplicates",
+            "collapse_duplicates",
+            Kind::Score,
+            "THRESHOLD",
+            "Fold near-duplicate hits (Jaccard of normalized tokens) at or above this threshold into the best one; 0 disables (default 0.9).",
+        ),
+        Flag::opt(
+            "vector-fusion",
+            "vector_fusion",
+            Kind::Choice(VECTOR_FUSIONS),
+            "MODE",
+            "How vector similarity is blended with the lexical score: relative (default) or absolute.",
+        ),
+        Flag::opt(
+            "synonym-weight",
+            "synonym_weight",
+            Kind::Score,
+            "WEIGHT",
+            "Weight of automatic thesaurus synonym expansion; 0 disables it (default 0.3).",
+        ),
+        Flag::opt(
+            "df-scope",
+            "df_scope",
+            Kind::Choice(DF_SCOPES),
+            "SCOPE",
+            "Lexical stop-word gate document-frequency scope: global (default) or field.",
+        ),
+        cutoff("df-cutoff-content", "df_cutoffs.content", "Gate cutoff ratio for content matches (default 0.30)."),
+        cutoff("df-cutoff-tags", "df_cutoffs.tags", "Gate cutoff ratio for tag matches (default 0.30)."),
+        cutoff("df-cutoff-concepts", "df_cutoffs.concepts", "Gate cutoff ratio for concept matches (default 0.30)."),
+        cutoff("df-cutoff-agent-id", "df_cutoffs.agent_id", "Gate cutoff ratio for agent-id matches (default 0.70)."),
+        cutoff("df-cutoff-agent-registry", "df_cutoffs.agent_registry", "Gate cutoff ratio for agent-registry text matches (default 0.60)."),
+    ]
+}
+
 fn graph_flags() -> Vec<Flag> {
     vec![
         Flag::opt(
@@ -394,6 +446,7 @@ fn ranked_flags() -> Vec<Flag> {
     flags.extend(graph_flags());
     flags.extend(thought_filters());
     flags.push(include_invalidated());
+    flags.extend(ranking_flags());
     flags.extend([
         Flag::opt(
             "as-of",
@@ -957,6 +1010,7 @@ fn search_commands() -> Vec<Command> {
     bundles.extend(graph_flags());
     bundles.extend(thought_filters());
     bundles.push(include_invalidated());
+    bundles.extend(ranking_flags());
 
     vec![
         rest_post(

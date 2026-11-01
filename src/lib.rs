@@ -3781,33 +3781,43 @@ pub struct RankedSearchQuery {
     /// best match is ranked low by one signal but high by another, at the
     /// cost of a second scoring pass over more documents.
     pub rerank_k: usize,
-    /// When `true`, use an LLM to rerank the top `llm_rerank_top_k` candidates.
-    ///
-    /// This is truly opt-in: no LLM API calls are made unless this field is
-    /// `true`. When enabled, the top N candidates from the existing scoring
-    /// pipeline are passed to the configured LLM which ranks them by relevance
-    /// to the query. The LLM's ranking is then used to reorder the hits.
+    /// **Deprecated no-op.** LLM reranking was never implemented: setting this
+    /// has no effect and no LLM call is ever made. Kept only so existing struct
+    /// users still compile; removed in the next breaking release.
+    #[deprecated(
+        since = "0.10.11",
+        note = "LLM reranking is not implemented: this has no effect and will be removed in the next breaking release"
+    )]
     pub llm_rerank: bool,
-    /// Model identifier for the LLM reranking call (e.g. "gpt-4", "claude-3-sonnet").
-    ///
-    /// Required when `llm_rerank` is `true`. The model should support
-    /// structured JSON output for reliable parsing of the ranking.
+    /// **Deprecated no-op**, see [`RankedSearchQuery::llm_rerank`].
+    #[deprecated(
+        since = "0.10.11",
+        note = "LLM reranking is not implemented: this has no effect and will be removed in the next breaking release"
+    )]
     pub llm_model: Option<String>,
-    /// Number of top candidates to send to the LLM for reranking.
-    ///
-    /// Defaults to 20. Only the top N candidates by the existing scoring
-    /// pipeline are included in the LLM reranking prompt to keep token
-    /// usage manageable and latency reasonable.
+    /// **Deprecated no-op**, see [`RankedSearchQuery::llm_rerank`].
+    #[deprecated(
+        since = "0.10.11",
+        note = "LLM reranking is not implemented: this has no effect and will be removed in the next breaking release"
+    )]
     pub llm_rerank_top_k: usize,
     /// Optional synonym expansion map for lexical queries.
     ///
     /// Each original term maps to a list of synonyms that are also searched
-    /// with reduced weight. This is per-query and opt-in.
+    /// with reduced weight. When empty and [`RankedSearchQuery::thesaurus`] is
+    /// `true`, the built-in thesaurus supplies the map automatically.
     pub synonyms: std::collections::HashMap<String, Vec<String>>,
     /// Weight applied to synonym matches relative to original term matches.
     ///
-    /// Defaults to 0.5. Must be non-negative.
+    /// Defaults to [`crate::search::thesaurus::AUTO_SYNONYM_WEIGHT`] (0.3), the
+    /// weight the server has always used, so library and server rank alike. On
+    /// LoCoMo R@10 / LongMemEval R@5: no expansion 75.3 / 69.6, weight 0.3
+    /// 75.2 / 70.0, weight 0.7 74.8 / 68.2. Must be non-negative.
     pub synonym_weight: f32,
+    /// Expand the query with the built-in thesaurus when `synonyms` is empty
+    /// (default `true`, matching the server). Set `false` for literal-term
+    /// matching only.
+    pub thesaurus: bool,
     /// Which document frequency the lexical stop-word gate compares against.
     ///
     /// Defaults to [`DfScope::from_env`] (`MENTISDB_DF_SCOPE`), which is
@@ -3944,12 +3954,13 @@ impl RankedSearchQuery {
         self
     }
 
-    /// Enable LLM-based reranking on this query.
-    ///
-    /// The `model` parameter specifies the LLM model to use (e.g. "gpt-4",
-    /// "claude-3-sonnet"). The `top_k` parameter controls how many of the
-    /// top-scored candidates from the existing pipeline are sent to the LLM
-    /// for reranking.
+    /// **Deprecated no-op.** LLM reranking is not implemented; this only sets
+    /// fields nothing reads. Removed in the next breaking release.
+    #[deprecated(
+        since = "0.10.11",
+        note = "LLM reranking is not implemented; this has no effect"
+    )]
+    #[allow(deprecated)]
     pub fn with_llm_reranking(mut self, model: impl Into<String>, top_k: usize) -> Self {
         self.llm_rerank = true;
         self.llm_model = Some(model.into());
@@ -3992,6 +4003,19 @@ impl RankedSearchQuery {
         self
     }
 
+    /// Turn automatic built-in thesaurus expansion on or off, see
+    /// [`RankedSearchQuery::thesaurus`].
+    pub fn with_thesaurus(mut self, thesaurus: bool) -> Self {
+        self.thesaurus = thesaurus;
+        self
+    }
+
+    /// Set the weight of synonym matches without changing the synonym map.
+    pub fn with_synonym_weight(mut self, weight: f32) -> Self {
+        self.synonym_weight = weight.max(0.0);
+        self
+    }
+
     /// Enable synonym expansion with a custom map and weight.
     pub fn with_synonyms(
         mut self,
@@ -4004,6 +4028,7 @@ impl RankedSearchQuery {
     }
 }
 
+#[allow(deprecated)]
 impl Default for RankedSearchQuery {
     fn default() -> Self {
         Self {
@@ -4023,7 +4048,8 @@ impl Default for RankedSearchQuery {
             llm_model: None,
             llm_rerank_top_k: 20,
             synonyms: std::collections::HashMap::new(),
-            synonym_weight: 0.7,
+            synonym_weight: crate::search::thesaurus::AUTO_SYNONYM_WEIGHT,
+            thesaurus: true,
             df_scope: crate::search::lexical::DfScope::from_env(),
             df_cutoffs: None,
         }
@@ -4071,8 +4097,12 @@ pub struct RankedSearchScore {
     pub session_cohesion: f32,
     /// Reciprocal Rank Fusion score (set when `enable_reranking` is true).
     pub rrf: f32,
-    /// LLM-based relevance score from opt-in reranking (set when `llm_rerank` is true).
-    /// This is a normalized 0.0–1.0 score derived from the LLM's ranking positions.
+    /// **Deprecated:** always `0.0`, LLM reranking is not implemented. Removed in
+    /// the next breaking release.
+    #[deprecated(
+        since = "0.10.11",
+        note = "always 0.0; LLM reranking is not implemented"
+    )]
     pub llm_score: f32,
     /// Final combined score used for ranking.
     pub total: f32,
@@ -11077,6 +11107,7 @@ impl MentisDb {
 
     /// Build the full hit object (matched terms, sources, graph path) for a
     /// candidate that survived top-k selection.
+    #[allow(deprecated)]
     fn materialize_ranked_hit<'a>(
         &self,
         candidate: ScoredCandidate<'a>,
@@ -11138,6 +11169,11 @@ impl MentisDb {
         }
         if !request.synonyms.is_empty() {
             query = query.with_synonyms(request.synonyms.clone(), request.synonym_weight);
+        } else if request.thesaurus && request.synonym_weight > 0.0 {
+            let synonyms = crate::search::thesaurus::expand_text(text);
+            if !synonyms.is_empty() {
+                query = query.with_synonyms(synonyms, request.synonym_weight);
+            }
         }
         if candidates.len() == self.thoughts.len() {
             // Candidates cover the whole chain: skip building a position list.

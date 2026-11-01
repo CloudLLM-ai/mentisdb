@@ -2409,6 +2409,9 @@ Important environment variables:
     Startup, per-thought, and per-read audio controls
 
 Search notes:
+  `mentisdb search`, `search federated` and `search bundles` take the ranking knobs
+  --resolve-successors, --collapse-duplicates, --vector-fusion, --synonym-weight,
+  --df-scope and --df-cutoff-*; see `mentisdb search --help`.
   Default ranked/search/context retrieval excludes thoughts that were superseded,
   corrected, or invalidated by a later relation and returns the newest live successor
   in its place (hit field successor_of). Thoughts that a Correction, AssumptionInvalidated

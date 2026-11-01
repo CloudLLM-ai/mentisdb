@@ -63,7 +63,6 @@
 
 use crate::audience::Audience;
 use crate::auth::{bearer_token_access_from_env, BearerTokenScope, BearerTokenStore};
-use crate::search::thesaurus;
 use crate::server_lens::{audience_for, scope_allows_chain};
 use crate::webhooks::{WebhookManager, WebhookRegistration};
 use crate::{
@@ -3815,6 +3814,8 @@ impl MentisDbService {
             &RankedSearchQuery::new()
                 .with_filter(filter)
                 .with_text(request.text.clone())
+                // `lexical-search` means literal terms: no thesaurus expansion.
+                .with_thesaurus(false)
                 .with_limit(ranked_limit),
         );
         let total = ranked.total_candidates;
@@ -3886,7 +3887,8 @@ impl MentisDbService {
             {
                 ranked_query = ranked_query.with_text(text.to_string());
             }
-            ranked_query = apply_thesaurus_if_text(ranked_query, request.text.as_deref());
+            ranked_query =
+                apply_thesaurus_if_text(ranked_query, request.text.as_deref(), &request.knobs);
             if let Some(graph) = &request.graph {
                 ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
             }
@@ -3903,7 +3905,7 @@ impl MentisDbService {
                 ranked_query = ranked_query.with_reranking(k);
             }
             ranked_query = apply_include_invalidated(ranked_query, request.include_invalidated);
-            ranked_query = apply_collapse_duplicates(ranked_query, request.collapse_duplicates);
+            ranked_query = apply_ranking_knobs(ranked_query, &request.knobs)?;
 
             let ranked = chain.query_ranked(&ranked_query);
             total_candidates += ranked.total_candidates;
@@ -4064,7 +4066,7 @@ impl MentisDbService {
             rerank_k: request.rerank_k,
             entity_type: request.entity_type.clone(),
             include_invalidated: request.include_invalidated,
-            collapse_duplicates: request.collapse_duplicates,
+            knobs: request.knobs.clone(),
         };
         let filter = build_ranked_filter_query(&ranked_req, primary_chain_key.clone())?;
         let mut ranked_query = RankedSearchQuery::new()
@@ -4095,7 +4097,7 @@ impl MentisDbService {
             ranked_query = ranked_query.with_reranking(query_rerank_k.max(1));
         }
         ranked_query = apply_include_invalidated(ranked_query, request.include_invalidated);
-        ranked_query = apply_collapse_duplicates(ranked_query, request.collapse_duplicates);
+        ranked_query = apply_ranking_knobs(ranked_query, &request.knobs)?;
 
         // Collect all chain arcs, each with the audience the caller has on it.
         let mut chain_arcs: Vec<(String, Arc<RwLock<MentisDb>>, Audience)> = Vec::new();
@@ -4336,7 +4338,8 @@ impl MentisDbService {
         {
             ranked_query = ranked_query.with_text(text.to_string());
         }
-        ranked_query = apply_thesaurus_if_text(ranked_query, request.text.as_deref());
+        ranked_query =
+            apply_thesaurus_if_text(ranked_query, request.text.as_deref(), &request.knobs);
         if let Some(graph) = &request.graph {
             ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
         }
@@ -4353,7 +4356,7 @@ impl MentisDbService {
             ranked_query = ranked_query.with_reranking(k);
         }
         ranked_query = apply_include_invalidated(ranked_query, request.include_invalidated);
-        ranked_query = apply_collapse_duplicates(ranked_query, request.collapse_duplicates);
+        ranked_query = apply_ranking_knobs(ranked_query, &request.knobs)?;
 
         let mut total_query = ranked_query.clone();
         total_query.limit = chain.thoughts().len().max(1);
@@ -6171,10 +6174,9 @@ struct RankedSearchRequest {
     /// When true, include superseded/corrected/invalidated thoughts.
     #[serde(default)]
     include_invalidated: Option<bool>,
-    /// Near-duplicate collapse threshold in `(0, 1]` (Jaccard of normalized
-    /// tokens); `0` disables collapsing. Omit for the server default.
-    #[serde(default)]
-    collapse_duplicates: Option<f32>,
+    /// Ranking knobs shared by every ranked surface, see [`RankingKnobs`].
+    #[serde(flatten)]
+    knobs: RankingKnobs,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -6349,10 +6351,9 @@ struct FederatedSearchRequest {
     /// When true, include superseded/corrected/invalidated thoughts.
     #[serde(default)]
     include_invalidated: Option<bool>,
-    /// Near-duplicate collapse threshold in `(0, 1]` (Jaccard of normalized
-    /// tokens); `0` disables collapsing. Omit for the server default.
-    #[serde(default)]
-    collapse_duplicates: Option<f32>,
+    /// Ranking knobs shared by every ranked surface, see [`RankingKnobs`].
+    #[serde(flatten)]
+    knobs: RankingKnobs,
 }
 
 #[derive(Debug, Serialize)]
@@ -8449,7 +8450,12 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
         .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by."))
         .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include thoughts superseded/corrected/invalidated by later memory. Default false: superseded thoughts are replaced by their live successor (field successor_of). Audit only; hits still carry version_status and current_version."))
-        .with_parameter(ToolParameter::new("collapse_duplicates", ToolParameterType::Number).with_description("Near-duplicate collapse threshold in (0,1] (Jaccard of normalized tokens); hits that copy a higher-ranked hit are folded into it and listed in collapsed_duplicates. 0 disables. Default 0.9.")),
+        .with_parameter(ToolParameter::new("collapse_duplicates", ToolParameterType::Number).with_description("Near-duplicate collapse threshold in (0,1] (Jaccard of normalized tokens); hits that copy a higher-ranked hit are folded into it and listed in collapsed_duplicates. 0 disables. Default 0.9."))
+        .with_parameter(ToolParameter::new("df_scope", ToolParameterType::String).with_description("Lexical stop-word gate document-frequency scope: global (default) or field."))
+        .with_parameter(ToolParameter::new("df_cutoffs", ToolParameterType::Object).with_description("Optional gate cutoff overrides (ratios 0..1): content, tags, concepts, agent_id, agent_registry."))
+        .with_parameter(ToolParameter::new("vector_fusion", ToolParameterType::String).with_description("Vector/lexical blend: relative (default, query-length independent) or absolute (raw BM25 decay)."))
+        .with_parameter(ToolParameter::new("resolve_successors", ToolParameterType::Boolean).with_description("Replace superseded hits by their live successor and promote the thought contesting a contested hit. Default true."))
+        .with_parameter(ToolParameter::new("synonym_weight", ToolParameterType::Number).with_description("Weight of automatic thesaurus synonym expansion; 0 disables it. Default 0.3.")),
         ToolMetadata::new(
             "mentisdb_federated_search",
             "Run federated ranked retrieval over multiple chains simultaneously and return a single merged, ranked result list. Useful for multi-agent hubs or cross-organizational memory aggregation.",
@@ -8475,7 +8481,13 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("enable_reranking", ToolParameterType::Boolean).with_description("Enable RRF reranking."))
         .with_parameter(ToolParameter::new("rerank_k", ToolParameterType::Integer).with_description("RRF candidates window size."))
         .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by."))
-        .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include thoughts superseded/corrected/invalidated by later memory. Default false.")),
+        .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include thoughts superseded/corrected/invalidated by later memory. Default false."))
+        .with_parameter(ToolParameter::new("collapse_duplicates", ToolParameterType::Number).with_description("Near-duplicate collapse threshold in (0,1] (Jaccard of normalized tokens); hits that copy a higher-ranked hit are folded into it and listed in collapsed_duplicates. 0 disables. Default 0.9."))
+        .with_parameter(ToolParameter::new("df_scope", ToolParameterType::String).with_description("Lexical stop-word gate document-frequency scope: global (default) or field."))
+        .with_parameter(ToolParameter::new("df_cutoffs", ToolParameterType::Object).with_description("Optional gate cutoff overrides (ratios 0..1): content, tags, concepts, agent_id, agent_registry."))
+        .with_parameter(ToolParameter::new("vector_fusion", ToolParameterType::String).with_description("Vector/lexical blend: relative (default, query-length independent) or absolute (raw BM25 decay)."))
+        .with_parameter(ToolParameter::new("resolve_successors", ToolParameterType::Boolean).with_description("Replace superseded hits by their live successor and promote the thought contesting a contested hit. Default true."))
+        .with_parameter(ToolParameter::new("synonym_weight", ToolParameterType::Number).with_description("Weight of automatic thesaurus synonym expansion; 0 disables it. Default 0.3.")),
         ToolMetadata::new(
             "mentisdb_context_bundles",
             "Return deterministic seed-anchored grouped context bundles over query_context_bundles. Use this when you want supporting context grouped beneath the best lexical seed thoughts.",
@@ -8497,7 +8509,13 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
         .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by."))
-        .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include superseded/corrected/invalidated thoughts as seeds or support. Default false.")),
+        .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include superseded/corrected/invalidated thoughts as seeds or support. Default false."))
+        .with_parameter(ToolParameter::new("collapse_duplicates", ToolParameterType::Number).with_description("Near-duplicate collapse threshold in (0,1] (Jaccard of normalized tokens); hits that copy a higher-ranked hit are folded into it and listed in collapsed_duplicates. 0 disables. Default 0.9."))
+        .with_parameter(ToolParameter::new("df_scope", ToolParameterType::String).with_description("Lexical stop-word gate document-frequency scope: global (default) or field."))
+        .with_parameter(ToolParameter::new("df_cutoffs", ToolParameterType::Object).with_description("Optional gate cutoff overrides (ratios 0..1): content, tags, concepts, agent_id, agent_registry."))
+        .with_parameter(ToolParameter::new("vector_fusion", ToolParameterType::String).with_description("Vector/lexical blend: relative (default, query-length independent) or absolute (raw BM25 decay)."))
+        .with_parameter(ToolParameter::new("resolve_successors", ToolParameterType::Boolean).with_description("Replace superseded hits by their live successor and promote the thought contesting a contested hit. Default true."))
+        .with_parameter(ToolParameter::new("synonym_weight", ToolParameterType::Number).with_description("Weight of automatic thesaurus synonym expansion; 0 disables it. Default 0.3.")),
         ToolMetadata::new(
             "mentisdb_summary_candidates",
             "Return deterministic append-only summary source candidates. This only selects source windows; it does not generate or append summary thoughts.",
@@ -9160,18 +9178,84 @@ fn build_query(request: &SearchRequest) -> Result<ThoughtQuery, Box<dyn Error + 
     Ok(query)
 }
 
-/// Applies a request's `collapse_duplicates` override: `0` (or less) turns
-/// collapsing off, a value in `(0, 1]` sets the threshold, `None` keeps the
-/// server default.
-fn apply_collapse_duplicates(
-    ranked_query: RankedSearchQuery,
+/// Ranking knobs accepted by ranked search, federated search and context
+/// bundles on REST and MCP (and by the matching CLI flags). Every field is
+/// optional; an omitted field keeps the library default.
+#[derive(Debug, Deserialize, Default, Clone)]
+struct RankingKnobs {
+    /// Lexical stop-word gate document-frequency scope: `global` or `field`.
+    #[serde(default)]
+    df_scope: Option<String>,
+    /// Per-field overrides of the lexical gate cutoffs (ratios in `0..=1`).
+    #[serde(default)]
+    df_cutoffs: Option<DfCutoffsRequest>,
+    /// Vector/lexical blend: `relative` or `absolute`.
+    #[serde(default)]
+    vector_fusion: Option<String>,
+    /// Replace superseded hits by their live successor (default true).
+    #[serde(default)]
+    resolve_successors: Option<bool>,
+    /// Near-duplicate collapse threshold in `(0, 1]`; `0` disables.
+    #[serde(default)]
     collapse_duplicates: Option<f32>,
-) -> RankedSearchQuery {
-    match collapse_duplicates {
-        Some(t) if t <= 0.0 || t.is_nan() => ranked_query.with_collapse_duplicates(None),
-        Some(t) => ranked_query.with_collapse_duplicates(Some(t.min(1.0))),
-        None => ranked_query,
+    /// Weight of automatic thesaurus synonym expansion; `0` disables it.
+    #[serde(default)]
+    synonym_weight: Option<f32>,
+}
+
+/// Lexical gate cutoff overrides, see [`crate::search::lexical::Bm25DfCutoffs`].
+#[derive(Debug, Deserialize, Default, Clone)]
+struct DfCutoffsRequest {
+    content: Option<f32>,
+    tags: Option<f32>,
+    concepts: Option<f32>,
+    agent_id: Option<f32>,
+    agent_registry: Option<f32>,
+}
+
+/// Applies a request's [`RankingKnobs`] over the library defaults.
+///
+/// # Errors
+///
+/// Fails for an unknown `df_scope` or `vector_fusion` name or a cutoff outside
+/// `0..=1`, so a typo is an error instead of a silent default.
+fn apply_ranking_knobs(
+    mut q: RankedSearchQuery,
+    knobs: &RankingKnobs,
+) -> Result<RankedSearchQuery, Box<dyn Error + Send + Sync>> {
+    if let Some(scope) = &knobs.df_scope {
+        q = q.with_df_scope(scope.parse::<crate::search::lexical::DfScope>()?);
     }
+    if let Some(c) = &knobs.df_cutoffs {
+        let mut cutoffs = crate::search::lexical::Bm25DfCutoffs::default();
+        for (slot, value) in [
+            (&mut cutoffs.content, c.content),
+            (&mut cutoffs.tags, c.tags),
+            (&mut cutoffs.concepts, c.concepts),
+            (&mut cutoffs.agent_id, c.agent_id),
+            (&mut cutoffs.agent_registry, c.agent_registry),
+        ] {
+            if let Some(v) = value {
+                if !(0.0..=1.0).contains(&v) {
+                    return Err(format!("df_cutoffs values must be in 0..=1, got {v}").into());
+                }
+                *slot = v;
+            }
+        }
+        q = q.with_df_cutoffs(cutoffs);
+    }
+    if let Some(fusion) = &knobs.vector_fusion {
+        q = q.with_vector_fusion(fusion.parse::<crate::VectorFusion>()?);
+    }
+    if let Some(resolve) = knobs.resolve_successors {
+        q = q.with_resolve_successors(resolve);
+    }
+    q = match knobs.collapse_duplicates {
+        Some(t) if t <= 0.0 || t.is_nan() => q.with_collapse_duplicates(None),
+        Some(t) => q.with_collapse_duplicates(Some(t.min(1.0))),
+        None => q,
+    };
+    Ok(q)
 }
 
 fn apply_include_invalidated(
@@ -9184,18 +9268,22 @@ fn apply_include_invalidated(
     ranked_query
 }
 
-/// Applies the built-in static thesaurus for automatic query-time synonym expansion.
-/// This makes the thesaurus performance breakthrough (NDCG +31% on research harness)
-/// available by default to all REST, MCP, dashboard, and CLI clients without requiring
-/// callers to construct synonym maps themselves.
-fn apply_thesaurus_if_text(mut q: RankedSearchQuery, text: Option<&str>) -> RankedSearchQuery {
-    if let Some(t) = text.map(str::trim).filter(|s| !s.is_empty()) {
-        let syns = thesaurus::expand_text(t);
-        if !syns.is_empty() {
-            q = q.with_synonyms(syns, thesaurus::AUTO_SYNONYM_WEIGHT);
-        }
+/// Applies a request's `synonym_weight` override. The built-in thesaurus
+/// expansion itself is a library default (see `RankedSearchQuery::thesaurus`),
+/// so REST, MCP, dashboard and CLI clients get it without building synonym maps.
+fn apply_thesaurus_if_text(
+    q: RankedSearchQuery,
+    _text: Option<&str>,
+    knobs: &RankingKnobs,
+) -> RankedSearchQuery {
+    // The library now expands with the built-in thesaurus by default, at the
+    // same weight the server always used; the request only overrides the weight
+    // (`0` turns expansion off).
+    match knobs.synonym_weight {
+        Some(w) if w <= 0.0 || w.is_nan() => q.with_thesaurus(false),
+        Some(w) => q.with_synonym_weight(w),
+        None => q,
     }
-    q
 }
 
 fn build_ranked_filter_query(

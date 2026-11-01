@@ -21,6 +21,26 @@ otherwise prints indented JSON; commands whose result is a document (memory
 Markdown, skill content, the recent-context prompt) print the raw text, and
 `--json` prints the full response envelope instead.
 
+## Ranking knobs
+
+`search`, `search federated` and `search bundles` (REST `ranked-search`,
+`federated-search`, `context-bundles`; MCP `mentisdb_ranked_search`,
+`mentisdb_federated_search`, `mentisdb_context_bundles`) accept the same ranking
+knobs. Each CLI flag is the REST/MCP request field of the same name with `-`
+for `_`; omitted knobs keep the library default.
+
+| REST / MCP field | CLI flag | Library | Default |
+|---|---|---|---|
+| `resolve_successors` | `--resolve-successors BOOL` | `RankedSearchQuery::with_resolve_successors` | `true` |
+| `collapse_duplicates` | `--collapse-duplicates THRESHOLD` (0 disables) | `with_collapse_duplicates` | `0.9` |
+| `vector_fusion` | `--vector-fusion relative\|absolute` | `with_vector_fusion` | `relative` |
+| `synonym_weight` | `--synonym-weight WEIGHT` (0 disables) | `with_synonym_weight`, `with_thesaurus` | `0.3` |
+| `df_scope` | `--df-scope global\|field` | `with_df_scope` | `global` |
+| `df_cutoffs.{content,tags,concepts,agent_id,agent_registry}` | `--df-cutoff-content`, `-tags`, `-concepts`, `-agent-id`, `-agent-registry` | `with_df_cutoffs` | 0.30 / 0.30 / 0.30 / 0.70 / 0.60 |
+
+Unknown `df_scope` or `vector_fusion` names and cutoffs outside `0..=1` are
+rejected with an error instead of silently falling back.
+
 ## MCP tools
 
 | MCP tool | REST route | CLI command |

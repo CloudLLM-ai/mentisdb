@@ -216,7 +216,8 @@ fn resolve_successors_off_only_hides() {
     let (_dir, chain, old, new) = scenario(Link::Supersedes);
     let q = RankedSearchQuery::new()
         .with_text(QUERY_OLD_WORDING)
-        .with_resolve_successors(false);
+        .with_resolve_successors(false)
+        .with_thesaurus(false);
     let ids: Vec<_> = chain
         .query_ranked(&q)
         .hits

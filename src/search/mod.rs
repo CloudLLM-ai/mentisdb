@@ -46,6 +46,19 @@ pub mod lemmas;
 /// BM25-style lexical indexing and ranking over committed thoughts.
 pub mod lexical;
 /// Personalized PageRank graph expansion primitives.
+///
+/// **Deprecated and unused.** Ranked search never calls this module, and no
+/// LoCoMo or LongMemEval run showed a gain that would justify wiring it in (the
+/// benchmark chains only carry sequential `ContinuesFrom` edges, which the
+/// bounded breadth-first expansion already covers). It will be removed in the
+/// next breaking release.
+#[cfg_attr(
+    not(test),
+    deprecated(
+        since = "0.10.11",
+        note = "never used by ranked search; removed in the next breaking release"
+    )
+)]
 pub mod ppr;
 /// Provenance path structures for graph expansion starting from lexical seeds.
 pub mod provenance;

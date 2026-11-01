@@ -572,6 +572,10 @@ and `cert` work on the data directory directly and do not need the daemon.
   Jaccard threshold (default `0.9`), `off` disables it. Collapsed ids are listed in
   `collapsed_duplicates` on the surviving hit. Per request: `collapse_duplicates`
   (`0` disables). Text queries only.
+- Per-request ranking knobs (REST/MCP fields and CLI flags, see `docs/CLI_PARITY.md`):
+  `resolve_successors`, `collapse_duplicates`, `vector_fusion`, `synonym_weight`
+  (automatic thesaurus expansion, default 0.3, `0` disables; the library applies it
+  by default too), `df_scope` and `df_cutoffs`.
 - `FASTEMBED_CACHE_DIR`
   Where the FastEmbed ONNX model is cached. Default: `<MENTISDB_DIR>/.fastembed_cache`.
 - `MENTISDB_UPDATE_CHECK`

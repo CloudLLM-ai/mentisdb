@@ -209,7 +209,11 @@ fn ranked_query_scores_agent_registry_text_lexically() {
         )
         .unwrap();
 
-    let ranked = chain.query_ranked(&RankedSearchQuery::new().with_text("architect"));
+    let ranked = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text("architect")
+            .with_thesaurus(false),
+    );
 
     assert_eq!(ranked.backend, RankedSearchBackend::Lexical);
     assert_eq!(ranked.total_candidates, 1);
@@ -1052,8 +1056,12 @@ fn ranked_query_with_synonyms_boosts_recall() {
         )
         .unwrap();
 
-    let without_synonyms =
-        chain.query_ranked(&RankedSearchQuery::new().with_text("fast").with_limit(10));
+    let without_synonyms = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text("fast")
+            .with_thesaurus(false)
+            .with_limit(10),
+    );
     assert_eq!(without_synonyms.total_candidates, 1);
 
     let mut synonyms = std::collections::HashMap::new();

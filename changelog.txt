@@ -1,4 +1,26 @@
 UNRELEASED
+  - feat(api): ranking knobs are reachable everywhere. REST, MCP and the CLI
+    (`search`, `search federated`, `search bundles`) accept `resolve_successors`,
+    `collapse_duplicates`, `vector_fusion`, `synonym_weight`, `df_scope` and
+    `df_cutoffs.*` (flags `--resolve-successors`, `--collapse-duplicates`,
+    `--vector-fusion`, `--synonym-weight`, `--df-scope`, `--df-cutoff-*`). Bad
+    values are errors, not silent defaults. See docs/CLI_PARITY.md.
+  - change(search): library and server now share the thesaurus default. The
+    library used to apply no expansion at synonym weight 0.7 while the server
+    expanded at 0.3. `RankedSearchQuery::new()` now expands with the built-in
+    thesaurus at 0.3 (`with_thesaurus(false)` or `synonym_weight` 0 turns it
+    off; the `lexical-search` endpoint stays literal). LoCoMo R@10 / LongMemEval
+    R@5: no expansion 75.3 / 69.6, weight 0.3 75.2 / 70.0, weight 0.7 74.8 /
+    68.2. 0.3 is best on LongMemEval and within noise on LoCoMo, and it is what
+    every published server number used.
+  - deprecate: `RankedSearchQuery::{llm_rerank, llm_model, llm_rerank_top_k,
+    with_llm_reranking}` and `RankedSearchScore::llm_score` are no-ops (LLM
+    reranking was never implemented; `llm_score` is always 0). Marked
+    `#[deprecated]`; removed in the next breaking release.
+  - deprecate: `search::ppr` (personalized PageRank) is never called by ranked
+    search. Wiring it in could not be justified: the benchmark chains only carry
+    sequential `ContinuesFrom` edges that bounded breadth-first expansion already
+    covers. Marked deprecated; removed in the next breaking release.
   - fix(build): `lineage` was gated on the `llm-extraction` feature by a
     misplaced attribute, so `--no-default-features` (with or without `server`)
     did not compile. Both configurations build again.

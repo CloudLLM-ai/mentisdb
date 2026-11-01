@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use super::{GraphExpansionPath, ThoughtLocator};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
