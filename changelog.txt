@@ -9,7 +9,7 @@ UNRELEASED
     (`version_status`, `successors`, `current_version`, `successor_of`,
     `collapsed_duplicates`) stay on the thought. Fields are dropped by
     name, so relations, concepts, refs, content and any field added later are
-    kept. On real chains the response was 25% smaller across 12 searches with
+    kept. On real chains the response was 24% smaller across 12 searches with
     every relation, concept and graph link kept; `search_compact` benchmarks
     show no time cost. The default response is unchanged.
   - fix(signing): a stored zero-length `thought_signature` is a placeholder, not a
