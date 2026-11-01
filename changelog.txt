@@ -149,13 +149,6 @@ UNRELEASED
   - feat(registry): `chains.json` entries gain `has_private` and
     `public_thought_count` (optional, written on the next flush) so listings
     show public counts without opening a chain.
-  - feat(migration): new `mentisdb::migration` engine for chain format upgrades.
-    Each chain migrates through a durable journal (planned, backed up, staged,
-    committed, finalized): the original is hard-linked into
-    `migrations/backup/` first, the upgraded chain is streamed (flat memory,
-    about 120 000 thoughts/s) into a staging file, re-verified end to end and
-    swapped in with an atomic rename. A kill at any step is resumed or
-    discarded on the next start; a chain interrupted three times is
   - feat(migration): chain format upgrades are now background, journaled,
     backed up and recoverable, and never block startup. The daemon comes up in
     about a second (measured: 0.97 s with a 600 000-thought legacy chain, which
