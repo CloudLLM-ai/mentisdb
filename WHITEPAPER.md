@@ -456,6 +456,17 @@ before their atomic rename. Explicit flush, shutdown and drop always sync. A fai
 commit is rolled back to the pre-commit file length, so a full disk cannot leave a torn
 record followed by its duplicate.
 
+Embedding stays off the critical section. A daemon append takes an embedding ticket
+under the chain's write lock, computes the embedding with no lock held, and then commits
+the vector under a brief lock. Vectors are applied in chain order even when concurrent
+appends finish out of order, and a failed embedding schedules the background rebuild
+instead of blocking the sidecar. With a 5 ms embedding model this cut the lock hold per
+append from about 9.5 ms to about 0.5 ms (`storage_paths/append_lock_hold`).
+
+The agent registry is not rewritten on every append. Its counters are recomputed from the
+chain at open, so only identity changes (a new agent, a rename, a learned owner) are
+written immediately, and counters are saved every 16 appends and at shutdown.
+
 One writer process per data directory is assumed. There is no cross-process file lock.
 
 ### 5.4 Crash Recovery
@@ -494,7 +505,9 @@ Derived files make search fast, and each one can be rebuilt from the log.
 - **Implicit-edge overlay** (Section 6.6) records the thought count and head hash it
   covers. On load it replays a missing tail of up to 2048 thoughts, and otherwise
   rebuilds.
-- **HNSW graphs** are reloaded only when their stored count matches the chain.
+- **HNSW graphs** start with a magic and a SHA-256 digest of the embedding space and
+  its documents. The digest is checked against the sidecar and the graph body on load;
+  any mismatch, torn write or legacy file triggers a background rebuild.
 
 ### 5.6 Schema Versions and Migration
 
