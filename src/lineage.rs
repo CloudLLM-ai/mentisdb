@@ -657,7 +657,11 @@ impl MentisDb {
         let mut wide = request.clone();
         wide.include_invalidated = true;
         wide.filter.include_invalidated = true;
-        wide.limit = request.limit.saturating_mul(2).max(request.limit + 8);
+        // Caller-supplied: saturate so `limit = usize::MAX` cannot overflow.
+        wide.limit = request
+            .limit
+            .saturating_mul(2)
+            .max(request.limit.saturating_add(8));
         let mut result = self.query_ranked_raw(&wide);
         let raw = std::mem::take(&mut result.hits);
         result.hits = self.redirect_hits(raw, request);
@@ -695,7 +699,10 @@ impl MentisDb {
             .enumerate()
             .map(|(i, h)| (h.thought.id, i))
             .collect();
-        let mut out: Vec<RankedSearchHit<'a>> = Vec::with_capacity(request.limit + 1);
+        // Sized from the hits we actually have, never from the caller-supplied
+        // limit, which may be `usize::MAX`.
+        let mut out: Vec<RankedSearchHit<'a>> =
+            Vec::with_capacity(request.limit.min(raw.len()).saturating_add(1));
         let mut placed: HashMap<Uuid, usize> = HashMap::new();
         let place = |out: &mut Vec<RankedSearchHit<'a>>,
                      placed: &mut HashMap<Uuid, usize>,
