@@ -26,7 +26,6 @@ fuzz_target!(|data: &[u8]| {
 });
 
 fn check(thought: Thought, layout: RecordLayout) {
-    assert_eq!(thought.schema_version, MENTISDB_CURRENT_VERSION);
     // Round trip through the current encoding.
     let bytes = bincode::serde::encode_to_vec(&thought, bincode::config::standard())
         .expect("a decoded thought re-encodes");
@@ -36,5 +35,7 @@ fn check(thought: Thought, layout: RecordLayout) {
     assert_eq!(again.thought.content, thought.content);
     // The hash rebuilder either accepts the record or returns a typed error.
     let mut rebuilder = HashRebuilder::default();
-    let _ = rebuilder.apply(thought, layout);
+    if let Ok(rebuilt) = rebuilder.apply(thought, layout, mentisdb::MENTISDB_CURRENT_VERSION) {
+        assert_eq!(rebuilt.schema_version, MENTISDB_CURRENT_VERSION);
+    }
 }

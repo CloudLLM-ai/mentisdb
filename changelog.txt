@@ -1,4 +1,20 @@
 UNRELEASED
+  - fix(storage): real chains written in March and April 2026 (the oldest chain
+    of at least one installation: 365 records, then 160 more) stamp
+    `schema_version = 4` on schema-3 records and hash them with that stored
+    value; records appended afterwards have `entity_type` but not
+    `source_episode`, a third schema-3 layout. Master 8cfebe2 refused the 4s as
+    "newer than supported" and, like every earlier release, decoded the third
+    layout as the base one, shifting its fields (the entity type was lost and
+    the hashes came out empty, which accidentally triggered a silent rehash).
+    Schema 4 is now an accepted alias (`MENTISDB_LEGACY_SCHEMA_V4_ALIAS`), the
+    third layout has its own decoder, every layout must consume its whole
+    payload, and both the loader and the migration engine verify alias records
+    under the rule that produced them (stored schema, stored link) and the rest
+    against the rebuilt chain, refusing anything that does not verify instead of
+    rehashing it. Both real chains verify and migrate with identical content,
+    head hash and entity types. Schema 4 is taken: the next thought schema must
+    be 5; only values above 4 are refused as newer.
   - fix(daemon): a second daemon on a data directory that is already in use now refuses
     to start (it used to start without the directory lock and could append to the same
     chain files); the `--offline` operator commands rely on the same lock.

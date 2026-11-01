@@ -21,7 +21,7 @@ use super::MigrationError;
 use crate::signing::{SignatureVersion, StoredSignature};
 use crate::{
     compute_thought_hash, compute_thought_hash_legacy, LegacyThoughtV0, LegacyThoughtV1,
-    LegacyThoughtV2, Thought, ThoughtRelation, MENTISDB_CURRENT_VERSION,
+    LegacyThoughtV2, LegacyThoughtV3b, Thought, ThoughtRelation, MENTISDB_CURRENT_VERSION,
 };
 
 /// One `vN -> vN+1` step of the upgrade pipeline.
@@ -65,10 +65,16 @@ pub const UPGRADE_STEPS: &[UpgradeStep] = &[
         description: "relations gain valid_at and invalid_at temporal validity",
     },
     UpgradeStep {
-        name: "thought-add-entity-fields",
+        name: "thought-add-entity-type",
         from_layout: "schema3-base",
+        to_layout: "schema3-entity",
+        description: "thoughts gain entity_type",
+    },
+    UpgradeStep {
+        name: "thought-add-source-episode",
+        from_layout: "schema3-entity",
         to_layout: "schema3",
-        description: "thoughts gain entity_type and source_episode",
+        description: "thoughts gain source_episode",
     },
 ];
 
@@ -81,6 +87,8 @@ pub enum RecordLayout {
     Schema2,
     /// Schema 3 before `entity_type`/`source_episode` existed.
     Schema3Base,
+    /// Schema 3 with `entity_type` but before `source_episode` existed.
+    Schema3Entity,
     /// The current layout.
     Current,
 }
@@ -96,7 +104,7 @@ impl RecordLayout {
         match self {
             Self::Schema0To1 => 0,
             Self::Schema2 => 2,
-            Self::Schema3Base | Self::Current => 3,
+            Self::Schema3Base | Self::Schema3Entity | Self::Current => 3,
         }
     }
 }
@@ -110,6 +118,9 @@ pub struct DecodedRecord {
     pub layout: RecordLayout,
     /// Names of the [`UPGRADE_STEPS`] applied, oldest first.
     pub steps: Vec<&'static str>,
+    /// The `schema_version` stored in the record (before normalization). It is
+    /// part of what the stored hash covers, so the hash rebuilder needs it.
+    pub stored_schema: u32,
 }
 
 fn invalid(message: impl Into<String>) -> MigrationError {
@@ -152,9 +163,13 @@ pub fn decode_and_upgrade(payload: &[u8]) -> Result<DecodedRecord, MigrationErro
             let v2 = step_v0_to_v2(legacy, &mut steps);
             let base = step_v2_to_v3(v2, &mut steps);
             Ok(DecodedRecord {
-                thought: step_add_entity_fields(base, &mut steps),
+                thought: {
+                    let with_entity = step_add_entity_type(base, &mut steps);
+                    step_add_source_episode(with_entity, &mut steps)
+                },
                 layout: RecordLayout::Schema0To1,
                 steps,
+                stored_schema: version,
             })
         }
         2 => {
@@ -163,15 +178,21 @@ pub fn decode_and_upgrade(payload: &[u8]) -> Result<DecodedRecord, MigrationErro
                     .map_err(|e| invalid(format!("schema 2 record: {e}")))?;
             let base = step_v2_to_v3(legacy, &mut steps);
             Ok(DecodedRecord {
-                thought: step_add_entity_fields(base, &mut steps),
+                thought: {
+                    let with_entity = step_add_entity_type(base, &mut steps);
+                    step_add_source_episode(with_entity, &mut steps)
+                },
                 layout: RecordLayout::Schema2,
                 steps,
+                stored_schema: version,
             })
         }
-        3 => {
-            // Schema 3 exists in two layouts. Try the current one and demand
-            // that it consumes the whole payload: the base layout can decode
-            // as the current one by accident and then leaves bytes over.
+        3 | crate::MENTISDB_LEGACY_SCHEMA_V4_ALIAS => {
+            // Schema 3 (and its alias 4, see
+            // `crate::MENTISDB_LEGACY_SCHEMA_V4_ALIAS`) exists in three
+            // layouts. Each must consume the whole payload: a layout that
+            // merely decodes without using every byte read the fields of
+            // another one, shifted.
             if let Ok((thought, used)) =
                 bincode::serde::decode_from_slice::<Thought, _>(payload, config)
             {
@@ -180,16 +201,38 @@ pub fn decode_and_upgrade(payload: &[u8]) -> Result<DecodedRecord, MigrationErro
                         thought,
                         layout: RecordLayout::Current,
                         steps,
+                        stored_schema: version,
                     });
                 }
             }
-            let (base, _): (LegacyThoughtV2, usize) =
+            if let Ok((with_entity, used)) =
+                bincode::serde::decode_from_slice::<LegacyThoughtV3b, _>(payload, config)
+            {
+                if used == payload.len() {
+                    return Ok(DecodedRecord {
+                        thought: step_add_source_episode(with_entity, &mut steps),
+                        layout: RecordLayout::Schema3Entity,
+                        steps,
+                        stored_schema: version,
+                    });
+                }
+            }
+            let (base, used): (LegacyThoughtV2, usize) =
                 bincode::serde::decode_from_slice(payload, config)
                     .map_err(|e| invalid(format!("schema 3 record: {e}")))?;
+            if used != payload.len() {
+                return Err(invalid(format!(
+                    "schema 3 record matches no known layout ({} of {} bytes used)",
+                    used,
+                    payload.len()
+                )));
+            }
+            let with_entity = step_add_entity_type(base, &mut steps);
             Ok(DecodedRecord {
-                thought: step_add_entity_fields(base, &mut steps),
+                thought: step_add_source_episode(with_entity, &mut steps),
                 layout: RecordLayout::Schema3Base,
                 steps,
+                stored_schema: version,
             })
         }
         newer => Err(MigrationError::FutureSchema { version: newer }),
@@ -262,11 +305,11 @@ fn step_v2_to_v3(legacy: LegacyThoughtV1, steps: &mut Vec<&'static str>) -> Lega
     }
 }
 
-/// Schema 3 base layout to the current layout.
-fn step_add_entity_fields(base: LegacyThoughtV2, steps: &mut Vec<&'static str>) -> Thought {
-    steps.push("thought-add-entity-fields");
-    Thought {
-        schema_version: MENTISDB_CURRENT_VERSION,
+/// Schema 3 base layout to the layout with `entity_type`.
+fn step_add_entity_type(base: LegacyThoughtV2, steps: &mut Vec<&'static str>) -> LegacyThoughtV3b {
+    steps.push("thought-add-entity-type");
+    LegacyThoughtV3b {
+        schema_version: base.schema_version,
         id: base.id,
         index: base.index,
         timestamp: base.timestamp,
@@ -284,9 +327,39 @@ fn step_add_entity_fields(base: LegacyThoughtV2, steps: &mut Vec<&'static str>) 
         refs: base.refs,
         relations: base.relations,
         entity_type: None,
-        source_episode: None,
         prev_hash: base.prev_hash,
         hash: base.hash,
+    }
+}
+
+/// Schema 3 with `entity_type` to the current layout.
+fn step_add_source_episode(
+    with_entity: LegacyThoughtV3b,
+    steps: &mut Vec<&'static str>,
+) -> Thought {
+    steps.push("thought-add-source-episode");
+    Thought {
+        schema_version: MENTISDB_CURRENT_VERSION,
+        id: with_entity.id,
+        index: with_entity.index,
+        timestamp: with_entity.timestamp,
+        session_id: with_entity.session_id,
+        agent_id: with_entity.agent_id,
+        signing_key_id: with_entity.signing_key_id,
+        thought_signature: with_entity.thought_signature,
+        thought_type: with_entity.thought_type,
+        role: with_entity.role,
+        content: with_entity.content,
+        confidence: with_entity.confidence,
+        importance: with_entity.importance,
+        tags: with_entity.tags,
+        concepts: with_entity.concepts,
+        refs: with_entity.refs,
+        relations: with_entity.relations,
+        entity_type: with_entity.entity_type,
+        source_episode: None,
+        prev_hash: with_entity.prev_hash,
+        hash: with_entity.hash,
     }
 }
 
@@ -331,6 +404,7 @@ impl HashRebuilder {
         &mut self,
         mut thought: Thought,
         layout: RecordLayout,
+        stored_schema: u32,
     ) -> Result<Thought, MigrationError> {
         if thought.index != self.next_index {
             return Err(MigrationError::Integrity {
@@ -366,7 +440,18 @@ impl HashRebuilder {
                 as_stored.prev_hash = stored_prev.clone();
                 stored_hash == compute_thought_hash_legacy(&as_stored)
             };
-            if !current_ok && !legacy_ok {
+            // Builds that stamped schema 4 on schema-3 records hashed them with
+            // the stored `schema_version`, and linked each record to the
+            // previous stored hash. Verify in that domain too.
+            let stored_domain_ok = stored_schema != MENTISDB_CURRENT_VERSION
+                && stored_prev == self.previous_stored_hash
+                && {
+                    let mut as_stored = thought.clone();
+                    as_stored.schema_version = stored_schema;
+                    as_stored.prev_hash = stored_prev.clone();
+                    stored_hash == compute_thought_hash(&as_stored)
+                };
+            if !current_ok && !legacy_ok && !stored_domain_ok {
                 return Err(MigrationError::Integrity {
                     index: thought.index,
                     message: "stored hash matches neither the current nor the legacy hash \
@@ -388,7 +473,10 @@ impl HashRebuilder {
                 });
             }
         }
-        self.hash_changed |= layout.hashes_untrusted() || stored_hash != new_hash || prev_changed;
+        self.hash_changed |= layout.hashes_untrusted()
+            || stored_schema != MENTISDB_CURRENT_VERSION
+            || stored_hash != new_hash
+            || prev_changed;
 
         thought.hash = new_hash.clone();
         self.previous_stored_hash = stored_hash;
@@ -426,26 +514,35 @@ pub fn decode_json_and_upgrade(line: &str) -> Result<DecodedRecord, MigrationErr
             let v2 = step_v0_to_v2(legacy, &mut steps);
             let base = step_v2_to_v3(v2, &mut steps);
             Ok(DecodedRecord {
-                thought: step_add_entity_fields(base, &mut steps),
+                thought: {
+                    let with_entity = step_add_entity_type(base, &mut steps);
+                    step_add_source_episode(with_entity, &mut steps)
+                },
                 layout: RecordLayout::Schema0To1,
                 steps,
+                stored_schema: version,
             })
         }
         2 => {
             let legacy: LegacyThoughtV1 = serde_json::from_value(value).map_err(corrupt)?;
             let base = step_v2_to_v3(legacy, &mut steps);
             Ok(DecodedRecord {
-                thought: step_add_entity_fields(base, &mut steps),
+                thought: {
+                    let with_entity = step_add_entity_type(base, &mut steps);
+                    step_add_source_episode(with_entity, &mut steps)
+                },
                 layout: RecordLayout::Schema2,
                 steps,
+                stored_schema: version,
             })
         }
-        3 => {
+        3 | crate::MENTISDB_LEGACY_SCHEMA_V4_ALIAS => {
             let thought: Thought = serde_json::from_value(value).map_err(corrupt)?;
             Ok(DecodedRecord {
                 thought,
                 layout: RecordLayout::Current,
                 steps,
+                stored_schema: version,
             })
         }
         newer => Err(MigrationError::FutureSchema { version: newer }),

@@ -461,6 +461,25 @@ pub const MENTISDB_SCHEMA_V2: u32 = 2;
 pub const MENTISDB_SCHEMA_V3: u32 = 3;
 /// Alias for the latest supported MentisDb storage schema version.
 pub const MENTISDB_CURRENT_VERSION: u32 = MENTISDB_SCHEMA_V3;
+/// A `schema_version` of `4` stamped by MentisDB builds from March and April
+/// 2026 on records that have the schema-3 layout.
+///
+/// Every release up to 0.10.10 decoded any `schema_version >= 3` as schema 3,
+/// so real chains (the oldest chain of at least one installation has hundreds
+/// of such records) were written and read this way. Readers keep accepting `4`
+/// as schema 3 and normalize it in memory. The stored hash of such a record was
+/// computed with `schema_version = 4`, so verification keeps the stored value
+/// (see `migration::HashRebuilder`) and the migration engine rebuilds the hashes
+/// under schema 3.
+///
+/// `4` is therefore taken: the next thought schema must be `5`, and only values
+/// above this alias are "newer than supported".
+///
+/// ```
+/// use mentisdb::{MENTISDB_CURRENT_VERSION, MENTISDB_LEGACY_SCHEMA_V4_ALIAS};
+/// assert_eq!(MENTISDB_LEGACY_SCHEMA_V4_ALIAS, MENTISDB_CURRENT_VERSION + 1);
+/// ```
+pub const MENTISDB_LEGACY_SCHEMA_V4_ALIAS: u32 = 4;
 const MENTISDB_REGISTRY_FILENAME: &str = "mentisdb-registry.json";
 const LEGACY_THOUGHTCHAIN_REGISTRY_FILENAME: &str = "thoughtchain-registry.json";
 
@@ -5571,6 +5590,39 @@ struct LegacyThoughtV2 {
     concepts: Vec<String>,
     refs: Vec<u64>,
     relations: Vec<ThoughtRelation>,
+    prev_hash: String,
+    hash: String,
+}
+
+/// Mirrors the schema-3 layout written between the base layout and the current
+/// one: `entity_type` exists but `source_episode` does not yet.
+///
+/// Found in real chains (the records appended after the March/April 2026
+/// schema-4 era). Decoding such a record as the base layout reads the
+/// `entity_type` byte as an empty `prev_hash` and shifts every following field,
+/// so it needs its own mirror.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyThoughtV3b {
+    schema_version: u32,
+    id: Uuid,
+    index: u64,
+    timestamp: DateTime<Utc>,
+    session_id: Option<Uuid>,
+    agent_id: String,
+    #[serde(default)]
+    signing_key_id: Option<String>,
+    #[serde(default)]
+    thought_signature: Option<Vec<u8>>,
+    thought_type: ThoughtType,
+    role: ThoughtRole,
+    content: String,
+    confidence: Option<f32>,
+    importance: f32,
+    tags: Vec<String>,
+    concepts: Vec<String>,
+    refs: Vec<u64>,
+    relations: Vec<ThoughtRelation>,
+    entity_type: Option<String>,
     prev_hash: String,
     hash: String,
 }
@@ -14364,8 +14416,24 @@ fn load_binary_thoughts(file_path: &Path) -> io::Result<Vec<Thought>> {
 /// `ThoughtRelation`).
 fn load_binary_thoughts_per_thought(reader: &mut impl Read) -> io::Result<Vec<Thought>> {
     let mut thoughts = Vec::new();
+    let mut stored_schemas = Vec::new();
     while let Some(payload) = read_next_binary_payload(reader)? {
+        let stored = bincode::decode_from_slice::<u32, _>(
+            &payload,
+            crate::decode_limits::thought_record_config(),
+        )
+        .map(|(version, _)| version)
+        .unwrap_or(0);
+        stored_schemas.push(stored);
         thoughts.push(deserialize_binary_thought_payload(&payload)?);
+    }
+
+    // Chains with records stamped with the March/April 2026 schema-4 alias were
+    // hashed with the stored `schema_version`; verify them in that domain and
+    // rebuild under schema 3 (never rebuilding what does not verify).
+    if stored_schemas.contains(&MENTISDB_LEGACY_SCHEMA_V4_ALIAS) {
+        rebuild_alias_chain(&mut thoughts, &stored_schemas)?;
+        return Ok(thoughts);
     }
 
     // Rebuild hash chain and agent registry for migrated thoughts.
@@ -14380,6 +14448,47 @@ fn load_binary_thoughts_per_thought(reader: &mut impl Read) -> io::Result<Vec<Th
     }
 
     Ok(thoughts)
+}
+
+/// Verify and rebuild a chain that contains schema-4 alias records.
+///
+/// Alias records must verify under the rule that produced them (stored
+/// `schema_version`, linked to the previous stored hash); every other record
+/// must verify against the chain as rebuilt under schema 3, which is how the
+/// loader that appended it hashed it. Anything else is corruption and the open
+/// fails instead of silently re-rooting the chain.
+fn rebuild_alias_chain(thoughts: &mut [Thought], stored_schemas: &[u32]) -> io::Result<()> {
+    let mut previous_stored = String::new();
+    let mut previous_new = String::new();
+    for (position, thought) in thoughts.iter_mut().enumerate() {
+        let stored_hash = std::mem::take(&mut thought.hash);
+        let stored_prev = std::mem::take(&mut thought.prev_hash);
+        thought.schema_version = MENTISDB_CURRENT_VERSION;
+        thought.prev_hash = previous_new.clone();
+        let new_hash = compute_thought_hash(thought);
+        let verified = if stored_schemas[position] == MENTISDB_LEGACY_SCHEMA_V4_ALIAS {
+            let mut as_stored = thought.clone();
+            as_stored.schema_version = MENTISDB_LEGACY_SCHEMA_V4_ALIAS;
+            as_stored.prev_hash = stored_prev.clone();
+            (stored_prev == previous_stored && stored_hash == compute_thought_hash(&as_stored))
+                || stored_hash == new_hash
+        } else {
+            stored_hash == new_hash
+        };
+        if !verified {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Thought chain integrity verification failed at thought {position} \
+                     (schema-4 era chain)"
+                ),
+            ));
+        }
+        thought.hash = new_hash.clone();
+        previous_stored = stored_hash;
+        previous_new = new_hash;
+    }
+    Ok(())
 }
 
 /// Rebuild the hash chain for thoughts that have empty `prev_hash` or `hash`
@@ -14638,7 +14747,7 @@ fn deserialize_binary_thought_payload(payload: &[u8]) -> io::Result<Thought> {
             })?;
 
     match schema_version {
-        v if v > MENTISDB_CURRENT_VERSION => Err(io::Error::new(
+        v if v > MENTISDB_LEGACY_SCHEMA_V4_ALIAS => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
                 "Unknown schema version {v}; this version of mentisdb supports up to schema {MENTISDB_CURRENT_VERSION}. \
@@ -14646,24 +14755,23 @@ fn deserialize_binary_thought_payload(payload: &[u8]) -> io::Result<Thought> {
             ),
         )),
         v if v >= MENTISDB_CURRENT_VERSION => {
-            match bincode::serde::decode_from_slice::<Thought, _>(
-                payload,
-                crate::decode_limits::thought_record_config(),
-            ) {
-                Ok((mut thought, _)) => {
+            let config = crate::decode_limits::thought_record_config();
+            // Schema 3 has three layouts. Each must consume the whole payload:
+            // a layout that merely decodes without using every byte read the
+            // fields of another one (and used to yield empty hashes).
+            if let Ok((mut thought, used)) =
+                bincode::serde::decode_from_slice::<Thought, _>(payload, config)
+            {
+                if used == payload.len() {
                     thought.schema_version = MENTISDB_CURRENT_VERSION;
-                    Ok(thought)
+                    return Ok(thought);
                 }
-                Err(_) => {
-                    let (legacy, _): (LegacyThoughtV2, usize) =
-                        bincode::serde::decode_from_slice(payload, crate::decode_limits::thought_record_config())
-                            .map_err(|error| {
-                                io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    format!("Failed to deserialize thought: {error}"),
-                                )
-                            })?;
-                    Ok(Thought {
+            }
+            if let Ok((legacy, used)) =
+                bincode::serde::decode_from_slice::<LegacyThoughtV3b, _>(payload, config)
+            {
+                if used == payload.len() {
+                    return Ok(Thought {
                         schema_version: MENTISDB_CURRENT_VERSION,
                         id: legacy.id,
                         index: legacy.index,
@@ -14681,13 +14789,43 @@ fn deserialize_binary_thought_payload(payload: &[u8]) -> io::Result<Thought> {
                         concepts: legacy.concepts,
                         refs: legacy.refs,
                         relations: legacy.relations,
-                        entity_type: None,
+                        entity_type: legacy.entity_type,
                         source_episode: None,
                         prev_hash: legacy.prev_hash,
                         hash: legacy.hash,
-                    })
+                    });
                 }
             }
+            let (legacy, _): (LegacyThoughtV2, usize) =
+                bincode::serde::decode_from_slice(payload, config).map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Failed to deserialize thought: {error}"),
+                    )
+                })?;
+            Ok(Thought {
+                schema_version: MENTISDB_CURRENT_VERSION,
+                id: legacy.id,
+                index: legacy.index,
+                timestamp: legacy.timestamp,
+                session_id: legacy.session_id,
+                agent_id: legacy.agent_id,
+                signing_key_id: legacy.signing_key_id,
+                thought_signature: legacy.thought_signature,
+                thought_type: legacy.thought_type,
+                role: legacy.role,
+                content: legacy.content,
+                confidence: legacy.confidence,
+                importance: legacy.importance,
+                tags: legacy.tags,
+                concepts: legacy.concepts,
+                refs: legacy.refs,
+                relations: legacy.relations,
+                entity_type: None,
+                source_episode: None,
+                prev_hash: legacy.prev_hash,
+                hash: legacy.hash,
+            })
         }
         0 | 1 => {
             let (legacy, _): (LegacyThoughtV0, usize) =

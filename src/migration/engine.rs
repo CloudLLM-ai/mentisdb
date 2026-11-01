@@ -535,12 +535,17 @@ fn detect_with_kind(
                 return Ok(None);
             };
             let decoded = decode_and_upgrade(&payload)?;
+            let alias =
+                decoded.stored_schema != MENTISDB_CURRENT_VERSION && decoded.stored_schema > 2;
             let reason = match decoded.layout {
+                _ if alias => Some(MigrationReason::LegacySchema(decoded.stored_schema)),
                 RecordLayout::Schema0To1 => Some(MigrationReason::LegacySchema(
                     super::codec::peek_schema_version(&payload)?,
                 )),
                 RecordLayout::Schema2 => Some(MigrationReason::LegacySchema(2)),
-                RecordLayout::Schema3Base => Some(MigrationReason::LegacyLayout),
+                RecordLayout::Schema3Base | RecordLayout::Schema3Entity => {
+                    Some(MigrationReason::LegacyLayout)
+                }
                 RecordLayout::Current => {
                     let thought = decoded.thought;
                     if thought.hash.is_empty() {
@@ -585,7 +590,13 @@ fn for_each_record(
     path: &Path,
     kind: StorageAdapterKind,
     bytes_read: &std::sync::Arc<std::sync::atomic::AtomicU64>,
-    mut visit: impl FnMut(Thought, RecordLayout, Vec<&'static str>, u64) -> Result<(), MigrationError>,
+    mut visit: impl FnMut(
+        Thought,
+        RecordLayout,
+        u32,
+        Vec<&'static str>,
+        u64,
+    ) -> Result<(), MigrationError>,
 ) -> Result<u64, MigrationError> {
     let file = File::open(path)?;
     let reader = CountingReader {
@@ -609,7 +620,13 @@ fn for_each_record(
                     },
                     other => other,
                 })?;
-                visit(decoded.thought, decoded.layout, decoded.steps, index)?;
+                visit(
+                    decoded.thought,
+                    decoded.layout,
+                    decoded.stored_schema,
+                    decoded.steps,
+                    index,
+                )?;
                 index += 1;
             }
         }
@@ -630,7 +647,13 @@ fn for_each_record(
                     },
                     other => other,
                 })?;
-                visit(decoded.thought, decoded.layout, decoded.steps, index)?;
+                visit(
+                    decoded.thought,
+                    decoded.layout,
+                    decoded.stored_schema,
+                    decoded.steps,
+                    index,
+                )?;
                 index += 1;
             }
         }
@@ -656,11 +679,11 @@ fn stream_upgrade<W: Write>(
         source,
         kind,
         &bytes_read,
-        |thought, layout, applied, index| {
+        |thought, layout, stored_schema, applied, index| {
             options.check(Failpoint::DuringStage { thought: index })?;
             from_schema = from_schema.min(layout.schema_version());
             steps.extend(applied);
-            let upgraded = rebuilder.apply(thought, layout)?;
+            let upgraded = rebuilder.apply(thought, layout, stored_schema)?;
             let payload = bincode::serde::encode_to_vec(&upgraded, bincode::config::standard())
                 .map_err(|error| MigrationError::Io(io::Error::other(error.to_string())))?;
             out.write_all(&(payload.len() as u64).to_le_bytes())?;

@@ -33,8 +33,8 @@
 use crate::{
     compute_thought_hash, compute_thought_hash_legacy, rehash_chain_to_bincode,
     LegacyThoughtRelation, LegacyThoughtRelationV2, LegacyThoughtV0, LegacyThoughtV1,
-    LegacyThoughtV2, Thought, ThoughtRelation, ThoughtRelationKind, ThoughtRole, ThoughtType,
-    MENTISDB_CURRENT_VERSION,
+    LegacyThoughtV2, LegacyThoughtV3b, Thought, ThoughtRelation, ThoughtRelationKind, ThoughtRole,
+    ThoughtType, MENTISDB_CURRENT_VERSION,
 };
 use chrono::{TimeZone, Utc};
 use std::fs::File;
@@ -53,6 +53,14 @@ pub enum FixtureFormat {
     Schema2,
     /// Binary, schema 3 before `entity_type`/`source_episode`, valid hashes.
     Schema3Base,
+    /// Binary, schema 3 with `entity_type` but no `source_episode`, valid hashes.
+    Schema3Entity,
+    /// The March/April 2026 mixed chain found in real installations: the first
+    /// two thirds are schema-3 base-layout records stamped `4` whose hashes were
+    /// computed with `schema_version = 4`; the rest are schema-3 records with
+    /// `entity_type` (no `source_episode`) hashed with schema 3 over the
+    /// chain as a schema-3 loader had rebuilt it.
+    Schema4Era,
     /// Binary, the current layout, current hashes.
     Current,
     /// Binary, the current layout but hashed with the legacy JSON algorithm.
@@ -67,11 +75,13 @@ pub enum FixtureFormat {
 
 impl FixtureFormat {
     /// Every format.
-    pub const ALL: [FixtureFormat; 9] = [
+    pub const ALL: [FixtureFormat; 11] = [
         Self::Schema0,
         Self::Schema1,
         Self::Schema2,
         Self::Schema3Base,
+        Self::Schema3Entity,
+        Self::Schema4Era,
         Self::Current,
         Self::CurrentLegacyHash,
         Self::JsonlSchema0,
@@ -99,8 +109,17 @@ impl FixtureFormat {
     fn supports_temporal_relations(self) -> bool {
         matches!(
             self,
-            Self::Schema3Base | Self::Current | Self::CurrentLegacyHash | Self::JsonlCurrent
+            Self::Schema3Base
+                | Self::Schema3Entity
+                | Self::Schema4Era
+                | Self::Current
+                | Self::CurrentLegacyHash
+                | Self::JsonlCurrent
         )
+    }
+
+    fn supports_entity_type(self) -> bool {
+        matches!(self, Self::Schema3Entity | Self::Schema4Era) || self.supports_entity_fields()
     }
 
     fn supports_entity_fields(self) -> bool {
@@ -194,12 +213,25 @@ pub fn project(format: FixtureFormat, thoughts: &[Thought]) -> Vec<Thought> {
                 }
             }
             if !format.supports_entity_fields() {
-                thought.entity_type = None;
+                if !format.supports_entity_type() {
+                    thought.entity_type = None;
+                }
                 thought.source_episode = None;
+            }
+            if format == FixtureFormat::Schema4Era
+                && (thought.index as usize) < schema4_split(thoughts.len())
+            {
+                thought.entity_type = None;
             }
             thought
         })
         .collect()
+}
+
+/// Index at which a [`FixtureFormat::Schema4Era`] chain of `len` records
+/// switches from schema-4 stamped records to schema-3 ones.
+pub fn schema4_split(len: usize) -> usize {
+    len * 2 / 3
 }
 
 /// The thoughts a correct migration of `format` must yield: the projection with
@@ -281,6 +313,31 @@ fn legacy_v1(thought: &Thought) -> LegacyThoughtV1 {
     }
 }
 
+fn legacy_v3b(thought: &Thought) -> LegacyThoughtV3b {
+    LegacyThoughtV3b {
+        schema_version: 3,
+        id: thought.id,
+        index: thought.index,
+        timestamp: thought.timestamp,
+        session_id: thought.session_id,
+        agent_id: thought.agent_id.clone(),
+        signing_key_id: thought.signing_key_id.clone(),
+        thought_signature: thought.thought_signature.clone(),
+        thought_type: thought.thought_type,
+        role: thought.role,
+        content: thought.content.clone(),
+        confidence: thought.confidence,
+        importance: thought.importance,
+        tags: thought.tags.clone(),
+        concepts: thought.concepts.clone(),
+        refs: thought.refs.clone(),
+        relations: thought.relations.clone(),
+        entity_type: thought.entity_type.clone(),
+        prev_hash: thought.prev_hash.clone(),
+        hash: thought.hash.clone(),
+    }
+}
+
 fn legacy_v2_base(thought: &Thought) -> LegacyThoughtV2 {
     LegacyThoughtV2 {
         schema_version: 3,
@@ -357,6 +414,33 @@ pub fn write_fixture(path: &Path, format: FixtureFormat, thoughts: &[Thought]) -
             let hashed = expected_after_migration(format, thoughts);
             for thought in &hashed {
                 write_record(&mut writer, &encode(&legacy_v2_base(thought))?)?;
+            }
+        }
+        FixtureFormat::Schema3Entity => {
+            for thought in &expected_after_migration(format, thoughts) {
+                write_record(&mut writer, &encode(&legacy_v3b(thought))?)?;
+            }
+        }
+        FixtureFormat::Schema4Era => {
+            let split = schema4_split(projected.len());
+            // Prefix: hashed with the stored schema_version 4, linked to the
+            // previous stored hash.
+            let mut previous = String::new();
+            for thought in projected.iter().take(split) {
+                let mut stamped = thought.clone();
+                stamped.schema_version = 4;
+                stamped.prev_hash = previous.clone();
+                stamped.hash = compute_thought_hash(&stamped);
+                previous = stamped.hash.clone();
+                let mut record = legacy_v2_base(&stamped);
+                record.schema_version = 4;
+                write_record(&mut writer, &encode(&record)?)?;
+            }
+            // Tail: hashed with schema 3 over the chain as a schema-3 loader
+            // rebuilt it (the prefix normalized to schema 3).
+            let rebuilt = expected_after_migration(format, thoughts);
+            for thought in rebuilt.iter().skip(split) {
+                write_record(&mut writer, &encode(&legacy_v3b(thought))?)?;
             }
         }
         FixtureFormat::Current => {
