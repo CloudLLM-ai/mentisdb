@@ -401,7 +401,7 @@ impl LexicalQuery {
 ///
 /// The default, [`DfScope::Global`], is what shipped through 0.10.10 and what
 /// every published benchmark number was produced with. [`DfScope::PerField`]
-/// is the behaviour `WHITEPAPER.md` section 6.3 describes. It is opt-in because
+/// counts each field separately (`WHITEPAPER.md` section 6.2). It is opt-in because
 /// it changes which terms score and therefore needs a LoCoMo/LongMemEval run
 /// before it can become the default.
 ///

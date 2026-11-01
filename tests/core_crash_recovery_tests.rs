@@ -1,4 +1,4 @@
-//! Adversarial crash-recovery tests for the invariants in WHITEPAPER 4.4:
+//! Adversarial crash-recovery tests for the invariants in WHITEPAPER 5.4:
 //! a chain file cut at any byte of its last record, and derived state (vector
 //! sidecar) that is newer than or different from the chain it sits beside.
 
