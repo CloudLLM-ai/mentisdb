@@ -133,6 +133,10 @@ name = "search_ranked"
 harness = false
 
 [[bench]]
+name = "search_compact"
+harness = false
+
+[[bench]]
 name = "standing_context"
 harness = false
 
