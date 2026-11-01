@@ -25,6 +25,13 @@ UNRELEASED
     still reads as current. Library: `mentisdb::audience::{Audience, Segment,
     SegmentMap}`, `ThoughtQuery::audience`, `StandingContextQuery::audience`
     and `*_for(audience)` variants.
+  - feat(security): open-time verification of governed chains. Thoughts in a
+    private segment must carry a valid signature by a key allowed at that point;
+    those that fail are quarantined (hidden from every reader, reported by
+    `MentisDb::verification` and `chain access verify`). A checkpoint signed by
+    the operator key lets later opens verify only what is new; a chain that no
+    longer matches its checkpoint (truncated, rewritten) is locked instead of
+    being served as public. Nothing is served before verification finishes.
   - feat(security): read proofs. `X-Mentis-Auth: v1 agent=;key=;pk=;ts=;nonce=;sig=`
     is an Ed25519 signature over method, path and query, body hash, key
     identity, timestamp and a single-use nonce (60 s window, bounded replay

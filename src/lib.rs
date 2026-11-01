@@ -1711,6 +1711,48 @@ impl EntityTypeRegistry {
     }
 }
 
+/// Result of the signature verification a chain goes through when it opens.
+///
+/// Only chains with governance records are verified. Thoughts that fail are
+/// **quarantined**: hidden from every reader, never returned by any route, and
+/// listed here and in the signature report, like invalid policy records. A
+/// chain is served only after verification finished (it runs inside `open`),
+/// so there is no window in which unverified private thoughts are readable.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerificationReport {
+    /// Thoughts examined by this run (the whole chain, or what is newer than
+    /// the checkpoint).
+    pub checked: usize,
+    /// Whether a valid signed checkpoint let this run skip the verified prefix.
+    pub checkpoint_used: bool,
+    /// A valid signed checkpoint says the chain once had more thoughts than it
+    /// has now: records were removed from the file.
+    pub truncated_since_checkpoint: bool,
+    /// A valid signed checkpoint exists but the chain file no longer matches it
+    /// (shorter, or the verified prefix changed): the file was truncated or
+    /// rewritten. The chain is **locked**: nothing is served to any reader.
+    /// After checking the file, the operator deletes `<chain>.verified.json`
+    /// to re-seal it.
+    pub diverged_from_checkpoint: bool,
+    /// Positions quarantined (this run and inherited from the checkpoint).
+    pub quarantined: Vec<u64>,
+    /// Why each newly quarantined position failed.
+    pub reasons: Vec<(u64, String)>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct VerifiedCheckpoint {
+    format: String,
+    chain_key: String,
+    count: usize,
+    head_hash: String,
+    keys_root: String,
+    seq: Option<u64>,
+    quarantined: Vec<u64>,
+    operator_public_key: String,
+    signature: String,
+}
+
 /// Metadata describing one registered thought chain.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 /// Metadata record for a single chain in the daemon registry.
@@ -5561,6 +5603,8 @@ pub struct MentisDb {
     lineage: lineage::LineageIndex,
     /// Access policy derived from the chain's governance records.
     access_policy: access::AccessPolicy,
+    /// Outcome of the signature verification run when the chain was opened.
+    verification: VerificationReport,
     /// Optional deduplication threshold for automatic `Supersedes` relations.
     ///
     /// When set, each new thought's content is compared against recent thoughts
@@ -5728,6 +5772,7 @@ impl MentisDb {
             lineage: lineage::LineageIndex::default(),
             invalidating_edges: HashMap::new(),
             access_policy: access::AccessPolicy::default(),
+            verification: VerificationReport::default(),
             dedup_threshold: None,
             dedup_scan_window: 64,
             dedup_tokens: DedupTokenWindow::default(),
@@ -5801,6 +5846,8 @@ impl MentisDb {
                 persist_thoughts_to_path(path, kind, &chain.thoughts)?;
             }
         }
+
+        chain.verify_on_open();
 
         chain.lexical_index = crate::search::lexical::LexicalIndex::build_with_registry(
             &chain.thoughts,
@@ -7636,69 +7683,274 @@ impl MentisDb {
         suffix_start: usize,
         registry: &AgentRegistry,
     ) -> Result<(), String> {
+        match self
+            .governed_suffix_findings(suffix_start, registry)
+            .into_iter()
+            .next()
+        {
+            Some((_, reason)) => Err(reason),
+            None => Ok(()),
+        }
+    }
+
+    /// Every thought from `suffix_start` on that the policy of its position
+    /// would not have accepted, with the reason. See
+    /// [`MentisDb::verify_governed_suffix`].
+    fn governed_suffix_findings(
+        &self,
+        suffix_start: usize,
+        registry: &AgentRegistry,
+    ) -> Vec<(u64, String)> {
         let chain_key = self.chain_key();
         let start = suffix_start.min(self.thoughts.len());
         let mut policy = access::AccessPolicy::replay(chain_key, &self.thoughts[..start]);
+        let mut findings = Vec::new();
         for thought in &self.thoughts[start..] {
+            let mut flag = |reason: String| findings.push((thought.index, reason));
             if thought.thought_type == ThoughtType::AccessPolicy {
-                policy
-                    .apply_thought(chain_key, thought)
-                    .map_err(|e| format!("thought #{}: {e}", thought.index))?;
+                if let Err(error) = policy.apply_thought(chain_key, thought) {
+                    flag(format!("thought #{}: {error}", thought.index));
+                }
                 continue;
             }
-            let signature = thought
+            let stored = match thought
                 .thought_signature
                 .as_deref()
                 .map(signing::StoredSignature::parse)
                 .transpose()
-                .map_err(|e| format!("thought #{}: {e}", thought.index))?;
-            if policy.mode == access::AccessMode::Open && signature.is_none() {
-                continue;
-            }
-            let Some(stored) = signature else {
-                return Err(format!(
-                    "thought #{} is unsigned in a segment that requires signatures",
-                    thought.index
-                ));
-            };
-            let key_id = thought.signing_key_id.as_deref().unwrap_or_default();
-            let key = registry
-                .agents
-                .get(&thought.agent_id)
-                .and_then(|agent| agent.public_keys.iter().find(|k| k.key_id == key_id))
-                .ok_or_else(|| {
-                    format!(
-                        "thought #{}: key '{key_id}' of agent '{}' is not in the registry",
-                        thought.index, thought.agent_id
-                    )
-                })?;
-            if policy.mode != access::AccessMode::Open
-                && stored.version != signing::SignatureVersion::V2
             {
-                return Err(format!("thought #{} has a v1 signature", thought.index));
-            }
-            let payload = match stored.version {
-                signing::SignatureVersion::V2 => {
-                    signing::thought_payload_v2_stored(chain_key, thought)
-                }
-                signing::SignatureVersion::V1 => {
-                    // v1 cannot be checked after the chain edited the thought;
-                    // it is only accepted in a public segment, unchecked.
+                Ok(stored) => stored,
+                Err(error) => {
+                    flag(format!("thought #{}: {error}", thought.index));
                     continue;
                 }
             };
-            signing::verify_ed25519_signature(&key.public_key_bytes, &payload, &stored.signature)
-                .map_err(|e| format!("thought #{}: {e}", thought.index))?;
+            if policy.mode == access::AccessMode::Open && stored.is_none() {
+                continue;
+            }
+            let Some(stored) = stored else {
+                flag(format!(
+                    "thought #{} is unsigned in a segment that requires signatures",
+                    thought.index
+                ));
+                continue;
+            };
+            let key_id = thought.signing_key_id.as_deref().unwrap_or_default();
+            let Some(key) = registry
+                .agents
+                .get(&thought.agent_id)
+                .and_then(|agent| agent.public_keys.iter().find(|k| k.key_id == key_id))
+            else {
+                flag(format!(
+                    "thought #{}: key '{key_id}' of agent '{}' is not in the registry",
+                    thought.index, thought.agent_id
+                ));
+                continue;
+            };
+            if policy.mode != access::AccessMode::Open
+                && stored.version != signing::SignatureVersion::V2
+            {
+                flag(format!("thought #{} has a v1 signature", thought.index));
+                continue;
+            }
+            if stored.version == signing::SignatureVersion::V1 {
+                // v1 cannot be checked once the chain edited the thought; only
+                // accepted, unchecked, in a public segment.
+                continue;
+            }
+            let payload = signing::thought_payload_v2_stored(chain_key, thought);
+            if let Err(error) = signing::verify_ed25519_signature(
+                &key.public_key_bytes,
+                &payload,
+                &stored.signature,
+            ) {
+                flag(format!("thought #{}: {error}", thought.index));
+                continue;
+            }
             if policy.mode == access::AccessMode::Allowlist
                 && !policy.contains(&thought.agent_id, key_id, &key.public_key_bytes)
             {
-                return Err(format!(
+                flag(format!(
                     "thought #{}: key '{key_id}' of '{}' was not allowed at that point",
                     thought.index, thought.agent_id
                 ));
             }
         }
-        Ok(())
+        findings
+    }
+
+    /// Outcome of the verification run when this chain was opened.
+    pub fn verification(&self) -> &VerificationReport {
+        &self.verification
+    }
+
+    /// Verify the governed part of the chain and quarantine what fails.
+    ///
+    /// Runs inside `open`, after the hash chain checked out. Only chains that
+    /// have governance records are verified. A signed checkpoint
+    /// (`<chain>.verified.json`, signed by the operator key and bound to the
+    /// hash at the checkpoint, the policy state there and the quarantine list)
+    /// lets later opens verify only what was appended since. A checkpoint that
+    /// does not match (forged, from another chain, past the end of a truncated
+    /// chain) is ignored and the whole chain is verified again; a signed
+    /// checkpoint beyond the end of the chain is reported as a truncation.
+    fn verify_on_open(&mut self) {
+        let checkpoint = self.load_checkpoint();
+        if checkpoint.is_none() && !self.access_policy.segments.has_private() {
+            return;
+        }
+        let mut report = VerificationReport::default();
+        let mut start = 0;
+        let mut inherited: Vec<u64> = Vec::new();
+        if let Some(cp) = checkpoint {
+            let prefix_matches = cp.count <= self.thoughts.len()
+                && (cp.count == 0
+                    || self.thoughts.get(cp.count - 1).map(|t| t.hash.as_str())
+                        == Some(cp.head_hash.as_str()));
+            let state_matches = prefix_matches && {
+                let state =
+                    access::AccessPolicy::replay(self.chain_key(), &self.thoughts[..cp.count]);
+                state.keys_root == cp.keys_root && state.seq == cp.seq
+            };
+            if state_matches {
+                start = cp.count;
+                inherited = cp.quarantined;
+                report.checkpoint_used = true;
+            } else {
+                report.truncated_since_checkpoint = cp.count > self.thoughts.len();
+                report.diverged_from_checkpoint = true;
+                self.access_policy.segments.lock();
+                report.reasons.push((
+                    cp.count.saturating_sub(1) as u64,
+                    "the chain no longer matches its signed verification checkpoint".to_string(),
+                ));
+                self.verification = report;
+                return;
+            }
+        }
+        let findings = self.governed_suffix_findings(start, &self.agent_registry);
+        report.checked = self.thoughts.len() - start;
+        let mut quarantined = inherited;
+        for (index, reason) in findings {
+            quarantined.push(index);
+            report.reasons.push((index, reason));
+        }
+        quarantined.sort_unstable();
+        quarantined.dedup();
+        report.quarantined = quarantined.clone();
+        self.access_policy.segments.set_quarantine(quarantined);
+        self.verification = report;
+        self.store_checkpoint();
+    }
+
+    fn checkpoint_path(&self) -> Option<PathBuf> {
+        let metadata = self.persistence.as_ref()?;
+        let file = chain_storage_filename(&metadata.chain_key, metadata.storage_kind);
+        let stem = file
+            .strip_suffix(&format!(".{}", metadata.storage_kind.file_extension()))
+            .unwrap_or(&file)
+            .to_string();
+        Some(metadata.chain_dir.join(format!("{stem}.verified.json")))
+    }
+
+    fn checkpoint_payload(
+        chain_key: &str,
+        count: usize,
+        head_hash: &str,
+        keys_root: &str,
+        seq: Option<u64>,
+        quarantined: &[u64],
+    ) -> Vec<u8> {
+        let mut p = signing::Payload::new(b"mentisdb/verified-prefix/v1\0");
+        p.str(chain_key)
+            .u64(count as u64)
+            .str(head_hash)
+            .str(keys_root);
+        p.u64(seq.map_or(0, |s| s + 1));
+        p.u32(quarantined.len() as u32);
+        for index in quarantined {
+            p.u64(*index);
+        }
+        p.0
+    }
+
+    fn operator_public_key(&self) -> Option<[u8; 32]> {
+        let dir = &self.persistence.as_ref()?.chain_dir;
+        operator::OperatorIdentity::load(&operator::OperatorIdentity::key_path(dir))
+            .ok()
+            .map(|identity| identity.public_key())
+    }
+
+    fn load_checkpoint(&self) -> Option<VerifiedCheckpoint> {
+        let path = self.checkpoint_path()?;
+        let text = fs::read_to_string(path).ok()?;
+        let cp: VerifiedCheckpoint = serde_json::from_str(&text).ok()?;
+        if cp.chain_key != self.chain_key() {
+            return None;
+        }
+        let local = self.operator_public_key()?;
+        let claimed = signing::from_hex(&cp.operator_public_key).ok()?;
+        if claimed.as_slice() != local.as_slice() {
+            return None;
+        }
+        let signature = signing::from_hex(&cp.signature).ok()?;
+        let payload = Self::checkpoint_payload(
+            &cp.chain_key,
+            cp.count,
+            &cp.head_hash,
+            &cp.keys_root,
+            cp.seq,
+            &cp.quarantined,
+        );
+        signing::verify_ed25519_signature(&local, &payload, &signature).ok()?;
+        Some(cp)
+    }
+
+    fn store_checkpoint(&self) {
+        let (Some(path), Some(dir)) = (
+            self.checkpoint_path(),
+            self.persistence.as_ref().map(|m| m.chain_dir.clone()),
+        ) else {
+            return;
+        };
+        let Ok(identity) =
+            operator::OperatorIdentity::load(&operator::OperatorIdentity::key_path(&dir))
+        else {
+            return;
+        };
+        let head_hash = self
+            .thoughts
+            .last()
+            .map(|t| t.hash.clone())
+            .unwrap_or_default();
+        let policy = &self.access_policy;
+        let quarantined = policy.segments.quarantined().to_vec();
+        let payload = Self::checkpoint_payload(
+            self.chain_key(),
+            self.thoughts.len(),
+            &head_hash,
+            &policy.keys_root,
+            policy.seq,
+            &quarantined,
+        );
+        let cp = VerifiedCheckpoint {
+            format: "mentisdb/verified-prefix/v1".to_string(),
+            chain_key: self.chain_key().to_string(),
+            count: self.thoughts.len(),
+            head_hash,
+            keys_root: policy.keys_root.clone(),
+            seq: policy.seq,
+            quarantined,
+            operator_public_key: signing::to_hex(&identity.public_key()),
+            signature: signing::to_hex(&identity.sign_bytes(&payload)),
+        };
+        let Ok(text) = serde_json::to_string(&cp) else {
+            return;
+        };
+        let tmp = path.with_extension("json.tmp");
+        if fs::write(&tmp, text).is_ok() && fs::rename(&tmp, &path).is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
     }
 
     /// Whether `audience` may see the thought at append-order `index`.
@@ -7737,7 +7989,7 @@ impl MentisDb {
 
     /// Number of thoughts `audience` may see.
     pub fn visible_thought_count(&self, audience: audience::Audience) -> usize {
-        if !audience.is_public() || !self.segments().has_private() {
+        if !self.segments().has_private() {
             return self.thoughts.len();
         }
         self.visible_thoughts(audience).count()
@@ -7917,6 +8169,11 @@ impl MentisDb {
             valid,
             unsigned,
             invalid,
+            quarantined: if audience.is_public() {
+                Vec::new()
+            } else {
+                self.access_policy.segments.quarantined().to_vec()
+            },
             checks,
         }
     }
@@ -14485,6 +14742,15 @@ fn persist_binary_thought(file_path: &Path, thought: &Thought) -> io::Result<()>
     file.write_all(&(payload.len() as u64).to_le_bytes())?;
     file.write_all(&payload)?;
     Ok(())
+}
+
+/// Recompute `thought.hash` with the chain's hash function.
+///
+/// Exists so tests can forge a chain file the way an attacker with file access
+/// could. Not part of the supported API.
+#[doc(hidden)]
+pub fn seal_thought_hash(thought: &mut Thought) {
+    thought.hash = compute_thought_hash(thought);
 }
 
 fn compute_thought_hash(thought: &Thought) -> String {

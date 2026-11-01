@@ -175,6 +175,12 @@ impl OperatorIdentity {
         })
     }
 
+    /// Sign `message` with the operator key (64-byte signature).
+    #[must_use]
+    pub fn sign_bytes(&self, message: &[u8]) -> [u8; 64] {
+        self.signing.sign(message).to_bytes()
+    }
+
     /// The operator's public key.
     #[must_use]
     pub fn public_key(&self) -> [u8; 32] {

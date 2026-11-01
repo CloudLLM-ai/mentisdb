@@ -157,6 +157,16 @@ pub struct SegmentMap {
     segments: Vec<Segment>,
     /// Indices of valid governance records, in order. Always private.
     records: Vec<u64>,
+    /// Thoughts that failed verification when the chain opened (unsigned or
+    /// forged in a private segment, invalid governance records). Hidden from
+    /// every reader and listed in the verification report. Sorted.
+    #[serde(default)]
+    quarantined: Vec<u64>,
+    /// Set when a signed checkpoint proves the chain file no longer matches
+    /// what was verified (records removed or rewritten): every position reads as
+    /// private, so the chain is served to nobody until the operator re-seals it.
+    #[serde(default)]
+    locked: bool,
 }
 
 impl SegmentMap {
@@ -171,7 +181,20 @@ impl SegmentMap {
         Self {
             segments,
             records: Vec::new(),
+            quarantined: Vec::new(),
+            locked: false,
         }
+    }
+
+    /// Mark the chain as diverged from its verified state (see the field docs).
+    pub fn lock(&mut self) {
+        self.locked = true;
+    }
+
+    /// Whether the chain is locked.
+    #[must_use]
+    pub fn is_locked(&self) -> bool {
+        self.locked
     }
 
     /// Record that the thought at `index` is a valid governance record. Such a
@@ -179,6 +202,29 @@ impl SegmentMap {
     pub fn push_record(&mut self, index: u64) {
         if self.records.last().is_none_or(|last| index > *last) {
             self.records.push(index);
+        }
+    }
+
+    /// Replace the quarantine list (sorted and de-duplicated here).
+    pub fn set_quarantine(&mut self, mut indices: Vec<u64>) {
+        indices.sort_unstable();
+        indices.dedup();
+        self.quarantined = indices;
+    }
+
+    /// Indices quarantined by open-time verification.
+    #[must_use]
+    pub fn quarantined(&self) -> &[u64] {
+        &self.quarantined
+    }
+
+    /// The same map without the quarantine list, for readers who must not learn
+    /// which positions failed verification.
+    #[must_use]
+    pub fn without_quarantine(&self) -> Self {
+        Self {
+            quarantined: Vec::new(),
+            ..self.clone()
         }
     }
 
@@ -214,7 +260,9 @@ impl SegmentMap {
     /// needed.
     #[must_use]
     pub fn has_private(&self) -> bool {
-        !self.records.is_empty()
+        self.locked
+            || !self.records.is_empty()
+            || !self.quarantined.is_empty()
             || self
                 .segments
                 .iter()
@@ -224,6 +272,9 @@ impl SegmentMap {
     /// Kind of the segment the thought at `index` belongs to.
     #[must_use]
     pub fn kind_at(&self, index: u64) -> SegmentKind {
+        if self.locked {
+            return SegmentKind::Private;
+        }
         if self.records.binary_search(&index).is_ok() {
             return SegmentKind::Private;
         }
@@ -239,6 +290,12 @@ impl SegmentMap {
     /// Whether `audience` may see the thought at `index`.
     #[must_use]
     pub fn is_visible(&self, index: u64, audience: Audience) -> bool {
+        if self.locked {
+            return false;
+        }
+        if !self.quarantined.is_empty() && self.quarantined.binary_search(&index).is_ok() {
+            return false;
+        }
         match audience {
             Audience::Authorized => true,
             Audience::Public => self.kind_at(index) == SegmentKind::Public,

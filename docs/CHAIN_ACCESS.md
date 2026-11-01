@@ -409,6 +409,44 @@ An invalid record found on replay (for example planted by file tampering after
 genesis) is **ignored** for enforcement and reported by `chain access verify`.
 
 
+## Verification when a chain opens
+
+Signatures used to be checked only on append. Opening a chain with governance
+records now verifies the governed part of it, so a file edited behind
+MentisDB's back cannot introduce unsigned or forged thoughts into a private
+segment:
+
+* Every thought in a signed or allowlist segment must carry a valid v2
+  signature by a key of its agent that was in the allowed set at that point,
+  and every governance record must be a valid continuation. Later revocations
+  are ignored: the key was good when it signed.
+* A thought that fails is **quarantined**: hidden from every reader (the
+  authorized ones too), never returned by any route, reported by
+  `MentisDb::verification`, in `chain access verify` (`quarantined`, non-zero
+  exit) and in the signature report, like an invalid policy record.
+* **Default while unverified: nothing is served.** Verification runs inside
+  `open`, so a chain is never readable before it finished; there is no
+  "pending" state in which private thoughts are served unchecked. The server
+  opens chains lazily off the request path, as it always did.
+* **Checkpoint.** After a clean run the chain writes `<chain>.verified.json`,
+  signed by the operator key and bound to the chain key, the hash at the
+  checkpoint, the policy state there (`keys_root`, `seq`) and the quarantine
+  list. The next open trusts it only if the signature verifies with the local
+  operator key and the chain still has exactly that hash at that position, and
+  then verifies only what is newer. Without an operator key there is no
+  checkpoint and every open verifies everything (about 25 µs per signed
+  private thought).
+* **Divergence locks the chain.** If a valid signed checkpoint exists but the
+  file no longer matches it (records removed, prefix rewritten), the chain is
+  *locked*: every position reads as private to every reader. Without this a
+  truncation that removes the governance records would turn a private chain
+  into a fully public one. After inspecting the file the operator deletes the
+  `.verified.json` file to re-seal. Restoring a backup over a chain removes
+  its checkpoint.
+* A forged checkpoint (no operator key, wrong signature, other chain) is
+  ignored and the chain is verified from scratch. Someone who can read the
+  operator key can forge anything; that is the filesystem boundary again.
+
 ## Moving thoughts between chains
 
 Merging and copying re-append thoughts unsigned under another chain's key,

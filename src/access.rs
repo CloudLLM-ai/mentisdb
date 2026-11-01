@@ -713,6 +713,7 @@ impl AccessPolicy {
             genesis_hash: None,
             head_record_hash: None,
             invalid_records: Vec::new(),
+            segments: self.segments.without_quarantine(),
             ..self.clone()
         }
     }
@@ -918,12 +919,15 @@ pub struct SignatureReport {
     pub unsigned: usize,
     /// Signed thoughts that do not verify.
     pub invalid: usize,
+    /// Positions quarantined when the chain opened (see
+    /// [`crate::MentisDb::verification`]). Empty for a public reader.
+    pub quarantined: Vec<u64>,
 }
 
 impl SignatureReport {
     /// True when no signed thought failed and no policy record was rejected.
     #[must_use]
     pub fn is_clean(&self) -> bool {
-        self.invalid == 0 && self.policy.invalid_records.is_empty()
+        self.invalid == 0 && self.policy.invalid_records.is_empty() && self.quarantined.is_empty()
     }
 }

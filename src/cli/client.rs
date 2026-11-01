@@ -536,11 +536,12 @@ fn check_reply(invocation: &RemoteInvocation, reply: &Reply) -> Result<(), Strin
     let rejected = value["policy"]["invalid_records"]
         .as_array()
         .map_or(0, Vec::len);
-    if invalid + rejected as u64 == 0 {
+    let quarantined = value["quarantined"].as_array().map_or(0, Vec::len);
+    if invalid + rejected as u64 + quarantined as u64 == 0 {
         Ok(())
     } else {
         Err(format!(
-            "{invalid} signature(s) failed verification and {rejected} policy record(s) were rejected"
+            "{invalid} signature(s) failed verification, {rejected} policy record(s) were rejected and {quarantined} thought(s) were quarantined at open"
         ))
     }
 }

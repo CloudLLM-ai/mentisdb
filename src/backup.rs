@@ -1132,6 +1132,9 @@ fn copy_chain_bundle(
         &destination_file,
         overwrite,
     )?;
+    // The chain file was replaced: its signed verification checkpoint described
+    // the old file and would read as tampering. The chain is verified afresh.
+    let _ = fs::remove_file(target_dir.join(format!("{destination_stem}.verified.json")));
 
     for entry in fs::read_dir(staging_dir)? {
         let entry = entry?;
