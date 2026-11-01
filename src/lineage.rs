@@ -322,6 +322,10 @@ impl SuccessorEdge {
 #[derive(Debug, Default)]
 pub(crate) struct LineageIndex {
     by_target: HashMap<Uuid, Vec<SuccessorEdge>>,
+    /// Strong edges whose target lives on another chain, keyed by that chain's
+    /// key and the target id. Only readers that can see this chain and the
+    /// target's chain together can apply them, see [`cross_chain_successor`].
+    cross: HashMap<(String, Uuid), Vec<SuccessorEdge>>,
 }
 
 /// Classify a link from `source` to `target` through `relation` (`None` for
@@ -403,7 +407,27 @@ impl LineageIndex {
             &crate::ThoughtRelation,
         )> = Vec::new();
         for relation in &thought.relations {
-            if relation.chain_key.is_some() {
+            if let Some(target_chain) = &relation.chain_key {
+                if let Some(kind) = contest_kind(
+                    thought.thought_type,
+                    Some(relation.kind),
+                    ThoughtType::Finding,
+                )
+                .filter(|kind| kind.is_strong())
+                {
+                    self.cross
+                        .entry((target_chain.clone(), relation.target_id))
+                        .or_default()
+                        .push(SuccessorEdge {
+                            source_id: thought.id,
+                            source_index: thought.index,
+                            source_type: thought.thought_type,
+                            timestamp: thought.timestamp,
+                            kind,
+                            valid_at: relation.valid_at,
+                            invalid_at: relation.invalid_at,
+                        });
+                }
                 continue;
             }
             let Some(&pos) = id_to_index.get(&relation.target_id) else {
@@ -1126,4 +1150,167 @@ pub(crate) fn collapse_duplicate_hits<'a>(
         }
     }
     kept.into_iter().map(|(_, hit)| hit).collect()
+}
+
+/// The live thought on another chain that supersedes a target, found by
+/// [`cross_chain_successor`].
+#[derive(Debug, Clone)]
+pub struct CrossSuccessor<'a> {
+    /// Key of the chain the successor lives on.
+    pub chain_key: String,
+    /// The live successor.
+    pub thought: &'a Thought,
+    /// How it relates to the target (always a strong kind).
+    pub kind: SuccessorKind,
+}
+
+/// Find the newest live thought, on any of `chains` other than the target's
+/// own, that supersedes, corrects or invalidates `target` on `target_chain`
+/// through a relation carrying that chain's key.
+///
+/// `chains` is the set of chains one read path can see together (a federated
+/// search, or a branch plus its ancestors), each with the audience the caller
+/// has on it. An edge counts only when its source is visible to that audience,
+/// so a public reader is never redirected to a private successor and never
+/// learns one exists. When the source was itself superseded on its own chain
+/// the walk continues to that chain's live successor. A target whose own chain
+/// is not in `chains` is never affected: nothing reads both.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::audience::Audience;
+/// use mentisdb::lineage::cross_chain_successor;
+/// use mentisdb::{MentisDb, StorageAdapterKind, ThoughtInput, ThoughtRelation, ThoughtRelationKind, ThoughtType};
+///
+/// # fn main() -> std::io::Result<()> {
+/// let dir = tempfile::tempdir()?;
+/// let mut parent = MentisDb::open_with_key_and_storage_kind(dir.path(), "parent", StorageAdapterKind::Binary)?;
+/// let old = parent.append_thought("a", ThoughtInput::new(ThoughtType::Decision, "Deploy on Fridays."))?.clone();
+/// let mut sibling = MentisDb::open_with_key_and_storage_kind(dir.path(), "sibling", StorageAdapterKind::Binary)?;
+/// let new = sibling
+///     .append_thought("a", ThoughtInput::new(ThoughtType::Decision, "Never deploy on Fridays.").with_relations(vec![ThoughtRelation {
+///         kind: ThoughtRelationKind::Supersedes,
+///         target_id: old.id,
+///         chain_key: Some("parent".into()),
+///         valid_at: None,
+///         invalid_at: None,
+///     }]))?
+///     .clone();
+/// let chains = [("parent", &parent, Audience::Authorized), ("sibling", &sibling, Audience::Authorized)];
+/// let found = cross_chain_successor(&chains, "parent", old.id).unwrap();
+/// assert_eq!((found.chain_key.as_str(), found.thought.id), ("sibling", new.id));
+/// # Ok(())
+/// # }
+/// ```
+pub fn cross_chain_successor<'a>(
+    chains: &[(&str, &'a MentisDb, Audience)],
+    target_chain: &str,
+    target: Uuid,
+) -> Option<CrossSuccessor<'a>> {
+    let key = (target_chain.to_owned(), target);
+    let mut best: Option<CrossSuccessor<'a>> = None;
+    for (chain_key, chain, audience) in chains.iter().filter(|(k, _, _)| *k != target_chain) {
+        for edge in chain.lineage.cross.get(&key).into_iter().flatten() {
+            if !edge.in_force_at(None) || !chain.is_visible_index(edge.source_index, *audience) {
+                continue;
+            }
+            let Some(source) = chain.get_thought_by_id(edge.source_id) else {
+                continue;
+            };
+            let live = if chain.invalidated_at(source.id, None, *audience) {
+                chain.live_successor(source.id, None, *audience)
+            } else {
+                Some(source)
+            };
+            let Some(thought) = live else { continue };
+            let newer = best.as_ref().is_none_or(|b| {
+                (thought.timestamp, thought.index) > (b.thought.timestamp, b.thought.index)
+            });
+            if newer {
+                best = Some(CrossSuccessor {
+                    chain_key: (*chain_key).to_owned(),
+                    thought,
+                    kind: edge.kind,
+                });
+            }
+        }
+    }
+    best
+}
+
+impl MentisDb {
+    /// Bundle seeds with superseded seeds replaced by their live successor and
+    /// contested seeds preceded by the thought contesting them, the same rule
+    /// [`MentisDb::query_ranked`] applies to hits.
+    ///
+    /// Returns `None` when redirection does not apply (it is off, the caller
+    /// asked for invalidated thoughts, or the chain has no lineage), so the
+    /// caller keeps the plain seeds. Seeds are chosen from a scan that includes
+    /// superseded thoughts, so a successor takes the rank its predecessor would
+    /// have had even when it shares no query word with it. A replaced seed keeps
+    /// the predecessor's lexical score and matched terms.
+    pub(crate) fn redirected_bundle_seeds(
+        &self,
+        request: &RankedSearchQuery,
+        text: &str,
+    ) -> Option<Vec<crate::search::ContextBundleSeed>> {
+        let explicit = request.include_invalidated || request.filter.include_invalidated;
+        let has_lineage =
+            !self.invalidated_thought_ids().is_empty() || !self.lineage.by_target.is_empty();
+        if !request.resolve_successors || explicit || !has_lineage || request.limit == 0 {
+            return None;
+        }
+        let audience = request.filter.audience;
+        let as_of = request.as_of;
+        let wide = self.retrieval_candidates(&request.filter, as_of, true);
+        let scan = self.rank_candidates_lexically(&wide, text, request);
+        let wide_limit = request
+            .limit
+            .saturating_mul(2)
+            .max(request.limit.saturating_add(8));
+        let raw = self.context_bundle_seeds(&scan, wide_limit);
+        let mut out: Vec<crate::search::ContextBundleSeed> = Vec::with_capacity(raw.len());
+        let mut placed: HashSet<Uuid> = HashSet::new();
+        let mut push = |out: &mut Vec<crate::search::ContextBundleSeed>,
+                        template: &crate::search::ContextBundleSeed,
+                        thought: &Thought| {
+            if placed.insert(thought.id) {
+                let mut seed = template.clone();
+                seed.locator = crate::search::ThoughtLocator::local(thought);
+                out.push(seed);
+            }
+        };
+        for seed in &raw {
+            let Some(id) = seed
+                .locator
+                .thought_index
+                .and_then(|i| self.get_thought_by_index(i))
+                .map(|t| t.id)
+            else {
+                continue;
+            };
+            let Some(thought) = self.get_thought_by_id(id) else {
+                continue;
+            };
+            if self.invalidated_at(id, as_of, audience) {
+                if let Some(succ) = self
+                    .live_successor(id, as_of, audience)
+                    .filter(|t| self.successor_allowed(t, request))
+                {
+                    push(&mut out, seed, succ);
+                }
+                continue;
+            }
+            if let Some(contester) = self
+                .live_contester(id, as_of, audience)
+                .filter(|t| self.successor_allowed(t, request))
+            {
+                push(&mut out, seed, contester);
+            }
+            push(&mut out, seed, thought);
+        }
+        out.truncate(request.limit);
+        Some(out)
+    }
 }

@@ -3464,6 +3464,75 @@ impl MentisDbService {
         Ok(chain)
     }
 
+    /// Resolve cross-chain lineage for hits gathered from several chains read
+    /// together (a branch plus its ancestors, or a federated search).
+    ///
+    /// A `Supersedes`/`Corrects`/`Invalidates` relation carrying a `chain_key`
+    /// marks a thought on that other chain. It applies only here, where both
+    /// chains are visible to the caller, and only through edges whose source
+    /// the caller's audience on its chain may see. With `include_invalidated`
+    /// the hit is annotated; otherwise it is replaced by the live successor.
+    async fn cross_lineage(
+        &self,
+        searched: &[String],
+        hits: &[(String, Uuid)],
+        include_invalidated: bool,
+    ) -> Vec<CrossAction> {
+        let keep = |n: usize| (0..n).map(|_| CrossAction::Keep).collect::<Vec<_>>();
+        if searched.len() < 2 || hits.is_empty() {
+            return keep(hits.len());
+        }
+        let mut arcs = Vec::new();
+        for key in searched {
+            if let Ok(arc) = self.get_chain(Some(key), None).await {
+                arcs.push((key.clone(), arc));
+            }
+        }
+        let mut guards = Vec::with_capacity(arcs.len());
+        for (_, arc) in &arcs {
+            guards.push(arc.read().await);
+        }
+        let view: Vec<(&str, &MentisDb, Audience)> = arcs
+            .iter()
+            .zip(guards.iter())
+            .map(|((key, _), guard)| (key.as_str(), &**guard, audience_for(guard)))
+            .collect();
+        hits.iter()
+            .map(|(chain_key, id)| {
+                let Some(found) = crate::lineage::cross_chain_successor(&view, chain_key, *id)
+                else {
+                    return CrossAction::Keep;
+                };
+                let Some((_, chain, audience)) =
+                    view.iter().find(|(key, _, _)| *key == found.chain_key)
+                else {
+                    return CrossAction::Keep;
+                };
+                let note = json!({
+                    "thought_id": found.thought.id,
+                    "chain_key": found.chain_key,
+                    "kind": found.kind,
+                    "thought_type": found.thought.thought_type,
+                    "timestamp": found.thought.timestamp,
+                });
+                if include_invalidated {
+                    return CrossAction::Annotate(note);
+                }
+                let mut thought = chain.thought_json_for(found.thought, *audience);
+                if let Value::Object(map) = &mut thought {
+                    map.insert("successor_of".into(), json!([id]));
+                    map.insert("successor_of_chain".into(), json!(chain_key));
+                }
+                CrossAction::Redirect {
+                    chain_key: found.chain_key,
+                    id: found.thought.id,
+                    index: found.thought.index,
+                    thought,
+                }
+            })
+            .collect()
+    }
+
     /// Discover ancestor chain keys by following `BranchesFrom` relations.
     ///
     /// Opens each ancestor chain to walk further if grandparent branches exist,
@@ -3964,6 +4033,50 @@ impl MentisDbService {
             }
         }
 
+        // Chains read together here (the branch and its ancestors) may hold
+        // a replacement for a thought on another of them.
+        let include_invalidated = request.include_invalidated.unwrap_or(false);
+        let keys: Vec<(String, Uuid)> = all_hits
+            .iter()
+            .filter_map(|(key, hit)| {
+                let id = hit.thought["id"].as_str()?.parse().ok()?;
+                Some((key.clone(), id))
+            })
+            .collect();
+        let actions = self
+            .cross_lineage(&chain_keys_to_search, &keys, include_invalidated)
+            .await;
+        let mut present: BTreeSet<Uuid> = keys.iter().map(|(_, id)| *id).collect();
+        let mut resolved: Vec<(String, RankedSearchHitOwned)> = Vec::with_capacity(all_hits.len());
+        for ((key, mut hit), action) in all_hits.into_iter().zip(actions) {
+            match action {
+                CrossAction::Keep => resolved.push((key, hit)),
+                CrossAction::Annotate(note) => {
+                    annotate_cross_superseded(&mut hit.thought, note);
+                    resolved.push((key, hit));
+                }
+                CrossAction::Redirect {
+                    chain_key,
+                    id,
+                    thought,
+                    ..
+                } => {
+                    if present.insert(id) {
+                        hit.thought = thought;
+                        resolved.push((chain_key, hit));
+                    } else if let Some(existing) = resolved
+                        .iter_mut()
+                        .find(|(_, h)| h.thought["id"].as_str() == Some(&id.to_string()))
+                    {
+                        // The successor already ranked on its own: keep it at
+                        // least as high as the thought it replaces.
+                        existing.1.score.total = existing.1.score.total.max(hit.score.total);
+                    }
+                }
+            }
+        }
+        let mut all_hits = resolved;
+
         all_hits.sort_by(|a, b| {
             b.1.score
                 .total
@@ -4200,6 +4313,40 @@ impl MentisDbService {
         .map_err(|e| std::io::Error::other(format!("federated search task failed: {e}")))?;
 
         let (all_hits, total_candidates, best_backend) = collected;
+
+        // A replacement written on another searched chain supersedes a hit
+        // here, so redirect (or annotate) before the cross-chain merge.
+        let searched: Vec<String> = chain_arcs.iter().map(|(key, _, _)| key.clone()).collect();
+        let keys: Vec<(String, Uuid)> = all_hits.iter().map(|h| (h.0.clone(), h.9)).collect();
+        let actions = self
+            .cross_lineage(
+                &searched,
+                &keys,
+                request.include_invalidated.unwrap_or(false),
+            )
+            .await;
+        let all_hits: Vec<_> = all_hits
+            .into_iter()
+            .zip(actions)
+            .map(|(mut hit, action)| {
+                match action {
+                    CrossAction::Keep => {}
+                    CrossAction::Annotate(note) => annotate_cross_superseded(&mut hit.1, note),
+                    CrossAction::Redirect {
+                        chain_key,
+                        id,
+                        index,
+                        thought,
+                    } => {
+                        hit.0 = chain_key;
+                        hit.1 = thought;
+                        hit.9 = id;
+                        hit.10 = index;
+                    }
+                }
+                hit
+            })
+            .collect();
 
         // Deduplicate by UUID, keeping the higher-scoring occurrence, before
         // any truncation to the requested page.
@@ -9183,6 +9330,30 @@ fn build_query(request: &SearchRequest) -> Result<ThoughtQuery, Box<dyn Error + 
         query = query.with_include_invalidated(true);
     }
     Ok(query)
+}
+
+/// What [`MentisDbService::cross_lineage`] decided for one hit.
+enum CrossAction {
+    /// No other searched chain supersedes this hit.
+    Keep,
+    /// Another searched chain supersedes it: annotate it (audit view).
+    Annotate(Value),
+    /// Another searched chain supersedes it: show the live successor instead.
+    Redirect {
+        chain_key: String,
+        id: Uuid,
+        index: u64,
+        thought: Value,
+    },
+}
+
+/// Mark a hit's thought JSON as superseded by a thought on another chain.
+fn annotate_cross_superseded(thought: &mut Value, note: Value) {
+    if let Value::Object(map) = thought {
+        map.insert("version_status".into(), json!("superseded"));
+        map.insert("successors".into(), json!([note.clone()]));
+        map.insert("current_version".into(), note);
+    }
 }
 
 /// Ranking knobs accepted by ranked search, federated search and context

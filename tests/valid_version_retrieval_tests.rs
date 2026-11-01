@@ -555,3 +555,234 @@ fn expired_supersession_no_longer_hides_the_target() {
     );
     assert_eq!(chain.version_status(old.id), VersionStatus::Current);
 }
+
+/// Lineage across chains and in context bundles. A policy on one chain and its
+/// replacement on another (a relation carrying the target chain's key) must be
+/// resolved wherever one read path sees both chains.
+mod cross_chain {
+    use super::*;
+    use mentisdb::audience::Audience;
+
+    fn two_chains() -> (tempfile::TempDir, MentisDb, MentisDb, Thought, Thought) {
+        let dir = tempdir().unwrap();
+        let mut parent = MentisDb::open_with_key_and_storage_kind(
+            dir.path(),
+            "parent",
+            StorageAdapterKind::Binary,
+        )
+        .unwrap();
+        let old = parent
+            .append_thought("a", ThoughtInput::new(ThoughtType::Decision, OLD_POLICY))
+            .unwrap()
+            .clone();
+        let mut sibling = MentisDb::open_with_key_and_storage_kind(
+            dir.path(),
+            "sibling",
+            StorageAdapterKind::Binary,
+        )
+        .unwrap();
+        let new = sibling
+            .append_thought(
+                "a",
+                ThoughtInput::new(ThoughtType::Decision, NEW_POLICY).with_relations(vec![
+                    ThoughtRelation {
+                        kind: ThoughtRelationKind::Supersedes,
+                        target_id: old.id,
+                        chain_key: Some("parent".into()),
+                        valid_at: None,
+                        invalid_at: None,
+                    },
+                ]),
+            )
+            .unwrap()
+            .clone();
+        (dir, parent, sibling, old, new)
+    }
+
+    /// The library federated search redirects the superseded hit to its
+    /// successor on the other chain; include_invalidated keeps the old hit.
+    #[test]
+    fn library_federated_search_redirects_across_chains() {
+        let (_d, parent, sibling, old, new) = two_chains();
+        let q = RankedSearchQuery::new().with_text(QUERY_OLD_WORDING);
+        let r = parent.query_federated(
+            "parent",
+            &[("sibling", &sibling)],
+            &q,
+            &Default::default(),
+            10,
+            0,
+        );
+        assert_eq!(r.hits.len(), 1);
+        assert_eq!(
+            (r.hits[0].chain_key, r.hits[0].thought.id),
+            ("sibling", new.id)
+        );
+        // Searching the parent alone cannot see the replacement: unchanged.
+        let alone = parent.query_ranked(&q);
+        assert_eq!(alone.hits[0].thought.id, old.id);
+        let audit = q.clone().with_include_invalidated(true);
+        let r = parent.query_federated(
+            "parent",
+            &[("sibling", &sibling)],
+            &audit,
+            &Default::default(),
+            10,
+            0,
+        );
+        assert!(r.hits.iter().any(|h| h.thought.id == old.id));
+    }
+
+    /// An edge whose source the caller may not see is ignored.
+    #[test]
+    fn cross_chain_successor_requires_a_visible_source() {
+        let (_d, parent, sibling, old, new) = two_chains();
+        let both = [
+            ("parent", &parent, Audience::Authorized),
+            ("sibling", &sibling, Audience::Authorized),
+        ];
+        assert_eq!(
+            mentisdb::lineage::cross_chain_successor(&both, "parent", old.id)
+                .unwrap()
+                .thought
+                .id,
+            new.id
+        );
+        // The replacement chain is not part of this read path.
+        let only = [("parent", &parent, Audience::Authorized)];
+        assert!(mentisdb::lineage::cross_chain_successor(&only, "parent", old.id).is_none());
+    }
+
+    /// Context bundles redirect a superseded seed to its live successor and put
+    /// the contesting thought first for a contested one.
+    #[test]
+    fn context_bundles_redirect_seeds() {
+        for link in [Link::Corrects, Link::RefsOnlyCorrection] {
+            let (_d, chain, old, new) = scenario(link);
+            let q = RankedSearchQuery::new()
+                .with_text(QUERY_OLD_WORDING)
+                .with_limit(5);
+            let bundles = chain.query_context_bundles(&q).bundles;
+            let first = &bundles[0].seed.locator;
+            assert_eq!(first.thought_index, Some(new.index), "{link:?}");
+            let seeds: Vec<_> = bundles
+                .iter()
+                .map(|b| b.seed.locator.thought_index)
+                .collect();
+            assert_eq!(
+                seeds.contains(&Some(old.index)),
+                !is_strong(link),
+                "{link:?}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+mod cross_chain_transport {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use mentisdb::server::{rest_router, MentisDbServiceConfig};
+    use serde_json::{json, Value};
+    use tower::util::ServiceExt;
+
+    async fn post(router: &axum::Router, uri: &str, body: Value) -> Value {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// Policy on the parent chain, replacement written on a branch and on a
+    /// sibling chain: branch search (which includes ancestors) and federated
+    /// search both return the replacement, and parent-only search is unchanged.
+    #[tokio::test]
+    async fn branch_and_federated_search_apply_cross_chain_lineage() {
+        let dir = std::env::temp_dir().join(format!("mentisdb_cross_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let rest = rest_router(MentisDbServiceConfig::new(
+            dir.clone(),
+            "parent",
+            StorageAdapterKind::Binary,
+        ));
+        let old = post(&rest, "/v1/thoughts", json!({"chain_key":"parent","agent_id":"a","thought_type":"Decision","content":OLD_POLICY})).await;
+        let old_id = old["thought"]["id"].as_str().unwrap().to_string();
+        let branch = post(
+            &rest,
+            "/v1/chains/branch",
+            json!({"source_chain_key":"parent","branch_thought_id":old_id,"branch_chain_key":"branch"}),
+        )
+        .await;
+        let _ = branch;
+        let supersede = json!([{"kind":"supersedes","target_id":old_id,"chain_key":"parent"}]);
+        for chain in ["branch", "sibling"] {
+            post(&rest, "/v1/thoughts", json!({"chain_key":chain,"agent_id":"a","thought_type":"Decision","content":NEW_POLICY,"relations":supersede})).await;
+        }
+        let first = |v: &Value| v["results"][0]["thought"]["content"].clone();
+        // Branch search includes the parent as an ancestor.
+        let r = post(
+            &rest,
+            "/v1/ranked-search",
+            json!({"chain_key":"branch","text":QUERY_OLD_WORDING,"limit":5}),
+        )
+        .await;
+        assert_eq!(first(&r), NEW_POLICY, "{r}");
+        assert!(
+            r["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|h| h["thought"]["id"] != old_id.as_str()),
+            "old hidden: {r}"
+        );
+        // Federated across parent and sibling.
+        let r = post(
+            &rest,
+            "/v1/federated-search",
+            json!({"chain_keys":["parent","sibling"],"text":QUERY_OLD_WORDING,"limit":5}),
+        )
+        .await;
+        assert_eq!(first(&r), NEW_POLICY, "{r}");
+        assert_eq!(r["results"][0]["chain_key"], "sibling");
+        assert!(r["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["thought"]["id"] != old_id.as_str()));
+        // Audit view keeps the old hit and says what replaced it.
+        let r = post(&rest, "/v1/federated-search", json!({"chain_keys":["parent","sibling"],"text":QUERY_OLD_WORDING,"limit":5,"include_invalidated":true})).await;
+        let hit = r["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["thought"]["id"] == old_id.as_str())
+            .expect("old kept for audit");
+        assert_eq!(hit["thought"]["version_status"], "superseded");
+        assert_eq!(hit["thought"]["current_version"]["chain_key"], "sibling");
+        // The parent alone cannot see either replacement.
+        let r = post(
+            &rest,
+            "/v1/ranked-search",
+            json!({"chain_key":"parent","text":QUERY_OLD_WORDING,"limit":5}),
+        )
+        .await;
+        assert_eq!(first(&r), OLD_POLICY);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

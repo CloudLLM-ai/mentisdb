@@ -1,4 +1,31 @@
 UNRELEASED
+  - feat(retrieval): cross-chain and branch lineage. A `Supersedes`, `Corrects` or
+    `Invalidates` relation carrying a `chain_key` now applies wherever one read
+    path sees both chains: server branch search (the branch plus its ancestors),
+    server and library federated search. The superseded hit is replaced by the
+    live successor on the other chain (`successor_of`, `successor_of_chain`), or
+    annotated `superseded` with `current_version.chain_key` under
+    `include_invalidated`. Only edges whose source the caller's audience may see
+    count, so a public reader is never redirected to a private successor.
+    `lineage::cross_chain_successor` is the library entry point. A chain read
+    alone is unchanged. Weak (untyped) links are not applied across chains.
+  - feat(retrieval): context bundles redirect seeds the same way as ranked
+    search: a superseded seed becomes its live successor and a contested seed is
+    preceded by the thought contesting it.
+  - behavior change for programmatic callers: `RankedSearchQuery::new()` now
+    defaults to relative vector fusion, near-duplicate collapse at Jaccard 0.9
+    for text queries, successor redirection and thesaurus expansion at 0.3, so
+    result lists and `total_candidates` differ from earlier releases. Opt out per
+    query with `with_vector_fusion(VectorFusion::Absolute)`,
+    `with_collapse_duplicates(None)`, `with_resolve_successors(false)`,
+    `with_thesaurus(false)`, per request with `vector_fusion: "absolute"`,
+    `collapse_duplicates: 0`, `resolve_successors: false`, `synonym_weight: 0`, or
+    process-wide with `MENTISDB_VECTOR_FUSION=absolute` and
+    `MENTISDB_COLLAPSE_DUPLICATES=off`.
+  - bench: full LoCoMo-10P and LongMemEval protocol run on these defaults
+    (fresh ingest, fastembed-minilm): LoCoMo R@5/R@10/R@20 67.9/76.7/83.4,
+    rerank 68.6/76.9/83.5; LongMemEval 69.8/75.6/81.4, rerank 70.2/75.8/82.0.
+    See results/benchmarks/2026-11-01-full-protocol/.
   - feat(api): ranking knobs are reachable everywhere. REST, MCP and the CLI
     (`search`, `search federated`, `search bundles`) accept `resolve_successors`,
     `collapse_duplicates`, `vector_fusion`, `synonym_weight`, `df_scope` and

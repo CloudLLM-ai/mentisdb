@@ -1,0 +1,24 @@
+{
+  "overall": 76.93474962063733,
+  "top_k": 10,
+  "total_correct": 1521,
+  "total_queries": 1977,
+  "by_type": {
+    "single": {
+      "correct": 1250,
+      "total": 1554,
+      "hit_10": 1250,
+      "hit_20": 1337,
+      "hit_50": 1429,
+      "recall_pct": 80.43758043758044
+    },
+    "multi": {
+      "correct": 271,
+      "total": 423,
+      "hit_10": 271,
+      "hit_20": 314,
+      "hit_50": 370,
+      "recall_pct": 64.0661938534279
+    }
+  }
+}

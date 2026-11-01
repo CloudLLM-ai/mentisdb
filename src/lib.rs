@@ -8982,7 +8982,10 @@ impl MentisDb {
         };
 
         let lexical_scores = self.rank_candidates_lexically(&candidates, ranked_text, request);
-        let seeds = self.context_bundle_seeds(&lexical_scores, request.limit);
+        let seeds = match self.redirected_bundle_seeds(request, ranked_text) {
+            Some(seeds) => seeds,
+            None => self.context_bundle_seeds(&lexical_scores, request.limit),
+        };
         if seeds.is_empty() {
             return crate::search::ContextBundleResult {
                 bundles: Vec::new(),
@@ -9237,6 +9240,30 @@ impl MentisDb {
                     hit.matched_terms,
                     hit.match_sources,
                 ));
+            }
+        }
+
+        // Step 1b: a replacement written on another searched chain supersedes a
+        // hit here (a relation carrying that chain's key). Redirect to the live
+        // successor, keeping the superseded hit's score, unless the caller asked
+        // for invalidated thoughts.
+        if !self_query.include_invalidated && !self_query.filter.include_invalidated {
+            let mut view: Vec<(&'a str, &'a MentisDb, audience::Audience)> =
+                vec![(self_chain_key, self, self_query.filter.audience)];
+            for (key, chain) in other_chains {
+                let audience = other_queries
+                    .get(*key)
+                    .map_or(self_query.filter.audience, |q| q.filter.audience);
+                view.push((key, chain, audience));
+            }
+            for hit in &mut all_hits {
+                if let Some(found) = lineage::cross_chain_successor(&view, hit.0, hit.1.id) {
+                    hit.0 = view
+                        .iter()
+                        .find(|(key, _, _)| *key == found.chain_key)
+                        .map_or(hit.0, |(key, _, _)| *key);
+                    hit.1 = found.thought;
+                }
             }
         }
 
