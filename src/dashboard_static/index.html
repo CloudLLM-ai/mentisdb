@@ -2172,32 +2172,74 @@
     return '<span class="badge badge-gray">Unknown</span>';
   }
 
-  // Read-only view of the chain's write-access policy (docs/CHAIN_ACCESS.md).
-  // Changing it needs a private-key signature, so it goes through the CLI/API.
+  // Public/private mode and allowed keys of a chain (docs/CHAIN_ACCESS.md).
+  // Changing them is the operator's: this panel is only reachable behind the
+  // dashboard PIN and the server signs the policy record with the operator key.
   function loadAccessPanel(chainKey) {
     const panel = document.getElementById('ex-access-card');
     if (!panel) return;
-    panel.innerHTML = '<div class="card-title">Write Access</div><div class="empty-state">Loading access policy…</div>';
-    api(`/dashboard/api/chains/${encodeURIComponent(chainKey)}`)
+    panel.innerHTML = '<div class="card-title">Access</div><div class="empty-state">Loading access policy…</div>';
+    api(`/dashboard/api/chains/${encodeURIComponent(chainKey)}/access`)
       .then(data => {
-        const policy = data.access_policy || {};
+        const policy = data.policy || {};
         const keys = Array.isArray(policy.keys) ? policy.keys : [];
         const mode = policy.mode || 'open';
-        const badge = mode === 'open' ? 'badge-gray' : (mode === 'signed' ? 'badge-blue' : 'badge-green');
+        const isPrivate = mode !== 'open';
         const bad = Array.isArray(policy.invalid_records) ? policy.invalid_records.length : 0;
+        const operatorKey = data.operator_key || {};
         panel.innerHTML = `
-          <div class="card-title">Write Access</div>
+          <div class="card-title">Access</div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-            <span class="badge ${badge}">${esc(mode)}</span>
-            <span style="color:#8b949e">${policy.seq === null || policy.seq === undefined ? 'no policy record (open by default)' : 'record #' + esc(String(policy.seq))}</span>
+            <span class="badge ${isPrivate ? 'badge-green' : 'badge-gray'}">${isPrivate ? 'private' : 'public'}</span>
+            <span style="color:#8b949e">${policy.seq === null || policy.seq === undefined ? 'no governance record yet (public from the first thought)' : 'record #' + esc(String(policy.seq))}</span>
             ${bad ? `<span class="badge badge-red">${esc(String(bad))} rejected record(s)</span>` : ''}
+            <button class="btn btn-secondary btn-sm" id="ex-access-mode">${isPrivate ? 'Make public' : 'Make private'}</button>
           </div>
+          <p style="color:#8b949e;margin:0 0 8px 0;font-size:0.85rem">${isPrivate ? 'Writes need a signature by an allowed key; what is written while private is readable only by allowed keys.' : 'Anyone can write unsigned and read. Making it private starts a private segment.'}</p>
           ${policy.keys_root ? `<div class="mono" style="font-size:0.8rem;color:#8b949e;word-break:break-all">keys root ${esc(policy.keys_root)}</div>` : ''}
-          ${policy.genesis_hash ? `<div class="mono" style="font-size:0.8rem;color:#8b949e;word-break:break-all">genesis ${esc(policy.genesis_hash)}</div>` : ''}
-          ${keys.length ? `<table style="margin-top:10px"><thead><tr><th>Agent</th><th>Key id</th><th>Public key</th></tr></thead><tbody>${keys.map(k => `<tr><td>${esc(k.agent_id)}</td><td>${esc(k.key_id)}</td><td class="mono" style="word-break:break-all">${esc(k.public_key)}</td></tr>`).join('')}</tbody></table>` : ''}
-          <p style="color:#8b949e;margin:10px 0 0 0;font-size:0.85rem">Read only. Change it with <span class="mono">mentisdb chain access set</span>.</p>`;
+          ${keys.length ? `<table style="margin-top:10px"><thead><tr><th>Agent</th><th>Key id</th><th>Public key</th><th></th></tr></thead><tbody>${keys.map(k => `<tr><td>${esc(k.agent_id)}</td><td>${esc(k.key_id)}</td><td class="mono" style="word-break:break-all">${esc(k.public_key)}</td><td>${(k.agent_id === operatorKey.agent_id && k.key_id === operatorKey.key_id) ? '<span class="badge badge-blue">operator</span>' : `<button class="btn btn-danger btn-sm" data-access-deny-agent="${esc(k.agent_id)}" data-access-deny-key="${esc(k.key_id)}">Remove</button>`}</td></tr>`).join('')}</tbody></table>` : ''}
+          ${isPrivate ? `
+          <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <input id="ex-access-agent" placeholder="agent id" style="width:140px">
+            <input id="ex-access-keyid" placeholder="key id" style="width:140px">
+            <input id="ex-access-pub" placeholder="public key (64 hex)" style="width:320px">
+            <button class="btn btn-secondary btn-sm" id="ex-access-allow">Allow key</button>
+          </div>` : ''}
+          <div id="ex-access-feedback" class="feedback" style="margin-top:8px"></div>
+          <p style="color:#8b949e;margin:10px 0 0 0;font-size:0.85rem">Operator only. The same actions are available as <span class="mono">mentisdb chain access set|allow|deny</span>.</p>`;
+        const feedback = document.getElementById('ex-access-feedback');
+        const send = (op, done) => api(`/dashboard/api/chains/${encodeURIComponent(chainKey)}/access`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(op),
+          })
+          .then(() => { showFeedback(feedback, true, done); loadAccessPanel(chainKey); })
+          .catch(err => showFeedback(feedback, false, err.message));
+        document.getElementById('ex-access-mode').addEventListener('click', () => {
+          send({ op: 'set_mode', mode: isPrivate ? 'public' : 'private' }, isPrivate ? 'Chain is public again' : 'Chain is private');
+        });
+        const allow = document.getElementById('ex-access-allow');
+        if (allow) {
+          allow.addEventListener('click', () => {
+            send({
+              op: 'allow_key',
+              agent_id: document.getElementById('ex-access-agent').value.trim(),
+              key_id: document.getElementById('ex-access-keyid').value.trim(),
+              public_key: document.getElementById('ex-access-pub').value.trim(),
+            }, 'Key allowed');
+          });
+        }
+        panel.querySelectorAll('[data-access-deny-agent]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            send({
+              op: 'deny_key',
+              agent_id: btn.getAttribute('data-access-deny-agent'),
+              key_id: btn.getAttribute('data-access-deny-key'),
+            }, 'Key removed');
+          });
+        });
       })
-      .catch(err => { panel.innerHTML = `<div class="card-title">Write Access</div><div class="empty-state">${esc(err.message)}</div>`; });
+      .catch(err => { panel.innerHTML = `<div class="card-title">Access</div><div class="empty-state">${esc(err.message)}</div>`; });
   }
 
   function loadVectorPanel(chainKey) {

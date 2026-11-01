@@ -456,6 +456,25 @@ allowlist membership check a few hundred ns. Unsigned appends on `Open` chains
 pay only a constant-time mode check, so existing deployments see no change. With
 durable (fsync) writes the verification is small next to the disk flush.
 
+## Cost of the audience filter
+
+`cargo bench --bench audience_search` (aarch64 macOS, release, one chain of
+10 000 public thoughts followed by 10 000 signed private ones, ranked search for
+three words, limit 10):
+
+| Case | Time |
+|---|---|
+| Public chain with no private segment, 10 000 thoughts (every existing deployment) | about 334 µs |
+| Private chain, authorized reader (20 000 thoughts visible) | about 691 µs |
+| Private chain, public reader (10 000 thoughts visible) | about 423 µs |
+
+The public reader pays about 27% over a chain of the same visible size: the
+candidate filter walks the whole chain and BM25 statistics are recomputed over
+the visible subset instead of read from the index. Counting visible thoughts
+for `head` and listings is a linear scan (about 30 µs at 20 000 thoughts).
+Chains with no private segment skip all of it: the audience check is a single
+comparison.
+
 ## Fuzzing
 
 `fuzz/` holds cargo-fuzz targets for the formats above: `policy_record` (parsing is

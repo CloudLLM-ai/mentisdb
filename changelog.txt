@@ -65,6 +65,13 @@ UNRELEASED
     authentication, per-surface visibility and residual risk.
   - feat(dashboard): chains with private segments are shown only behind a PIN;
     access administration routes `GET/POST /dashboard/api/chains/{chain}/access`.
+  - perf(security): `cargo bench --bench audience_search`: ranked search over a
+    chain with a 10 000-thought private segment takes about 423 µs for a public
+    reader against 334 µs for a public chain of the same visible size; chains
+    without private segments pay a single comparison.
+  - fix(build): the `llm-extraction` feature gate sat on `mod lineage` instead of
+    `mod llm`, so `--no-default-features --features server` (the fuzz crate) did
+    not compile.
   - feat(registry): `chains.json` entries gain `has_private` and
     `public_thought_count` (optional, written on the next flush) so listings
     show public counts without opening a chain.

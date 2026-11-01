@@ -309,8 +309,8 @@ pub mod cli;
 pub(crate) mod dashboard;
 pub(crate) mod decode_limits;
 pub mod integrations;
-#[cfg(feature = "llm-extraction")]
 pub mod lineage;
+#[cfg(feature = "llm-extraction")]
 pub mod llm;
 pub mod migration;
 pub mod operator;

@@ -2038,6 +2038,7 @@ dependencies = [
  "subtle",
  "time",
  "tokio",
+ "tokio-stream",
  "toml_edit",
  "ureq",
  "url",
@@ -2052,6 +2053,7 @@ name = "mentisdb-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "bincode",
  "libfuzzer-sys",
  "mentisdb",
  "serde_json",

@@ -113,6 +113,10 @@ name = "access_policy"
 harness = false
 
 [[bench]]
+name = "audience_search"
+harness = false
+
+[[bench]]
 name = "skill_registry"
 harness = false
 
