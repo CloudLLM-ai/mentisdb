@@ -313,6 +313,7 @@ pub mod integrations;
 pub mod lineage;
 pub mod llm;
 pub mod paths;
+pub mod read_auth;
 pub mod search;
 #[cfg(feature = "server")]
 pub mod server;
@@ -5984,6 +5985,11 @@ impl MentisDb {
             .agents
             .get(agent_id)
             .ok_or_else(|| AccessError::UnknownAgent(agent_id.to_string()))?;
+        if agent.status == AgentStatus::Revoked {
+            return Err(AccessError::AgentDisabled {
+                agent_id: agent_id.to_string(),
+            });
+        }
         let key = agent
             .public_keys
             .iter()
@@ -6066,6 +6072,10 @@ impl MentisDb {
                 .map_err(access::AccessError::into_io)?;
         }
         validate_refs(&self.thoughts, &input.refs)?;
+        if !governance {
+            self.check_private_targets(agent_id, &input)
+                .map_err(access::AccessError::into_io)?;
+        }
         let signed = input.thought_signature.is_some();
 
         let mut relations = input.relations.clone();
@@ -6097,6 +6107,7 @@ impl MentisDb {
         // A prior thought the author rated more important than this one is
         // never a candidate: superseding it would hide the higher-value record
         // behind a near-copy that was filed as less important.
+        let dedup_audience = self.writer_audience(agent_id, &input);
         if let Some(threshold) = self.dedup_threshold.filter(|_| !signed) {
             let new_tokens: HashSet<String> =
                 search::lexical::normalize_lexical_tokens(&input.content, true)
@@ -6111,6 +6122,12 @@ impl MentisDb {
                 let new_importance = input.importance.clamp(0.0, 1.0);
                 for (offset, prior_tokens) in self.dedup_tokens.sets.iter().enumerate() {
                     if self.thoughts[scan_start + offset].importance > new_importance {
+                        continue;
+                    }
+                    // An unsigned thought is public. It must not collapse into
+                    // a private one: that would leak the private thought's id
+                    // in the response and hide it from its own readers.
+                    if !self.is_visible(&self.thoughts[scan_start + offset], dedup_audience) {
                         continue;
                     }
                     if prior_tokens.is_empty() {
@@ -7112,6 +7129,105 @@ impl MentisDb {
     /// governance records. See [`audience`].
     pub fn segments(&self) -> &audience::SegmentMap {
         &self.access_policy.segments
+    }
+
+    /// Whether `(agent_id, key_id, public_key)` may read the private segments
+    /// of this chain.
+    ///
+    /// The key must be active (the agent not disabled, the key not revoked) in
+    /// this chain's registry with exactly this public key, and in the policy's
+    /// key set. In the legacy `signed` mode every active registered key counts,
+    /// because every such key may already write.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::{MentisDb, StorageAdapterKind};
+    ///
+    /// let dir = std::env::temp_dir().join(format!("mentisdb_doc_readauth_{}", std::process::id()));
+    /// let chain = MentisDb::open_with_key_and_storage_kind(&dir, "doc", StorageAdapterKind::Binary).unwrap();
+    /// // Nobody is authorized on a chain with no policy.
+    /// assert!(!chain.is_read_authorized("alice", "k1", &[1u8; 32]));
+    /// # let _ = std::fs::remove_dir_all(&dir);
+    /// ```
+    pub fn is_read_authorized(&self, agent_id: &str, key_id: &str, public_key: &[u8; 32]) -> bool {
+        let Some(agent) = self.agent_registry.agents.get(agent_id) else {
+            return false;
+        };
+        if agent.status == AgentStatus::Revoked {
+            return false;
+        }
+        let active = agent.public_keys.iter().any(|key| {
+            key.key_id == key_id
+                && key.revoked_at.is_none()
+                && key.public_key_bytes.as_slice() == public_key.as_slice()
+        });
+        if !active {
+            return false;
+        }
+        match self.access_policy.mode {
+            access::AccessMode::Signed => true,
+            _ => self.access_policy.contains(agent_id, key_id, public_key),
+        }
+    }
+
+    /// The audience a writer of `input` belongs to: [`audience::Audience::Authorized`]
+    /// when the thought carries a signature of a key that may read the private
+    /// segments, otherwise [`audience::Audience::Public`].
+    fn writer_audience(&self, agent_id: &str, input: &ThoughtInput) -> audience::Audience {
+        let (Some(signature), Some(key_id)) = (&input.thought_signature, &input.signing_key_id)
+        else {
+            return audience::Audience::Public;
+        };
+        let _ = signature;
+        let public_key = self
+            .agent_registry
+            .agents
+            .get(agent_id)
+            .and_then(|agent| {
+                agent
+                    .public_keys
+                    .iter()
+                    .find(|key| key.key_id == key_id.trim())
+            })
+            .and_then(|key| <[u8; 32]>::try_from(key.public_key_bytes.as_slice()).ok());
+        match public_key {
+            Some(pk) if self.is_read_authorized(agent_id, key_id.trim(), &pk) => {
+                audience::Audience::Authorized
+            }
+            _ => audience::Audience::Public,
+        }
+    }
+
+    /// Refuse a thought from a writer who may not read the private segments if it
+    /// points into them.
+    fn check_private_targets(
+        &self,
+        agent_id: &str,
+        input: &ThoughtInput,
+    ) -> Result<(), access::AccessError> {
+        if !self.segments().has_private() {
+            return Ok(());
+        }
+        let audience = self.writer_audience(agent_id, input);
+        if !audience.is_public() {
+            return Ok(());
+        }
+        let hidden_ref = input
+            .refs
+            .iter()
+            .any(|index| !self.is_visible_index(*index, audience));
+        let hidden_relation = input.relations.iter().any(|relation| {
+            relation.chain_key.is_none()
+                && self
+                    .id_to_index
+                    .get(&relation.target_id)
+                    .is_some_and(|position| !self.is_visible_index(*position as u64, audience))
+        });
+        if hidden_ref || hidden_relation {
+            return Err(access::AccessError::PrivateTarget);
+        }
+        Ok(())
     }
 
     /// Whether `audience` may see the thought at append-order `index`.

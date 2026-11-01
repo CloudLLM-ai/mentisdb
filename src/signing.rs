@@ -297,30 +297,30 @@ impl StoredSignature {
 // ── canonical payload encoding ───────────────────────────────────────────────
 
 /// Writer for the primitive encodings in `docs/CHAIN_ACCESS.md`.
-struct Payload(Vec<u8>);
+pub(crate) struct Payload(pub(crate) Vec<u8>);
 
 impl Payload {
-    fn new(domain: &[u8]) -> Self {
+    pub(crate) fn new(domain: &[u8]) -> Self {
         Self(domain.to_vec())
     }
-    fn str(&mut self, value: &str) -> &mut Self {
+    pub(crate) fn str(&mut self, value: &str) -> &mut Self {
         self.0.extend((value.len() as u32).to_be_bytes());
         self.0.extend(value.as_bytes());
         self
     }
-    fn raw(&mut self, bytes: &[u8]) -> &mut Self {
+    pub(crate) fn raw(&mut self, bytes: &[u8]) -> &mut Self {
         self.0.extend(bytes);
         self
     }
-    fn u32(&mut self, value: u32) -> &mut Self {
+    pub(crate) fn u32(&mut self, value: u32) -> &mut Self {
         self.0.extend(value.to_be_bytes());
         self
     }
-    fn u64(&mut self, value: u64) -> &mut Self {
+    pub(crate) fn u64(&mut self, value: u64) -> &mut Self {
         self.0.extend(value.to_be_bytes());
         self
     }
-    fn i64(&mut self, value: i64) -> &mut Self {
+    pub(crate) fn i64(&mut self, value: i64) -> &mut Self {
         self.0.extend(value.to_be_bytes());
         self
     }

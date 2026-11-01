@@ -81,6 +81,15 @@ pub enum AccessError {
         /// Key id that was named.
         key_id: String,
     },
+    /// An unauthorized writer pointed at a thought of a private segment
+    /// (`refs` or a relation target). Only a signer who may read the private
+    /// segments can link to them.
+    PrivateTarget,
+    /// The signing agent has been disabled by the operator.
+    AgentDisabled {
+        /// Agent that was named.
+        agent_id: String,
+    },
     /// A policy record is malformed or inconsistent.
     PolicyInvalid(String),
     /// The signer may not change the policy.
@@ -159,6 +168,12 @@ impl fmt::Display for AccessError {
                 f,
                 "key '{key_id}' of agent '{agent_id}' is not in this chain's allowed key set"
             ),
+            Self::PrivateTarget => f.write_str(
+                "this thought links to a private segment of the chain; only a signer authorized to read it may do that",
+            ),
+            Self::AgentDisabled { agent_id } => {
+                write!(f, "agent '{agent_id}' has been disabled")
+            }
             Self::PolicyInvalid(why) => write!(f, "invalid access policy record: {why}"),
             Self::NotAuthorized(why) => write!(f, "not authorized to change the access policy: {why}"),
         }

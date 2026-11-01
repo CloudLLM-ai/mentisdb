@@ -145,19 +145,19 @@ fn fixture_with(name: &str, secret_a: &str, secret_b: &str) -> Fixture {
     ids.insert("s4", chain.thoughts()[4].id);
     set_mode(&mut chain, AccessMode::Open);
     ids.insert("rec_open", chain.thoughts()[5].id);
-    // A public thought that links straight into the private segment and one
-    // that links to a public thought on the far side of it.
-    chain
-        .append_thought(
-            "pub",
-            ThoughtInput::new(ThoughtType::Insight, "pelican follow up after the lockdown")
-                .with_refs(vec![3, 1])
-                .with_relations(vec![
-                    ThoughtRelation::new(ThoughtRelationKind::RelatedTo, ids["s4"]),
-                    ThoughtRelation::new(ThoughtRelationKind::RelatedTo, ids["p1"]),
-                ]),
-        )
-        .unwrap();
+    // A thought in the public segment that links straight into the private
+    // one and to a public thought on the far side of it. It is written by an
+    // authorized signer (an unsigned writer is refused, see below), which is
+    // how older chains came to hold such links.
+    signed(
+        &mut chain,
+        ThoughtInput::new(ThoughtType::Insight, "pelican follow up after the lockdown")
+            .with_refs(vec![3, 1])
+            .with_relations(vec![
+                ThoughtRelation::new(ThoughtRelationKind::RelatedTo, ids["s4"]),
+                ThoughtRelation::new(ThoughtRelationKind::RelatedTo, ids["p1"]),
+            ]),
+    );
     ids.insert("p6", chain.thoughts()[6].id);
     chain
         .append("pub", ThoughtType::Insight, "another public pelican fact")
@@ -564,4 +564,89 @@ fn existing_policy_chains_migrate_to_private_from_their_record() {
     assert!(!chain.is_visible_index(1, PUB));
     assert!(!chain.is_visible_index(2, PUB));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── write side: a public writer cannot touch the private segment ────────────
+
+/// An unsigned thought may not point into a private segment (by index or by id).
+#[test]
+fn public_writer_cannot_link_into_private_segment() {
+    let mut f = fixture("private_target");
+    let by_ref = f.chain.append_thought(
+        "pub",
+        ThoughtInput::new(ThoughtType::Insight, "ref probe").with_refs(vec![3]),
+    );
+    let error = by_ref.expect_err("ref into private segment");
+    assert_eq!(
+        mentisdb::access::AccessError::from_io(&error),
+        Some(&mentisdb::access::AccessError::PrivateTarget)
+    );
+    let by_relation = f.chain.append_thought(
+        "pub",
+        ThoughtInput::new(ThoughtType::Insight, "invalidate probe").with_relations(vec![
+            ThoughtRelation::new(ThoughtRelationKind::Supersedes, f.ids["s3"]),
+        ]),
+    );
+    assert!(by_relation.is_err());
+    // Links to public thoughts keep working.
+    f.chain
+        .append_thought(
+            "pub",
+            ThoughtInput::new(ThoughtType::Insight, "fine").with_refs(vec![1]),
+        )
+        .unwrap();
+    // The private thought was not invalidated.
+    assert!(!f.chain.is_invalidated(f.ids["s3"]));
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+/// A signer who may read the private segment can link to it.
+#[test]
+fn authorized_signer_can_link_into_private_segment() {
+    let mut f = fixture("private_target_ok");
+    set_mode(&mut f.chain, AccessMode::Allowlist);
+    signed(
+        &mut f.chain,
+        ThoughtInput::new(ThoughtType::Insight, "linked").with_refs(vec![3]),
+    );
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+/// Automatic dedup must not collapse a public write into a private thought.
+#[test]
+fn dedup_never_supersedes_a_private_thought() {
+    let mut f = fixture("dedup");
+    f.chain.with_dedup_threshold(Some(0.5));
+    let echo = f
+        .chain
+        .append_thought(
+            "pub",
+            ThoughtInput::new(ThoughtType::Constraint, "SECRET never reveal the zebra plan"),
+        )
+        .unwrap()
+        .clone();
+    assert!(
+        echo.relations
+            .iter()
+            .all(|r| r.target_id != f.ids["s4"] && r.target_id != f.ids["s3"]),
+        "dedup leaked or superseded a private thought: {:?}",
+        echo.relations
+    );
+    assert!(!f.chain.is_invalidated(f.ids["s4"]));
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+/// Only the key set of the policy, with an active registry key, may read.
+#[test]
+fn read_authorization_follows_policy_and_registry() {
+    let mut f = fixture("readauth");
+    set_mode(&mut f.chain, AccessMode::Allowlist);
+    let pk = key().verifying_key().to_bytes();
+    assert!(f.chain.is_read_authorized("gov", "gov-1", &pk));
+    assert!(!f.chain.is_read_authorized("gov", "gov-1", &[1u8; 32]));
+    assert!(!f.chain.is_read_authorized("gov", "other", &pk));
+    assert!(!f.chain.is_read_authorized("nobody", "gov-1", &pk));
+    f.chain.revoke_agent_key("gov", "gov-1").unwrap();
+    assert!(!f.chain.is_read_authorized("gov", "gov-1", &pk));
+    let _ = std::fs::remove_dir_all(&f.dir);
 }
