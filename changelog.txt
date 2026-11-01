@@ -4,7 +4,8 @@ UNRELEASED
     chain files); the `--offline` operator commands rely on the same lock.
   - fix(migration): chains from schemas 0 to 2 are now checked before their
     hashes are rebuilt: the old stored hash links must be intact (a removed,
-    inserted or altered record is refused and the chain left untouched), and the
+    inserted or reordered record, or a broken link, is refused and the chain
+    left untouched; an edit that keeps the stored hash is not detectable), and the
     report counts the links verified. A migration that rewrites hashes also
     removes the chain's signed `.verified.json` checkpoint, which is bound to the
     old hashes.
