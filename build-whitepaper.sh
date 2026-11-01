@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
 # Rebuild WHITEPAPER.pdf from WHITEPAPER.tex.
-# Usage: ./build-whitepaper.sh [--open] [--clean]
+# Usage: ./build-whitepaper.sh [--from-md] [--open] [--clean]
 #
 # -----------------------------------------------------------------------------
 # Examples
 # -----------------------------------------------------------------------------
 #
 #     ./build-whitepaper.sh           # rebuild WHITEPAPER.pdf
+#     ./build-whitepaper.sh --from-md # regenerate WHITEPAPER.tex from WHITEPAPER.md first
 #     ./build-whitepaper.sh --open    # rebuild and open the PDF
 #     ./build-whitepaper.sh --clean   # remove aux files (.aux/.log/...) and exit
 #     ./build-whitepaper.sh --help    # show short help
 #
-# Typical workflow after editing WHITEPAPER.tex:
+# WHITEPAPER.md is the source of truth; WHITEPAPER.tex is generated from it by
+# scripts/whitepaper/md2tex.sh (needs pandoc). Typical workflow:
 #
-#     vim WHITEPAPER.tex
-#     ./build-whitepaper.sh --open
+#     vim WHITEPAPER.md
+#     ./build-whitepaper.sh --from-md --open
 #
 # The script runs pdflatex twice (first pass writes .aux, second pass resolves
 # cross-references and the bibliography), then removes intermediate files so
@@ -32,6 +34,7 @@
 #     sudo tlmgr update --self
 #     # install the extra packages this document uses but BasicTeX omits:
 #     sudo tlmgr install booktabs mathtools enumitem microtype lm
+#     # --from-md also needs pandoc: brew install pandoc
 #
 #     # Alternative (full distribution, no extra tlmgr calls needed):
 #     # brew install --cask mactex-no-gui
@@ -58,14 +61,17 @@ cd "$(dirname "$0")"
 TEX_FILE="WHITEPAPER.tex"
 PDF_FILE="WHITEPAPER.pdf"
 OPEN_AFTER=0
+FROM_MD=0
 CLEAN_ONLY=0
 
 for arg in "$@"; do
   case "$arg" in
     --open) OPEN_AFTER=1 ;;
+    --from-md) FROM_MD=1 ;;
     --clean) CLEAN_ONLY=1 ;;
     -h|--help)
-      echo "Usage: $0 [--open] [--clean]"
+      echo "Usage: $0 [--from-md] [--open] [--clean]"
+      echo "  --from-md  Regenerate WHITEPAPER.tex from WHITEPAPER.md (pandoc) first"
       echo "  --open   Open the PDF when the build finishes"
       echo "  --clean  Remove aux files and exit"
       exit 0
@@ -84,6 +90,10 @@ if [[ $CLEAN_ONLY -eq 1 ]]; then
   cleanup_aux
   echo "Cleaned aux files."
   exit 0
+fi
+
+if [[ $FROM_MD -eq 1 ]]; then
+  scripts/whitepaper/md2tex.sh
 fi
 
 if [[ ! -f "$TEX_FILE" ]]; then

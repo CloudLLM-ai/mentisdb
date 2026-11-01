@@ -1,0 +1,47 @@
+% Preamble additions for WHITEPAPER.tex, injected by scripts/whitepaper/md2tex.sh.
+\usepackage{microtype}
+\usepackage[margin=1in]{geometry}
+\usepackage{xcolor}
+\usepackage{textcomp}
+
+
+\lstdefinelanguage{Rust}{
+  keywords={fn, let, mut, struct, enum, impl, for, in, if, else, return, match, use,
+           pub, crate, mod, self, Some, None, Ok, Err, as, where, dyn, trait, type,
+           const, static, ref, move, async, await, break, continue, loop, while,
+           true, false},
+  keywords=[2]{Vec, HashMap, HashSet, Option, Result, String, Box, Uuid, DateTime,
+           Utc, usize, u64, u32, u8, f32, f64, bool, str},
+  morecomment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  morestring=[b]",
+  sensitive=true,
+}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{blue!60!black}\bfseries,
+  keywordstyle=[2]\color{teal!70!black},
+  commentstyle=\color{green!40!black}\itshape,
+  stringstyle=\color{red!55!black},
+  showstringspaces=false,
+  breaklines=true,
+  breakatwhitespace=false,
+  frame=single,
+  framerule=0.4pt,
+  rulecolor=\color{gray!50},
+  backgroundcolor=\color{gray!5},
+  tabsize=2,
+  columns=fixed,
+  basewidth=0.52em,
+  keepspaces=true,
+  upquote=true,
+  aboveskip=0.8em,
+  belowskip=0.8em,
+  xleftmargin=0.5em,
+  xrightmargin=0.5em,
+}
+
+% Long tables: slightly tighter rows and smaller text.
+\AtBeginEnvironment{longtable}{\small}
+\renewcommand{\arraystretch}{1.15}

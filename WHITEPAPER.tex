@@ -1,35 +1,75 @@
-\documentclass[11pt,a4paper]{article}
-
-\usepackage[utf8]{inputenc}
-\usepackage[T1]{fontenc}
-\usepackage{lmodern}
+% GENERATED from WHITEPAPER.md by scripts/whitepaper/md2tex.sh. Do not edit by hand.
+% Options for packages loaded elsewhere
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+\PassOptionsToPackage{dvipsnames,svgnames,x11names}{xcolor}
+\documentclass[
+  11pt,
+  a4paper]{article}
+\usepackage{xcolor}
+\usepackage{amsmath,amssymb}
+\setcounter{secnumdepth}{-\maxdimen} % remove section numbering
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp} % provide euro and other symbols
+\else % if luatex or xetex
+  \usepackage{unicode-math} % this also loads fontspec
+  \defaultfontfeatures{Scale=MatchLowercase}
+  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
+\fi
+\usepackage[]{lmodern}
+\ifPDFTeX\else
+  % xetex/luatex font selection
+\fi
+% Use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\IfFileExists{microtype.sty}{% use microtype if available
+  \usepackage[]{microtype}
+  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\makeatletter
+\@ifundefined{KOMAClassName}{% if non-KOMA class
+  \IfFileExists{parskip.sty}{%
+    \usepackage{parskip}
+  }{% else
+    \setlength{\parindent}{0pt}
+    \setlength{\parskip}{6pt plus 2pt minus 1pt}}
+}{% if KOMA class
+  \KOMAoptions{parskip=half}}
+\makeatother
+\usepackage{listings}
+\newcommand{\passthrough}[1]{#1}
+\lstset{defaultdialect=[5.3]Lua}
+\lstset{defaultdialect=[x86masm]Assembler}
+\usepackage{longtable,booktabs,array}
+\usepackage{caption}
+\captionsetup[table]{skip=6pt}
+\newcounter{none} % for unnumbered tables
+\usepackage{calc} % for calculating minipage widths
+% Correct order of tables after \paragraph or \subparagraph
+\usepackage{etoolbox}
+\makeatletter
+\patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
+\makeatother
+\setlength{\emergencystretch}{3em} % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+% Preamble additions for WHITEPAPER.tex, injected by scripts/whitepaper/md2tex.sh.
 \usepackage{microtype}
 \usepackage[margin=1in]{geometry}
-\usepackage{booktabs}
-\usepackage{longtable}
-\usepackage{array}
-\usepackage{enumitem}
-\usepackage{hyperref}
-\usepackage{url}
 \usepackage{xcolor}
-\usepackage{listings}
-\usepackage{fvextra}
+\usepackage{textcomp}
 
-\hypersetup{
-  colorlinks=true,
-  linkcolor=black,
-  citecolor=blue,
-  urlcolor=blue,
-  pdftitle={MentisDB: Durable Semantic Memory for Software Agents},
-  pdfauthor={Angel Leon}
-}
 
 \lstdefinelanguage{Rust}{
   keywords={fn, let, mut, struct, enum, impl, for, in, if, else, return, match, use,
            pub, crate, mod, self, Some, None, Ok, Err, as, where, dyn, trait, type,
            const, static, ref, move, async, await, break, continue, loop, while,
-           true, false, Vec, HashMap, HashSet, Option, Result, String, Box,
-           VecDeque, Uuid, DateTime, Utc, usize, u64, u32, f64, bool, str},
+           true, false},
+  keywords=[2]{Vec, HashMap, HashSet, Option, Result, String, Box, Uuid, DateTime,
+           Utc, usize, u64, u32, u8, f32, f64, bool, str},
   morecomment=[l]{//},
   morecomment=[s]{/*}{*/},
   morestring=[b]",
@@ -37,752 +77,1570 @@
 }
 
 \lstset{
-  language=Rust,
-  basicstyle=\ttfamily\small,
-  keywordstyle=\color{blue!70!black}\bfseries,
-  commentstyle=\color{green!50!black}\itshape,
-  stringstyle=\color{red!60!black},
-  numberstyle=\tiny\color{gray},
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{blue!60!black}\bfseries,
+  keywordstyle=[2]\color{teal!70!black},
+  commentstyle=\color{green!40!black}\itshape,
+  stringstyle=\color{red!55!black},
   showstringspaces=false,
   breaklines=true,
-  breakatwhitespace=true,
+  breakatwhitespace=false,
   frame=single,
   framerule=0.4pt,
   rulecolor=\color{gray!50},
   backgroundcolor=\color{gray!5},
   tabsize=2,
-  columns=flexible,
-  literate={→}{$\to$}{1}
-           {≥}{$\geq$}{1}
-           {≤}{$\leq$}{1}
-           {≠}{$\neq$}{1},
+  columns=fixed,
+  basewidth=0.52em,
+  keepspaces=true,
+  upquote=true,
+  aboveskip=0.8em,
+  belowskip=0.8em,
   xleftmargin=0.5em,
   xrightmargin=0.5em,
 }
 
-\title{\textbf{MentisDB}\\[0.3em]
-\large Durable Semantic Memory for Software Agents}
-\author{Angel Leon\\[0.3em]
-\small Version 0.10.10.55 \quad \textemdash \quad October 22, 2026}
-\date{}
+% Long tables: slightly tighter rows and smaller text.
+\AtBeginEnvironment{longtable}{\small}
+\renewcommand{\arraystretch}{1.15}
+\usepackage{bookmark}
+\IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
+\urlstyle{same}
+% fallback for those not using the hyperref driver hyperxmp:
+\makeatletter
+\@ifundefined{xmpquote}{\newcommand{\xmpquote}[1]{#1}}{}
+\makeatother
+\hypersetup{
+  colorlinks=true,
+  linkcolor={black},
+  filecolor={Maroon},
+  citecolor={Blue},
+  urlcolor={blue},
+  pdfcreator={LaTeX via pandoc}}
+
+\title{\textbf{MentisDB}\\[0.3em]\large Durable, Verifiable Memory for Software Agents}
+\author{Angel Leon}
+\date{master after 0.10.10.55 (unreleased changes included) --- 2026-11-01}
 
 \begin{document}
 \maketitle
-
 \begin{abstract}
-Most agent frameworks treat long-term memory as an afterthought — ad-hoc prompt stuffing,
-unstructured Markdown files, or opaque session state that's non-portable and easily lost.
-MentisDB is a durable, semantically typed memory engine built in Rust that treats agent
-memory as an append-only, hash-chained ledger of structured records called \emph{thoughts}.
-Every thought is cryptographically linked to its predecessor via SHA-256, making the chain
-tamper-evident. On top of this ledger, MentisDB provides a retrieval pipeline that combines
-BM25 lexical scoring, vector similarity, typed graph expansion, implicit edge inference,
-and Reciprocal Rank Fusion (RRF) — all without requiring an external database or LLM service
-in the core path. On standard long-term memory benchmarks, MentisDB achieves 72.6\% Recall@10
-on LoCoMo-10P and 66.8\% Recall@5 on LongMemEval.
+Agents forget. A coding agent that learned last month that the user
+wants tabs, that the build breaks on a certain linker flag, or that a
+design was rejected, starts the next session without any of it unless
+something durable and searchable carries it forward. MentisDB is that
+memory, built as an embedded Rust library and an optional single-binary
+daemon. Memory is an append-only log of typed records called
+\emph{thoughts}. Each record is linked to its predecessor by a SHA-256
+hash, can carry an Ed25519 signature bound to its chain and position,
+and can be governed by a write policy recorded inside the chain itself.
+
+Retrieval combines BM25 lexical scoring with document-frequency gating,
+dense-vector similarity from a local ONNX model, typed graph expansion,
+append-order session cohesion, and optional Reciprocal Rank Fusion.
+Superseded and corrected thoughts are hidden by default but never
+deleted. A \emph{standing context} query returns what is durably true
+about the user and the project regardless of age, next to the usual
+window of recent thoughts. None of this needs an external database, a
+network service or an LLM call.
+
+On the LoCoMo-10P benchmark the default pipeline reaches 73.5\%
+Recall@10, and on LongMemEval it reaches 68.0\% Recall@5 (release
+0.10.9.54, local MiniLM embeddings). On real project chains, an audit
+found no loss of recall with the age of a memory, but it found that
+near-duplicate thoughts crowd results and that paraphrased queries
+recall far less than verbatim ones. This paper describes the design as
+it is implemented, states each default exactly, and lists what is still
+weak.
 \end{abstract}
 
-\tableofcontents
-\newpage
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section{System Overview}
-
-\subsection{The Problem}
-
-LLM agents need memory that is:
-\begin{itemize}
-  \item \textbf{Durable} — survives process restarts and context window resets
-  \item \textbf{Queryable} — not just a flat file, but searchable by text, semantics, and graph relationships
-  \item \textbf{Tamper-evident} — you can detect if someone modified the memory log
-  \item \textbf{Portable} — works with Claude Code, Codex, Copilot, Cursor, or any MCP client
-  \item \textbf{Attributable} — every record carries the agent ID that wrote it
-\end{itemize}
-
-Existing solutions fail one or more of these. Markdown files aren't queryable. Provider
-session state isn't portable. Vector databases don't have integrity guarantees. LLM-based
-memory extraction adds latency and cost to every write.
-
-\subsection{The Approach}
-
-MentisDB models agent memory as a hash-chained append-only log — similar to a blockchain,
-but without consensus or distributed systems complexity. Each entry (a ``thought'') is a
-typed, structured record with semantic metadata, signed by the agent that produced it.
-
-Retrieval is a multi-signal pipeline: lexical search (BM25), vector similarity (cosine
-over ONNX embeddings), graph traversal (typed edges between thoughts), and rank fusion
-(RRF). All of this runs locally — no network calls, no LLM API bills for the core path.
-
-\subsection{Architecture at a Glance}
-
-The daemon is a single static binary with no external dependencies. Storage is embedded
-files on disk. No database server, no Redis, no Neo4j. The MCP server runs on port 9471,
-REST on 9472, and the HTTPS dashboard on 9473. All storage lives under
-\texttt{\textasciitilde/.cloudllm/mentisdb/}.
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section{The Thought Data Model}
-
-\subsection{The Thought Record}
-
-The core unit of memory is a \emph{thought} — a structured, typed, hash-chained record:
-
-\begin{lstlisting}
-struct Thought {
-    schema_version: u32,
-
-    // Identity (assigned by the chain on commit)
-    thought_id: Uuid,
-    index: u64,
-    timestamp: DateTime<Utc>,
-
-    // Attribution
-    agent_id: String,
-    signing_key_id: Option<String>,
-    thought_signature: Option<Vec<u8>>,
-
-    // Semantics
-    thought_type: ThoughtType,
-    thought_role: ThoughtRole,
-    content: String,
-    tags: Vec<String>,
-    concepts: Vec<String>,
-
-    // Scoring metadata
-    confidence: Option<f64>,
-    importance: Option<f64>,
-
-    // Relationships
-    refs: Vec<u64>,
-    relations: Vec<ThoughtRelation>,
-
-    // Chain integrity (assigned on commit)
-    prev_hash: String,
-    hash: String,
-}
-\end{lstlisting}
-
-The key design decision: the agent authors the \emph{content} fields but cannot forge the
-\emph{chain} fields (id, index, timestamp, hashes). Those are assigned by the chain on commit.
-
-\subsection{The Hash Chain}
-
-Every thought is linked to its predecessor via SHA-256, similar to a git history but for
-memory records:
-
-\begin{lstlisting}
-fn compute_thought_hash(thought: &Thought) -> String {
-    // Serialize everything EXCEPT the hash field itself
-    let canonical_bytes = bincode::serialize(&CanonicalThought {
-        schema_version: thought.schema_version,
-        thought_id: thought.thought_id,
-        index: thought.index,
-        // ... all fields except `hash`
-        prev_hash: thought.prev_hash.clone(),
-    });
-    sha256(&canonical_bytes)
-}
-\end{lstlisting}
-
-The integrity invariant: \texttt{thought.hash == sha256(canonical\_serialize(thought))}
-and \texttt{thought.prev\_hash == previous\_thought.hash}.
-
-If someone modifies any field, the hash breaks. If they recompute the hash, the next
-thought's \texttt{prev\_hash} no longer matches — tamper cascades forward through the
-entire chain. Detection is O(1): check that each record's \texttt{prev\_hash} matches the
-previous record's \texttt{hash}.
-
-For stronger provenance, individual thoughts can be Ed25519-signed by the producing agent.
-
-\subsection{Typed Relations}
-
-Thoughts link to each other via 12 typed edge kinds:
-
-\begin{lstlisting}
-enum ThoughtRelationKind {
-    References, Summarizes, Corrects, Invalidates,
-    CausedBy, Supports, Contradicts, DerivedFrom,
-    ContinuesFrom, BranchesFrom, RelatedTo, Supersedes,
-}
-\end{lstlisting}
-
-Each relation carries an optional validity interval (\texttt{valid\_at} /
-\texttt{invalid\_at}), enabling point-in-time queries: ``what did the agent know at
-timestamp T?''
-
-\subsection{The Invalidation Set}
-
-When a thought is superseded, corrected, or invalidated, we don't delete it — we mark it.
-At chain open time, we precompute a set of all invalidated thought IDs for O(1) skipping
-during retrieval:
-
-\begin{lstlisting}
-fn build_invalidation_set(chain: &[Thought]) -> HashSet<Uuid> {
-    let mut invalidated = HashSet::new();
-    for thought in chain {
-        for relation in &thought.relations {
-            match relation.kind {
-                Supersedes | Corrects | Invalidates => {
-                    invalidated.insert(relation.target_thought_id);
-                }
-                _ => {}
-            }
-        }
-    }
-    invalidated
-}
-\end{lstlisting}
-
-\subsection{Agent Registry}
-
-Thoughts carry only a stable \texttt{agent\_id} string; display names, owners, descriptions,
-aliases, public keys, and thought counters live in a per-chain agent registry, resolved at
-read time.
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section{Semantic Typing}
-
-\subsection{ThoughtType}
-
-Every thought carries a semantic type from a 30-variant enum, organized into seven
-categories: user/relationship, observation, error/correction, planning, exploration,
-execution, and state. Examples include \texttt{Decision}, \texttt{Mistake},
-\texttt{Insight}, \texttt{Constraint}, \texttt{Checkpoint}, and \texttt{Summary}.
-
-\subsection{ThoughtRole}
-
-Orthogonal to type, every thought has a role: \texttt{Memory}, \texttt{WorkingMemory},
-\texttt{Summary}, \texttt{Compression}, \texttt{Checkpoint}, \texttt{Handoff},
-\texttt{Audit}, or \texttt{Retrospective}. The combination of type $\times$ role gives
-240 distinguishable semantic positions.
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section{Storage Layer}
-
-\subsection{Storage Adapter}
-
-Persistence is abstracted behind a trait, allowing the chain semantics to stay the same
-regardless of backend:
-
-\begin{lstlisting}
-trait StorageAdapter {
-    fn load_thoughts(&self) -> io::Result<Vec<Thought>>;
-    fn append_thought(&self, thought: &Thought) -> io::Result<()>;
-    fn flush(&self) -> io::Result<()>;
-    fn set_auto_flush(&self, auto: bool);
-}
-\end{lstlisting}
-
-\subsection{Binary Storage}
-
-The default backend writes each thought as a length-prefixed bincode record with file
-extension \texttt{.tcbin}. This format is 40–60\% smaller than JSON and deserializes faster.
-
-Two durability modes: \textbf{Strict} (each append blocks until flushed; 2ms group-commit
-window) and \textbf{Buffered} (flushes every 16 records; up to 15 may be lost on hard crash).
-
-\subsection{Crash Recovery and Derived-State Invariants}
-
-The canonical log is the only source of truth; everything else must be atomically
-replaced or rebuildable from it. Since 0.10.9 four rules make that hold:
-
-\begin{itemize}
-  \item \textbf{Torn-tail repair is narrow.} Only a strict partial \emph{final} record
-  counts as torn; it is preserved to a \texttt{.torn} file (mode \texttt{0600}) and
-  truncated before the writer reopens the chain. If the bytes after a bad length prefix
-  still decode as complete records, the corruption is mid-file: the open fails with
-  \texttt{InvalidData} and the file is left untouched. One writer per chain directory
-  is assumed.
-  \item \textbf{Durable commits.} A strict-mode append returns once its group commit is
-  written to the OS; \texttt{MENTISDB\_FSYNC=1} adds one \texttt{fsync} per group commit.
-  Explicit flush, shutdown and drop always sync; registries are replaced atomically.
-  \item \textbf{Overlay coverage metadata.} The implicit-edge overlay records the thought
-  count and head hash it covers; a matching prefix is caught up by replaying the missing
-  tail, a mismatch triggers a rebuild.
-  \item \textbf{Single-flight background sidecar rebuild.} Opening a chain never embeds
-  its history on the request path. Stale sidecars are rebuilt by one process-wide worker
-  (at most one pending job per sidecar, bounded batches, shared model) and adopted by the
-  read path when finished; until then ranked search uses lexical and graph signals.
-\end{itemize}
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section{Schema Evolution}
-
-MentisDB has a linear schema version history (V0 through V3). Each migration is an
-idempotent transformation — running it twice produces the same result as once. Migrations
-compose: a V0 chain is upgraded by applying V0$\to$V1, then V1$\to$V2, then V2$\to$V3.
-
-A critical constraint: because bincode encodes enum variants by integer tag, new variants
-must be appended to the end of an enum. Reordering or inserting mid-enum would silently
-corrupt persisted data.
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section{Retrieval Pipeline}
-
-\subsection{Baseline Filter Search}
-
-The baseline path narrows candidates by indexed fields (type, role, agent\_id, tags,
-concepts) and applies a case-insensitive substring predicate. Results return in append
-order. No BM25, no vectors, no graph.
-
-\subsection{Ranked Search — Backend Selection}
-
-Ranked search selects a backend based on available signals: Lexical (BM25 only), Hybrid
-(BM25 + vector fusion), LexicalGraph, HybridGraph (full pipeline), or Heuristic (when no
-text is provided).
-
-\subsection{BM25 with Per-Field DF Gating}
-
-The lexical score uses BM25 applied across five fields. Each field has its own weight and
-document-frequency gate:
-
-\begin{lstlisting}
-fn bm25_field_score(
-    term_freq: f64,
-    doc_field_len: f64,
-    avg_field_len: f64,
-    doc_freq: usize,
-    corpus_size: usize,
-) -> f64 {
-    let k1 = 1.2;
-    let b = 0.75;
-    let idf = ((corpus_size as f64 - doc_freq as f64 + 0.5)
-        / (doc_freq as f64 + 0.5) + 1.0).ln();
-    let tf_norm = (term_freq * (k1 + 1.0))
-        / (term_freq + k1 * (1.0 - b + b * (doc_field_len / avg_field_len)));
-    idf * tf_norm
-}
-\end{lstlisting}
-
-Per-field DF gating prevents common terms from dominating. If a term appears in more than
-30\% of documents in a field, it's filtered out of that field's scoring. Each field has its
-own cutoff: content (30\%, weight 1.0), tags (30\%, weight 1.6), concepts (30\%, weight 1.4),
-agent\_id (70\%, weight 1.5), agent\_registry (60\%, weight 1.1).
-
-Text normalization applies Porter stemming plus an irregular verb lemma table ($\sim$170
-entries: ``went'' $\to$ ``go'', ``saw'' $\to$ ``see'').
-
-\subsection{Smooth Vector-Lexical Fusion}
-
-When a vector sidecar is available, cosine similarity provides a semantic score. The fusion
-function combines lexical and vector signals:
-
-\begin{lstlisting}
-fn fuse_scores(lexical_score: f64, vector_similarity: f64) -> f64 {
-    let alpha = 35.0;
-    let beta = 3.0;
-    vector_similarity * (1.0 + alpha * (-lexical_score / beta).exp())
-}
-\end{lstlisting}
-
-When lexical score is 0 (no text overlap), the vector signal gets amplified $\sim$36$\times$.
-As lexical score increases, amplification decays exponentially, so strong lexical matches
-aren't drowned out.
-
-\subsection{Graph-Aware Expansion}
-
-Thoughts linked by typed relations form a directed graph. Ranked search expands outward
-from seed hits via bounded BFS, traversing both explicit typed edges and implicit
-cosine-inferred edges:
-
-\begin{lstlisting}
-fn expand_graph(
-    seeds: &[&Thought],
-    adjacency: &AdjacencyIndex,
-    implicit_edges: &ImplicitEdgeOverlay,
-    max_depth: usize,
-    max_visits: usize,
-    mode: TraversalMode,
-) -> Vec<GraphHit> {
-    let mut visited = HashSet::new();
-    let mut queue = VecDeque::new();
-    let mut results = Vec::new();
-
-    for seed in seeds {
-        queue.push_back((seed, 0));
-    }
-
-    while let Some((thought, depth)) = queue.pop_front() {
-        if depth > max_depth || results.len() >= max_visits {
-            break;
-        }
-        if !visited.insert(thought.thought_id) {
-            continue;
-        }
-        results.push(GraphHit {
-            thought_id: thought.thought_id,
-            depth,
-            graph_score: 1.0 / (depth as f64),
-        });
-        for neighbor in adjacency.neighbors(thought, mode) {
-            queue.push_back((neighbor, depth + 1));
-        }
-        for neighbor in implicit_edges.neighbors(thought) {
-            queue.push_back((neighbor, depth + 1));
-        }
-    }
-    results
-}
-\end{lstlisting}
-
-Each typed relation carries a weight: \texttt{ContinuesFrom} (0.60) is stronger than
-\texttt{References} (0.06). Graph proximity decays with depth: depth 1 gets 1.0, depth 2
-gets 0.5, depth 3 gets 0.33.
-
-\subsection{Session Cohesion}
-
-When a seed thought has a moderate lexical score (not strong enough to stand alone),
-thoughts adjacent in append order get a proximity boost, surfacing ``evidence turns'' that
-share context but not vocabulary:
-
-\begin{lstlisting}
-fn cohesion_score(
-    candidate_index: u64,
-    seed_index: u64,
-    seed_lexical_score: f64,
-) -> f64 {
-    let radius = 8;
-    let boost = 0.8;
-    if seed_lexical_score < 3.0 || seed_lexical_score >= 5.0 {
-        return 0.0;
-    }
-    let distance = (candidate_index as f64 - seed_index as f64).abs();
-    if distance > radius as f64 {
-        return 0.0;
-    }
-    boost * (1.0 - distance / radius as f64)
-}
-\end{lstlisting}
-
-\subsection{Implicit Edge Overlay}
-
-Most agents append thoughts without authoring explicit relation edges. The implicit edge
-overlay derives \texttt{RelatedTo} edges automatically from vector cosine similarity:
-
-\begin{lstlisting}
-fn build_implicit_edges(
-    vectors: &HashMap<Uuid, Vec<f32>>,
-    threshold: f64,      // default 0.85
-    max_neighbors: usize, // default 5
-) -> HashMap<Uuid, Vec<ImplicitNeighbor>> {
-    let mut overlay = HashMap::new();
-    let ids: Vec<_> = vectors.keys().collect();
-
-    for &source_id in &ids {
-        let source_vec = &vectors[source_id];
-        let mut neighbors: Vec<(Uuid, f64)> = Vec::new();
-
-        for &target_id in &ids {
-            if source_id == target_id { continue; }
-            let sim = cosine_similarity(source_vec, &vectors[target_id]);
-            if sim >= threshold {
-                neighbors.push((*target_id, sim));
-            }
-        }
-        neighbors.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        neighbors.truncate(max_neighbors);
-        overlay.insert(*source_id, neighbors.into_iter()
-            .map(|(id, score)| ImplicitNeighbor { id, score })
-            .collect());
-    }
-    overlay
-}
-\end{lstlisting}
-
-The full build is O(N$^2$), done once at chain open for N $\leq$ 50,000. On each new
-append, an O(N) incremental update computes cosines between the new vector and all existing
-entries.
-
-\subsection{HNSW Approximate Vector Backend}
-
-For vector sidecars above 50,000 vectors, MentisDB switches from exact linear-scan cosine
-to an HNSW graph. Both backends implement the same \texttt{VectorSearchBackend} trait, so
-the retrieval pipeline is unchanged. At 10k vectors, HNSW delivers a 10.9$\times$ query
-speedup with 91.4\% recall. At 50k vectors, it achieves 100\% recall at 4.23ms per query.
-
-\subsection{Reciprocal Rank Fusion}
-
-When reranking is enabled, the top K candidates are re-ranked using RRF — a simple method
-that combines multiple ranked lists:
-
-\begin{lstlisting}
-fn rrf_score(
-    candidate: &Thought,
-    ranked_lists: &[Vec<Uuid>],
-    k: u64,  // damping constant, default 60
-) -> f64 {
-    let mut total = 0.0;
-    for list in ranked_lists {
-        if let Some(pos) = list.iter().position(|id| *id == candidate.thought_id) {
-            let rank = (pos + 1) as u64;
-            total += 1.0 / (k + rank) as f64;
-        }
-    }
-    total
-}
-\end{lstlisting}
-
-MentisDB produces three single-signal rankings — lexical-only, vector-only, and
-graph-only — and fuses them via RRF. Pure arithmetic: no LLM, no network round trip.
-
-\subsection{Importance Weighting}
-
-User-originated thoughts (importance $\sim$0.8) outrank verbose assistant responses
-(importance $\sim$0.2) via a differential boost:
-
-\begin{lstlisting}
-fn importance_boost(base_score: f64, importance: f64) -> f64 {
-    base_score * (importance - 0.5) * 0.3
-}
-\end{lstlisting}
-
-\subsection{Decomposed Scores}
-
-Each ranked hit exposes its full score breakdown (lexical, vector, graph, relation boost,
-seed score, importance, confidence, recency, cohesion, total) plus matched terms and match
-sources, preserving auditability.
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section{Deduplication}
-
-When a new thought is appended, MentisDB checks the last N thoughts (default 64) for
-near-duplicates using Jaccard similarity over normalized token sets:
-
-\begin{lstlisting}
-fn check_dedup(
-    new_thought: &Thought,
-    recent_thoughts: &[&Thought],
-    threshold: f64,  // default 0.85
-) -> Option<Uuid> {
-    let new_tokens = normalize_tokens(&new_thought.content);
-    if new_tokens.is_empty() { return None; }
-
-    let mut best_match = None;
-    let mut best_sim = 0.0;
-
-    for prior in recent_thoughts {
-        let prior_tokens = normalize_tokens(&prior.content);
-        let sim = jaccard(&new_tokens, &prior_tokens);
-        if sim > best_sim {
-            best_sim = sim;
-            best_match = Some(prior.thought_id);
-        }
-    }
-
-    if best_sim >= threshold { best_match } else { None }
-}
-
-fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
-    let intersection = a.intersection(b).count() as f64;
-    let union = a.union(b).count() as f64;
-    if union == 0.0 { 0.0 } else { intersection / union }
-}
-\end{lstlisting}
-
-If a duplicate is found, a \texttt{Supersedes} edge is auto-emitted and the superseded
-thought's ID is added to the invalidation set. The original is retained for audit.
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section{Operational Surfaces}
-
-\subsection{CLI}
-
-The \texttt{mentisdb} binary exposes subcommands that RPC over REST to a running daemon:
-\texttt{add}, \texttt{search}, \texttt{agents}. Client commands use synchronous HTTP to
-avoid an async runtime dependency.
-
-\subsection{MCP Server}
-
-MentisDB exposes a streamable HTTP MCP endpoint (port 9471) with 35+ tools covering
-bootstrap, append, search, read, export/import, agent registry, chain management, and a
-skill registry.
-
-\subsection{Skill Registry}
-
-A git-like immutable version store for agent instruction bundles. Uploads to an existing
-skill ID create new immutable versions: the first is full content, subsequent versions are
-unified diff patches. Skills may be deprecated or revoked without losing history.
-Permanent delete removes the skill and all versions so the identifier can be reused.
-Agents with registered Ed25519 keys must sign uploads.
-
-\subsection{Bootstrap Protocol}
-
-Modern MCP clients bootstrap from a handshake: \texttt{initialize} directs the agent to
-read the core skill, \texttt{mentisdb\_bootstrap} opens or creates the chain (writing a
-genesis checkpoint if empty), and \texttt{mentisdb\_recent\_context} loads prior state.
-
-\subsection{REST API}
-
-A versioned REST API (\texttt{/v1/...}) mirrors the MCP tools for non-MCP clients, with
-bearer token authorization supporting chain-scoped tokens.
-
-Authorization must inspect exactly the fields the executing handler consumes. REST and
-MCP share one operation table marking each operation chain-scoped or global-only; chain
-keys are normalized before both the check and the execution; and an MCP payload is read
-through the single field set its transport executes (\texttt{tool}/\texttt{parameters}
-or \texttt{name}/\texttt{arguments}), rejecting payloads that carry both.
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section{Empirical Evaluation}
-
-\subsection{Benchmarks}
-
-\begin{longtable}{llcccc}
-\toprule
-Benchmark & Metric & v0.8.1 & v0.8.5 & v0.8.9 \\
-\midrule
-LoCoMo-2P & R@10 & \textbf{88.7\%} & — & — \\
-LoCoMo-2P single-hop & R@10 & 90.7\% & — & — \\
-LoCoMo-10P (1977 queries) & R@10 & 74.2\% & \textbf{74.6\%} & \textbf{71.9\%} \\
-LoCoMo-10P single-hop & R@10 & — & 79.0\% & 75.8\% \\
-LoCoMo-10P multi-hop & R@10 & — & 58.4\% & 57.4\% \\
-LoCoMo-10P & R@20 & — & — & 79.1\% \\
-LongMemEval (fresh chain) & R@5 & 67.6\% & — & \textbf{66.8\%} \\
-LongMemEval (fresh chain) & R@10 & 73.2\% & — & \textbf{72.2\%} \\
-LongMemEval (fresh chain) & R@20 & — & — & 78.0\% \\
-\bottomrule
-\end{longtable}
-
-\subsection{Scoring Evolution}
-
-\begin{longtable}{llcc}
-\toprule
-Version & Change & LongMemEval R@5 & LoCoMo-10P R@10 \\
-\midrule
-0.8.0 baseline & — & 57.2\% & — \\
-0.8.0 + Porter stemming & token normalization & 61.6\% & — \\
-0.8.0 + tiered fusion + importance & vector/lexical balance & 65.0\% & — \\
-0.8.1 + cohesion + smooth fusion + DF cutoff & retrieval quality & 67.6\% & 74.2\% \\
-0.8.5 + cohesion tuning + edge weights + fastembed & session/graph boost & — & 74.6\% \\
-0.8.9 + irregular lemmas + webhooks & lemma expansion + events & 66.8\% & 71.9\% \\
-0.9.8 + implicit edge overlay + in-memory vector index & graph density + latency & 66.8\% & — \\
-0.9.9 + thesaurus auto-by-default + full embeddings & automatic synonym expansion & 66.8\% & \textbf{72.6\%} \\
-\bottomrule
-\end{longtable}
-
-\subsection{Near-Miss Analysis (LoCoMo-10P, v0.8.5)}
-
-Of 503 misses (gold answer absent from top-10):
-
-\begin{tabular}{lrl}
-\toprule
-Bucket & Count & Interpretation \\
-\midrule
-R@20 hit & 130 (25.8\%) & close ranking error \\
-R@50 hit & 285 (56.7\%) & moderate signal gap \\
-R > 50 & 218 (43.3\%) & lexical gap \\
-\bottomrule
-\end{tabular}
-
-The 43.3\% figure represents a hard ceiling for BM25-only retrieval. The 25.8\%
-ranking-error bucket is the target for graph-density improvements.
-
-\subsection{Near-Miss Analysis (LongMemEval, v0.9.8)}
-
-R@5 = 66.8\%, R@10 $\approx$ 72.0\%, R@20 $\approx$ 77.8\%. Of 166 misses:
-
-\begin{tabular}{lrl}
-\toprule
-Bucket & Count & Interpretation \\
-\midrule
-R@10 hit & 27 (16.3\%) & close ranking error \\
-R@20 hit & 57 (34.3\%) & moderate signal gap \\
-not in R@20 & 109 (65.7\%) & lexical gap \\
-\bottomrule
-\end{tabular}
-
-65.7\% of misses are not recoverable at R@20 regardless of graph topology — evidence
-thoughts share no vocabulary with the query.
-
-\subsection{HNSW Performance}
-
-\begin{tabular}{lllll}
-\toprule
-Corpus & Backend & Query Latency & Recall@10 & Speedup \\
-\midrule
-10k $\times$ 128d & Exact (linear scan) & 95.1 ms & 100.0\% & — \\
-10k $\times$ 128d & \textbf{HNSW} & \textbf{8.75 ms} & 91.4\% & \textbf{10.9$\times$} \\
-50k $\times$ 128d & \textbf{HNSW} & \textbf{4.23 ms/query} & \textbf{100.0\%} & — \\
-\bottomrule
-\end{tabular}
-
-\subsection{Micro-Benchmarks}
-
-Criterion benchmarks span append throughput, baseline search, ranked retrieval, skill
-registry lifecycle, and HTTP concurrency. A \texttt{DashMap}-based concurrent chain lookup
-delivers 750–930 read req/s at 10k concurrent tasks.
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section{Related Work and Positioning}
-
-\begin{longtable}{lcccc}
-\toprule
-Feature & \textbf{MentisDB} & Mem0 & Graphiti / Zep & Letta / MemGPT \\
-\midrule
-Language & Rust & Python & Python & Python / TS \\
-Storage & embedded file & external DB & Neo4j / FalkorDB & external DB \\
-LLM required for core & \textbf{No} & Yes & Yes & Yes \\
-Cryptographic integrity & \textbf{SHA-256 hash chain} & — & — & — \\
-Hybrid retrieval & BM25 + vector + graph & vector + keyword & semantic + keyword + graph & — \\
-Approximate NN (HNSW) & \textbf{Yes (default)} & — & — & — \\
-Implicit graph inference & \textbf{cosine-inferred edges} & — & LLM-extracted & — \\
-Temporal facts & valid\_at / invalid\_at & update-only & valid\_at / invalid\_at & — \\
-Deduplication & \textbf{Jaccard + Supersedes} & LLM-based & merge & — \\
-Agent registry & Yes & — & — & Yes \\
-MCP server & \textbf{Built-in} & — & Yes & — \\
-\bottomrule
-\end{longtable}
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section{Limitations and Future Work}
-
-\subsection{Limitations}
-
-\begin{itemize}
-  \item \textbf{Ceiling of sparse retrieval.} 43.3\% of LoCoMo-10P misses and 65.7\% of
-    LongMemEval misses are irreducible lexical gaps.
-  \item \textbf{Implicit edge quality depends on the encoder.} MiniLM (384-dim) at
-    threshold 0.85 produces sparse overlays for topically diverse conversations.
-  \item \textbf{Local-only integrity.} The hash chain provides tamper evidence, not
-    Byzantine fault tolerance.
-  \item \textbf{Schema churn discipline.} Bincode enum tagging requires append-only
-    variant ordering.
-\end{itemize}
-
-\subsection{Future Work}
-
-\begin{itemize}
-  \item LoCoMo multi-hop validation of implicit edge overlay
-  \item Threshold sweep for cosine threshold and K
-  \item Per-chain entity/relation ontologies
-  \item Cross-chain federated retrieval
-  \item Optional LLM-extracted memories as a layered transform
-  \item Self-improving skill registry with signed provenance
-\end{itemize}
-
-\subsection{Conclusion}
-
-MentisDB formalizes agent memory as an append-only, hash-chained ledger of semantically
-typed thoughts, coupled with a composable retrieval pipeline — BM25 with per-field DF
-gating, smooth vector-lexical fusion, bounded graph expansion with cosine-inferred implicit
-edges, RRF, session cohesion, and Jaccard deduplication — in a single embedded Rust crate.
-Empirical results demonstrate competitive retrieval quality without external databases or
-LLM services for the core path.
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section*{References}
-\addcontentsline{toc}{section}{References}
+\subsection{1. The Problem and the Requirements}
+
+An agent's context window is working memory. It is erased at the end of
+each session and compacted during long ones. What the agent needs on top
+of it is the equivalent of long-term memory: a store it writes to as it
+works and reads from when it starts or when a question touches the past.
+We set eight requirements for that store.
 
 \begin{enumerate}
-  \item Robertson, S. and Zaragoza, H. \emph{The Probabilistic Relevance Framework: BM25 and Beyond}. Foundations and Trends in IR, 3(4), 2009.
-  \item Cormack, G. V., Clarke, C. L. A., and Büttcher, S. \emph{Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods}. SIGIR, 2009.
-  \item Porter, M. F. \emph{An algorithm for suffix stripping}. Program, 14(3), 1980.
-  \item Jaccard, P. \emph{Étude comparative de la distribution florale dans une portion des Alpes et des Jura}. Bull. Soc. Vaud. Sci. Nat., 1901.
-  \item Bernstein, D. J. et al. \emph{High-speed high-security signatures}. J. Cryptographic Engineering, 2012.
-  \item FIPS PUB 180-4. \emph{Secure Hash Standard (SHS)}. NIST, 2015.
-  \item Maharana, A. et al. \emph{Evaluating Very Long-Term Conversational Memory of LLM Agents (LoCoMo)}. 2024.
-  \item Wu, D. et al. \emph{LongMemEval: Benchmarking Chat Assistants on Long-Term Interactive Memory}. 2024.
-  \item Anthropic. \emph{Model Context Protocol (MCP) Specification}. 2024.
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \textbf{Durable.} An acknowledged write survives a process crash. With
+  an opt-in setting it also survives power loss.
+\item
+  \textbf{Recallable regardless of age.} A preference stated three
+  months ago must reach the agent as reliably as one stated yesterday. A
+  window of recent records does not satisfy this on its own.
+\item
+  \textbf{Searchable by meaning and by words.} Users paraphrase. Exact
+  identifiers, file names and error strings also matter. Both kinds of
+  query must work.
+\item
+  \textbf{Current.} When a fact changes, the new version must win and
+  the old one must stop surfacing, without destroying the history that
+  explains the change.
+\item
+  \textbf{Attributable and verifiable.} Every record names the agent
+  that wrote it. Edits to history are detectable, and a chain can
+  require that writes carry valid signatures.
+\item
+  \textbf{Local and dependency-free.} The core path runs on a laptop
+  with no database server, no cloud API and no per-write LLM cost.
+\item
+  \textbf{Portable across agents.} Claude Code, Codex, Copilot, Gemini
+  and any other MCP client share one memory.
+\item
+  \textbf{Inspectable.} Every ranking can be explained, and every memory
+  can be read, exported and audited by a human.
 \end{enumerate}
+
+Common approaches fail at least one requirement. A Markdown notes file
+is durable and portable but is not searchable at scale and is loaded
+whole or not at all. Provider session memory is not portable and not
+inspectable. A plain vector store answers paraphrases but has no notion
+of currency, attribution or integrity, and misses exact identifiers.
+Systems that extract memories with an LLM on every write add latency,
+cost and a second model whose mistakes become permanent.
+
+MentisDB addresses the requirements with three ideas. Memory is an
+append-only, hash-chained log, so history is never rewritten and changes
+are recorded as new thoughts that point at old ones. Retrieval is a
+local, multi-signal ranking whose every component is exposed in the
+result. A written protocol, shipped as an agent skill, tells agents when
+to read, when to write and what to link.
+
+
+\subsection{2. Architecture}
+
+MentisDB is a Rust crate (\passthrough{\lstinline!mentisdb!}) and one
+binary of the same name. The crate can be embedded directly. The binary
+runs a daemon and also serves as the command-line client.
+
+\begin{lstlisting}
+  Agents (Claude Code, Codex, Copilot, Gemini, ...)      Humans
+        |  MCP (HTTP or stdio)    |  REST       |  CLI      |  browser
+        v                         v             v           v
+  +---------------------------------------------------------------+
+  | mentisdb daemon (one process, binds 127.0.0.1 by default)     |
+  |   MCP 9471   REST 9472   HTTPS MCP 9473   HTTPS REST 9474     |
+  |   Dashboard 9475 (HTTPS)                                      |
+  |   auth: optional bearer tokens (global or chain-scoped)       |
+  +-------------------------------+-------------------------------+
+                                  |
+  +-------------------------------v-------------------------------+
+  | MentisDb core (library)                                       |
+  |   append path: validate -> access policy -> sign check ->     |
+  |                relations/dedup -> hash -> writer thread       |
+  |   read path:   candidates (invalidation, as_of, filters) ->   |
+  |                BM25 + vectors + graph + cohesion -> rank      |
+  |   standing context, recent context, context bundles           |
+  |   agent registry, entity types, skill registry, webhooks      |
+  +-------------------------------+-------------------------------+
+                                  |
+  +-------------------------------v-------------------------------+
+  | Files under MENTISDB_DIR (default ~/.cloudllm/mentisdb)       |
+  |   canonical:  <stem>.tcbin (the hash chain)                   |
+  |   sidecars:   agents, entity types, vectors (+WAL, HNSW),     |
+  |               implicit-edge overlay   (all rebuildable)       |
+  |   global:     chain registry, skills, webhooks, tokens, TLS   |
+  +---------------------------------------------------------------+
+\end{lstlisting}
+
+The canonical log is the only source of truth. Every other file is
+either a small registry written atomically or a derived index that can
+be rebuilt from the log.
+
+Ports are set in \passthrough{\lstinline!src/server.rs!}
+(\passthrough{\lstinline!MentisDbServerConfig!}) and can be changed or
+disabled with \passthrough{\lstinline!MENTISDB\_MCP\_PORT!},
+\passthrough{\lstinline!MENTISDB\_REST\_PORT!},
+\passthrough{\lstinline!MENTISDB\_HTTPS\_MCP\_PORT!},
+\passthrough{\lstinline!MENTISDB\_HTTPS\_REST\_PORT!} and
+\passthrough{\lstinline!MENTISDB\_DASHBOARD\_PORT!} (0 disables a
+listener). A self-signed TLS certificate is generated on first start
+under \passthrough{\lstinline!tls/!}.
+
+
+\subsection{3. Data Model}
+
+\subsubsection{3.1 Thoughts}
+
+A thought is one memory record. The \passthrough{\lstinline!Thought!}
+struct (\passthrough{\lstinline!src/lib.rs!}) has these fields, in
+declared order. The order matters because records are encoded
+positionally.
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.1881}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2178}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.0792}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.5149}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Field
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Type
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Set by
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Meaning
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\passthrough{\lstinline!schema\_version!} &
+\passthrough{\lstinline!u32!} & chain & Record layout version (currently
+3) \\
+\passthrough{\lstinline!id!} & \passthrough{\lstinline!Uuid!} & chain &
+Stable identifier (random v4) \\
+\passthrough{\lstinline!index!} & \passthrough{\lstinline!u64!} & chain
+& Position in the chain, from 0 \\
+\passthrough{\lstinline!timestamp!} &
+\passthrough{\lstinline!DateTime<Utc>!} & chain & Commit time \\
+\passthrough{\lstinline!session\_id!} &
+\passthrough{\lstinline!Option<Uuid>!} & caller & Groups thoughts of one
+working session \\
+\passthrough{\lstinline!agent\_id!} & \passthrough{\lstinline!String!} &
+caller & Author, resolved through the agent registry \\
+\passthrough{\lstinline!signing\_key\_id!} &
+\passthrough{\lstinline!Option<String>!} & caller & Key that signed this
+thought \\
+\passthrough{\lstinline!thought\_signature!} &
+\passthrough{\lstinline!Option<Vec<u8>>!} & caller & Detached Ed25519
+signature (Section 4.2) \\
+\passthrough{\lstinline!thought\_type!} &
+\passthrough{\lstinline!ThoughtType!} & caller & What kind of memory
+this is \\
+\passthrough{\lstinline!role!} & \passthrough{\lstinline!ThoughtRole!} &
+caller & How the system should treat it \\
+\passthrough{\lstinline!content!} & \passthrough{\lstinline!String!} &
+caller & The memory text \\
+\passthrough{\lstinline!confidence!} &
+\passthrough{\lstinline!Option<f32>!} & caller & 0 to 1, clamped \\
+\passthrough{\lstinline!importance!} & \passthrough{\lstinline!f32!} &
+caller & 0 to 1, clamped; default 0.5 \\
+\passthrough{\lstinline!tags!} & \passthrough{\lstinline!Vec<String>!} &
+caller & Free-form labels, normalized; also carries the scope \\
+\passthrough{\lstinline!concepts!} &
+\passthrough{\lstinline!Vec<String>!} & caller & Semantic labels,
+normalized \\
+\passthrough{\lstinline!refs!} & \passthrough{\lstinline!Vec<u64>!} &
+caller & Back-references by index \\
+\passthrough{\lstinline!relations!} &
+\passthrough{\lstinline!Vec<ThoughtRelation>!} & caller & Typed edges
+(Section 3.3) \\
+\passthrough{\lstinline!entity\_type!} &
+\passthrough{\lstinline!Option<String>!} & caller & Optional domain
+label, e.g.~\passthrough{\lstinline!bug\_report!} \\
+\passthrough{\lstinline!source\_episode!} &
+\passthrough{\lstinline!Option<String>!} & caller & Optional link to an
+external source \\
+\passthrough{\lstinline!prev\_hash!} & \passthrough{\lstinline!String!}
+& chain & Hash of the previous thought, empty for the first \\
+\passthrough{\lstinline!hash!} & \passthrough{\lstinline!String!} &
+chain & SHA-256 of this record (Section 4.1) \\
+\end{longtable}
+}
+
+The caller supplies the semantic fields. The chain assigns identity,
+position, time and the hash fields, so a client cannot choose where in
+history its record lands. For an unsigned thought the chain also
+normalizes input: it adds a \passthrough{\lstinline!References!}
+relation for each \passthrough{\lstinline!ref!}, fills a missing
+\passthrough{\lstinline!valid\_at!} on relations with the commit time,
+and may add a \passthrough{\lstinline!Supersedes!} edge when automatic
+deduplication is on (Section 6.9). A signed thought is stored exactly as
+signed, with none of these additions, so its signature can be checked
+again later.
+
+\subsubsection{3.2 Types and Roles}
+
+\passthrough{\lstinline!ThoughtType!} says what kind of memory a thought
+is. It has 32 variants. In declared order they are:
+
+\begin{quote}
+PreferenceUpdate, UserTrait, RelationshipUpdate, Finding, Insight,
+FactLearned, PatternDetected, Hypothesis, Mistake, Correction,
+LessonLearned, AssumptionInvalidated, Constraint, Plan, Subgoal,
+Decision, StrategyShift, Wonder, Question, Idea, Experiment,
+ActionTaken, TaskComplete, Checkpoint, StateSnapshot, Handoff, Summary,
+Surprise, Reframe, Goal, LLMExtracted, AccessPolicy.
+\end{quote}
+
+\passthrough{\lstinline!LLMExtracted!} marks memories produced by the
+optional extraction feature. \passthrough{\lstinline!AccessPolicy!} is
+reserved for governance records and is refused on the normal append
+path.
+
+\passthrough{\lstinline!ThoughtRole!} says how the system treats a
+thought: \passthrough{\lstinline!Memory!},
+\passthrough{\lstinline!WorkingMemory!},
+\passthrough{\lstinline!Summary!},
+\passthrough{\lstinline!Compression!},
+\passthrough{\lstinline!Checkpoint!}, \passthrough{\lstinline!Handoff!},
+\passthrough{\lstinline!Audit!} or
+\passthrough{\lstinline!Retrospective!}. Type and role are independent.
+A context-compaction checkpoint is a \passthrough{\lstinline!Summary!}
+thought with role \passthrough{\lstinline!Checkpoint!}. A post-mortem
+lesson is a \passthrough{\lstinline!LessonLearned!} thought with role
+\passthrough{\lstinline!Retrospective!}.
+
+Types drive behaviour, not only labels. Standing context (Section 6.10)
+selects thoughts by type.
+
+\subsubsection{3.3 Typed Relations}
+
+A relation is a directed, typed edge from the new thought to an earlier
+one, possibly in another chain:
+
+\begin{lstlisting}
+struct ThoughtRelation {
+    kind: ThoughtRelationKind,
+    target_id: Uuid,
+    chain_key: Option<String>,        // set for cross-chain edges
+    valid_at: Option<DateTime<Utc>>,  // when the edge starts to hold
+    invalid_at: Option<DateTime<Utc>>,// when it stops holding
+}
+\end{lstlisting}
+
+There are twelve kinds: \passthrough{\lstinline!References!},
+\passthrough{\lstinline!Summarizes!},
+\passthrough{\lstinline!Corrects!},
+\passthrough{\lstinline!Invalidates!},
+\passthrough{\lstinline!CausedBy!}, \passthrough{\lstinline!Supports!},
+\passthrough{\lstinline!Contradicts!},
+\passthrough{\lstinline!DerivedFrom!},
+\passthrough{\lstinline!ContinuesFrom!},
+\passthrough{\lstinline!BranchesFrom!},
+\passthrough{\lstinline!RelatedTo!} and
+\passthrough{\lstinline!Supersedes!}. Because edges always point
+backwards in time, the relation graph of a chain is acyclic by
+construction.
+
+Three kinds change what retrieval shows:
+\passthrough{\lstinline!Supersedes!}, \passthrough{\lstinline!Corrects!}
+and \passthrough{\lstinline!Invalidates!}. A thought that is the target
+of one of them is \emph{invalidated} (Section 3.6).
+
+\subsubsection{3.4 Scopes, Sessions and Entities}
+
+A thought belongs to one memory scope: \passthrough{\lstinline!User!}
+(the default), \passthrough{\lstinline!Session!} or
+\passthrough{\lstinline!Agent!}. The scope is stored as a tag
+(\passthrough{\lstinline!scope:user!},
+\passthrough{\lstinline!scope:session!},
+\passthrough{\lstinline!scope:agent!}), so it is covered by signatures
+and filters like any tag. User scope holds facts about the person and
+the project. Session and agent scopes hold material private to one
+session or one agent, and standing context skips them.
+
+\passthrough{\lstinline!session\_id!} groups the thoughts of one working
+session. \passthrough{\lstinline!entity\_type!} lets a chain declare
+domain types such as \passthrough{\lstinline!bug\_report!} or
+\passthrough{\lstinline!customer!}; the per-chain entity-type registry
+records them. Both are filters. Neither changes ranking.
+
+\subsubsection{3.5 Agents}
+
+Thoughts carry only an \passthrough{\lstinline!agent\_id!}. Everything
+else about an agent lives in a per-chain registry
+(\passthrough{\lstinline!AgentRecord!}): display name, owner,
+description, aliases, status (\passthrough{\lstinline!Active!} or
+\passthrough{\lstinline!Revoked!}), public keys, first and last seen
+index and time, and a thought count. Each public key records its id,
+algorithm (Ed25519 is the only one), key bytes, and when it was added
+and revoked.
+
+A public key is accepted only if it is a valid, non-weak Ed25519 curve
+point and comes with a proof of possession: a signature by that key over
+a payload with domain
+\passthrough{\lstinline!mentisdb/key-registration/v1!} that names the
+chain, agent, key id, key and a timestamp within ten minutes of the
+server clock (\passthrough{\lstinline!KeyRegistrationProof::verify!} in
+\passthrough{\lstinline!src/access.rs!}). Nobody can register a key they
+do not hold.
+
+The registry is a sidecar file, not part of the hash chain. Section 4.3
+explains what that means for trust.
+
+\subsubsection{3.6 Invalidation and Point-in-Time Reads}
+
+Nothing is deleted. When a thought is superseded, corrected or
+invalidated, the new thought carries the edge and the old one stays in
+the log.
+
+At open, the chain scans all relations and builds the set of invalidated
+thought ids together with each target's invalidating edges
+(\passthrough{\lstinline!observe\_invalidating\_relations!}). Every
+append updates the set. The default read paths hide invalidated
+thoughts: filter search, ranked search, context bundles and recent
+context. A caller sees them with
+\passthrough{\lstinline!include\_invalidated=true!}, which is how an
+agent audits what changed.
+
+A query with \passthrough{\lstinline!as\_of = T!} sees the chain as it
+was at time \passthrough{\lstinline!T!}. It considers only thoughts
+committed at or before \passthrough{\lstinline!T!}, and hides a thought
+only if an invalidating edge was in force at
+\passthrough{\lstinline!T!}: the edge's source was committed by then,
+its \passthrough{\lstinline!valid\_at!} is not after
+\passthrough{\lstinline!T!}, and its
+\passthrough{\lstinline!invalid\_at!} is not at or before
+\passthrough{\lstinline!T!}.
+
+The live view treats every invalidating edge as permanent. An edge whose
+\passthrough{\lstinline!invalid\_at!} has passed still hides its target
+from live reads. Only \passthrough{\lstinline!as\_of!} reads honour edge
+validity.
+
+\subsubsection{3.7 Chains, Branches and Merges}
+
+A chain is one independent log, named by a chain key. Keys are validated
+at every entry point: not blank, at most 256 bytes, no control
+characters (\passthrough{\lstinline!validate\_chain\_key!}). The chain
+registry (\passthrough{\lstinline!mentisdb-registry.json!}) lists chains
+with their schema version, storage adapter, thought and agent counts,
+and location.
+
+\passthrough{\lstinline!branch\_from!} creates a new chain whose first
+thought is a \passthrough{\lstinline!StateSnapshot!} with a cross-chain
+\passthrough{\lstinline!BranchesFrom!} edge to a thought of the source
+chain. Nothing is copied and the source is untouched; the branch
+inherits context by reference.
+
+Merging is a server operation. It re-appends the source chain's
+thoughts, unsigned, onto the target and then deregisters the source. It
+copies type, role, content, importance, confidence, tags and concepts,
+and maps agents by id. It drops relations, refs, sessions, entity types,
+source episodes, signatures and original timestamps, and it refuses
+targets that are not open-write chains. A merge therefore preserves what
+was remembered but not how it was connected or who signed it.
+
+
+\subsection{4. Integrity and Access Control}
+
+\subsubsection{4.1 The Hash Chain}
+
+Each thought's \passthrough{\lstinline!hash!} is the lowercase hex
+SHA-256 of a canonical encoding of the record
+(\passthrough{\lstinline!compute\_thought\_hash!}). The canonical form
+is a fixed struct serialized with bincode 2 in its standard
+configuration. It contains every field except
+\passthrough{\lstinline!hash!} itself and two fields excluded for
+backward compatibility: \passthrough{\lstinline!entity\_type!} and
+\passthrough{\lstinline!source\_episode!}. It includes
+\passthrough{\lstinline!prev\_hash!} and the signature fields. Every
+thought therefore satisfies:
+
+\begin{lstlisting}
+thought.hash      == sha256(bincode(canonical(thought)))
+thought.prev_hash == previous_thought.hash      ("" for index 0)
+thought.index     == its position
+\end{lstlisting}
+
+Every open verifies the whole chain
+(\passthrough{\lstinline!verify\_integrity!}): it checks each index,
+each \passthrough{\lstinline!prev\_hash!} link, and recomputes each
+hash. This costs O(n) and runs before the chain serves reads. Checking
+links alone would miss an edited record, which is why the hashes are
+recomputed.
+
+This is tamper \emph{evidence}. An attacker who can write the file can
+rewrite it entirely and recompute every hash. Evidence becomes useful
+when the head hash is recorded somewhere the attacker cannot reach, and
+signatures (Section 4.2) bind individual records to keys the attacker
+does not hold.
+
+Two gaps are known. First, \passthrough{\lstinline!entity\_type!} and
+\passthrough{\lstinline!source\_episode!} are not covered by the record
+hash, so they can be edited in the file without breaking the chain (v2
+signatures do cover them). Second, migrating a chain from schema V0 to
+V2 recomputes all hashes without checking the old ones, so tamper
+evidence does not extend across that migration.
+
+\subsubsection{4.2 Signatures}
+
+A thought may carry a detached Ed25519 signature (RFC 8032, strict
+verification) and the id of the signing key. The signature is checked on
+append against an active, unrevoked key of the thought's agent, on every
+chain. A bad signature is always refused, whatever the chain's policy.
+
+Two payload versions exist, distinguished by the stored signature
+itself:
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.2766}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.0851}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.6383}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Stored \passthrough{\lstinline!thought\_signature!}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Version
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Payload
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+64 bytes & v1 & Legacy JSON of the semantic fields. Not bound to a chain
+or position, so replayable; accepted only on open chains. \\
+65 bytes starting \passthrough{\lstinline!0x02!} & v2 & Domain
+\passthrough{\lstinline!mentisdb/thought/v2!}, then chain key, agent,
+\passthrough{\lstinline!prev\_hash!}, session, type, role, content,
+confidence, importance, tags (which include the scope), concepts, refs,
+relations with validity, entity type and source episode. \\
+\end{longtable}
+}
+
+The v2 payload (\passthrough{\lstinline!encode\_thought\_v2!} in
+\passthrough{\lstinline!src/signing.rs!}) uses big-endian
+length-prefixed fields and a NUL-terminated domain tag, so a signature
+for one payload type can never verify as another. Binding the chain key
+and the previous head means a signed thought is valid at exactly one
+position of one chain. The cost is a race: if another writer moves the
+head first, the append fails with the typed error
+\passthrough{\lstinline!StaleHead!} and the client signs again against
+the new head. The \passthrough{\lstinline!id!},
+\passthrough{\lstinline!index!} and \passthrough{\lstinline!timestamp!}
+are assigned by the chain and covered by the record hash rather than the
+signature.
+
+Signing happens on the client. The CLI signs locally with
+\passthrough{\lstinline!--private-key-file!} and never sends the seed.
+
+\subsubsection{4.3 Write Policies Recorded in the Chain}
+
+Each chain has a write policy (\passthrough{\lstinline!AccessMode!} in
+\passthrough{\lstinline!src/access.rs!}):
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.2105}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.7895}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Mode
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+A new thought must
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\passthrough{\lstinline!Open!} (default) & nothing more; unsigned writes
+are accepted \\
+\passthrough{\lstinline!Signed!} & carry a valid v2 signature by an
+active key registered to its agent \\
+\passthrough{\lstinline!Allowlist!} & carry a valid v2 signature by a
+key in the policy's allowed set that is still active in the registry \\
+\end{longtable}
+}
+
+The policy is not configuration. It lives in the chain as signed
+\passthrough{\lstinline!AccessPolicy!} thoughts, replayed at open. Each
+record holds the mode, the governor key set, an RFC 6962 Merkle root
+over that set, a sequence number and the hash of the previous policy
+record. A change after the first record must be signed by a current
+governor. The first record is trust-on-first-use: it is accepted only
+from an operator-authenticated entry point (the library, a global bearer
+token, or the dashboard PIN), and its signer becomes the first governor.
+An invalid record found on replay is ignored for enforcement and
+reported by \passthrough{\lstinline!mentisdb chain access verify!}.
+
+\passthrough{\lstinline!Signed!} chains trust the agent registry's key
+list, which is a sidecar outside the hash chain.
+\passthrough{\lstinline!Allowlist!} chains do not, because their allowed
+keys are committed in the chain. Policies govern writes only; they do
+not restrict reads. The full design, formats and threat model are in
+\passthrough{\lstinline!docs/CHAIN\_ACCESS.md!}.
+
+\subsubsection{4.4 Transport Authentication}
+
+The daemon binds to \passthrough{\lstinline!127.0.0.1!} by default.
+Bearer tokens are optional and off by default
+(\passthrough{\lstinline!src/auth.rs!}). When enabled, tokens are stored
+as SHA-256 hashes in a \passthrough{\lstinline!0600!} file and compared
+in constant time. A token is either global or scoped to one or more
+chains. REST and MCP share one table that marks each operation as
+chain-scoped or global-only, normalize chain keys before authorization,
+and authorize the same fields the handler executes. Chain-scoped tools
+that name no chain require access to the default chain.
+
+While tokens are off, requests that come from a browser (they carry
+\passthrough{\lstinline!Origin!} or
+\passthrough{\lstinline!Sec-Fetch-Site!}) must name an allowed host,
+which blocks DNS-rebinding and cross-site requests to the loopback
+listeners. The dashboard sits behind an optional PIN with a per-IP limit
+of five failures per five minutes, sends a strict
+Content-Security-Policy and frame-denial headers, and guards
+state-changing calls against cross-site requests.
+
+Several authorization bypasses have been found and fixed, in 0.10.9 and
+again in the unreleased changes, including decoy chain-key fields that
+let a chain-scoped token read another chain and a fail-open default for
+unlisted MCP tools. Deployments that expose the daemon beyond loopback
+should run current master and enable tokens.
+
+
+\subsection{5. Storage and Durability}
+
+\subsubsection{5.1 Record Format}
+
+Each chain is one append-only file,
+\passthrough{\lstinline!<stem>.tcbin!}. Each record is an 8-byte
+little-endian length followed by the bincode 2 encoding of the
+\passthrough{\lstinline!Thought!}
+(\passthrough{\lstinline!persist\_binary\_thought!}). A record payload
+may not exceed 10 MiB.
+
+The file stem is the chain key with characters outside
+\passthrough{\lstinline![A-Za-z0-9\_-]!} replaced by
+\passthrough{\lstinline!\_!}, a dash, and the first 16 hex characters of
+the SHA-256 of the chain key. Two keys that sanitize to the same string
+therefore still get different files.
+
+A legacy JSON-lines format (\passthrough{\lstinline!.jsonl!}) can still
+be read for migration but no new chain uses it.
+
+\subsubsection{5.2 File Layout}
+
+\begin{lstlisting}
+$MENTISDB_DIR/                         (default ~/.cloudllm/mentisdb)
+  mentisdb-registry.json               chain registry
+  mentisdb-skills.bin                  skill registry
+  mentisdb-webhooks.json               webhook registrations
+  bearer-tokens.json                   hashed bearer tokens (0600)
+  tls/cert.pem, tls/key.pem            self-signed certificate
+  .fastembed_cache/                    local embedding model
+  <stem>.tcbin                         the hash chain (canonical)
+  <stem>.agents.json                   agent registry
+  <stem>.entity-types.json             entity-type registry
+  <stem>.vectors.<model>.<ver>.<dim>d.json       vector sidecar snapshot
+  <stem>.vectors.<model>.<ver>.<dim>d.json.wal   its write-ahead log
+  <stem>.vectors.<model>.<ver>.<dim>d.hnsw.bin   persisted HNSW graph
+  <stem>.vectors.managed.json          which sidecars stay in sync on append
+  <stem>.auto_edges.bin                implicit-edge overlay
+  migrations/vX_to_vY/                 archived pre-migration files
+\end{lstlisting}
+
+\subsubsection{5.3 Write Path and Durability Modes}
+
+Appends go through a dedicated writer thread per chain. Two modes exist:
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.2547}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3727}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3727}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Mode
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Behaviour
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+What a crash can lose
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Strict (\passthrough{\lstinline!auto\_flush = true!}, the default) &
+Each append returns after its group commit is written to the operating
+system. When other appends are already queued, the writer waits up to 2
+ms (\passthrough{\lstinline!MENTISDB\_GROUP\_COMMIT\_MS!}) to batch
+them. & Nothing on a process crash. On power loss, writes since the last
+sync unless \passthrough{\lstinline!MENTISDB\_FSYNC=1!}. \\
+Buffered (\passthrough{\lstinline!auto\_flush = false!}) & Appends are
+queued (capacity 128) and written every 16 records. & Queued and
+unwritten records. \\
+\end{longtable}
+}
+
+\passthrough{\lstinline!MENTISDB\_FSYNC=1!} adds one
+\passthrough{\lstinline!fsync!} per group commit, and registry files are
+then synced before their atomic rename. Explicit flush, shutdown and
+drop always sync. A failed group commit is rolled back to the pre-commit
+file length, so a full disk cannot leave a torn record followed by its
+duplicate.
+
+One writer process per data directory is assumed. There is no
+cross-process file lock.
+
+\subsubsection{5.4 Crash Recovery}
+
+Opening a chain repairs only what is safe to repair.
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Torn tail.} If the final record is strictly partial (a short
+  length prefix, or a payload that ends at end of file), it is copied to
+  \passthrough{\lstinline!<file>.torn-<millis>!} with mode
+  \passthrough{\lstinline!0600!} and truncated before the writer reopens
+  the file.
+\item
+  \textbf{Mid-file corruption.} If the bytes after a bad length prefix
+  still decode as a complete record with a 64-digit hex hash, the damage
+  is not a torn tail. The open fails with
+  \passthrough{\lstinline!InvalidData!} and the file is left untouched,
+  so no acknowledged thought is ever discarded as ``tail''.
+\item
+  \textbf{Bounded decoding.} Every decode of untrusted bytes runs under
+  a budget: 64 MiB per thought record and 1 GiB per derived file
+  (\passthrough{\lstinline!src/decode\_limits.rs!}). A forged length
+  prefix yields \passthrough{\lstinline!InvalidData!} instead of an
+  allocation that aborts the process.
+\end{itemize}
+
+These rules are pinned by adversarial tests that cut the last record at
+every byte
+(\passthrough{\lstinline!tests/core\_crash\_recovery\_tests.rs!}).
+
+\subsubsection{5.5 Derived State}
+
+Derived files make search fast, and each one can be rebuilt from the
+log.
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Vector sidecars} store one embedding per thought for one
+  model, version and dimension. Changing any of these selects a
+  different file, so incompatible embeddings never mix. Each append
+  writes one integrity-chained record to the sidecar's write-ahead log
+  (magic \passthrough{\lstinline!MDBVWAL1!}). The snapshot is compacted
+  when the log reaches one sixteenth of the entries, and at least 32. A
+  sidecar is fresh only if its thought count, head hash and entry count
+  all match the chain.
+\item
+  \textbf{Background rebuild.} Opening a chain never embeds its history
+  on the request path. A missing or stale sidecar is queued to one
+  process-wide worker, one job per sidecar at a time, built in batches
+  of 32 with one shared model, and adopted when done. Until then ranked
+  search serves lexical and graph signals. Chains of 32 thoughts or
+  fewer embed inline.
+\item
+  \textbf{Implicit-edge overlay} (Section 6.6) records the thought count
+  and head hash it covers. On load it replays a missing tail of up to
+  2048 thoughts, and otherwise rebuilds.
+\item
+  \textbf{HNSW graphs} are reloaded only when their stored count matches
+  the chain.
+\end{itemize}
+
+\subsubsection{5.6 Schema Versions and Migration}
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Version
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Change
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+V0 & Original layout, no version field (JSON lines) \\
+V1 & Explicit version, registry-backed chains, optional signatures \\
+V2 & \passthrough{\lstinline!Reframe!} type,
+\passthrough{\lstinline!Supersedes!} relation, cross-chain
+\passthrough{\lstinline!chain\_key!} on relations \\
+V3 & \passthrough{\lstinline!valid\_at!} and
+\passthrough{\lstinline!invalid\_at!} on relations; later
+\passthrough{\lstinline!entity\_type!} and
+\passthrough{\lstinline!source\_episode!} were appended without a
+version bump \\
+\end{longtable}
+}
+
+The loader tries the current layout first and falls back record by
+record to the legacy layouts, so a file with mixed versions still loads.
+When the daemon starts it migrates registered chains before serving: it
+writes the new file beside the old one, archives the old file under
+\passthrough{\lstinline!migrations/!}, and renames the new file into
+place. A chain written with the older JSON-based hash is rehashed with
+the bincode hash on open. Both steps skip work that is already done, so
+running them twice is harmless. Both also block: a large chain is
+unavailable until its migration finishes.
+
+Because bincode encodes enum variants by position, new variants must be
+appended at the end of an enum and existing ones never reordered. A
+chain that contains a variant added later, such as an
+\passthrough{\lstinline!AccessPolicy!} record, cannot be read by an
+older MentisDB.
+
+\subsubsection{5.7 Backups}
+
+A backup is a ZIP file named
+\passthrough{\lstinline!mentisdb-YYYY-MM-DD-HH-MM-SS.mentis!} holding a
+manifest with the SHA-256 and size of each file, the registries, chain
+files and sidecars, skills, webhooks and optionally the TLS material.
+Restore checks the manifest before writing, bounds sizes and file
+counts, rejects symlinks and zip bombs, and never splices raw records
+into a chain with a \passthrough{\lstinline!Signed!} or
+\passthrough{\lstinline!Allowlist!} policy; such a backup is imported as
+a separate, renamed chain.
+
+
+\subsection{6. Retrieval}
+
+Two read paths exist. \emph{Filter search}
+(\passthrough{\lstinline!query!}) returns thoughts that match indexed
+fields and a case-insensitive substring, in append order. \emph{Ranked
+search} (\passthrough{\lstinline!query\_ranked!}) scores candidates with
+several signals and returns them best first. Agents use ranked search
+almost always. This section describes ranked search with its defaults as
+of current master.
+
+\subsubsection{6.1 Candidates}
+
+Ranking starts from a candidate set
+(\passthrough{\lstinline!retrieval\_candidates!}). It removes
+invalidated thoughts unless
+\passthrough{\lstinline!include\_invalidated!} is set, applies
+\passthrough{\lstinline!as\_of!} (Section 3.6), and applies filters on
+type, role, agent, tags, concepts, scope, entity type, session and time
+range. Filters only restrict; they never add score.
+
+\subsubsection{6.2 Lexical Signal: BM25 with Document-Frequency Gating}
+
+Text is normalized by lowercasing, tokenizing and stemming with the
+Snowball English (Porter2) stemmer. At query time, a table of 325
+irregular forms maps words such as ``went'' and ``saw'' to their lemmas
+(``go'', ``see''), which stemming cannot do.
+
+Each thought is indexed in five fields, scored with BM25
+(\passthrough{\lstinline!k1 = 1.2!}, \passthrough{\lstinline!b = 0.75!})
+and weighted:
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.7639}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.1111}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.1250}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Field
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Weight
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+DF cutoff
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+content & 1.0 & 30\% \\
+tags & 1.6 & 30\% \\
+concepts & 1.4 & 30\% \\
+agent id & 1.5 & 70\% \\
+agent registry text (name, owner, description, aliases) & 1.1 & 60\% \\
+\end{longtable}
+}
+
+\begin{lstlisting}
+idf(t)        = ln( (N - df + 0.5) / (df + 0.5) + 1 )
+score(t, f)   = idf(t) * tf*(k1+1) / (tf + k1*(1 - b + b*len_f/avg_len_f)) * weight_f
+\end{lstlisting}
+
+MentisDB has no stop-word list. Instead, for each query term and each
+field, the term is skipped in that field when
+\passthrough{\lstinline!df / N!} exceeds the field's cutoff. This
+\emph{document-frequency gate} is a hard cliff rather than a
+down-weight: a term in 29\% of thoughts scores fully in
+\passthrough{\lstinline!content!}, and one in 31\% scores nothing there.
+A gated term can still score through a field whose cutoff it respects.
+Details that matter in practice:
+
+\begin{itemize}
+\tightlist
+\item
+  By default \passthrough{\lstinline!df!} counts thoughts that contain
+  the term in \emph{any} field (global scope), and that one ratio is
+  compared with each field's cutoff. Registry text is attached to every
+  thought of an agent, so a word in an agent's description counts as
+  present in all of that agent's thoughts. On one real 750-thought
+  chain, project words that occur in 2\% to 9\% of the content were
+  gated out of it by registry text alone.
+\item
+  A per-field scope that counts each field separately exists as an
+  opt-in (\passthrough{\lstinline!MENTISDB\_DF\_SCOPE=field!}, or
+  \passthrough{\lstinline!df\_scope!} on the library query). It is not
+  the default because it has not yet been run through LoCoMo and
+  LongMemEval.
+\item
+  Gating is off for chains under 20 thoughts.
+  \passthrough{\lstinline!N!} counts every committed thought, including
+  invalidated ones and ones excluded by filters. The IDF of a surviving
+  term always uses the global \passthrough{\lstinline!df!}.
+\end{itemize}
+
+\textbf{Synonyms.} The daemon expands query terms with a built-in
+thesaurus of 895 headwords, keyed by stem so inflected forms expand too.
+Each term gets at most three synonyms at weight 0.3
+(\passthrough{\lstinline!apply\_thesaurus\_if\_text!} in
+\passthrough{\lstinline!src/server.rs!}). The library does not expand by
+default; embedders pass synonyms explicitly.
+
+\subsubsection{6.3 Vector Signal and Fusion}
+
+The default build includes local embeddings through fastembed: the
+\passthrough{\lstinline!all-MiniLM-L6-v2!} model, 384 dimensions, run on
+ONNX on the CPU. A dependency-free \passthrough{\lstinline!local-text!}
+provider (256 dimensions) is the fallback.
+\passthrough{\lstinline!MENTISDB\_EMBEDDINGS!} selects
+\passthrough{\lstinline!auto!} (default),
+\passthrough{\lstinline!fastembed!},
+\passthrough{\lstinline!local-text!} or \passthrough{\lstinline!off!}.
+
+The query is embedded and compared by cosine with each thought's vector.
+Up to 256 hits per sidecar are kept, and hits under cosine 0.04 are
+dropped. The vector score is \passthrough{\lstinline!0.5 * cosine!}. It
+is fused with the lexical score by:
+
+\begin{lstlisting}
+vector_contribution = vector * (1 + 35 * exp(-lexical / 3))
+\end{lstlisting}
+
+With no lexical match the vector signal is amplified 36 times, so a
+paraphrase with no shared words can still rank. As the lexical score
+grows the amplification decays smoothly, so vectors help moderate
+lexical matches without overriding strong ones.
+
+Below 50,000 vectors the search is an exact scan. At or above that
+threshold (\passthrough{\lstinline!MENTISDB\_HNSW\_THRESHOLD!}) it
+switches to an HNSW graph (M 48, ef\_construction 400, ef\_search 128).
+A filtered HNSW search scans exactly when the allowed set is small (at
+most 4096 thoughts or under 5\% of the corpus) and otherwise
+oversamples, so filters do not lose matches the graph skipped.
+
+\subsubsection{6.4 Graph Expansion}
+
+Graph expansion is off unless the query sets
+\passthrough{\lstinline!graph!}. When on, the top 20 lexical hits seed a
+breadth-first traversal over explicit relations and the implicit-edge
+overlay, bidirectional by default, to depth 2, visiting at most 128
+thoughts (\passthrough{\lstinline!expand\_with\_overlay\_classified!}).
+Each reached thought gets three scores:
+
+\begin{itemize}
+\tightlist
+\item
+  \passthrough{\lstinline!graph = 1 / depth!},
+\item
+  \passthrough{\lstinline!seed\_support = 0.2 * min(paths - 1, 5)!} for
+  thoughts reached from several seeds,
+\item
+  \passthrough{\lstinline!relation = boost(kind) / depth!} for the
+  strongest edge kind on its path.
+\end{itemize}
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}ll@{}}
+\toprule\noalign{}
+Relation kind & Boost \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+ContinuesFrom & 0.60 \\
+BranchesFrom & 0.55 \\
+Corrects, Invalidates & 0.50 \\
+Supersedes & 0.45 \\
+DerivedFrom & 0.40 \\
+Summarizes, CausedBy & 0.20 \\
+Supports, Contradicts & 0.15 \\
+RelatedTo (implicit) & 0.08 \\
+References & 0.06 \\
+\end{longtable}
+}
+
+\subsubsection{6.5 Session Cohesion, Importance, Confidence and Recency}
+
+\textbf{Session cohesion} surfaces the turns around a good match, which
+often hold the answer without sharing its words. Every candidate with a
+lexical score of at least 3.0 is a seed. A candidate whose own lexical
+score is under 5.0 and that lies within 12 positions of a seed receives
+\passthrough{\lstinline!1.2 * (1 - d / 12)!}, where
+\passthrough{\lstinline!d!} is the distance in append order. This is
+always on (\passthrough{\lstinline!apply\_session\_cohesion!}).
+
+\textbf{Importance} shifts close races towards what the author marked as
+important: \passthrough{\lstinline!lexical * (importance - 0.5) * 0.3!}
+when there is a lexical match, else
+\passthrough{\lstinline!(importance - 0.5) * 0.1!}. \textbf{Confidence}
+adds \passthrough{\lstinline!0.1 * confidence!}. \textbf{Recency} adds
+at most 0.05, linear in append position; there is no time-based decay.
+Recency is deliberately a tie-breaker so that old memories are not
+pushed down.
+
+The total is:
+
+\begin{lstlisting}
+total = lexical + vector_contribution + graph + relation + seed_support
+      + importance + confidence + recency + session_cohesion (+ rrf)
+\end{lstlisting}
+
+\subsubsection{6.6 Implicit Edges}
+
+Most agents write few explicit relations, which leaves graph expansion
+little to walk. The implicit-edge overlay adds
+\passthrough{\lstinline!RelatedTo!} edges between thoughts whose
+embeddings have cosine at least 0.85, keeping the 5 strongest per
+thought (\passthrough{\lstinline!MENTISDB\_AUTO\_EDGE\_THRESHOLD!},
+\passthrough{\lstinline!MENTISDB\_AUTO\_EDGE\_K!}). Up to 128 thoughts
+the build compares all pairs. Above that it runs one nearest-neighbour
+search per thought through the vector backend. Each append adds the new
+thought's edges with one linear scan. Chains above 50,000 thoughts get
+no overlay. The overlay is saved every 32 appends and is never part of
+the hash chain.
+
+\subsubsection{6.7 Optional Reciprocal Rank Fusion}
+
+With \passthrough{\lstinline!enable\_reranking!}, the top 50 candidates
+are ranked three times: by lexical score, by vector score, and by
+graph-related score. Only candidates with a positive score enter each
+list. Each candidate then gains a consensus bonus:
+
+\begin{lstlisting}
+rrf = 50 * sum over lists containing it of 1 / (60 + rank)
+\end{lstlisting}
+
+A candidate ranked first in all three lists gains about 2.5. RRF is off
+by default. Before 0.10.9 it replaced the additive total and collapsed
+rankings; it now only adds.
+
+\subsubsection{6.8 Explaining a Ranking}
+
+Each hit carries its full score breakdown:
+\passthrough{\lstinline!lexical!}, \passthrough{\lstinline!vector!},
+\passthrough{\lstinline!graph!}, \passthrough{\lstinline!relation!},
+\passthrough{\lstinline!seed\_support!},
+\passthrough{\lstinline!importance!},
+\passthrough{\lstinline!confidence!}, \passthrough{\lstinline!recency!},
+\passthrough{\lstinline!session\_cohesion!},
+\passthrough{\lstinline!rrf!} and \passthrough{\lstinline!total!}, plus
+the matched terms, the fields they matched in, and for graph hits the
+distance, seed path count, relation kinds and path. A human or an agent
+can see why any thought ranked where it did.
+
+\emph{Context bundles}
+(\passthrough{\lstinline!query\_context\_bundles!}) group results by
+seed: each lexical seed comes with the thoughts graph expansion reached
+from it and the path that reached them, so an agent can read supporting
+memories in provenance order.
+
+\subsubsection{6.9 Deduplication on Write}
+
+Automatic deduplication is off unless
+\passthrough{\lstinline!MENTISDB\_DEDUP\_THRESHOLD!} is set; 0.85 is a
+suggested value, not a default. When on, each unsigned append compares
+the new thought's normalized token set with the last 64 thoughts
+(\passthrough{\lstinline!MENTISDB\_DEDUP\_SCAN\_WINDOW!}) by Jaccard
+similarity. If the best match reaches the threshold, the new thought
+gets a \passthrough{\lstinline!Supersedes!} edge to it, which hides the
+older one by default. A prior thought the author rated more important
+than the new one is never superseded, so a throwaway restatement cannot
+hide a critical constraint. Signed thoughts are never deduplicated.
+
+The window is a real limit: a fact re-recorded hundreds of thoughts
+later is not caught. Section 9.4 shows that duplicates are a measured
+problem on real chains.
+
+\subsubsection{6.10 Standing Context and Recent Context}
+
+Memory has two halves. The episodic half is what happened, in order. The
+semantic half is what stays true. Recent context
+(\passthrough{\lstinline!mentisdb\_recent\_context!}, 12 thoughts by
+default) serves the first. It forgets: a preference from three months
+ago has scrolled out of any practical window.
+
+Standing context (\passthrough{\lstinline!MentisDb::standing\_context!},
+\passthrough{\lstinline!src/standing.rs!}) serves the second. It selects
+live thoughts of the standing types, ranks them by importance and then
+recency, collapses restatements, and caps the result:
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.4196}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.4196}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.1608}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Group
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Types
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Cap
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Constraint, Preference, User trait, Relationship, Goal, Decision, Lesson
+& \passthrough{\lstinline!Constraint!},
+\passthrough{\lstinline!PreferenceUpdate!},
+\passthrough{\lstinline!UserTrait!},
+\passthrough{\lstinline!RelationshipUpdate!},
+\passthrough{\lstinline!Goal!}, \passthrough{\lstinline!Decision!},
+\passthrough{\lstinline!LessonLearned!} & 8 per type, 40 in total \\
+Handoff & \passthrough{\lstinline!Handoff!} & the newest one \\
+Checkpoint & \passthrough{\lstinline!Checkpoint!} or
+\passthrough{\lstinline!Summary!} type or role & the newest one \\
+\end{longtable}
+}
+
+Only user-scoped or unscoped thoughts are standing. Within a group,
+restatements with Jaccard similarity of 0.85 or more collapse to the
+newest. The result is a compact prompt block delimited by
+\passthrough{\lstinline!=== STANDING CONTEXT ===!} that the agent loads
+at startup, next to the recent-context block. It is available as an MCP
+tool, a REST route (\passthrough{\lstinline!POST /v1/standing-context!})
+and a CLI command (\passthrough{\lstinline!mentisdb thought standing!}).
+
+\subsubsection{6.11 What Is Not in the Default Path}
+
+The crate contains components that ranked search does not use by
+default, and this paper makes no claim based on them: personalized
+PageRank (\passthrough{\lstinline!src/search/ppr.rs!}), pseudo-relevance
+feedback (\passthrough{\lstinline!query\_expansion.rs!}), a query-intent
+classifier (\passthrough{\lstinline!query\_intent.rs!}), embedding
+synonyms, and an \passthrough{\lstinline!llm\_rerank!} flag that nothing
+reads. LLM memory extraction (\passthrough{\lstinline!src/llm.rs!})
+exists as an explicit, opt-in operation that writes
+\passthrough{\lstinline!LLMExtracted!} thoughts.
+
+
+\subsection{7. The Agent Protocol}
+
+A memory store is only as good as the habits of the agents that use it.
+MentisDB ships its operating protocol as a skill
+(\passthrough{\lstinline!MENTISDB\_SKILL.md!}), served to MCP clients as
+the resource \passthrough{\lstinline!mentisdb://skill/core!} and pointed
+to by the server's \passthrough{\lstinline!initialize!} instructions.
+Its main rules are these.
+
+\textbf{Startup.} List chains and pick the project's chain, bootstrap it
+(which writes a genesis checkpoint only on an empty chain), load the
+skill, list agents and reuse an existing identity, load standing
+context, load recent context, then write a checkpoint. Agents never
+invent a new agent id; they ask the user.
+
+\textbf{Search before write.} Before every append the agent runs a
+ranked search for its proposed memory and makes three decisions. Should
+it write at all, or is this already known? Should it correct, invalidate
+or supersede an earlier thought instead of writing a parallel one? Which
+one to three earlier thoughts should it link to, with which typed edge?
+This keeps chains small and connected, and it is the main defence
+against duplicates. Automatic deduplication is only the downstream half.
+
+\textbf{Write triggers.} Write immediately on a lesson learned, a
+decision, a constraint, a correction or invalidated assumption, a
+checkpoint, a completed task, an open question or a hypothesis. One
+strong memory is better than many weak ones.
+
+\textbf{Recall triggers.} Search before answering when a question
+touches the user's preferences, a past decision, a constraint or how
+something was done before, or when the user says ``again'', ``remember''
+or ``last time''. If nothing turns up, retry with
+\passthrough{\lstinline!include\_invalidated=true!}, and if a hit
+appears only there, tell the user it was superseded. Never say ``I don't
+know your preference'' without having searched.
+
+Standing context covers what must be known at the start. Recall triggers
+cover what becomes relevant later. Together they address the complaint
+that users have to repeat themselves.
+
+
+\subsection{8. Interfaces}
+
+\textbf{MCP.} The daemon serves the Model Context Protocol over
+streamable HTTP. A stdio mode lets clients that only speak stdio connect
+through a local proxy that starts the daemon if needed. The server
+exposes 48 tools covering bootstrap, append and retrospectives, filter
+and ranked search, standing and recent context, context bundles,
+traversal, federated search across chains, branches and merges, agents
+and keys, access policies and signature verification, entity types,
+import and export, vectors, webhooks and the skill registry.
+
+\textbf{REST.} A versioned API under \passthrough{\lstinline!/v1/!}
+mirrors the tools with 51 routes and can be embedded in another server
+with \passthrough{\lstinline!rest\_router!}.
+
+\textbf{CLI.} The \passthrough{\lstinline!mentisdb!} binary is also a
+client for every MCP tool, REST route and dashboard action, with typed
+argument validation and \passthrough{\lstinline!--help!} examples on
+each command (\passthrough{\lstinline!docs/CLI\_PARITY.md!} maps each
+one and a test keeps the map in sync). For example:
+
+\begin{lstlisting}[language=bash]
+mentisdb thought append "Use Postgres for the billing service" \
+  --chain myproj --agent dev --type Decision
+mentisdb search "which database did we pick for billing" --chain myproj
+mentisdb thought standing --chain myproj
+mentisdb chain access verify --chain myproj
+\end{lstlisting}
+
+\textbf{Dashboard.} A local HTTPS web interface browses chains,
+thoughts, agents, skills and access policies, and manages settings
+behind its PIN.
+
+\textbf{Skill registry.} Agent instruction bundles are versioned in
+\passthrough{\lstinline!mentisdb-skills.bin!}. The first version is
+stored whole and later versions as diffs. A skill can be deprecated or
+revoked with its history kept, or deleted permanently. An agent with
+registered keys must sign its uploads. The registry is integrity-checked
+as a file; it is not a hash chain.
+
+\textbf{Webhooks and setup.} Webhooks notify external services of
+appends. \passthrough{\lstinline!mentisdb setup!} configures MCP
+clients: Claude Code, Claude Desktop, Codex, Copilot CLI, VS Code
+Copilot, Gemini, Grok, OpenCode and Qwen.
+
+
+\subsection{9. Evaluation}
+
+\subsubsection{9.1 Setup}
+
+Two public benchmarks measure retrieval recall: for each question, does
+the gold evidence turn appear in the top \emph{k} thoughts? Both
+harnesses are in the repository
+(\passthrough{\lstinline!locomo-benches/!},
+\passthrough{\lstinline!lme-benches/!}) and run against a live daemon
+with a fresh chain.
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{LoCoMo-10P}: ten long multi-session conversations, 1977
+  questions, split into single-hop (1554) and multi-hop (423). Turns are
+  ingested with \passthrough{\lstinline!ContinuesFrom!} edges between
+  consecutive turns, speaker and turn tags, and importance 0.8 or 0.2 by
+  speaker. Queries use ranked search with graph expansion to depth 3. A
+  hit is substring containment of the gold evidence in a returned
+  thought.
+\item
+  \textbf{LongMemEval}: 500 questions over a chain of about 10,900
+  turns, scored at R@5, R@10 and R@20.
+\end{itemize}
+
+Both use the default embedding model
+(\passthrough{\lstinline!fastembed!} MiniLM, 384 dimensions) and the
+daemon's automatic thesaurus.
+
+\subsubsection{9.2 Results}
+
+Release 0.10.9.54 (October 2026) is the latest full run:
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}lllll@{}}
+\toprule\noalign{}
+Benchmark & Pipeline & R@5 & R@10 & R@20 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+LoCoMo-10P & default & 63.9\% & 73.5\% & \\
+LoCoMo-10P & with RRF & 66.0\% & 74.1\% & \\
+LongMemEval & default & 68.0\% & 72.8\% & 78.8\% \\
+LongMemEval & with RRF & 68.6\% & & \\
+\end{longtable}
+}
+
+Query throughput was about 384 queries per second on both. The changes
+after 0.10.9.54 up to the date of this paper do not touch ranking
+defaults, except where Section 6 says so.
+
+Earlier full runs show where the gains came from:
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.1034}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.5517}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.1724}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.1724}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Release
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Main change
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+LoCoMo-10P R@10
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+LongMemEval R@5
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+0.8.0 & baseline & & 57.2\% \\
+0.8.0 & Porter stemming & & 61.6\% \\
+0.8.1 & smooth fusion, cohesion, DF gate & 74.2\% & 67.6\% \\
+0.8.9 & irregular lemmas & 71.9\% & 66.8\% \\
+0.9.9 & automatic thesaurus, real embeddings & 72.6\% & 66.8\% \\
+0.10.9.54 & stemmed thesaurus keys, damped synonyms, RRF fix & 73.5\% &
+68.0\% \\
+\end{longtable}
+}
+
+On a two-conversation LoCoMo subset, 0.8.1 reached 88.7\% R@10. That
+number is for the subset only and should not be compared with
+full-benchmark results.
+
+\subsubsection{9.3 Where Misses Come From}
+
+A near-miss analysis of 0.8.5 on LoCoMo-10P bucketed the misses at R@10.
+A quarter of them (25.8\%) were found by R@20, which is a ranking error.
+Of the rest, 43.3\% were not found even by R@50, because the evidence
+shares almost no words with the question. A similar analysis of 0.9.8 on
+LongMemEval found that 65.7\% of misses were not in the top 20.
+Multi-hop questions remain the weakest category on LoCoMo, about 17 to
+20 points below single-hop. The lesson is that lexical retrieval has a
+hard ceiling on paraphrase, and a small embedding model only partly
+lifts it.
+
+\subsubsection{9.4 Recall on Real Project Chains}
+
+Benchmarks use conversations, not the memories coding agents actually
+write. The \passthrough{\lstinline!examples/recall\_audit.rs!} tool
+audits a copy of a real chain. It builds synthetic queries from the
+chain's own thoughts, runs them through the production ranked search
+with the daemon's defaults, and reports where each target lands,
+bucketed by its age. Query kinds range from easy
+(\passthrough{\lstinline!drop50!}: the target's words with half removed)
+to hard (\passthrough{\lstinline!ref!}: the opening of a later thought
+that refers to the target, and \passthrough{\lstinline!sem!}: the
+opening of the target's nearest semantic neighbour among thoughts
+sharing few of its words).
+
+The audit of real chains found three things:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \textbf{No age effect.} Recall did not fall with the age of the
+  target. Older memories are found as reliably as recent ones once the
+  query reaches them. Ranking does not bury the past; startup loading
+  did, which standing context addresses.
+\item
+  \textbf{Duplicates crowd results.} Near-duplicate thoughts, written
+  because agents did not search first or because a fact was restated
+  outside the dedup window, took several of the top ten slots and pushed
+  other relevant memories out.
+\item
+  \textbf{Paraphrase is weak.} Paraphrase-style queries recalled the
+  target in the top ten only 43\% to 55\% of the time, against much
+  higher recall for verbatim-style queries.
+\end{enumerate}
+
+These findings set the priorities in Section 10.
+
+\subsubsection{9.5 Cost}
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.6962}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.3038}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Operation
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Measurement
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Unsigned append, open chain (buffered, CPU only) & about 55 µs \\
+Signed append (one Ed25519 verification) & about 75 to 80 µs \\
+Append with a 3000-thought managed sidecar & 2.1 ms \\
+Rare one-term lexical query, 100,000 documents & 1.8 µs \\
+Three-term lexical query, 100,000 documents & 0.93 ms \\
+100 vector queries, 10,000 x 128 dimensions, exact scan & 33.8 ms
+(recall@10 100\%) \\
+100 vector queries, 10,000 x 128 dimensions, HNSW & 8.5 ms (recall@10
+91.4\%) \\
+\end{longtable}
+}
+
+The first five figures are from the Criterion benches
+\passthrough{\lstinline!access\_policy!} and
+\passthrough{\lstinline!storage\_paths!} on Apple silicon in release
+mode, as recorded in the changelog and
+\passthrough{\lstinline!docs/CHAIN\_ACCESS.md!}. The vector figures are
+from \passthrough{\lstinline!hnsw\_comparison!}, re-run for this paper
+on an Apple M4 Max with synthetic unit vectors. HNSW is about four times
+faster here; it only becomes the default backend at 50,000 vectors,
+where an exact scan grows linearly. With
+\passthrough{\lstinline!MENTISDB\_FSYNC=1!} the disk flush dominates
+append cost.
+
+
+\subsection{10. Limitations and Future Work}
+
+\subsubsection{10.1 Limitations}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Paraphrase recall.} On real chains, paraphrased queries find
+  the target in the top ten only about half the time. The default
+  encoder is a small model whose cosine scores are compressed, and its
+  training window is shorter than long thoughts.
+\item
+  \textbf{Duplicates.} Deduplication is off by default and sees only the
+  last 64 thoughts. Restated facts accumulate and crowd results. The
+  protocol's search-before-write rule is the main defence, and it
+  depends on agent discipline.
+\item
+  \textbf{Global document frequency.} The default gate counts registry
+  text as present in every thought of an agent, which removes useful
+  project words from content scoring. The per-field alternative is not
+  yet benchmarked.
+\item
+  \textbf{Live view ignores edge expiry.} An invalidating edge hides its
+  target forever in live reads, even after its
+  \passthrough{\lstinline!invalid\_at!}.
+\item
+  \textbf{Integrity gaps.} Two fields are outside the record hash,
+  legacy migration rehashes without checking, and the agent registry is
+  outside the chain, so \passthrough{\lstinline!Signed!} chains trust a
+  sidecar. Integrity is local: there is no consensus and no external
+  anchoring of head hashes.
+\item
+  \textbf{Reads are not access-controlled.} Write policies do not
+  restrict who can read a chain. Bearer tokens are the only read control
+  and are off by default.
+\item
+  \textbf{Blocking migrations.} Schema and hash migrations run before a
+  chain serves and rewrite the whole file.
+\item
+  \textbf{Merges lose structure.} A merge drops relations, signatures
+  and timestamps.
+\item
+  \textbf{Single writer.} Two processes writing one data directory are
+  not detected.
+\item
+  \textbf{Benchmarks measure retrieval, not answers.} Recall at \emph{k}
+  says whether the evidence was retrieved, not whether the agent used it
+  well.
+\end{itemize}
+
+\subsubsection{10.2 Future Work}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Valid-version retrieval:} redirect hits on superseded thoughts
+  to their current successor, annotate what was superseded, and collapse
+  duplicate clusters in results.
+\item
+  \textbf{Better paraphrase recall:} retune vector fusion, evaluate
+  larger local encoders, and embed long thoughts in chunks.
+\item
+  \textbf{Per-field document frequency} as the default once benchmarked.
+\item
+  \textbf{Read access control:} private chains whose reads require
+  authentication, with mode changes recorded in the chain, and key
+  administration restricted to the operator.
+\item
+  \textbf{Non-blocking, recoverable migrations} and hash coverage of
+  every field.
+\item
+  \textbf{Anchoring head hashes} externally so that a full rewrite of a
+  chain becomes detectable.
+\item
+  \textbf{Answer-level evaluation} with an LLM reader, alongside recall.
+\end{itemize}
+
+
+\subsection{11. Related Work}
+
+Several systems give agents long-term memory. Mem0 extracts and updates
+memories with an LLM over a vector store. Graphiti, behind Zep, builds a
+temporal knowledge graph with LLM extraction and validity intervals.
+Letta, formerly MemGPT, lets the model page memory in and out of its own
+context. These systems put an LLM on the write path, which gives them
+structured facts at the cost of latency, money and a second model's
+errors.
+
+MentisDB makes the opposite trade. It keeps what the agent wrote,
+verbatim and typed, adds no model to the write path, and puts the work
+into retrieval, the write protocol and integrity. Its distinguishing
+properties are the hash chain, signatures bound to chain position, write
+policies governed inside the chain, standing context, and fully
+decomposed scores, all in one embedded binary. Validity intervals on
+relations are shared with Graphiti's design. Hybrid lexical and vector
+retrieval is common to most systems.
+
+
+\subsection{12. Conclusion}
+
+MentisDB treats agent memory as a verifiable log of typed thoughts and
+builds retrieval, currency and governance on top of it without an
+external service. Its defaults are stated in this paper exactly, its
+benchmark numbers come with their setup, and its weaknesses are
+measured: paraphrase recall and duplicates, not age, are what limit
+recall on real chains. That is where the next work goes.
+
+
+\subsection{References}
+
+\begin{itemize}
+\tightlist
+\item
+  Robertson, S. and Zaragoza, H. \emph{The Probabilistic Relevance
+  Framework: BM25 and Beyond}. Foundations and Trends in Information
+  Retrieval, 3(4), 2009.
+\item
+  Cormack, G. V., Clarke, C. L. A. and Büttcher, S. \emph{Reciprocal
+  Rank Fusion outperforms Condorcet and individual Rank Learning
+  Methods}. SIGIR, 2009.
+\item
+  Porter, M. F. \emph{An algorithm for suffix stripping}. Program,
+  14(3), 1980.
+\item
+  Jaccard, P. \emph{Étude comparative de la distribution florale dans
+  une portion des Alpes et des Jura}. Bulletin de la Société Vaudoise
+  des Sciences Naturelles, 1901.
+\item
+  Malkov, Y. A. and Yashunin, D. A. \emph{Efficient and robust
+  approximate nearest neighbor search using Hierarchical Navigable Small
+  World graphs}. IEEE TPAMI, 2018.
+\item
+  Bernstein, D. J., Duif, N., Lange, T., Schwabe, P. and Yang, B.-Y.
+  \emph{High-speed high-security signatures}. Journal of Cryptographic
+  Engineering, 2012.
+\item
+  Josefsson, S. and Liusvaara, I. \emph{Edwards-Curve Digital Signature
+  Algorithm (EdDSA)}. RFC 8032, 2017.
+\item
+  Laurie, B., Langley, A. and Kasper, E. \emph{Certificate
+  Transparency}. RFC 6962, 2013.
+\item
+  FIPS PUB 180-4. \emph{Secure Hash Standard (SHS)}. NIST, 2015.
+\item
+  Reimers, N. and Gurevych, I. \emph{Sentence-BERT: Sentence Embeddings
+  using Siamese BERT-Networks}. EMNLP, 2019.
+\item
+  Maharana, A. et al.~\emph{Evaluating Very Long-Term Conversational
+  Memory of LLM Agents (LoCoMo)}. ACL, 2024.
+\item
+  Wu, D. et al.~\emph{LongMemEval: Benchmarking Chat Assistants on
+  Long-Term Interactive Memory}. 2024.
+\item
+  Anthropic. \emph{Model Context Protocol (MCP) Specification}. 2024.
+\end{itemize}
 
 \end{document}
