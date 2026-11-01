@@ -580,8 +580,9 @@ written immediately, and counters are saved every 16 appends and at shutdown.
 
 One writer process per data directory is assumed. The daemon takes an advisory lock on
 `mentisdb.lock` in the data directory. A second daemon on the same directory refuses to
-start, and the offline operator CLI refuses to run while the lock is held. Library
-embedders do not take the lock.
+start, and the offline operator CLI refuses to run while the lock is held. An in-process
+service embedded through the library takes the lock only if it is free, so embedders
+that bypass the daemon binary are not protected.
 
 ### 5.4 Crash Recovery
 
