@@ -45,3 +45,6 @@
 % Long tables: slightly tighter rows and smaller text.
 \AtBeginEnvironment{longtable}{\small}
 \renewcommand{\arraystretch}{1.15}
+
+% Let TeX stretch a line rather than overflow the margin around long code spans.
+\setlength{\emergencystretch}{3em}
