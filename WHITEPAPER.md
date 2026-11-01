@@ -336,7 +336,9 @@ are recomputed.
 This is tamper *evidence*. An attacker who can write the file can rewrite it entirely and
 recompute every hash. Evidence becomes useful when the head hash is recorded somewhere
 the attacker cannot reach, and signatures (Section 4.2) bind individual records to keys
-the attacker does not hold.
+the attacker does not hold. For governed chains MentisDB records the head hash itself, in
+a checkpoint signed by the operator key (Section 4.4), so a later rewrite of the verified
+prefix locks the chain instead of passing unnoticed.
 
 Two gaps are known. First, `entity_type` and `source_episode` are not covered by the
 record hash, so they can be edited in the file without breaking the chain (v2 signatures
@@ -438,6 +440,18 @@ reader can see that a chain has private segments and where they are, how many th
 each gap holds (indices skip hidden positions), and the one `prev_hash` that links the
 first public thought after a gap to the hidden thought before it. Timing is not padded.
 
+Governed chains are also verified when they open, before anything is served. Every
+thought in a private segment must carry a valid v2 signature by a key allowed at its
+position. A thought that fails is quarantined: hidden from every reader and listed by
+`MentisDb::verification`, `mentisdb chain access verify` and the signature report. To
+keep later opens cheap, the operator key signs a checkpoint (`<stem>.verified.json`)
+bound to the chain key, the head hash at that point, the policy's key root and sequence
+number, and the quarantine list; later opens verify only the thoughts after it. If a
+valid checkpoint exists but the chain file no longer matches it, because it was truncated
+or its prefix rewritten, the chain is locked and nothing is served, rather than falling
+back to looking public. The operator inspects the file and deletes the checkpoint to
+re-seal the chain.
+
 The library defaults to the authorized audience, because an embedder that holds the
 chain directory already holds every byte of it. The daemon starts every request from the
 public audience and raises it only for a proven reader (`src/server_lens.rs`), so a code
@@ -528,6 +542,8 @@ $MENTISDB_DIR/                         (default ~/.cloudllm/mentisdb)
   <stem>.vectors.<model>.<ver>.<dim>d.hnsw.bin   persisted HNSW graph
   <stem>.vectors.managed.json          which sidecars stay in sync on append
   <stem>.auto_edges.bin                implicit-edge overlay
+  <stem>.verified.json                 operator-signed verification checkpoint
+  operator/operator.key                operator signing key (0600)
   migrations/vX_to_vY/                 archived pre-migration files
 ```
 
@@ -1185,8 +1201,8 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
   append-time warning.
 - **Integrity gaps.** Two fields are outside the record hash, legacy migration rehashes
   without checking, and the agent registry is outside the chain, so `Signed` chains trust
-  a sidecar. Integrity is local: there is no consensus and no external anchoring of head
-  hashes.
+  a sidecar. Integrity is local: there is no consensus, and only governed chains anchor
+  their head hash, in a checkpoint signed by a key on the same host.
 - **Read control covers private segments only.** Public segments are readable by
   anyone who can reach the API, and bearer tokens are off by default. Private segments
   are not encrypted at rest, a key that can read is also a key that can write, and a
