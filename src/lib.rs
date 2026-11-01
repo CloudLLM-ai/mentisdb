@@ -11169,9 +11169,18 @@ fn load_or_build_hnsw_backend(
     documents: Vec<crate::search::VectorDocument>,
 ) -> VectorBackendBuildResult {
     if path.exists() {
-        if let Ok(backend) =
-            crate::search::hnsw_backend::HnswBackend::load_from_path(path, metadata)
-        {
+        // Trust the persisted graph only when it was built from exactly these
+        // documents: entry count alone would accept a same-size graph whose
+        // content (or embedding model) differs.
+        let expected = crate::search::hnsw_backend::documents_digest(
+            metadata,
+            documents
+                .iter()
+                .map(|document| (document.document_id.as_str(), document.vector.as_slice())),
+        );
+        if let Ok(backend) = crate::search::hnsw_backend::HnswBackend::load_from_path_matching(
+            path, metadata, &expected,
+        ) {
             if backend.document_count() == documents.len() {
                 return VectorBackendBuildResult::ready(Some(crate::search::VectorBackend::Hnsw(
                     Box::new(backend),

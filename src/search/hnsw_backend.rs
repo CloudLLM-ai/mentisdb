@@ -26,7 +26,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use bincode;
@@ -34,6 +34,7 @@ use hnsw::{Hnsw, Params};
 use rand_pcg::Pcg64;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use space::{Metric, Neighbor};
 
 use super::vector::{
@@ -432,46 +433,193 @@ impl std::fmt::Debug for HnswBackend {
     }
 }
 
+/// Magic bytes opening every persisted HNSW graph file (format version 2).
+///
+/// Version 1 files (bincode body only, no header) are recognised by the
+/// missing magic and rebuilt: the graph is derived state, so refusing a legacy
+/// file costs one rebuild and nothing else.
+pub const GRAPH_MAGIC: &[u8; 8] = b"MDBHNSW2";
+
+/// Length in bytes of the graph file header: [`GRAPH_MAGIC`] followed by the
+/// raw 32-byte content digest.
+pub const GRAPH_HEADER_LEN: usize = 8 + 32;
+
+/// Order-independent SHA-256 digest of an embedding space and its documents.
+///
+/// The digest binds the model id, embedding version and dimension together
+/// with the set of `(document id, vector)` pairs, so a graph built for another
+/// model, or from a corpus that merely has the same number of entries, never
+/// matches. Each document is hashed on its own and the results are summed
+/// lane-wise, which makes the value independent of insertion order (the
+/// sidecar lists documents in chain order, the backend stores them sorted).
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::search::hnsw_backend::documents_digest;
+/// use mentisdb::search::{EmbeddingMetadata, VectorDocument};
+///
+/// let meta = EmbeddingMetadata::new("toy", 2, "v1");
+/// let a = VectorDocument::new("a", vec![1.0, 0.0]);
+/// let b = VectorDocument::new("b", vec![0.0, 1.0]);
+/// let forward = documents_digest(&meta, [&a, &b].into_iter().map(|d| (d.document_id.as_str(), d.vector.as_slice())));
+/// let reverse = documents_digest(&meta, [&b, &a].into_iter().map(|d| (d.document_id.as_str(), d.vector.as_slice())));
+/// assert_eq!(forward, reverse);
+/// let other = VectorDocument::new("b", vec![0.0, -1.0]);
+/// let changed = documents_digest(&meta, [&a, &other].into_iter().map(|d| (d.document_id.as_str(), d.vector.as_slice())));
+/// assert_ne!(forward, changed);
+/// ```
+pub fn documents_digest<'a>(
+    metadata: &EmbeddingMetadata,
+    documents: impl IntoIterator<Item = (&'a str, &'a [f32])>,
+) -> [u8; 32] {
+    let mut lanes = [0_u64; 4];
+    let mut count = 0_u64;
+    for (id, vector) in documents {
+        let mut hasher = Sha256::new();
+        hasher.update((id.len() as u64).to_le_bytes());
+        hasher.update(id.as_bytes());
+        for value in vector {
+            hasher.update(value.to_le_bytes());
+        }
+        let one: [u8; 32] = hasher.finalize().into();
+        for (lane, chunk) in lanes.iter_mut().zip(one.chunks_exact(8)) {
+            let word = u64::from_le_bytes(chunk.try_into().expect("8-byte chunk"));
+            *lane = lane.wrapping_add(word);
+        }
+        count += 1;
+    }
+    let mut hasher = Sha256::new();
+    for field in [
+        metadata.model_id.as_str(),
+        metadata.embedding_version.as_str(),
+    ] {
+        hasher.update((field.len() as u64).to_le_bytes());
+        hasher.update(field.as_bytes());
+    }
+    hasher.update((metadata.dimension as u64).to_le_bytes());
+    hasher.update(count.to_le_bytes());
+    for lane in lanes {
+        hasher.update(lane.to_le_bytes());
+    }
+    hasher.finalize().into()
+}
+
 impl HnswBackend {
+    /// Digest of the live documents currently held by this backend; see
+    /// [`documents_digest`].
+    pub fn content_digest(&self) -> [u8; 32] {
+        documents_digest(
+            &self.metadata,
+            self.vectors
+                .iter()
+                .map(|(id, vector)| (id.as_str(), vector.as_slice())),
+        )
+    }
+
     /// Persist the HNSW graph and its exact-vector cache to `path`.
     ///
-    /// The contents are serialized with bincode and atomically swapped into
-    /// place so readers never see a partial file. Callers should pair this
-    /// with the sidecar integrity metadata so stale graphs can be rejected on
-    /// load.
+    /// The file is [`GRAPH_MAGIC`], the [`content_digest`](Self::content_digest)
+    /// of the documents the graph was built from, then the bincode body. It is
+    /// written to a unique sibling temp file and renamed into place, so readers
+    /// never see a partial file. No fsync: the graph is derived, and a torn or
+    /// stale file fails the digest check on load and is rebuilt.
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O error from creating, writing or renaming the file.
     pub fn persist_to_path(&self, path: &Path) -> io::Result<()> {
-        let bytes = bincode::serde::encode_to_vec(self, bincode::config::standard())
+        static TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let body = bincode::serde::encode_to_vec(self, bincode::config::standard())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error}")))?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let temp_path = path.with_extension("tmp");
-        let file = File::create(&temp_path)?;
-        let mut writer = BufWriter::new(file);
-        std::io::Write::write_all(&mut writer, &bytes)?;
-        writer.flush()?;
-        drop(writer);
-
-        // fs::rename is atomic on POSIX and most modern filesystems.
-        fs::rename(temp_path, path)
+        let sequence = TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut temp_name = path.as_os_str().to_owned();
+        temp_name.push(format!(".tmp-{}-{sequence}", std::process::id()));
+        let temp_path = std::path::PathBuf::from(temp_name);
+        let result = (|| {
+            let mut writer = BufWriter::new(File::create(&temp_path)?);
+            writer.write_all(GRAPH_MAGIC)?;
+            writer.write_all(&self.content_digest())?;
+            writer.write_all(&body)?;
+            writer.flush()?;
+            drop(writer);
+            fs::rename(&temp_path, path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        result
     }
 
     /// Load a persisted HNSW graph from `path`.
     ///
-    /// Returns an error if the file is corrupt or if the persisted metadata
-    /// does not match the supplied `metadata`. This prevents a graph built
-    /// for one embedding space from being reused for another.
+    /// Returns an error if the file is corrupt, is a legacy (headerless)
+    /// graph, if the body does not match the digest in its header, or if the
+    /// persisted metadata does not match `metadata`. This prevents a graph
+    /// built for one embedding space from being reused for another.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidData` for any of the rejections above, or the underlying I/O
+    /// error.
     pub fn load_from_path(path: &Path, metadata: &EmbeddingMetadata) -> io::Result<Self> {
+        Self::load_verified(path, metadata, None)
+    }
+
+    /// Like [`load_from_path`](Self::load_from_path), and additionally require
+    /// the graph to have been built from exactly the documents whose
+    /// [`documents_digest`] is `expected`. A graph with the same entry count
+    /// but different content is rejected.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidData` when the digest differs, plus every error of
+    /// [`load_from_path`](Self::load_from_path).
+    pub fn load_from_path_matching(
+        path: &Path,
+        metadata: &EmbeddingMetadata,
+        expected: &[u8; 32],
+    ) -> io::Result<Self> {
+        Self::load_verified(path, metadata, Some(expected))
+    }
+
+    fn load_verified(
+        path: &Path,
+        metadata: &EmbeddingMetadata,
+        expected: Option<&[u8; 32]>,
+    ) -> io::Result<Self> {
+        let invalid =
+            |message: &str| io::Error::new(io::ErrorKind::InvalidData, message.to_owned());
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
+        let mut header = [0_u8; GRAPH_HEADER_LEN];
+        reader
+            .read_exact(&mut header)
+            .map_err(|_| invalid("HNSW graph file is shorter than its header"))?;
+        if &header[..8] != GRAPH_MAGIC {
+            return Err(invalid(
+                "legacy or unrecognised HNSW graph file; rebuilding",
+            ));
+        }
+        let stored: [u8; 32] = header[8..].try_into().expect("32-byte digest");
+        if expected.is_some_and(|expected| expected != &stored) {
+            return Err(invalid(
+                "HNSW graph was built from different documents than the sidecar",
+            ));
+        }
         let backend: Self =
             bincode::serde::decode_from_reader(&mut reader, crate::decode_limits::file_config())
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error}")))?;
         if &backend.metadata != metadata {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
+            return Err(invalid(
                 "HNSW graph metadata does not match the requested embedding space",
             ));
+        }
+        if backend.content_digest() != stored {
+            return Err(invalid("HNSW graph body does not match its header digest"));
         }
         Ok(backend)
     }

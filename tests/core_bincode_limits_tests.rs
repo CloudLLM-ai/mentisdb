@@ -66,15 +66,17 @@ fn test_hnsw_graph_with_forged_string_length_fails_to_load() {
     .unwrap();
     backend.persist_to_path(&path).unwrap();
 
+    use mentisdb::search::hnsw_backend::GRAPH_HEADER_LEN;
     let bytes = std::fs::read(&path).unwrap();
     assert_eq!(
-        bytes[0] as usize,
+        bytes[GRAPH_HEADER_LEN] as usize,
         "toy-model".len(),
-        "model id leads the file"
+        "model id leads the body"
     );
-    let mut forged = vec![253];
+    let mut forged = bytes[..GRAPH_HEADER_LEN].to_vec();
+    forged.push(253);
     forged.extend_from_slice(&(1_u64 << 50).to_le_bytes());
-    forged.extend_from_slice(&bytes[1..]);
+    forged.extend_from_slice(&bytes[GRAPH_HEADER_LEN + 1..]);
     std::fs::write(&path, forged).unwrap();
 
     let error =

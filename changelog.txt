@@ -30,6 +30,14 @@ UNRELEASED
     include_invalidated retry advice is replaced by "read version_status".
   - test(retrieval): end-to-end regression for the policy scenario over library,
     REST and MCP for seven link styles, old wording and paraphrase.
+  - fix(storage): a persisted HNSW graph was trusted when its entry count
+    matched the sidecar, so a same-size graph built from other vectors (or
+    another model) was served. The graph file (format 2) now starts with a
+    magic and a SHA-256 digest of the embedding space plus its documents; the
+    digest is checked against the sidecar and against the graph body on load,
+    and any mismatch, torn write or legacy headerless file rebuilds the graph.
+    Graph temp files are unique per writer. Upgrade note: existing graphs are
+    rebuilt once, in the background.
   - perf(storage): appends no longer rewrite and rename `*.agents.json` once
     per thought. The per-agent counters (`thought_count`, `last_seen_*`) were
     already recomputed from the chain at every open, so only an identity change
