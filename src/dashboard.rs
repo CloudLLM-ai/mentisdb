@@ -255,9 +255,15 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
 /// state-changing UI), `base-uri 'none'`, `object-src 'none'`, `form-action 'self'`.
 pub(crate) const DASHBOARD_CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'";
 
-/// Adds CSP, `nosniff`, `X-Frame-Options` and `no-referrer` to every dashboard
-/// response so rendered thought content cannot be framed, sniffed into script
-/// or leak the dashboard URL.
+/// Adds CSP, `nosniff`, `X-Frame-Options` and `Referrer-Policy: same-origin`
+/// to every dashboard response so rendered thought content cannot be framed or
+/// sniffed into script, and links to other sites never leak the dashboard URL.
+///
+/// The referrer policy is `same-origin`, not `no-referrer`: under `no-referrer`
+/// browsers send `Origin: null` on every POST, including the dashboard's own
+/// login form and API calls, which [`csrf_guard_middleware`] cannot tell apart
+/// from a cross-site request. `same-origin` keeps the real `Origin` and
+/// `Referer` on same-origin requests and sends nothing to other origins.
 async fn security_headers_middleware(request: axum::extract::Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
@@ -265,7 +271,7 @@ async fn security_headers_middleware(request: axum::extract::Request, next: Next
         ("content-security-policy", DASHBOARD_CSP),
         ("x-content-type-options", "nosniff"),
         ("x-frame-options", "DENY"),
-        ("referrer-policy", "no-referrer"),
+        ("referrer-policy", "same-origin"),
     ] {
         headers.insert(
             header::HeaderName::from_static(name),
@@ -400,10 +406,24 @@ fn url_authority(value: &str) -> Option<&str> {
 
 /// Reject cross-site state-changing requests to the dashboard API.
 ///
-/// Safe methods (GET/HEAD/OPTIONS) pass. For other methods the `Origin` header
-/// (or `Referer` when `Origin` is absent) must have the same authority as
-/// `Host`. Requests carrying neither header (curl, CLI) must send
-/// `X-MentisDB-Dashboard: 1`.
+/// Safe methods (GET/HEAD/OPTIONS) pass. Other methods are checked in this
+/// order, and the first signal present decides:
+///
+/// 1. `Origin`, unless it is the opaque `null`: its authority must equal
+///    `Host` (or the URI authority on HTTP/2).
+/// 2. `Sec-Fetch-Site`: must be `same-origin`. Browsers set it and page
+///    scripts cannot, so it proves a same-origin request even when the browser
+///    sent `Origin: null` (an older dashboard build's `Referrer-Policy:
+///    no-referrer` still cached by the browser, privacy extensions, or a
+///    stricter policy injected by a proxy).
+/// 3. `Referer`: its authority must equal `Host`.
+/// 4. None of the above (curl, the CLI, scripts): the request must carry
+///    `X-MentisDB-Dashboard: 1`. A cross-site page cannot add that header
+///    without a CORS preflight, which the dashboard never answers.
+///
+/// A sandboxed or `data:` attacker page sends `Origin: null` together with
+/// `Sec-Fetch-Site: cross-site`, so treating `null` as "no origin" does not
+/// let it through.
 async fn csrf_guard_middleware(request: axum::extract::Request, next: Next) -> Response {
     use axum::http::Method;
     let method = request.method();
@@ -416,21 +436,24 @@ async fn csrf_guard_middleware(request: axum::extract::Request, next: Next) -> R
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
         .or_else(|| request.uri().authority().map(|a| a.as_str()));
-    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
-    let referer = headers.get(header::REFERER).and_then(|v| v.to_str().ok());
+    let header_str = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    // `Origin: null` is opaque: it says nothing about where the request came
+    // from, so fall through to the next signal instead of rejecting outright.
+    let origin = header_str("origin").filter(|o| !o.trim().eq_ignore_ascii_case("null"));
+    let fetch_site = header_str("sec-fetch-site");
+    let referer = header_str("referer");
     let same_host = |url: &str| match (url_authority(url), host) {
         (Some(a), Some(h)) => a.eq_ignore_ascii_case(h),
         _ => false,
     };
-    let allowed = match (origin, referer) {
-        (Some(o), _) => same_host(o),
-        (None, Some(r)) => same_host(r),
-        (None, None) => {
-            headers
-                .get(DASHBOARD_CSRF_HEADER)
-                .and_then(|v| v.to_str().ok())
-                == Some("1")
-        }
+    let allowed = if let Some(o) = origin {
+        same_host(o)
+    } else if let Some(site) = fetch_site {
+        site.trim().eq_ignore_ascii_case("same-origin")
+    } else if let Some(r) = referer {
+        same_host(r)
+    } else {
+        header_str(DASHBOARD_CSRF_HEADER) == Some("1")
     };
     if allowed {
         next.run(request).await

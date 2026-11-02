@@ -243,6 +243,9 @@ async fn responses_carry_security_headers_and_xss_payloads_stay_json() {
         );
         assert_eq!(h["x-content-type-options"], "nosniff", "{uri}");
         assert_eq!(h["x-frame-options"], "DENY", "{uri}");
+        // Not `no-referrer`: that makes browsers send `Origin: null` on the
+        // dashboard's own POSTs, which the CSRF guard used to reject.
+        assert_eq!(h["referrer-policy"], "same-origin", "{uri}");
         if uri.contains("/api/") {
             let ct = h["content-type"].to_str().unwrap().to_string();
             assert!(ct.starts_with("application/json"), "{uri}: {ct}");

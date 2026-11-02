@@ -274,6 +274,68 @@ async fn csrf_guard_uses_uri_authority_when_host_header_absent() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Regression: a browser on a page served with `Referrer-Policy: no-referrer`
+/// sends `Origin: null` and no `Referer` on POST. The guard rejected the
+/// dashboard's own PIN login and API calls with "cross-origin request
+/// rejected" (seen on a VPS dashboard).
+#[tokio::test]
+async fn csrf_guard_accepts_null_origin_from_same_origin_browser_fetch() {
+    let dir = unique_dir();
+    let app = router(&dir);
+    let body = json!({"chain_key": "csrfnull", "content": "x"}).to_string();
+    let mk = |origin: Option<&str>, fetch_site: Option<&str>, referer: Option<&str>| {
+        let mut b = Request::builder()
+            .method("POST")
+            .uri("/dashboard/api/chains")
+            .header("host", "localhost:19999")
+            .header("content-type", "application/json");
+        if let Some(o) = origin {
+            b = b.header("origin", o);
+        }
+        if let Some(s) = fetch_site {
+            b = b.header("sec-fetch-site", s);
+        }
+        if let Some(r) = referer {
+            b = b.header("referer", r);
+        }
+        b.body(Body::from(body.clone())).unwrap()
+    };
+
+    // What a browser sends for the dashboard's own POST under no-referrer.
+    let (status, _) = send(&app, mk(Some("null"), Some("same-origin"), None)).await;
+    assert_eq!(status, StatusCode::OK);
+    // A sandboxed iframe or data: page on another site: null origin, cross-site.
+    let (status, _) = send(&app, mk(Some("null"), Some("cross-site"), None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = send(&app, mk(Some("null"), Some("same-site"), None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Null origin and nothing else proves nothing.
+    let (status, _) = send(&app, mk(Some("null"), None, None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Null origin falls through to a matching or foreign Referer.
+    let (status, _) = send(
+        &app,
+        mk(
+            Some("null"),
+            None,
+            Some("https://localhost:19999/dashboard"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send(&app, mk(Some("null"), None, Some("https://evil.example/x"))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // A real foreign Origin wins over a forged same-origin fetch site.
+    let (status, _) = send(
+        &app,
+        mk(Some("https://evil.example"), Some("same-origin"), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn settings_never_leak_dashboard_pin_and_blank_save_keeps_it() {
     let dir = unique_dir();

@@ -1605,9 +1605,13 @@ Dashboard API rules (0.10.9):
   or `.env`, not from the dashboard). Reverse proxies must preserve the original `Host`
   header, or forward a name listed in `MENTISDB_DASHBOARD_ALLOWED_HOSTS`.
 - **CSRF protection.** `POST`, `PATCH` and `DELETE` calls under `/dashboard/api/`, and the
-  `POST /dashboard/login` form, must come from the dashboard's own origin: an `Origin` (or,
-  without it, `Referer`) header whose host matches the request host. Scripts and CLI clients
-  that send neither header must add `X-MentisDB-Dashboard: 1`; anything else gets `403`.
+  `POST /dashboard/login` form, must come from the dashboard's own origin. The first signal
+  present decides: an `Origin` header whose host matches the request host (`Origin: null` is
+  treated as absent), else `Sec-Fetch-Site: same-origin` (set by browsers, not by pages), else
+  a `Referer` whose host matches. Scripts and CLI clients that send none of these must add
+  `X-MentisDB-Dashboard: 1`; anything else gets `403`. Dashboard responses carry
+  `Referrer-Policy: same-origin`, so browsers keep the real `Origin` on the dashboard's own
+  requests and send no referrer to other sites.
 - **Login rate limiting** is keyed per client IP, so one client's failed PIN attempts do not
   lock out others. `X-Forwarded-For` is ignored, so behind a reverse proxy all clients share
   the proxy's address and one rate-limit bucket.

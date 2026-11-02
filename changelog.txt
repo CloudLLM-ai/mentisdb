@@ -1,4 +1,12 @@
 UNRELEASED
+  - fix(dashboard): the PIN login form, and every other dashboard POST from a
+    browser, was rejected with "cross-origin request rejected". The dashboard
+    sent `Referrer-Policy: no-referrer`, under which browsers send `Origin: null`
+    on POST, and the CSRF guard read `null` as a foreign origin. The policy is
+    now `same-origin` (links to other sites still get no referrer), and the
+    guard treats `Origin: null` as absent and then accepts `Sec-Fetch-Site:
+    same-origin`, which browsers set and pages cannot. A cross-site or sandboxed
+    page still sends `Sec-Fetch-Site: cross-site` and is still refused.
   - fix(signing): a stored zero-length `thought_signature` is a placeholder, not a
     signature. Older clients sent an empty field and it was stored as `Some([])`,
     so `verify_signatures` reported each such thought as an invalid signature (43 of
