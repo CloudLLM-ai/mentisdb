@@ -1,0 +1,290 @@
+{
+  "endpoint": "/v1/ranked-search",
+  "request": {
+    "chain_key": "fx-main",
+    "limit": 5,
+    "text": "job queue storage"
+  },
+  "response": {
+    "backend": "hybrid",
+    "results": [
+      {
+        "chain_key": "fx-main",
+        "graph_distance": null,
+        "graph_path": null,
+        "graph_relation_kinds": [],
+        "graph_seed_paths": 0,
+        "match_sources": [
+          "content"
+        ],
+        "matched_terms": [
+          "job"
+        ],
+        "score": {
+          "confidence": 0.0,
+          "graph": 0.0,
+          "importance": 0.0,
+          "lexical": 0.14581242,
+          "recency": 0.05,
+          "relation": 0.0,
+          "rrf": 0.0,
+          "seed_support": 0.0,
+          "session_cohesion": 0.0,
+          "total": 6.3914914,
+          "vector": 0.18628906
+        },
+        "thought": {
+          "agent_id": "builder",
+          "agent_name": "Builder",
+          "agent_owner": "platform",
+          "concepts": [],
+          "confidence": null,
+          "content": "Hourly cron jobs enqueue thousands of tasks at once.",
+          "entity_type": null,
+          "hash": "ba961fbf64366e57dfee657273c967b5e96d2d6facb9f109eb9caf59236426f9",
+          "id": "63ba7148-0c80-4545-98f6-7547ef511a24",
+          "importance": 0.5,
+          "index": 2,
+          "prev_hash": "796e7aaea151a396efb11e1ec075c19cf015c912b5661a7199d96c3d77f287fb",
+          "provenance": {
+            "segment": "public",
+            "signature": "unsigned",
+            "signature_version": null,
+            "signed": false,
+            "trust": "untrusted_data",
+            "verified_agent": null
+          },
+          "refs": [],
+          "relations": [
+            {
+              "kind": "CausedBy",
+              "target_id": "066a6136-d558-41ee-8562-eca3772e75eb",
+              "valid_at": "2026-11-02T03:39:43.185860Z"
+            }
+          ],
+          "role": "Memory",
+          "schema_version": 3,
+          "session_id": null,
+          "signing_key_id": null,
+          "source_episode": null,
+          "tags": [
+            "ops"
+          ],
+          "thought_signature": null,
+          "thought_type": "Finding",
+          "timestamp": "2026-11-02T03:39:43.185886Z"
+        }
+      },
+      {
+        "chain_key": "fx-main",
+        "graph_distance": null,
+        "graph_path": null,
+        "graph_relation_kinds": [],
+        "graph_seed_paths": 0,
+        "match_sources": [
+          "content",
+          "tags",
+          "concepts"
+        ],
+        "matched_terms": [
+          "job",
+          "queue",
+          "storag"
+        ],
+        "score": {
+          "confidence": 0.089999996,
+          "graph": 0.0,
+          "importance": 0.19260804,
+          "lexical": 2.1400893,
+          "recency": 0.0,
+          "relation": 0.0,
+          "rrf": 0.0,
+          "seed_support": 0.0,
+          "session_cohesion": 0.0,
+          "total": 6.3662124,
+          "vector": 0.34079674
+        },
+        "thought": {
+          "agent_id": "builder",
+          "agent_name": "Builder",
+          "agent_owner": "platform",
+          "concepts": [
+            "job queue"
+          ],
+          "confidence": 0.8999999761581421,
+          "content": "Use Postgres for the job queue; revisit if throughput exceeds 5k jobs per second.",
+          "entity_type": null,
+          "hash": "ceb1ddcf117420fe407317dcce7f8212c5a8ce1e6194fdc7fcb24a04a2313fdb",
+          "id": "066a6136-d558-41ee-8562-eca3772e75eb",
+          "importance": 0.800000011920929,
+          "index": 0,
+          "prev_hash": "",
+          "provenance": {
+            "segment": "public",
+            "signature": "unsigned",
+            "signature_version": null,
+            "signed": false,
+            "trust": "untrusted_data",
+            "verified_agent": null
+          },
+          "refs": [],
+          "relations": [],
+          "role": "Memory",
+          "schema_version": 3,
+          "session_id": null,
+          "signing_key_id": null,
+          "source_episode": null,
+          "tags": [
+            "storage"
+          ],
+          "thought_signature": null,
+          "thought_type": "Decision",
+          "timestamp": "2026-11-02T03:39:43.183919Z"
+        }
+      },
+      {
+        "chain_key": "fx-main",
+        "graph_distance": null,
+        "graph_path": null,
+        "graph_relation_kinds": [],
+        "graph_seed_paths": 0,
+        "match_sources": [
+          "content",
+          "tags",
+          "concepts"
+        ],
+        "matched_terms": [
+          "job",
+          "queue",
+          "backlog",
+          "storag"
+        ],
+        "score": {
+          "confidence": 0.0,
+          "graph": 0.0,
+          "importance": 0.0,
+          "lexical": 2.2344913,
+          "recency": 0.025,
+          "relation": 0.0,
+          "rrf": 0.0,
+          "seed_support": 0.0,
+          "session_cohesion": 0.0,
+          "total": 5.7488084,
+          "vector": 0.31641474
+        },
+        "thought": {
+          "agent_id": "signer",
+          "agent_name": "Signer",
+          "agent_owner": null,
+          "concepts": [
+            "job queue"
+          ],
+          "confidence": null,
+          "content": "The job queue backlog peaks at the top of every hour.",
+          "entity_type": null,
+          "hash": "796e7aaea151a396efb11e1ec075c19cf015c912b5661a7199d96c3d77f287fb",
+          "id": "2b075581-40d1-4a6c-9702-7b8b26d0e72a",
+          "importance": 0.5,
+          "index": 1,
+          "prev_hash": "ceb1ddcf117420fe407317dcce7f8212c5a8ce1e6194fdc7fcb24a04a2313fdb",
+          "provenance": {
+            "segment": "public",
+            "signature": "valid",
+            "signature_version": 2,
+            "signed": true,
+            "trust": "untrusted_data",
+            "verified_agent": "signer"
+          },
+          "refs": [
+            0
+          ],
+          "relations": [
+            {
+              "kind": "Supports",
+              "target_id": "066a6136-d558-41ee-8562-eca3772e75eb"
+            }
+          ],
+          "role": "Memory",
+          "schema_version": 3,
+          "session_id": null,
+          "signing_key_id": "signer-1",
+          "source_episode": null,
+          "tags": [
+            "storage",
+            "ops"
+          ],
+          "thought_signature": [
+            2,
+            65,
+            133,
+            21,
+            210,
+            34,
+            28,
+            61,
+            175,
+            227,
+            40,
+            183,
+            165,
+            120,
+            58,
+            147,
+            226,
+            15,
+            69,
+            178,
+            189,
+            116,
+            123,
+            24,
+            132,
+            198,
+            209,
+            180,
+            242,
+            99,
+            71,
+            135,
+            147,
+            113,
+            16,
+            247,
+            129,
+            20,
+            11,
+            54,
+            247,
+            184,
+            214,
+            11,
+            246,
+            120,
+            166,
+            149,
+            66,
+            112,
+            157,
+            22,
+            236,
+            215,
+            32,
+            233,
+            228,
+            144,
+            120,
+            7,
+            176,
+            199,
+            191,
+            43,
+            7
+          ],
+          "thought_type": "Insight",
+          "timestamp": "2026-11-02T03:39:43.185737Z"
+        }
+      }
+    ],
+    "total": 3
+  }
+}

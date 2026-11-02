@@ -1,0 +1,114 @@
+{
+  "endpoint": "/v1/ranked-search",
+  "request": {
+    "chain_key": "fx-main",
+    "compact": true,
+    "limit": 5,
+    "text": "job queue storage"
+  },
+  "response": {
+    "backend": "hybrid",
+    "results": [
+      {
+        "chain_key": "fx-main",
+        "score": 6.3914914,
+        "thought": {
+          "agent_id": "builder",
+          "content": "Hourly cron jobs enqueue thousands of tasks at once.",
+          "id": "63ba7148-0c80-4545-98f6-7547ef511a24",
+          "importance": 0.5,
+          "index": 2,
+          "provenance": {
+            "segment": "public",
+            "signature": "unsigned",
+            "signature_version": null,
+            "signed": false,
+            "trust": "untrusted_data",
+            "verified_agent": null
+          },
+          "relations": [
+            {
+              "kind": "CausedBy",
+              "target_id": "066a6136-d558-41ee-8562-eca3772e75eb",
+              "valid_at": "2026-11-02T03:39:43.185860Z"
+            }
+          ],
+          "role": "Memory",
+          "tags": [
+            "ops"
+          ],
+          "thought_type": "Finding",
+          "timestamp": "2026-11-02T03:39:43.185886Z"
+        }
+      },
+      {
+        "chain_key": "fx-main",
+        "score": 6.3662124,
+        "thought": {
+          "agent_id": "builder",
+          "concepts": [
+            "job queue"
+          ],
+          "confidence": 0.8999999761581421,
+          "content": "Use Postgres for the job queue; revisit if throughput exceeds 5k jobs per second.",
+          "id": "066a6136-d558-41ee-8562-eca3772e75eb",
+          "importance": 0.800000011920929,
+          "index": 0,
+          "provenance": {
+            "segment": "public",
+            "signature": "unsigned",
+            "signature_version": null,
+            "signed": false,
+            "trust": "untrusted_data",
+            "verified_agent": null
+          },
+          "role": "Memory",
+          "tags": [
+            "storage"
+          ],
+          "thought_type": "Decision",
+          "timestamp": "2026-11-02T03:39:43.183919Z"
+        }
+      },
+      {
+        "chain_key": "fx-main",
+        "score": 5.7488084,
+        "thought": {
+          "agent_id": "signer",
+          "concepts": [
+            "job queue"
+          ],
+          "content": "The job queue backlog peaks at the top of every hour.",
+          "id": "2b075581-40d1-4a6c-9702-7b8b26d0e72a",
+          "importance": 0.5,
+          "index": 1,
+          "provenance": {
+            "segment": "public",
+            "signature": "valid",
+            "signature_version": 2,
+            "signed": true,
+            "trust": "untrusted_data",
+            "verified_agent": "signer"
+          },
+          "refs": [
+            0
+          ],
+          "relations": [
+            {
+              "kind": "Supports",
+              "target_id": "066a6136-d558-41ee-8562-eca3772e75eb"
+            }
+          ],
+          "role": "Memory",
+          "tags": [
+            "storage",
+            "ops"
+          ],
+          "thought_type": "Insight",
+          "timestamp": "2026-11-02T03:39:43.185737Z"
+        }
+      }
+    ],
+    "total": 3
+  }
+}

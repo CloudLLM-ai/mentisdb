@@ -1,0 +1,41 @@
+{
+  "endpoint": "/v1/ranked-search",
+  "request": {
+    "chain_key": "fx-dup",
+    "compact": true,
+    "limit": 5,
+    "text": "staging database nightly backup"
+  },
+  "response": {
+    "backend": "hybrid",
+    "results": [
+      {
+        "chain_key": "fx-dup",
+        "score": 4.640523,
+        "thought": {
+          "agent_id": "builder",
+          "collapsed_duplicates": [
+            "68861787-7eb7-4a48-aa44-53fb4bd12d89",
+            "4cfa411b-dac1-411c-85e1-2eef996d6144"
+          ],
+          "content": "The staging database nightly backup runs at two in the morning.",
+          "id": "03467de1-37b4-4949-b5a1-30f39ff1998d",
+          "importance": 0.5,
+          "index": 2,
+          "provenance": {
+            "segment": "public",
+            "signature": "unsigned",
+            "signature_version": null,
+            "signed": false,
+            "trust": "untrusted_data",
+            "verified_agent": null
+          },
+          "role": "Memory",
+          "thought_type": "Insight",
+          "timestamp": "2026-11-02T03:39:43.190370Z"
+        }
+      }
+    ],
+    "total": 3
+  }
+}

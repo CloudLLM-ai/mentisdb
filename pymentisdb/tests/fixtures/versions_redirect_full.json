@@ -1,0 +1,227 @@
+{
+  "endpoint": "/v1/ranked-search",
+  "request": {
+    "chain_key": "fx-versions",
+    "limit": 5,
+    "text": "release policy deploy to production on Fridays"
+  },
+  "response": {
+    "backend": "hybrid",
+    "results": [
+      {
+        "chain_key": "fx-versions",
+        "graph_distance": null,
+        "graph_path": null,
+        "graph_relation_kinds": [],
+        "graph_seed_paths": 0,
+        "match_sources": [
+          "content"
+        ],
+        "matched_terms": [
+          "releas",
+          "polici",
+          "deploy",
+          "to",
+          "product",
+          "on",
+          "friday"
+        ],
+        "score": {
+          "confidence": 0.0,
+          "graph": 0.0,
+          "importance": 0.0,
+          "lexical": 4.2087035,
+          "recency": 0.016666668,
+          "relation": 0.0,
+          "rrf": 0.0,
+          "seed_support": 0.0,
+          "session_cohesion": 0.0,
+          "total": 9.634872,
+          "vector": 0.42491713
+        },
+        "thought": {
+          "agent_id": "builder",
+          "agent_name": "builder",
+          "agent_owner": null,
+          "concepts": [],
+          "confidence": null,
+          "content": "Release policy: never deploy to production on Fridays.",
+          "entity_type": null,
+          "hash": "b803b6869833f677d0dd7d618318dcb71fad0391256945280d28c6cfd57240b8",
+          "id": "dfa9b1cb-1ddf-48e2-a341-c59a50656814",
+          "importance": 0.5,
+          "index": 1,
+          "prev_hash": "1de44ba6c9caf3b26dc54870495b544a5b11c22d3ede7930dbcad76d6afd863f",
+          "provenance": {
+            "segment": "public",
+            "signature": "unsigned",
+            "signature_version": null,
+            "signed": false,
+            "trust": "untrusted_data",
+            "verified_agent": null
+          },
+          "refs": [],
+          "relations": [
+            {
+              "kind": "Supersedes",
+              "target_id": "b8b5b3f5-b4bf-4dd7-b03c-0c0951c784c2",
+              "valid_at": "2026-11-02T03:39:43.187821Z"
+            }
+          ],
+          "role": "Memory",
+          "schema_version": 3,
+          "session_id": null,
+          "signing_key_id": null,
+          "source_episode": null,
+          "successor_of": [
+            "b8b5b3f5-b4bf-4dd7-b03c-0c0951c784c2"
+          ],
+          "tags": [],
+          "thought_signature": null,
+          "thought_type": "Decision",
+          "timestamp": "2026-11-02T03:39:43.187825Z"
+        }
+      },
+      {
+        "chain_key": "fx-versions",
+        "graph_distance": null,
+        "graph_path": null,
+        "graph_relation_kinds": [],
+        "graph_seed_paths": 0,
+        "match_sources": [
+          "content"
+        ],
+        "matched_terms": [
+          "polici"
+        ],
+        "score": {
+          "confidence": 0.0,
+          "graph": 0.0,
+          "importance": 0.0,
+          "lexical": 0.098838925,
+          "recency": 0.05,
+          "relation": 0.0,
+          "rrf": 0.0,
+          "seed_support": 0.0,
+          "session_cohesion": 1.0,
+          "total": 5.1631846,
+          "vector": 0.11456627
+        },
+        "thought": {
+          "agent_id": "builder",
+          "agent_name": "builder",
+          "agent_owner": null,
+          "concepts": [],
+          "confidence": null,
+          "content": "Retry policy: retry failed jobs five times with backoff.",
+          "entity_type": null,
+          "hash": "e933e8a45cae557f83b74473d11987d2f59de76b141519e031c52d3842999d0f",
+          "id": "773ef8ee-912c-45c5-8f6e-1d0ef23a4d1a",
+          "importance": 0.5,
+          "index": 3,
+          "prev_hash": "8a3859128643677d7c8f6983d8669b46e391a270588f1d1ea1f066801e26b3ff",
+          "provenance": {
+            "segment": "public",
+            "signature": "unsigned",
+            "signature_version": null,
+            "signed": false,
+            "trust": "untrusted_data",
+            "verified_agent": null
+          },
+          "refs": [
+            2
+          ],
+          "relations": [
+            {
+              "kind": "References",
+              "target_id": "2c64a839-a380-49fd-a0a0-3823ce64a44b",
+              "valid_at": "2026-11-02T03:39:43.187979Z"
+            }
+          ],
+          "role": "Memory",
+          "schema_version": 3,
+          "session_id": null,
+          "signing_key_id": null,
+          "source_episode": null,
+          "successor_of": [
+            "2c64a839-a380-49fd-a0a0-3823ce64a44b"
+          ],
+          "tags": [],
+          "thought_signature": null,
+          "thought_type": "Correction",
+          "timestamp": "2026-11-02T03:39:43.187981Z"
+        }
+      },
+      {
+        "chain_key": "fx-versions",
+        "graph_distance": null,
+        "graph_path": null,
+        "graph_relation_kinds": [],
+        "graph_seed_paths": 0,
+        "match_sources": [
+          "content"
+        ],
+        "matched_terms": [
+          "polici"
+        ],
+        "score": {
+          "confidence": 0.0,
+          "graph": 0.0,
+          "importance": 0.0,
+          "lexical": 0.109703675,
+          "recency": 0.033333335,
+          "relation": 0.0,
+          "rrf": 0.0,
+          "seed_support": 0.0,
+          "session_cohesion": 1.1,
+          "total": 4.935014,
+          "vector": 0.105679646
+        },
+        "thought": {
+          "agent_id": "builder",
+          "agent_name": "builder",
+          "agent_owner": null,
+          "concepts": [],
+          "confidence": null,
+          "content": "Retry policy: retry failed jobs three times.",
+          "entity_type": null,
+          "hash": "8a3859128643677d7c8f6983d8669b46e391a270588f1d1ea1f066801e26b3ff",
+          "id": "2c64a839-a380-49fd-a0a0-3823ce64a44b",
+          "importance": 0.5,
+          "index": 2,
+          "prev_hash": "b803b6869833f677d0dd7d618318dcb71fad0391256945280d28c6cfd57240b8",
+          "provenance": {
+            "segment": "public",
+            "signature": "unsigned",
+            "signature_version": null,
+            "signed": false,
+            "trust": "untrusted_data",
+            "verified_agent": null
+          },
+          "refs": [],
+          "relations": [],
+          "role": "Memory",
+          "schema_version": 3,
+          "session_id": null,
+          "signing_key_id": null,
+          "source_episode": null,
+          "successors": [
+            {
+              "index": 3,
+              "kind": "contests",
+              "thought_id": "773ef8ee-912c-45c5-8f6e-1d0ef23a4d1a",
+              "thought_type": "Correction",
+              "timestamp": "2026-11-02T03:39:43.187981Z"
+            }
+          ],
+          "tags": [],
+          "thought_signature": null,
+          "thought_type": "Decision",
+          "timestamp": "2026-11-02T03:39:43.187912Z",
+          "version_status": "contested"
+        }
+      }
+    ],
+    "total": 4
+  }
+}

@@ -1,0 +1,148 @@
+{
+  "endpoint": "/v1/ranked-search",
+  "request": {
+    "chain_key": "fx-versions",
+    "compact": true,
+    "include_invalidated": true,
+    "limit": 5,
+    "text": "release policy deploy to production on Fridays"
+  },
+  "response": {
+    "backend": "hybrid",
+    "results": [
+      {
+        "chain_key": "fx-versions",
+        "score": 9.634872,
+        "thought": {
+          "agent_id": "builder",
+          "content": "Release policy: deploy to production on Fridays.",
+          "current_version": {
+            "index": 1,
+            "kind": "supersedes",
+            "thought_id": "dfa9b1cb-1ddf-48e2-a341-c59a50656814",
+            "thought_type": "Decision",
+            "timestamp": "2026-11-02T03:39:43.187825Z"
+          },
+          "id": "b8b5b3f5-b4bf-4dd7-b03c-0c0951c784c2",
+          "importance": 0.5,
+          "index": 0,
+          "provenance": {
+            "segment": "public",
+            "signature": "unsigned",
+            "signature_version": null,
+            "signed": false,
+            "trust": "untrusted_data",
+            "verified_agent": null
+          },
+          "role": "Memory",
+          "successors": [
+            {
+              "index": 1,
+              "kind": "supersedes",
+              "thought_id": "dfa9b1cb-1ddf-48e2-a341-c59a50656814",
+              "thought_type": "Decision",
+              "timestamp": "2026-11-02T03:39:43.187825Z"
+            }
+          ],
+          "thought_type": "Decision",
+          "timestamp": "2026-11-02T03:39:43.186818Z",
+          "version_status": "superseded"
+        }
+      },
+      {
+        "chain_key": "fx-versions",
+        "score": 9.197935,
+        "thought": {
+          "agent_id": "builder",
+          "content": "Release policy: never deploy to production on Fridays.",
+          "id": "dfa9b1cb-1ddf-48e2-a341-c59a50656814",
+          "importance": 0.5,
+          "index": 1,
+          "provenance": {
+            "segment": "public",
+            "signature": "unsigned",
+            "signature_version": null,
+            "signed": false,
+            "trust": "untrusted_data",
+            "verified_agent": null
+          },
+          "relations": [
+            {
+              "kind": "Supersedes",
+              "target_id": "b8b5b3f5-b4bf-4dd7-b03c-0c0951c784c2",
+              "valid_at": "2026-11-02T03:39:43.187821Z"
+            }
+          ],
+          "role": "Memory",
+          "thought_type": "Decision",
+          "timestamp": "2026-11-02T03:39:43.187825Z"
+        }
+      },
+      {
+        "chain_key": "fx-versions",
+        "score": 5.1631846,
+        "thought": {
+          "agent_id": "builder",
+          "content": "Retry policy: retry failed jobs five times with backoff.",
+          "id": "773ef8ee-912c-45c5-8f6e-1d0ef23a4d1a",
+          "importance": 0.5,
+          "index": 3,
+          "provenance": {
+            "segment": "public",
+            "signature": "unsigned",
+            "signature_version": null,
+            "signed": false,
+            "trust": "untrusted_data",
+            "verified_agent": null
+          },
+          "refs": [
+            2
+          ],
+          "relations": [
+            {
+              "kind": "References",
+              "target_id": "2c64a839-a380-49fd-a0a0-3823ce64a44b",
+              "valid_at": "2026-11-02T03:39:43.187979Z"
+            }
+          ],
+          "role": "Memory",
+          "thought_type": "Correction",
+          "timestamp": "2026-11-02T03:39:43.187981Z"
+        }
+      },
+      {
+        "chain_key": "fx-versions",
+        "score": 4.935014,
+        "thought": {
+          "agent_id": "builder",
+          "content": "Retry policy: retry failed jobs three times.",
+          "id": "2c64a839-a380-49fd-a0a0-3823ce64a44b",
+          "importance": 0.5,
+          "index": 2,
+          "provenance": {
+            "segment": "public",
+            "signature": "unsigned",
+            "signature_version": null,
+            "signed": false,
+            "trust": "untrusted_data",
+            "verified_agent": null
+          },
+          "role": "Memory",
+          "successors": [
+            {
+              "index": 3,
+              "kind": "contests",
+              "thought_id": "773ef8ee-912c-45c5-8f6e-1d0ef23a4d1a",
+              "thought_type": "Correction",
+              "timestamp": "2026-11-02T03:39:43.187981Z"
+            }
+          ],
+          "thought_type": "Decision",
+          "timestamp": "2026-11-02T03:39:43.187912Z",
+          "version_status": "contested"
+        }
+      }
+    ],
+    "total": 4
+  }
+}
