@@ -41,6 +41,24 @@ for `_`; omitted knobs keep the library default.
 Unknown `df_scope` or `vector_fusion` names and cutoffs outside `0..=1` are
 rejected with an error instead of silently falling back.
 
+## Compact results
+
+`search` and `search federated` (REST `ranked-search` and `federated-search`; MCP
+`mentisdb_ranked_search` and `mentisdb_federated_search`) accept `compact`. It has no
+effect on `search bundles` (`context-bundles`): that REST route shares the
+ranked request type, so it accepts the field and ignores it, and `search
+bundles` therefore has no `--compact` flag.
+
+| REST / MCP field | CLI flag | Library | Default |
+|---|---|---|---|
+| `compact` | `--compact` (switch) | none: a response shape of the server, not a query option | `false` |
+
+A compact hit is `chain_key`, the total `score` and the thought without `hash`,
+`prev_hash`, `thought_signature`, `signing_key_id`, `schema_version`,
+`agent_name`, `agent_owner` and top-level empty values. The `provenance` object,
+the version fields and graph provenance are kept. See
+[Compact search results](../README.md#compact-search-results).
+
 ## MCP tools
 
 | MCP tool | REST route | CLI command |

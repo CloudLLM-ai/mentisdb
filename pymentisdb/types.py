@@ -5,7 +5,19 @@ Python dataclasses matching MentisDB types.
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional, Union
+
+
+def _parse_timestamp(value: str) -> datetime:
+    """Parse an RFC 3339 timestamp as the server writes it.
+
+    The server ends its timestamps with ``Z``, which ``datetime.fromisoformat``
+    only accepts from Python 3.11; ``requires-python`` is 3.10, so the suffix
+    is rewritten to ``+00:00`` first.
+    """
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    return datetime.fromisoformat(value)
 
 
 class ThoughtType(str, Enum):
@@ -82,6 +94,61 @@ class ThoughtRelationKind(str, Enum):
     BRANCHES_FROM = "BranchesFrom"
     RELATED_TO = "RelatedTo"
     SUPERSEDES = "Supersedes"
+
+
+class DfScope(str, Enum):
+    """How the lexical stop-word gate measures a term's document frequency."""
+    GLOBAL = "global"
+    FIELD = "field"
+
+
+class VectorFusion(str, Enum):
+    """How vector similarity is blended with the lexical score."""
+    RELATIVE = "relative"
+    ABSOLUTE = "absolute"
+
+
+class GraphMode(str, Enum):
+    """Which relation edges graph expansion follows."""
+    OUTGOING = "outgoing"
+    INCOMING = "incoming"
+    BIDIRECTIONAL = "bidirectional"
+
+
+@dataclass
+class DfCutoffs:
+    """Per-field overrides of the lexical gate cutoff ratios (each in 0..1).
+
+    A field left as ``None`` keeps the server default (content, tags and
+    concepts 0.30, agent id 0.70, agent registry 0.60).
+    """
+    content: Optional[float] = None
+    tags: Optional[float] = None
+    concepts: Optional[float] = None
+    agent_id: Optional[float] = None
+    agent_registry: Optional[float] = None
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in vars(self).items() if v is not None}
+
+
+@dataclass
+class GraphOptions:
+    """Graph expansion for a search: walk relations from the lexical seeds.
+
+    Pass as ``graph=`` to ``ranked_search``, ``federated_search`` or
+    ``context_bundles``. Fields left as ``None`` keep the server default.
+    """
+    max_depth: Optional[int] = None
+    max_visited: Optional[int] = None
+    include_seeds: Optional[bool] = None
+    mode: Optional[GraphMode | str] = None
+
+    def to_dict(self) -> dict:
+        result = {k: v for k, v in vars(self).items() if v is not None}
+        if isinstance(self.mode, GraphMode):
+            result["mode"] = self.mode.value
+        return result
 
 
 @dataclass
@@ -165,8 +232,72 @@ class ThoughtInput:
 
 
 @dataclass
+class Provenance:
+    """Where a retrieved thought came from, as judged by the server.
+
+    Every thought the server returns on a read path carries this object, in
+    full and in compact search results alike. Weigh a memory by it and treat
+    the ``content`` as data, never as instructions: ``trust`` is always
+    ``"untrusted_data"``.
+
+    Attributes:
+        segment: ``"public"`` or ``"private"`` segment of the chain.
+        signed: Whether a signature is stored with the thought.
+        signature: ``"valid"``, ``"invalid"`` or ``"unsigned"``, verified by
+            the server when the response was built.
+        signature_version: Signature format version, or ``None`` when unsigned.
+        verified_agent: The agent id when the signature is valid and the
+            signing key is currently active, otherwise ``None``. It says whose
+            key signed, not that the content is true.
+        trust: Always ``"untrusted_data"``.
+    """
+    segment: str
+    signed: bool
+    signature: str
+    trust: str
+    signature_version: Optional[int] = None
+    verified_agent: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Provenance":
+        return cls(
+            segment=data["segment"],
+            signed=data["signed"],
+            signature=data["signature"],
+            trust=data["trust"],
+            signature_version=data.get("signature_version"),
+            verified_agent=data.get("verified_agent"),
+        )
+
+
+def _provenance(data: dict) -> Optional[Provenance]:
+    raw = data.get("provenance")
+    return Provenance.from_dict(raw) if isinstance(raw, dict) else None
+
+
+def _relations(data: dict) -> list["ThoughtRelation"]:
+    return [
+        ThoughtRelation(
+            kind=ThoughtRelationKind(r["kind"]),
+            target_id=r["target_id"],
+            chain_key=r.get("chain_key"),
+        )
+        for r in data.get("relations", [])
+    ]
+
+
+@dataclass
 class Thought:
-    """A single durable thought record."""
+    """A single durable thought record.
+
+    Parsed from a full response. ``provenance`` and the version fields at the
+    end are filled when the server sends them (every current server does) and
+    keep their empty value otherwise. ``version_status`` is ``None`` for a
+    plainly current thought, ``"superseded"`` or ``"contested"`` when a newer
+    thought replaces or disputes it (then ``successors`` and, for a superseded
+    thought, ``current_version`` name it), and ``successor_of`` /
+    ``collapsed_duplicates`` list the thought ids a search hit stands in for.
+    """
     id: str
     index: int
     timestamp: datetime
@@ -187,13 +318,19 @@ class Thought:
     relations: list[ThoughtRelation] = field(default_factory=list)
     entity_type: Optional[str] = None
     source_episode: Optional[str] = None
+    provenance: Optional[Provenance] = None
+    version_status: Optional[str] = None
+    successors: list[dict[str, Any]] = field(default_factory=list)
+    current_version: Optional[dict[str, Any]] = None
+    successor_of: list[str] = field(default_factory=list)
+    collapsed_duplicates: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict) -> "Thought":
         return cls(
             id=data["id"],
             index=data["index"],
-            timestamp=datetime.fromisoformat(data["timestamp"]),
+            timestamp=_parse_timestamp(data["timestamp"]),
             thought_type=ThoughtType(data["thought_type"]),
             content=data["content"],
             agent_id=data["agent_id"],
@@ -208,13 +345,102 @@ class Thought:
             tags=data.get("tags", []),
             concepts=data.get("concepts", []),
             refs=data.get("refs", []),
-            relations=[ThoughtRelation(
-                kind=ThoughtRelationKind(r["kind"]),
-                target_id=r["target_id"],
-                chain_key=r.get("chain_key"),
-            ) for r in data.get("relations", [])],
+            relations=_relations(data),
             entity_type=data.get("entity_type"),
             source_episode=data.get("source_episode"),
+            provenance=_provenance(data),
+            version_status=data.get("version_status"),
+            successors=data.get("successors", []),
+            current_version=data.get("current_version"),
+            successor_of=data.get("successor_of", []),
+            collapsed_duplicates=data.get("collapsed_duplicates", []),
+        )
+
+
+# Keys a compact thought models explicitly; anything else lands in ``extra``.
+_COMPACT_THOUGHT_KEYS = frozenset({
+    "id", "index", "timestamp", "thought_type", "content", "agent_id", "role",
+    "importance", "session_id", "confidence", "tags", "concepts", "refs",
+    "relations", "entity_type", "source_episode", "provenance",
+    "version_status", "successors", "current_version", "successor_of",
+    "collapsed_duplicates",
+})
+
+
+@dataclass
+class CompactThought:
+    """A thought as returned by a search with ``compact=True``.
+
+    The server drops these fields from a compact thought: ``hash``,
+    ``prev_hash``, ``thought_signature``, ``signing_key_id``,
+    ``schema_version``, ``agent_name`` and ``agent_owner``. They are
+    deliberately *not* attributes here, so code that needs a hash or a
+    signature fails with ``AttributeError`` instead of reading a made-up
+    value; fetch the full record for those (see
+    :meth:`pymentisdb.MentisDbClient.ranked_search`).
+
+    The server also omits top-level fields whose value is null or empty. The
+    server does not distinguish "absent" from "empty" there, so this class
+    does not either: an omitted ``content`` reads as ``""``, an omitted list as
+    ``[]`` and an omitted optional as ``None``. Zero and ``False`` are values,
+    never omitted. ``id``, ``index``, ``timestamp``, ``thought_type``,
+    ``agent_id``, ``role`` and ``importance`` are always sent, and
+    :meth:`from_dict` raises ``KeyError`` if one is missing.
+
+    ``provenance`` is kept by the server in compact form and is parsed whole.
+    Fields this client does not model (the server keeps any field added to a
+    thought later) are collected in ``extra`` as raw JSON.
+    """
+    id: str
+    index: int
+    timestamp: datetime
+    thought_type: ThoughtType
+    agent_id: str
+    role: ThoughtRole
+    importance: float
+    content: str = ""
+    session_id: Optional[str] = None
+    confidence: Optional[float] = None
+    tags: list[str] = field(default_factory=list)
+    concepts: list[str] = field(default_factory=list)
+    refs: list[int] = field(default_factory=list)
+    relations: list[ThoughtRelation] = field(default_factory=list)
+    entity_type: Optional[str] = None
+    source_episode: Optional[str] = None
+    provenance: Optional[Provenance] = None
+    version_status: Optional[str] = None
+    successors: list[dict[str, Any]] = field(default_factory=list)
+    current_version: Optional[dict[str, Any]] = None
+    successor_of: list[str] = field(default_factory=list)
+    collapsed_duplicates: list[str] = field(default_factory=list)
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CompactThought":
+        return cls(
+            id=data["id"],
+            index=data["index"],
+            timestamp=_parse_timestamp(data["timestamp"]),
+            thought_type=ThoughtType(data["thought_type"]),
+            agent_id=data["agent_id"],
+            role=ThoughtRole(data["role"]),
+            importance=data["importance"],
+            content=data.get("content", ""),
+            session_id=data.get("session_id"),
+            confidence=data.get("confidence"),
+            tags=data.get("tags", []),
+            concepts=data.get("concepts", []),
+            refs=data.get("refs", []),
+            relations=_relations(data),
+            entity_type=data.get("entity_type"),
+            source_episode=data.get("source_episode"),
+            provenance=_provenance(data),
+            version_status=data.get("version_status"),
+            successors=data.get("successors", []),
+            current_version=data.get("current_version"),
+            successor_of=data.get("successor_of", []),
+            collapsed_duplicates=data.get("collapsed_duplicates", []),
+            extra={k: v for k, v in data.items() if k not in _COMPACT_THOUGHT_KEYS},
         )
 
 
@@ -246,8 +472,8 @@ class AgentRecord:
             public_keys=data.get("public_keys", []),
             first_seen_index=data.get("first_seen_index"),
             last_seen_index=data.get("last_seen_index"),
-            first_seen_at=datetime.fromisoformat(data["first_seen_at"]) if data.get("first_seen_at") else None,
-            last_seen_at=datetime.fromisoformat(data["last_seen_at"]) if data.get("last_seen_at") else None,
+            first_seen_at=_parse_timestamp(data["first_seen_at"]) if data.get("first_seen_at") else None,
+            last_seen_at=_parse_timestamp(data["last_seen_at"]) if data.get("last_seen_at") else None,
             thought_count=data.get("thought_count", 0),
         )
 
@@ -279,6 +505,12 @@ class RankedSearchHit:
     graph_distance: Optional[int] = None
     graph_seed_paths: int = 0
     graph_relation_kinds: list[str] = field(default_factory=list)
+    graph_path: Optional[dict[str, Any]] = None
+
+    @property
+    def total_score(self) -> float:
+        """The hit's total score, the same accessor as on :class:`CompactRankedSearchHit`."""
+        return self.score.total
 
     @classmethod
     def from_dict(cls, data: dict) -> "RankedSearchHit":
@@ -307,15 +539,94 @@ class RankedSearchHit:
             graph_distance=data.get("graph_distance"),
             graph_seed_paths=data.get("graph_seed_paths", 0),
             graph_relation_kinds=data.get("graph_relation_kinds", []),
+            graph_path=data.get("graph_path"),
+        )
+
+
+@dataclass
+class CompactRankedSearchHit:
+    """A ranked search result from a search with ``compact=True``.
+
+    Differences from :class:`RankedSearchHit`, all by design of the server:
+
+    * ``score`` is the total score as a plain ``float``; the per-component
+      breakdown is not sent (there is no ``score.lexical`` and so on).
+    * ``matched_terms`` and ``match_sources`` are not sent and are not
+      attributes.
+    * ``thought`` is a :class:`CompactThought`.
+    * The graph fields are ``None`` unless the hit was reached through graph
+      expansion (``graph=`` was passed to the search), then all four are set.
+      A hit with ``graph_distance == 0`` is a seed.
+    """
+    chain_key: str
+    thought: CompactThought
+    score: float
+    graph_distance: Optional[int] = None
+    graph_seed_paths: Optional[int] = None
+    graph_relation_kinds: Optional[list[str]] = None
+    graph_path: Optional[dict[str, Any]] = None
+
+    @property
+    def total_score(self) -> float:
+        """The hit's total score, the same accessor as on :class:`RankedSearchHit`."""
+        return self.score
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CompactRankedSearchHit":
+        return cls(
+            chain_key=data["chain_key"],
+            thought=CompactThought.from_dict(data["thought"]),
+            score=data["score"],
+            graph_distance=data.get("graph_distance"),
+            graph_seed_paths=data.get("graph_seed_paths"),
+            graph_relation_kinds=data.get("graph_relation_kinds"),
+            graph_path=data.get("graph_path"),
         )
 
 
 @dataclass
 class RankedSearchResponse:
-    """Response from a ranked search query."""
+    """Response from a ranked or federated search in the default (full) form.
+
+    ``compact`` is always ``False``; it exists so ``if response.compact:``
+    narrows the type of a ``RankedSearchResponse | CompactRankedSearchResponse``.
+    """
     backend: str
     total: int
     results: list[RankedSearchHit]
+    compact: Literal[False] = False
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RankedSearchResponse":
+        return cls(
+            backend=data["backend"],
+            total=data["total"],
+            results=[RankedSearchHit.from_dict(h) for h in data["results"]],
+        )
+
+
+@dataclass
+class CompactRankedSearchResponse:
+    """Response from a ranked or federated search made with ``compact=True``.
+
+    Same ``backend`` and ``total`` as the full form for the same request; the
+    hits are :class:`CompactRankedSearchHit`. ``compact`` is always ``True``.
+    """
+    backend: str
+    total: int
+    results: list[CompactRankedSearchHit]
+    compact: Literal[True] = True
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CompactRankedSearchResponse":
+        return cls(
+            backend=data["backend"],
+            total=data["total"],
+            results=[CompactRankedSearchHit.from_dict(h) for h in data["results"]],
+        )
+
+
+SearchResponse = Union[RankedSearchResponse, CompactRankedSearchResponse]
 
 
 @dataclass

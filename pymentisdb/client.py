@@ -16,8 +16,14 @@ from .types import (
     ThoughtType,
     ThoughtRole,
     MemoryScope,
+    DfScope,
+    DfCutoffs,
+    VectorFusion,
+    GraphOptions,
     RankedSearchHit,
     RankedSearchResponse,
+    CompactRankedSearchResponse,
+    SearchResponse,
     ContextBundle,
     ContextBundleSeed,
     ContextBundleHit,
@@ -34,7 +40,8 @@ class MentisDbClient:
 
     Provides a wrapper around MentisDB's HTTP REST interface for:
     - Appending thoughts to memory chains
-    - Searching memory with ranked retrieval
+    - Searching memory with ranked retrieval, one chain or several, in the
+      full or the smaller compact form
     - Getting context bundles with supporting memories
     - Managing agent identities
 
@@ -171,56 +178,30 @@ class MentisDbClient:
         result = self._post("/v1/thoughts", payload)
         return Thought.from_dict(result["thought"])
 
-    def ranked_search(
+    def _filter_payload(
         self,
-        text: Optional[str] = None,
-        chain_key: Optional[str] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        thought_types: Optional[list[ThoughtType]] = None,
-        roles: Optional[list[ThoughtRole]] = None,
-        tags_any: Optional[list[str]] = None,
-        concepts_any: Optional[list[str]] = None,
-        agent_ids: Optional[list[str]] = None,
-        agent_names: Optional[list[str]] = None,
-        agent_owners: Optional[list[str]] = None,
-        min_importance: Optional[float] = None,
-        min_confidence: Optional[float] = None,
-        since: Optional[datetime] = None,
-        until: Optional[datetime] = None,
-        scope: Optional[MemoryScope | str] = None,
-        enable_reranking: Optional[bool] = None,
-        rerank_k: Optional[int] = None,
-        entity_type: Optional[str] = None,
-    ) -> RankedSearchResponse:
-        """
-        Perform a ranked semantic search over thought memories.
-
-        Args:
-            text: Query text to search for.
-            chain_key: Optional chain to search. Uses default if not provided.
-            limit: Maximum number of results to return.
-            offset: Number of results to skip (for pagination).
-            thought_types: Filter by thought type categories.
-            roles: Filter by operational roles.
-            tags_any: Match thoughts with any of these tags.
-            concepts_any: Match thoughts with any of these concepts.
-            agent_ids: Filter by agent identifiers.
-            agent_names: Filter by agent names.
-            agent_owners: Filter by agent owners.
-            min_importance: Minimum importance threshold.
-            min_confidence: Minimum confidence threshold.
-            since: Match thoughts after this timestamp.
-            until: Match thoughts before this timestamp.
-            scope: Filter by visibility scope.
-            enable_reranking: Enable result reranking.
-            rerank_k: Number of results to rerank.
-            entity_type: Filter by entity type.
-
-        Returns:
-            RankedSearchResponse with ranked results.
-        """
-        request_data: dict = {"chain_key": chain_key}
+        *,
+        text: Optional[str],
+        limit: Optional[int],
+        offset: Optional[int],
+        thought_types: Optional[list[ThoughtType]],
+        roles: Optional[list[ThoughtRole]],
+        tags_any: Optional[list[str]],
+        concepts_any: Optional[list[str]],
+        agent_ids: Optional[list[str]],
+        agent_names: Optional[list[str]],
+        agent_owners: Optional[list[str]],
+        min_importance: Optional[float],
+        min_confidence: Optional[float],
+        since: Optional[datetime],
+        until: Optional[datetime],
+        scope: Optional[MemoryScope | str],
+        enable_reranking: Optional[bool],
+        rerank_k: Optional[int],
+        entity_type: Optional[str],
+    ) -> dict:
+        """Request fields shared by ranked and federated search; unset ones are omitted."""
+        request_data: dict = {}
         if text is not None:
             request_data["text"] = text
         if limit is not None:
@@ -258,13 +239,257 @@ class MentisDbClient:
             request_data["rerank_k"] = rerank_k
         if entity_type:
             request_data["entity_type"] = entity_type
+        return request_data
+
+    def _extended_payload(
+        self,
+        *,
+        graph: Optional[GraphOptions],
+        as_of: Optional[datetime],
+        include_invalidated: Optional[bool],
+        df_scope: Optional[DfScope | str],
+        df_cutoffs: Optional[DfCutoffs],
+        vector_fusion: Optional[VectorFusion | str],
+        resolve_successors: Optional[bool],
+        collapse_duplicates: Optional[float],
+        synonym_weight: Optional[float],
+    ) -> dict:
+        """Graph, point-in-time and ranking-knob fields; unset ones are omitted."""
+        request_data: dict = {}
+        if graph is not None:
+            request_data["graph"] = graph.to_dict()
+        if as_of is not None:
+            request_data["as_of"] = as_of.isoformat()
+        if include_invalidated is not None:
+            request_data["include_invalidated"] = include_invalidated
+        if df_scope is not None:
+            request_data["df_scope"] = DfScope(df_scope).value
+        if df_cutoffs is not None:
+            request_data["df_cutoffs"] = df_cutoffs.to_dict()
+        if vector_fusion is not None:
+            request_data["vector_fusion"] = VectorFusion(vector_fusion).value
+        if resolve_successors is not None:
+            request_data["resolve_successors"] = resolve_successors
+        if collapse_duplicates is not None:
+            request_data["collapse_duplicates"] = collapse_duplicates
+        if synonym_weight is not None:
+            request_data["synonym_weight"] = synonym_weight
+        return request_data
+
+    def ranked_search(
+        self,
+        text: Optional[str] = None,
+        chain_key: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        thought_types: Optional[list[ThoughtType]] = None,
+        roles: Optional[list[ThoughtRole]] = None,
+        tags_any: Optional[list[str]] = None,
+        concepts_any: Optional[list[str]] = None,
+        agent_ids: Optional[list[str]] = None,
+        agent_names: Optional[list[str]] = None,
+        agent_owners: Optional[list[str]] = None,
+        min_importance: Optional[float] = None,
+        min_confidence: Optional[float] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+        scope: Optional[MemoryScope | str] = None,
+        enable_reranking: Optional[bool] = None,
+        rerank_k: Optional[int] = None,
+        entity_type: Optional[str] = None,
+        compact: bool = False,
+        *,
+        graph: Optional[GraphOptions] = None,
+        as_of: Optional[datetime] = None,
+        include_invalidated: Optional[bool] = None,
+        df_scope: Optional[DfScope | str] = None,
+        df_cutoffs: Optional[DfCutoffs] = None,
+        vector_fusion: Optional[VectorFusion | str] = None,
+        resolve_successors: Optional[bool] = None,
+        collapse_duplicates: Optional[float] = None,
+        synonym_weight: Optional[float] = None,
+    ) -> SearchResponse:
+        """
+        Perform a ranked semantic search over thought memories.
+
+        Args:
+            text: Query text to search for.
+            chain_key: Optional chain to search. Uses default if not provided.
+            limit: Maximum number of results to return.
+            offset: Number of results to skip (for pagination).
+            thought_types: Filter by thought type categories.
+            roles: Filter by operational roles.
+            tags_any: Match thoughts with any of these tags.
+            concepts_any: Match thoughts with any of these concepts.
+            agent_ids: Filter by agent identifiers.
+            agent_names: Filter by agent names.
+            agent_owners: Filter by agent owners.
+            min_importance: Minimum importance threshold.
+            min_confidence: Minimum confidence threshold.
+            since: Match thoughts after this timestamp.
+            until: Match thoughts before this timestamp.
+            scope: Filter by visibility scope.
+            enable_reranking: Enable result reranking.
+            rerank_k: Number of results to rerank.
+            entity_type: Filter by entity type.
+            compact: Ask the server for compact hits, about a quarter smaller
+                (fewer tokens when the results go into an LLM prompt).
+                Defaults to ``False``, which sends nothing and returns the
+                full form exactly as before. See below.
+            graph: ``GraphOptions`` to expand the relation graph from the
+                lexical seeds; expanded hits carry ``graph_*`` fields.
+            as_of: Search the chain as it was at this time.
+            include_invalidated: Also return superseded, corrected and
+                invalidated thoughts (history); the default hides them.
+            df_scope: ``DfScope`` of the lexical stop-word gate.
+            df_cutoffs: ``DfCutoffs`` overrides of the gate cutoff ratios.
+            vector_fusion: ``VectorFusion`` blend of vector and lexical scores.
+            resolve_successors: Replace a superseded hit by its live successor
+                and promote the thought contesting a contested hit (server
+                default ``True``).
+            collapse_duplicates: Near-duplicate collapse threshold in (0, 1];
+                ``0`` disables (server default 0.9).
+            synonym_weight: Weight of automatic thesaurus expansion; ``0``
+                disables it (server default 0.3).
+
+        Returns:
+            ``RankedSearchResponse`` (full form, the default) or, when
+            ``compact=True``, ``CompactRankedSearchResponse``. Both have
+            ``backend``, ``total``, ``results`` and a ``compact`` flag that
+            tells them apart (``if response.compact:`` narrows the type).
+
+        Compact mode keeps each hit's order, total score, content, tags,
+        concepts, refs, relations, ``provenance``, version fields
+        (``version_status``, ``successors``, ``current_version``,
+        ``successor_of``, ``collapsed_duplicates``) and graph provenance. It
+        leaves out the score components, ``matched_terms``, ``match_sources``
+        and, on the thought, ``hash``, ``prev_hash``, ``thought_signature``,
+        ``signing_key_id``, ``schema_version``, ``agent_name``,
+        ``agent_owner`` and empty fields. Those are not attributes of the
+        compact types. Use compact for routine recall; use the default form
+        when you need a hash or signature to verify a thought, to audit
+        provenance, or to debug score components.
+
+        Example:
+            >>> client = MentisDbClient()
+            >>> response = client.ranked_search(text="job queue", limit=5, compact=True)
+            >>> for hit in response.results:
+            ...     print(f"[{hit.total_score:.2f}] {hit.thought.content}")
+        """
+        request_data: dict = {"chain_key": chain_key}
+        request_data.update(
+            self._filter_payload(
+                text=text, limit=limit, offset=offset, thought_types=thought_types,
+                roles=roles, tags_any=tags_any, concepts_any=concepts_any,
+                agent_ids=agent_ids, agent_names=agent_names, agent_owners=agent_owners,
+                min_importance=min_importance, min_confidence=min_confidence,
+                since=since, until=until, scope=scope, enable_reranking=enable_reranking,
+                rerank_k=rerank_k, entity_type=entity_type,
+            )
+        )
+        request_data.update(
+            self._extended_payload(
+                graph=graph, as_of=as_of, include_invalidated=include_invalidated,
+                df_scope=df_scope, df_cutoffs=df_cutoffs, vector_fusion=vector_fusion,
+                resolve_successors=resolve_successors,
+                collapse_duplicates=collapse_duplicates, synonym_weight=synonym_weight,
+            )
+        )
+        if compact:
+            request_data["compact"] = True
 
         result = self._post("/v1/ranked-search", request_data)
-        return RankedSearchResponse(
-            backend=result["backend"],
-            total=result["total"],
-            results=[RankedSearchHit.from_dict(h) for h in result["results"]],
+        if compact:
+            return CompactRankedSearchResponse.from_dict(result)
+        return RankedSearchResponse.from_dict(result)
+
+    def federated_search(
+        self,
+        chain_keys: list[str],
+        text: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        thought_types: Optional[list[ThoughtType]] = None,
+        roles: Optional[list[ThoughtRole]] = None,
+        tags_any: Optional[list[str]] = None,
+        concepts_any: Optional[list[str]] = None,
+        agent_ids: Optional[list[str]] = None,
+        agent_names: Optional[list[str]] = None,
+        agent_owners: Optional[list[str]] = None,
+        min_importance: Optional[float] = None,
+        min_confidence: Optional[float] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+        scope: Optional[MemoryScope | str] = None,
+        enable_reranking: Optional[bool] = None,
+        rerank_k: Optional[int] = None,
+        entity_type: Optional[str] = None,
+        compact: bool = False,
+        *,
+        graph: Optional[GraphOptions] = None,
+        as_of: Optional[datetime] = None,
+        include_invalidated: Optional[bool] = None,
+        df_scope: Optional[DfScope | str] = None,
+        df_cutoffs: Optional[DfCutoffs] = None,
+        vector_fusion: Optional[VectorFusion | str] = None,
+        resolve_successors: Optional[bool] = None,
+        collapse_duplicates: Optional[float] = None,
+        synonym_weight: Optional[float] = None,
+    ) -> SearchResponse:
+        """
+        Run one ranked search across several chains and merge the results.
+
+        The server fuses the per-chain rankings and deduplicates before paging;
+        each hit carries the ``chain_key`` it came from.
+
+        Args:
+            chain_keys: Chains to search (``POST /v1/federated-search``).
+            text: Query text to search for.
+            compact: Ask for compact hits; see :meth:`ranked_search` for what
+                compact keeps and leaves out. Defaults to ``False``.
+
+        The remaining arguments, including the keyword-only graph, ``as_of``,
+        ``include_invalidated`` and ranking knobs, are those of
+        :meth:`ranked_search`.
+
+        Returns:
+            ``RankedSearchResponse``, or ``CompactRankedSearchResponse`` when
+            ``compact=True``.
+
+        Example:
+            >>> client = MentisDbClient()
+            >>> response = client.federated_search(
+            ...     ["backend", "frontend"], text="auth bug", compact=True
+            ... )
+            >>> for hit in response.results:
+            ...     print(hit.chain_key, hit.thought.content)
+        """
+        request_data: dict = {"chain_keys": list(chain_keys)}
+        request_data.update(
+            self._filter_payload(
+                text=text, limit=limit, offset=offset, thought_types=thought_types,
+                roles=roles, tags_any=tags_any, concepts_any=concepts_any,
+                agent_ids=agent_ids, agent_names=agent_names, agent_owners=agent_owners,
+                min_importance=min_importance, min_confidence=min_confidence,
+                since=since, until=until, scope=scope, enable_reranking=enable_reranking,
+                rerank_k=rerank_k, entity_type=entity_type,
+            )
         )
+        request_data.update(
+            self._extended_payload(
+                graph=graph, as_of=as_of, include_invalidated=include_invalidated,
+                df_scope=df_scope, df_cutoffs=df_cutoffs, vector_fusion=vector_fusion,
+                resolve_successors=resolve_successors,
+                collapse_duplicates=collapse_duplicates, synonym_weight=synonym_weight,
+            )
+        )
+        if compact:
+            request_data["compact"] = True
+
+        result = self._post("/v1/federated-search", request_data)
+        if compact:
+            return CompactRankedSearchResponse.from_dict(result)
+        return RankedSearchResponse.from_dict(result)
 
     def context_bundles(
         self,
@@ -287,6 +512,16 @@ class MentisDbClient:
         enable_reranking: Optional[bool] = None,
         rerank_k: Optional[int] = None,
         entity_type: Optional[str] = None,
+        *,
+        graph: Optional[GraphOptions] = None,
+        as_of: Optional[datetime] = None,
+        include_invalidated: Optional[bool] = None,
+        df_scope: Optional[DfScope | str] = None,
+        df_cutoffs: Optional[DfCutoffs] = None,
+        vector_fusion: Optional[VectorFusion | str] = None,
+        resolve_successors: Optional[bool] = None,
+        collapse_duplicates: Optional[float] = None,
+        synonym_weight: Optional[float] = None,
     ) -> ContextBundlesResponse:
         """
         Get context bundles with seed-anchored supporting context.
@@ -314,6 +549,20 @@ class MentisDbClient:
             enable_reranking: Enable result reranking.
             rerank_k: Number of results to rerank.
             entity_type: Filter by entity type.
+            graph: ``GraphOptions`` for the supporting-context expansion.
+            as_of: Search the chain as it was at this time.
+            include_invalidated: Also return superseded, corrected and
+                invalidated thoughts (history); the default hides them.
+            df_scope: ``DfScope`` of the lexical stop-word gate.
+            df_cutoffs: ``DfCutoffs`` overrides of the gate cutoff ratios.
+            vector_fusion: ``VectorFusion`` blend of vector and lexical scores.
+            resolve_successors: Replace a superseded hit by its live successor
+                and promote the thought contesting a contested hit (server
+                default ``True``).
+            collapse_duplicates: Near-duplicate collapse threshold in (0, 1];
+                ``0`` disables (server default 0.9).
+            synonym_weight: Weight of automatic thesaurus expansion; ``0``
+                disables it (server default 0.3).
 
         Returns:
             ContextBundlesResponse with seed bundles and supporting memories.
@@ -356,6 +605,15 @@ class MentisDbClient:
             request_data["rerank_k"] = rerank_k
         if entity_type:
             request_data["entity_type"] = entity_type
+
+        request_data.update(
+            self._extended_payload(
+                graph=graph, as_of=as_of, include_invalidated=include_invalidated,
+                df_scope=df_scope, df_cutoffs=df_cutoffs, vector_fusion=vector_fusion,
+                resolve_successors=resolve_successors,
+                collapse_duplicates=collapse_duplicates, synonym_weight=synonym_weight,
+            )
+        )
 
         result = self._post("/v1/context-bundles", request_data)
         bundles = [

@@ -1,0 +1,80 @@
+{
+  "endpoint": "/v1/ranked-search",
+  "request": {
+    "chain_key": "fx-dup",
+    "limit": 5,
+    "text": "staging database nightly backup"
+  },
+  "response": {
+    "backend": "hybrid",
+    "results": [
+      {
+        "chain_key": "fx-dup",
+        "graph_distance": null,
+        "graph_path": null,
+        "graph_relation_kinds": [],
+        "graph_seed_paths": 0,
+        "match_sources": [
+          "content"
+        ],
+        "matched_terms": [
+          "stage",
+          "databas",
+          "night",
+          "backup"
+        ],
+        "score": {
+          "confidence": 0.0,
+          "graph": 0.0,
+          "importance": 0.0,
+          "lexical": 0.53412575,
+          "recency": 0.05,
+          "relation": 0.0,
+          "rrf": 0.0,
+          "seed_support": 0.0,
+          "session_cohesion": 0.0,
+          "total": 4.640523,
+          "vector": 0.36783814
+        },
+        "thought": {
+          "agent_id": "builder",
+          "agent_name": "builder",
+          "agent_owner": null,
+          "collapsed_duplicates": [
+            "68861787-7eb7-4a48-aa44-53fb4bd12d89",
+            "4cfa411b-dac1-411c-85e1-2eef996d6144"
+          ],
+          "concepts": [],
+          "confidence": null,
+          "content": "The staging database nightly backup runs at two in the morning.",
+          "entity_type": null,
+          "hash": "9ef82dd5d9cef47b5e0986ec766cfff12789a9873204a89956ac7832e59694e2",
+          "id": "03467de1-37b4-4949-b5a1-30f39ff1998d",
+          "importance": 0.5,
+          "index": 2,
+          "prev_hash": "6019acaff76ddd70ba01a3f3f3e1df0798b0a820154b492bddcfa68195b54b27",
+          "provenance": {
+            "segment": "public",
+            "signature": "unsigned",
+            "signature_version": null,
+            "signed": false,
+            "trust": "untrusted_data",
+            "verified_agent": null
+          },
+          "refs": [],
+          "relations": [],
+          "role": "Memory",
+          "schema_version": 3,
+          "session_id": null,
+          "signing_key_id": null,
+          "source_episode": null,
+          "tags": [],
+          "thought_signature": null,
+          "thought_type": "Insight",
+          "timestamp": "2026-11-02T03:39:43.190370Z"
+        }
+      }
+    ],
+    "total": 3
+  }
+}

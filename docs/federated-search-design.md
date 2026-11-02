@@ -66,6 +66,7 @@ Federated search lets callers issue a single ranked-search query over **multiple
 | `enable_reranking` | `bool` | No | Enable RRF reranking (default false). |
 | `rerank_k` | `usize` | No | RRF candidates window (default 50). |
 | `entity_type` | `String` | No | Entity type filter. |
+| `compact` | `bool` | No | Return compact hits (`chain_key`, total `score`, and the thought without hashes, signatures, schema version, agent name and owner and top-level empty values; `provenance`, version fields and graph provenance are kept). Default false. See the README, "Compact search results". |
 
 #### Response
 
