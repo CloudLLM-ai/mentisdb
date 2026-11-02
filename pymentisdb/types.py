@@ -96,6 +96,61 @@ class ThoughtRelationKind(str, Enum):
     SUPERSEDES = "Supersedes"
 
 
+class DfScope(str, Enum):
+    """How the lexical stop-word gate measures a term's document frequency."""
+    GLOBAL = "global"
+    FIELD = "field"
+
+
+class VectorFusion(str, Enum):
+    """How vector similarity is blended with the lexical score."""
+    RELATIVE = "relative"
+    ABSOLUTE = "absolute"
+
+
+class GraphMode(str, Enum):
+    """Which relation edges graph expansion follows."""
+    OUTGOING = "outgoing"
+    INCOMING = "incoming"
+    BIDIRECTIONAL = "bidirectional"
+
+
+@dataclass
+class DfCutoffs:
+    """Per-field overrides of the lexical gate cutoff ratios (each in 0..1).
+
+    A field left as ``None`` keeps the server default (content, tags and
+    concepts 0.30, agent id 0.70, agent registry 0.60).
+    """
+    content: Optional[float] = None
+    tags: Optional[float] = None
+    concepts: Optional[float] = None
+    agent_id: Optional[float] = None
+    agent_registry: Optional[float] = None
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in vars(self).items() if v is not None}
+
+
+@dataclass
+class GraphOptions:
+    """Graph expansion for a search: walk relations from the lexical seeds.
+
+    Pass as ``graph=`` to ``ranked_search``, ``federated_search`` or
+    ``context_bundles``. Fields left as ``None`` keep the server default.
+    """
+    max_depth: Optional[int] = None
+    max_visited: Optional[int] = None
+    include_seeds: Optional[bool] = None
+    mode: Optional[GraphMode | str] = None
+
+    def to_dict(self) -> dict:
+        result = {k: v for k, v in vars(self).items() if v is not None}
+        if isinstance(self.mode, GraphMode):
+            result["mode"] = self.mode.value
+        return result
+
+
 @dataclass
 class ThoughtRelation:
     """Typed edge in the thought graph."""
