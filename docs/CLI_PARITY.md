@@ -44,9 +44,10 @@ rejected with an error instead of silently falling back.
 ## Compact results
 
 `search` and `search federated` (REST `ranked-search` and `federated-search`; MCP
-`mentisdb_ranked_search` and `mentisdb_federated_search`) accept `compact`. The
-field is not part of `search bundles` (`context-bundles`), whose request
-rejects it.
+`mentisdb_ranked_search` and `mentisdb_federated_search`) accept `compact`. It has no
+effect on `search bundles` (`context-bundles`): that REST route shares the
+ranked request type, so it accepts the field and ignores it, and `search
+bundles` therefore has no `--compact` flag.
 
 | REST / MCP field | CLI flag | Library | Default |
 |---|---|---|---|

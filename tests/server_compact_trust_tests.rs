@@ -612,3 +612,22 @@ async fn mcp_tool_schema_describes_what_compact_keeps_and_when_to_skip_it() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `compact` has no effect on context bundles: the route shares the ranked
+/// request type, so it accepts the field and keeps returning full thoughts.
+/// This pins what the README and `docs/CLI_PARITY.md` say about it.
+#[tokio::test]
+async fn context_bundles_accept_compact_and_still_return_full_thoughts() {
+    let world = world("bundles");
+    let router = rest_router(world.config.clone());
+    let query = json!({"chain_key": "c", "text": "pelican registry", "limit": 5});
+    let mut compact_query = query.clone();
+    compact_query["compact"] = json!(true);
+    let (_, plain) = post(&router, "/v1/context-bundles", &query, false).await;
+    let (_, compact) = post(&router, "/v1/context-bundles", &compact_query, false).await;
+    assert_eq!(plain, compact);
+    let seed = &compact["bundles"][0]["seed"]["thought"];
+    assert!(seed.get("hash").is_some(), "{seed}");
+    assert!(seed.get("agent_name").is_some(), "{seed}");
+    let _ = std::fs::remove_dir_all(&world.dir);
+}

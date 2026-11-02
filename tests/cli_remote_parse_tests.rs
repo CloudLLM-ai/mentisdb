@@ -166,7 +166,7 @@ fn test_double_dash_allows_mode_named_queries() {
 
 /// `--compact` is a switch on `search` and `search federated` that lands on the
 /// REST/MCP `compact` field; it is absent unless given, and `search bundles`
-/// (whose request has no such field) does not offer it.
+/// (where the field has no effect) does not offer it.
 #[test]
 fn test_compact_flag_on_ranked_and_federated_search() {
     assert!(body(&["search", "q"]).get("compact").is_none());

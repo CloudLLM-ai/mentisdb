@@ -1189,7 +1189,7 @@ The ranked-search benchmark `benches/search_ranked.rs` and evaluation tests in `
 
 ### Compact search results
 
-Ranked and federated search accept an opt-in `compact: true`. It cuts the tokens an agent spends reading results without removing any field the agent reasons with. The default response is unchanged. It is available on MCP (`mentisdb_ranked_search`, `mentisdb_federated_search`), REST (`POST /v1/ranked-search`, `POST /v1/federated-search`) and the CLI (`mentisdb search --compact`, `mentisdb search federated --compact`). It is not offered on `mentisdb_context_bundles`.
+Ranked and federated search accept an opt-in `compact: true`. It cuts the tokens an agent spends reading results without removing any field the agent reasons with. The default response is unchanged. It is available on MCP (`mentisdb_ranked_search`, `mentisdb_federated_search`), REST (`POST /v1/ranked-search`, `POST /v1/federated-search`) and the CLI (`mentisdb search --compact`, `mentisdb search federated --compact`). It has no effect on `mentisdb_context_bundles` and `POST /v1/context-bundles`, which still return full thoughts.
 
 A compact hit is `chain_key`, the total `score` as a plain number, and the thought, in the same order as the full form. Graph-expanded hits also keep `graph_distance`, `graph_seed_paths`, `graph_relation_kinds` and `graph_path`.
 
