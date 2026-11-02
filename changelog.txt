@@ -116,6 +116,22 @@ UNRELEASED
     search. Wiring it in could not be justified: the benchmark chains only carry
     sequential `ContinuesFrom` edges that bounded breadth-first expansion already
     covers. Marked deprecated; removed in the next breaking release.
+  - feat(pymentisdb): the Python client supports compact search. `ranked_search`
+    gains `compact=True` and there is a new `federated_search`; both return a
+    `RankedSearchResponse` by default (unchanged) or a `CompactRankedSearchResponse`
+    whose `CompactThought` / `CompactRankedSearchHit` types make the difference
+    explicit: the fields the server drops (hashes, signatures, agent name and
+    owner, score components, matched terms) are not attributes, omitted empty
+    fields read as their empty value and unknown fields land in `extra`. Full
+    thoughts gain `provenance`, `version_status`, `successors`, `current_version`,
+    `successor_of` and `collapsed_duplicates`, hits gain `graph_path`, and
+    `Z`-suffixed server timestamps now parse on Python 3.10. Keyword-only `graph`,
+    `as_of`, `include_invalidated`, `df_scope`, `df_cutoffs`, `vector_fusion`,
+    `resolve_successors`, `collapse_duplicates` and `synonym_weight` reach
+    `ranked_search`, `federated_search` and `context_bundles` (they were
+    unreachable from Python). Tests parse 14 responses recorded from the real
+    server and pin every payload. pymentisdb stays at 0.9.0, the version it has
+    carried through every change since; nothing is published.
   - feat(pymentisdb): read proofs. `ReadSigner` (optional `cryptography` extra) signs every
     request with the `X-Mentis-Auth` format, from a key file or MENTISDB_READ_KEY_FILE/
     AGENT_ID/KEY_ID; a pinned vector is shared with the Rust tests.
