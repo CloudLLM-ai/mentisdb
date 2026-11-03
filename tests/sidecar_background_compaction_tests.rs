@@ -409,3 +409,27 @@ fn test_append_path_never_hashes_the_corpus_across_a_compaction() {
         "at least one compaction folded the WAL into the snapshot"
     );
 }
+
+/// Regression: a load that read the old snapshot and then found the WAL gone
+/// (a compaction swapped the snapshot and deleted the WAL in between) returned
+/// the old snapshot alone, silently dropping every record the WAL held, so a
+/// reopen during a compaction saw a stale sidecar and rebuilt it. The load now
+/// notices the snapshot changed and reads again.
+#[test]
+fn test_load_during_a_compaction_never_loses_wal_records() {
+    let mut fixture = Fixture::new();
+    fixture.append(6);
+    let path = fixture.path.clone();
+    let mut compacted = false;
+    let loaded = VectorSidecar::load_from_path_with_hook(&path, &mut || {
+        if !compacted {
+            compacted = true;
+            compact_sidecar_snapshot(&path, &Mutex::new(()))
+                .unwrap()
+                .expect("compacted");
+        }
+    })
+    .unwrap();
+    assert_eq!(loaded.entries.len(), 6);
+    assert!(!wal_exists(&path), "the compaction did run mid-load");
+}

@@ -249,10 +249,36 @@ impl VectorSidecar {
     ///
     /// If a sibling `.wal` file exists, incremental records are replayed and
     /// verified against the snapshot digest before being applied.
+    ///
+    /// A background compaction ([`compact_sidecar_snapshot`]) may swap the
+    /// snapshot and delete the WAL while this runs; reading the old snapshot and
+    /// then finding no WAL would silently drop every record the WAL held. The
+    /// load therefore notices that the snapshot file changed under it and reads
+    /// again (up to three attempts).
     pub fn load_from_path(path: &Path) -> io::Result<Self> {
-        let mut sidecar = Self::read_snapshot(path)?;
-        replay_sidecar_wal(&mut sidecar, &sidecar_wal_path(path))?;
-        Ok(sidecar)
+        Self::load_from_path_with_hook(path, &mut || {})
+    }
+
+    /// [`Self::load_from_path`] with a hook that runs after the snapshot is read
+    /// and before the WAL is: the point a concurrent compaction can tear a load.
+    #[doc(hidden)]
+    pub fn load_from_path_with_hook(
+        path: &Path,
+        after_snapshot: &mut dyn FnMut(),
+    ) -> io::Result<Self> {
+        const ATTEMPTS: usize = 3;
+        let mut attempt = 1;
+        loop {
+            let before = file_stamp(path)?;
+            let mut sidecar = Self::read_snapshot(path)?;
+            after_snapshot();
+            replay_sidecar_wal(&mut sidecar, &sidecar_wal_path(path))?;
+            let settled = file_stamp(path).is_ok_and(|after| after == before);
+            if settled || attempt == ATTEMPTS {
+                return Ok(sidecar);
+            }
+            attempt += 1;
+        }
     }
 
     /// Read and verify the JSON snapshot alone, leaving the WAL unreplayed.
