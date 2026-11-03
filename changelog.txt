@@ -227,6 +227,13 @@ UNRELEASED
     debug build panicked, and a release build wrapped (to zero seconds for
     N = 2^57), which treated every backup, however fresh, as expired. The
     conversion now saturates, so an absurdly long retention keeps everything.
+  - fix(search): `total` of a ranked search on a chain with superseded thoughts
+    counted the superseded ones. The lineage-resolving pass ranks them so their
+    successors can take their place, and its candidate count leaked into REST
+    `total` and the library's `total_candidates`: one more than the live matches
+    per superseded thought, and more than the page could ever show. The total now
+    excludes thoughts a default query would hide; audit mode
+    (`include_invalidated`) still counts them.
   - fix(server): caller-sized numbers can no longer make a search or a standing
     context cost minutes. `offset + limit` above 10,000 on `ranked-search`,
     `lexical-search`, `federated-search` and `context-bundles` (REST, MCP and the

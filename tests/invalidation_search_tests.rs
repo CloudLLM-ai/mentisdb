@@ -284,3 +284,53 @@ fn unknown_id_is_not_invalidated() {
     let chain = open_chain(dir.path(), "empty-ish");
     assert!(!chain.is_invalidated(Uuid::new_v4()));
 }
+
+/// `total_candidates` counts the live matches of the query, not the superseded
+/// thoughts the lineage-resolving pass ranks along the way. Before, a chain
+/// with one superseded match reported one more candidate than the same query
+/// with successor resolution off (and than the page could ever show).
+#[test]
+fn total_candidates_does_not_count_superseded_thoughts() {
+    let dir = tempdir().unwrap();
+    let mut chain = open_chain(dir.path(), "total");
+    let old = append(
+        &mut chain,
+        ThoughtType::Decision,
+        "We cache sessions in Redis for the quokka service",
+        vec![],
+    );
+    append(
+        &mut chain,
+        ThoughtType::Decision,
+        "We cache sessions in Postgres for the quokka service",
+        vec![ThoughtRelation {
+            kind: ThoughtRelationKind::Supersedes,
+            target_id: old.id,
+            chain_key: None,
+            valid_at: Some(Utc::now()),
+            invalid_at: None,
+        }],
+    );
+    for n in 0..4 {
+        append(
+            &mut chain,
+            ThoughtType::Finding,
+            &format!("Quokka survey note {n} about habitat{n}"),
+            vec![],
+        );
+    }
+    let query = RankedSearchQuery::new().with_text("quokka").with_limit(20);
+    let live_only = chain.query_ranked(&query.clone().with_resolve_successors(false));
+    let resolved = chain.query_ranked(&query);
+    assert_eq!(
+        live_only.total_candidates, 5,
+        "one live decision, four notes"
+    );
+    assert_eq!(
+        resolved.total_candidates, live_only.total_candidates,
+        "resolution must not inflate the total"
+    );
+    // Audit mode asks for the superseded thought too, so it does count.
+    let audit = chain.query_ranked(&query.clone().with_include_invalidated(true));
+    assert_eq!(audit.total_candidates, 6);
+}

@@ -9700,6 +9700,19 @@ impl MentisDb {
     /// }
     /// ```
     pub(crate) fn query_ranked_raw(&self, request: &RankedSearchQuery) -> RankedSearchResult<'_> {
+        self.rank_raw(request, false).0
+    }
+
+    /// [`Self::query_ranked_raw`], also counting how many of the scored
+    /// candidates a default (live-only) query would have excluded because they
+    /// are superseded, corrected or invalidated. Only the lineage-resolving
+    /// pass asks for it: that pass ranks superseded thoughts too, so its
+    /// `total_candidates` would otherwise overstate the number of live matches.
+    pub(crate) fn rank_raw(
+        &self,
+        request: &RankedSearchQuery,
+        count_invalidated: bool,
+    ) -> (RankedSearchResult<'_>, usize) {
         let candidates = self.retrieval_candidates(
             &request.filter,
             request.as_of,
@@ -9800,6 +9813,20 @@ impl MentisDb {
         }
 
         let total_candidates = scored.len();
+        let invalidated = if count_invalidated {
+            let audience = request.filter.audience;
+            scored
+                .iter()
+                .filter(|candidate| match request.as_of {
+                    Some(as_of) => {
+                        self.is_invalidated_as_of_for(candidate.thought.id, as_of, audience)
+                    }
+                    None => self.is_invalidated_for(candidate.thought.id, audience),
+                })
+                .count()
+        } else {
+            0
+        };
         let limit = request.limit;
         if limit == 0 {
             scored.clear();
@@ -9817,11 +9844,14 @@ impl MentisDb {
             })
             .collect();
 
-        RankedSearchResult {
-            backend,
-            total_candidates,
-            hits,
-        }
+        (
+            RankedSearchResult {
+                backend,
+                total_candidates,
+                hits,
+            },
+            invalidated,
+        )
     }
 
     /// Query the chain and return grouped context bundles anchored on lexical seeds.

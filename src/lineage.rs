@@ -806,7 +806,10 @@ impl MentisDb {
             .limit
             .saturating_mul(2)
             .max(request.limit.saturating_add(8));
-        let mut result = self.query_ranked_raw(&wide);
+        let (mut result, superseded) = self.rank_raw(&wide, redirect);
+        // The wide pass ranked superseded thoughts so their successors can take
+        // their place; they are not matches of the query the caller asked.
+        result.total_candidates = result.total_candidates.saturating_sub(superseded);
         let raw = std::mem::take(&mut result.hits);
         let mut hits = if redirect {
             self.redirect_hits(raw, request)
