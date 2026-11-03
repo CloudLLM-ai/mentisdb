@@ -292,3 +292,55 @@ fn vector_sidecar_compact_removes_wal() {
     assert_eq!(loaded.entries.len(), 2);
     loaded.verify_integrity().unwrap();
 }
+
+/// A WAL whose records carry valid digests but a malformed row. The digest
+/// chain is a checksum, not an authenticator, so replay must apply the same
+/// row checks as a snapshot load. The record is crafted by extending a clone
+/// whose metadata is altered, so its digest chains from the real sidecar.
+fn load_with_crafted_wal_row(
+    vector: Vec<f32>,
+    index: u64,
+    dimension: usize,
+) -> std::io::Result<VectorSidecar> {
+    let tempdir = TempDir::new().unwrap();
+    let path = tempdir.path().join("chain.vectors.model.v1.json");
+    let sidecar = VectorSidecar::build(
+        "mentisdb",
+        EmbeddingMetadata::new("local-model", 2, "v1"),
+        0,
+        None,
+        Utc::now(),
+        Vec::new(),
+    )
+    .unwrap();
+    sidecar.save_to_path(&path).unwrap();
+    let mut crafted = sidecar.clone();
+    crafted.metadata.dimension = dimension;
+    let record = crafted
+        .extend_with_entry(
+            VectorSidecarEntry::new(Uuid::new_v4(), index, "hash-x", vector),
+            1,
+            Some("hash-x".to_string()),
+        )
+        .unwrap();
+    append_sidecar_wal_record(&sidecar_wal_path(&path), &record).unwrap();
+    VectorSidecar::load_from_path(&path)
+}
+
+#[test]
+fn vector_sidecar_wal_replay_rejects_a_row_of_the_wrong_dimension() {
+    let error = load_with_crafted_wal_row(vec![1.0, 0.0, 0.0], 0, 3).unwrap_err();
+    assert!(error.to_string().contains("dimension"), "{error}");
+}
+
+#[test]
+fn vector_sidecar_wal_replay_rejects_a_non_finite_component() {
+    let error = load_with_crafted_wal_row(vec![f32::NAN, 0.0], 0, 2).unwrap_err();
+    assert!(error.to_string().contains("non-finite"), "{error}");
+}
+
+#[test]
+fn vector_sidecar_wal_replay_accepts_a_well_formed_row() {
+    let loaded = load_with_crafted_wal_row(vec![0.5, -0.5], 0, 2).unwrap();
+    assert_eq!(loaded.entries.len(), 1);
+}

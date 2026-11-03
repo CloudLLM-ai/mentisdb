@@ -5060,7 +5060,11 @@ impl DedupTokenWindow {
 #[derive(Default)]
 struct PendingDerivedWrite {
     sidecar_wals: Vec<(PathBuf, crate::search::VectorSidecarWalRecord)>,
-    sidecar_compacts: Vec<(PathBuf, crate::search::VectorSidecar)>,
+    /// Snapshot paths whose WAL has grown past
+    /// [`crate::search::wal_compact_threshold`]. The flush hands each to its own
+    /// thread once the WAL records queued before it are on disk; nothing about
+    /// the sidecar itself is copied, so queueing one is `O(1)`.
+    sidecar_compactions: Vec<PathBuf>,
     overlay: Option<(PathBuf, crate::search::ImplicitEdgeOverlay)>,
 }
 
@@ -5751,8 +5755,10 @@ pub struct MentisDb {
     adjacency_index: std::sync::Mutex<Option<(usize, Arc<crate::search::ThoughtAdjacencyIndex>)>>,
     /// Derived-artifact writes queued during append (sidecar WAL, overlay).
     pending_derived: std::sync::Mutex<PendingDerivedWrite>,
-    /// Serializes [`Self::flush_pending_derived`] callers.
-    derived_flush_lock: std::sync::Mutex<()>,
+    /// Serializes [`Self::flush_pending_derived`] callers, and is the I/O lock
+    /// background sidecar compactions take around their short file steps so
+    /// they never observe a half-written WAL record.
+    derived_flush_lock: Arc<std::sync::Mutex<()>>,
     /// Sidecar rebuilds handed to the process-wide background worker whose
     /// results this handle has not adopted yet.
     pending_sidecar_rebuilds: Vec<PendingSidecarRebuild>,
@@ -5904,7 +5910,7 @@ impl MentisDb {
             implicit_edge_overlay: None,
             adjacency_index: std::sync::Mutex::new(None),
             pending_derived: std::sync::Mutex::new(PendingDerivedWrite::default()),
-            derived_flush_lock: std::sync::Mutex::new(()),
+            derived_flush_lock: Arc::new(std::sync::Mutex::new(())),
             pending_sidecar_rebuilds: Vec::new(),
             overlay_unsaved_appends: std::sync::atomic::AtomicUsize::new(0),
             defer_derived_flush: false,
@@ -6729,21 +6735,22 @@ impl MentisDb {
         };
         let PendingDerivedWrite {
             sidecar_wals,
-            sidecar_compacts,
+            sidecar_compactions,
             overlay,
         } = pending;
         let mut wals = sidecar_wals.into_iter();
-        let mut compacts = sidecar_compacts.into_iter();
+        let mut compactions = sidecar_compactions.into_iter();
         let mut overlay = overlay;
         let result = (|| {
             for (path, record) in wals.by_ref() {
                 crate::search::append_sidecar_wal_record(&path, &record)?;
             }
-            for (path, sidecar) in compacts.by_ref() {
-                // Queued snapshots were rebased onto their full-corpus digest
-                // when scheduled; recomputing it here would serialize and hash
-                // the whole corpus a second time.
-                sidecar.save_to_path(&path)?;
+            // Only now, with every record queued before the request on disk:
+            // the compaction folds what is there, and runs on its own thread so
+            // neither this flush (which a service runs under a shared chain
+            // lock that blocks the next writer) nor any lock waits for it.
+            for path in compactions.by_ref() {
+                crate::search::spawn_sidecar_compaction(path, Arc::clone(&self.derived_flush_lock));
             }
             if let Some((path, snapshot)) = overlay.take() {
                 snapshot.save_to_path(&path)?;
@@ -6761,7 +6768,7 @@ impl MentisDb {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             guard.sidecar_wals.splice(0..0, wals);
-            guard.sidecar_compacts.splice(0..0, compacts);
+            guard.sidecar_compactions.splice(0..0, compactions);
             if guard.overlay.is_none() {
                 guard.overlay = overlay;
             }
@@ -7050,7 +7057,7 @@ impl MentisDb {
                     }
                 }
             }
-            if let Err(error) = self.queue_sidecar_wal(&path, record, &mut sidecar, metadata) {
+            if let Err(error) = self.queue_sidecar_wal(&path, record, &sidecar, metadata) {
                 result = Err(error);
                 needs_repair = true;
                 break;
@@ -11105,7 +11112,7 @@ impl MentisDb {
                             }
                         }
                     }
-                    let queued = self.queue_sidecar_wal(&path, wal_record, &mut sidecar, &metadata);
+                    let queued = self.queue_sidecar_wal(&path, wal_record, &sidecar, &metadata);
                     if let Some(entry) = self.managed_vector_sidecars.get_mut(&metadata) {
                         entry.cached_sidecar = Some(sidecar);
                     }
@@ -11137,20 +11144,22 @@ impl MentisDb {
         Ok(())
     }
 
-    /// Queue one WAL record for the last append, scheduling a snapshot
-    /// compaction when the WAL reaches
-    /// [`crate::search::wal_compact_threshold`].
+    /// Queue one WAL record for the last append, and request a snapshot
+    /// compaction when the WAL reaches [`crate::search::wal_compact_threshold`].
     ///
-    /// When a compaction is scheduled, `sidecar` is rebased onto the
-    /// full-corpus snapshot digest that compaction will persist. The queued
-    /// compaction rewrites the snapshot with that digest and drops the WAL, so
-    /// the live handle must adopt it now; otherwise the next append chains a WAL
-    /// record to the pre-compaction incremental digest and fails replay.
+    /// Runs under the chain's write lock, so it is `O(1)`: it queues a record
+    /// and, at the threshold, a path. The compaction itself (`O(entries x
+    /// dimension)`: serializing and hashing the whole corpus) happens later on
+    /// its own thread from the files on disk (see
+    /// [`crate::search::compact_sidecar_snapshot`]). The live `sidecar` keeps
+    /// chaining WAL records from its incremental digest across the compaction:
+    /// the compacted snapshot records that digest as its WAL base, so nothing
+    /// here has to hash, copy or rebase the sidecar.
     fn queue_sidecar_wal(
         &mut self,
         snapshot_path: &Path,
         record: crate::search::VectorSidecarWalRecord,
-        sidecar: &mut crate::search::VectorSidecar,
+        sidecar: &crate::search::VectorSidecar,
         metadata: &crate::search::EmbeddingMetadata,
     ) -> io::Result<()> {
         let wal_path = crate::search::sidecar_wal_path(snapshot_path);
@@ -11160,19 +11169,21 @@ impl MentisDb {
             .map(|entry| entry.wal_uncompacted.saturating_add(1))
             .unwrap_or(1);
         let compact = next >= crate::search::wal_compact_threshold(sidecar.entries.len());
-        if compact {
-            sidecar.refresh_snapshot_integrity()?;
-        }
         {
             let mut pending = self
                 .pending_derived
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             pending.sidecar_wals.push((wal_path, record));
-            if compact {
+            if compact
+                && !pending
+                    .sidecar_compactions
+                    .iter()
+                    .any(|p| p == snapshot_path)
+            {
                 pending
-                    .sidecar_compacts
-                    .push((snapshot_path.to_path_buf(), sidecar.clone()));
+                    .sidecar_compactions
+                    .push(snapshot_path.to_path_buf());
             }
         }
         if let Some(entry) = self.managed_vector_sidecars.get_mut(metadata) {

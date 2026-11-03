@@ -100,9 +100,12 @@ pub use graph::{
 pub use implicit_edges::{ImplicitEdgeOverlay, ImplicitNeighbor};
 pub use provenance::{GraphExpansionHop, GraphExpansionPath, GraphExpansionPathError};
 pub use sidecar::{
-    append_sidecar_wal_record, sidecar_wal_path, wal_compact_threshold, VectorSidecar,
-    VectorSidecarEntry, VectorSidecarFreshness, VectorSidecarIntegrity, VectorSidecarWalRecord,
-    VECTOR_SIDECAR_SCHEMA_VERSION, VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD,
+    append_sidecar_wal_record, compact_sidecar_snapshot, compact_sidecar_snapshot_with_hook,
+    full_sidecar_digests_on_this_thread, sidecar_wal_path, spawn_sidecar_compaction,
+    wait_for_sidecar_compaction, wal_compact_threshold, SidecarCompactionReport,
+    SidecarCompactionStage, VectorSidecar, VectorSidecarEntry, VectorSidecarFreshness,
+    VectorSidecarIntegrity, VectorSidecarWalRecord, VECTOR_SIDECAR_SCHEMA_VERSION,
+    VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD,
 };
 pub use summary_index::{
     build_summary_candidates, SummaryBuildConfig, SummaryCandidate, SummaryCoverage, SummaryGroup,
