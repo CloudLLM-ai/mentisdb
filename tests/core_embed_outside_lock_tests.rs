@@ -2,13 +2,21 @@
 //! tickets instead of calling the model, tickets are embedded with no lock,
 //! and committing the outcomes keeps the sidecar complete and in chain order
 //! even when they arrive out of order, fail, or never arrive.
+//!
+//! A vector that is slow, fails or is lost must cost one extra embedding of
+//! that thought, never a re-embed of the corpus. The tests count provider
+//! calls (every thought embedded exactly once, plus one per repair) to prove
+//! it; nothing depends on wall-clock time.
 
 use mentisdb::search::{
     EmbeddingMetadata, EmbeddingProvider, EmbeddingVector, LocalTextEmbeddingProvider,
     VectorSidecarFreshness,
 };
-use mentisdb::{EmbedOutcome, MentisDb, ThoughtInput, ThoughtType};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use mentisdb::{
+    EmbedOutcome, EmbeddingBacklog, MentisDb, ThoughtInput, ThoughtType, MAX_EMBED_ATTEMPTS,
+    MAX_PIPELINED_EMBEDDINGS,
+};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -24,11 +32,13 @@ impl std::fmt::Display for ProbeError {
 
 impl std::error::Error for ProbeError {}
 
-/// Counts model calls and can fail the next one.
+/// Counts model calls and can fail the next ones.
 #[derive(Default)]
 struct Probe {
+    /// Thoughts embedded successfully.
     calls: AtomicUsize,
-    fail_next: AtomicBool,
+    /// How many upcoming model calls fail (failed calls are not counted).
+    fail_remaining: AtomicUsize,
     /// Milliseconds every call sleeps, to model a slow embedding backend.
     delay_ms: AtomicUsize,
 }
@@ -49,7 +59,8 @@ impl EmbeddingProvider for ProbeProvider {
         &self,
         inputs: &[mentisdb::search::EmbeddingInput],
     ) -> Result<Vec<EmbeddingVector>, ProbeError> {
-        if self.probe.fail_next.swap(false, Ordering::SeqCst) {
+        let failing = take_failure(&self.probe.fail_remaining);
+        if failing {
             return Err(ProbeError);
         }
         self.probe.calls.fetch_add(inputs.len(), Ordering::SeqCst);
@@ -58,6 +69,22 @@ impl EmbeddingProvider for ProbeProvider {
             std::thread::sleep(Duration::from_millis(delay as u64));
         }
         self.inner.embed_batch(inputs).map_err(|_| ProbeError)
+    }
+}
+
+/// Consume one scheduled failure, if any is left.
+fn take_failure(remaining: &AtomicUsize) -> bool {
+    loop {
+        let left = remaining.load(Ordering::SeqCst);
+        if left == 0 {
+            return false;
+        }
+        if remaining
+            .compare_exchange(left, left - 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return true;
+        }
     }
 }
 
@@ -190,29 +217,91 @@ fn test_commit_after_chain_moved_on_keeps_coverage_correct() {
     assert_persisted_sidecar(dir.path(), "moved", &metadata, 4);
 }
 
-/// A model failure never fails the append; the sidecar is repaired by the
-/// background rebuild and ends complete.
+/// A model failure never fails the append. The one thought whose embedding
+/// failed is embedded again in the background: two thoughts, two successful
+/// model calls, no rebuild of the corpus (which would embed both thoughts
+/// again).
 #[test]
-fn test_embed_failure_is_repaired_by_rebuild() {
+fn test_embed_failure_is_repaired_by_embedding_the_one_thought_again() {
     let dir = tempdir().unwrap();
     let (mut chain, probe, metadata) = open_chain(dir.path(), "fail");
     let ok = deferred_append(&mut chain, "fine");
     chain.commit_embeddings(ok);
-    probe.fail_next.store(true, Ordering::SeqCst);
+    probe.fail_remaining.store(1, Ordering::SeqCst);
     let failed = deferred_append(&mut chain, "model fails here");
+    chain.commit_embeddings(failed);
+    assert_eq!(chain.embedding_backlog(&metadata).unwrap().in_flight, 1);
+    wait_for_adoption(&mut chain);
+    assert_eq!(
+        chain.embedding_backlog(&metadata),
+        Some(EmbeddingBacklog::default())
+    );
+    chain.flush().unwrap();
+    drop(chain);
+    assert_persisted_sidecar(dir.path(), "fail", &metadata, 2);
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 2);
+}
+
+/// Regression: a failed model call used to clear every parked vector and
+/// rebuild the whole sidecar. With a 20-thought corpus a rebuild would embed
+/// 20 more thoughts; retrying the one thought embeds exactly one.
+#[test]
+fn test_transient_embed_failures_never_rebuild_the_corpus() {
+    let dir = tempdir().unwrap();
+    let (mut chain, probe, metadata) = open_chain(dir.path(), "flaky");
+    for n in 0..20 {
+        let outcomes = deferred_append(&mut chain, &format!("settled {n}"));
+        chain.commit_embeddings(outcomes);
+    }
+    const { assert!(MAX_EMBED_ATTEMPTS > 2, "two failures must stay retryable") };
+    probe.fail_remaining.store(2, Ordering::SeqCst);
+    let failed = deferred_append(&mut chain, "fails twice");
+    chain.commit_embeddings(failed);
+    // Behind the failing thought: later appends park until it is repaired.
+    for n in 0..3 {
+        let outcomes = deferred_append(&mut chain, &format!("behind {n}"));
+        chain.commit_embeddings(outcomes);
+    }
+    wait_for_adoption(&mut chain);
+    chain.flush().unwrap();
+    drop(chain);
+    assert_persisted_sidecar(dir.path(), "flaky", &metadata, 24);
+    assert_eq!(
+        probe.calls.load(Ordering::SeqCst),
+        24,
+        "every thought was embedded exactly once"
+    );
+}
+
+/// A thought the provider keeps failing on is retried alone up to
+/// [`MAX_EMBED_ATTEMPTS`] times, then the sidecar falls back to a full
+/// background rebuild so the vectors behind it are not held back forever.
+#[test]
+fn test_a_thought_that_keeps_failing_falls_back_to_a_rebuild() {
+    let dir = tempdir().unwrap();
+    let (mut chain, probe, metadata) = open_chain(dir.path(), "poison");
+    let ok = deferred_append(&mut chain, "fine");
+    chain.commit_embeddings(ok);
+    probe
+        .fail_remaining
+        .store(MAX_EMBED_ATTEMPTS as usize, Ordering::SeqCst);
+    let failed = deferred_append(&mut chain, "never embeds");
     chain.commit_embeddings(failed);
     wait_for_adoption(&mut chain);
     chain.flush().unwrap();
     drop(chain);
-    assert_persisted_sidecar(dir.path(), "fail", &metadata, 2);
+    assert_persisted_sidecar(dir.path(), "poison", &metadata, 2);
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 3, "1 + the rebuild's 2");
 }
 
 /// If a ticket is dropped without being committed (a cancelled caller) and
-/// later vectors pile up behind it, the sidecar is rebuilt rather than wedged.
+/// later vectors pile up behind it, only that thought is embedded again.
+/// Before the fix the 64th later vector cleared the pipeline and rebuilt the
+/// corpus.
 #[test]
 fn test_lost_ticket_does_not_wedge_the_sidecar() {
     let dir = tempdir().unwrap();
-    let (mut chain, _, metadata) = open_chain(dir.path(), "lost");
+    let (mut chain, probe, metadata) = open_chain(dir.path(), "lost");
     let lost = deferred_append(&mut chain, "never committed");
     drop(lost);
     let total = 70;
@@ -224,6 +313,154 @@ fn test_lost_ticket_does_not_wedge_the_sidecar() {
     chain.flush().unwrap();
     drop(chain);
     assert_persisted_sidecar(dir.path(), "lost", &metadata, total);
+    assert_eq!(
+        probe.calls.load(Ordering::SeqCst),
+        total + 1,
+        "each thought once, plus the lost thought embedded again"
+    );
+}
+
+/// A ticket dropped before it ever ran (the request was cancelled while the
+/// embedding was queued) is detected the same way as a dropped outcome.
+#[test]
+fn test_ticket_dropped_before_running_is_embedded_again() {
+    let dir = tempdir().unwrap();
+    let (mut chain, probe, metadata) = open_chain(dir.path(), "unrun");
+    chain.defer_next_embedding();
+    chain
+        .append_thought("a", ThoughtInput::new(ThoughtType::Finding, "dropped"))
+        .unwrap();
+    drop(chain.take_embed_tickets());
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+    // The next append notices the drop and redoes thought 0 as well.
+    let outcomes = deferred_append(&mut chain, "after");
+    chain.commit_embeddings(outcomes);
+    wait_for_adoption(&mut chain);
+    chain.flush().unwrap();
+    drop(chain);
+    assert_persisted_sidecar(dir.path(), "unrun", &metadata, 2);
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 2);
+}
+
+/// A synchronous append (an import, a branch copy) that lands while deferred
+/// appends still have vectors in flight finds the sidecar legitimately behind
+/// the chain. It used to read that as a stale sidecar and rebuild all of it; it
+/// must instead apply its own vector in chain order behind the in-flight one.
+#[test]
+fn test_synchronous_append_during_in_flight_embeddings_does_not_rebuild() {
+    let dir = tempdir().unwrap();
+    let (mut chain, probe, metadata) = open_chain(dir.path(), "mixed");
+    for n in 0..20 {
+        let outcomes = deferred_append(&mut chain, &format!("settled {n}"));
+        chain.commit_embeddings(outcomes);
+    }
+    let in_flight = deferred_append(&mut chain, "still embedding");
+    chain
+        .append("a", ThoughtType::Finding, "synchronous import")
+        .unwrap();
+    chain
+        .append("a", ThoughtType::Finding, "another synchronous import")
+        .unwrap();
+    assert!(!chain.has_pending_sidecar_rebuilds());
+    assert_eq!(chain.embedding_backlog(&metadata).unwrap().parked, 2);
+    chain.commit_embeddings(in_flight);
+    assert_eq!(
+        chain.embedding_backlog(&metadata).unwrap().parked,
+        0,
+        "the in-flight vector released the two behind it"
+    );
+    chain.flush().unwrap();
+    drop(chain);
+    assert_persisted_sidecar(dir.path(), "mixed", &metadata, 23);
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 23);
+}
+
+/// A straggler that finally arrives releases every vector parked behind it, but
+/// one commit applies only a bounded number so the write lock is not held for
+/// the whole backlog. The rest is applied by later polls, which the service
+/// keeps running while `has_pending_sidecar_rebuilds` says so.
+#[test]
+fn test_released_backlog_is_applied_in_bounded_steps() {
+    let dir = tempdir().unwrap();
+    let (mut chain, probe, metadata) = open_chain(dir.path(), "backlog");
+    let straggler = deferred_append(&mut chain, "slow embedding");
+    let behind = 100;
+    for n in 0..behind {
+        let outcomes = deferred_append(&mut chain, &format!("behind {n}"));
+        chain.commit_embeddings(outcomes);
+    }
+    assert_eq!(chain.embedding_backlog(&metadata).unwrap().parked, behind);
+    assert!(!chain.has_pending_sidecar_rebuilds());
+
+    chain.commit_embeddings(straggler);
+    let left = chain.embedding_backlog(&metadata).unwrap().parked;
+    assert!(
+        left > 0 && left < behind,
+        "one commit applied some of the backlog, not all ({left} left)"
+    );
+    assert!(
+        chain.has_pending_sidecar_rebuilds(),
+        "work remains for a poll"
+    );
+    wait_for_adoption(&mut chain);
+    assert_eq!(
+        chain.embedding_backlog(&metadata),
+        Some(EmbeddingBacklog::default())
+    );
+    chain.flush().unwrap();
+    drop(chain);
+    assert_persisted_sidecar(dir.path(), "backlog", &metadata, behind + 1);
+    assert_eq!(probe.calls.load(Ordering::SeqCst), behind + 1);
+}
+
+/// Regression for the embedding-ticket overflow: one straggling embedding that
+/// outlasts more later appends than the pipeline holds used to clear every
+/// parked vector and re-embed the whole corpus (a 1.3 s hiccup at 50 appends
+/// per second was enough). Now the pipeline stays bounded by shedding the
+/// excess appends, which are embedded again, alone, once the straggler
+/// finishes. Every thought is embedded exactly once and nothing is rebuilt.
+#[test]
+fn test_straggler_outlasting_the_pipeline_does_not_re_embed_the_corpus() {
+    let dir = tempdir().unwrap();
+    let (mut chain, probe, metadata) = open_chain(dir.path(), "straggler");
+    let settled = 50;
+    for n in 0..settled {
+        let outcomes = deferred_append(&mut chain, &format!("settled {n}"));
+        chain.commit_embeddings(outcomes);
+    }
+    let straggler = deferred_append(&mut chain, "slow embedding");
+    let behind = MAX_PIPELINED_EMBEDDINGS + 20;
+    for n in 0..behind {
+        let outcomes = deferred_append(&mut chain, &format!("behind the straggler {n}"));
+        chain.commit_embeddings(outcomes);
+    }
+    // The straggler holds one slot, so `MAX - 1` later appends fit and the
+    // rest were shed.
+    let shed = behind - (MAX_PIPELINED_EMBEDDINGS - 1);
+    let backlog = chain.embedding_backlog(&metadata).unwrap();
+    assert_eq!(backlog.in_flight, 1);
+    assert_eq!(backlog.parked, MAX_PIPELINED_EMBEDDINGS - 1);
+    assert_eq!(backlog.missing, shed);
+    assert!(
+        !chain.has_pending_sidecar_rebuilds(),
+        "no rebuild may be scheduled while the straggler is merely slow"
+    );
+
+    chain.commit_embeddings(straggler);
+    wait_for_adoption(&mut chain);
+    assert_eq!(
+        chain.embedding_backlog(&metadata),
+        Some(EmbeddingBacklog::default())
+    );
+    chain.flush().unwrap();
+    drop(chain);
+    let total = settled + 1 + behind;
+    assert_persisted_sidecar(dir.path(), "straggler", &metadata, total);
+    assert_eq!(
+        probe.calls.load(Ordering::SeqCst),
+        total,
+        "every thought was embedded exactly once; a corpus re-embed would add {total} more"
+    );
 }
 
 /// A process that dies after the append but before the commit leaves the

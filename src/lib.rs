@@ -4875,11 +4875,145 @@ struct ManagedSidecarEntry {
     /// Embedded vectors that arrived before an earlier thought's vector and
     /// wait for the sidecar to reach their position.
     parked: BTreeMap<u64, ParkedVector>,
+    /// Thoughts that need a (re-)embedding because their vector will not
+    /// arrive on its own: the ticket was dropped, the model call failed, or the
+    /// pipeline was full when the thought was appended. A background gap repair
+    /// embeds them again, a few at a time, without touching the rest of the
+    /// sidecar.
+    missing: BTreeSet<u64>,
+    /// Failed attempts per thought index, to stop retrying a thought whose
+    /// embedding keeps failing (see [`MAX_EMBED_ATTEMPTS`]).
+    attempts: BTreeMap<u64, u32>,
+    /// Indices of tickets dropped without being committed.
+    ledger: Arc<TicketLedger>,
 }
 
-/// Most embedded vectors held back waiting for an earlier thought's vector
-/// before the sidecar is declared out of step and rebuilt instead.
-const MAX_PARKED_VECTORS: usize = 64;
+/// Most embeddings a managed sidecar keeps in the pipeline between an append
+/// and the moment its vector is applied: tickets issued but not committed plus
+/// vectors parked behind a slower, earlier one.
+///
+/// Vectors are applied strictly in chain order, so one slow embedding holds
+/// every later vector back. This bound keeps that backlog's memory finite (a
+/// parked vector is `dimension x 4` bytes) when a provider stalls. An append
+/// that finds the pipeline full is not embedded then: its thought is recorded
+/// as missing and embedded again, alone, once the stall clears. That is
+/// load shedding with a targeted catch-up, never a rebuild of the corpus.
+///
+/// The value covers a few seconds of a slow remote provider at hundreds of
+/// appends per second; a stall longer than that costs one extra embedding per
+/// shed thought.
+pub const MAX_PIPELINED_EMBEDDINGS: usize = 512;
+
+/// Failed embedding attempts for one thought (the first try included) after
+/// which a managed sidecar stops retrying it alone and falls back to a full
+/// background rebuild.
+///
+/// A transient provider error is retried for the one thought; a thought the
+/// provider can never embed would otherwise hold every later vector back
+/// forever.
+pub const MAX_EMBED_ATTEMPTS: u32 = 4;
+
+/// Thoughts embedded again per background gap repair job.
+const EMBED_REPAIR_BATCH: usize = 16;
+
+/// Most parked vectors one drain applies to a sidecar while the chain's write
+/// lock is held.
+///
+/// Applying a vector is not free (it updates the vector index and the
+/// implicit-edge overlay), and a straggler that finally arrives can release
+/// hundreds at once. The rest stay parked and are applied by the next commit or
+/// poll (see [`MentisDb::has_pending_sidecar_rebuilds`]), so one commit never
+/// holds the lock for the whole backlog.
+const MAX_DRAIN_PER_CALL: usize = 32;
+
+/// Tickets of one sidecar that were dropped without being committed, shared
+/// between the sidecar entry and every [`TicketGuard`] it handed out.
+#[derive(Default)]
+struct TicketLedger {
+    abandoned: Mutex<BTreeSet<u64>>,
+}
+
+/// Rides inside an [`EmbedTicket`] and its [`EmbedOutcome`]. If it is dropped
+/// before [`MentisDb::commit_embeddings`] consumes it, the thought's vector is
+/// lost (a cancelled request, a panicking provider) and the sidecar entry is
+/// told exactly which index to embed again.
+struct TicketGuard {
+    issued: Option<(Arc<TicketLedger>, u64)>,
+}
+
+impl TicketGuard {
+    fn issued(ledger: &Arc<TicketLedger>, index: u64) -> Self {
+        Self {
+            issued: Some((Arc::clone(ledger), index)),
+        }
+    }
+
+    /// A guard for work nobody waits on (gap repair results), which is
+    /// accounted for by the job that produced it.
+    fn detached() -> Self {
+        Self { issued: None }
+    }
+
+    /// The outcome reached [`MentisDb::commit_embeddings`]; nothing was lost.
+    fn disarm(mut self) {
+        self.issued = None;
+    }
+}
+
+impl Drop for TicketGuard {
+    fn drop(&mut self) {
+        if let Some((ledger, index)) = self.issued.take() {
+            ledger
+                .abandoned
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(index);
+        }
+    }
+}
+
+/// How many embeddings one managed sidecar has in flight, parked or waiting to
+/// be embedded again.
+///
+/// Returned by [`MentisDb::embedding_backlog`]. All three are zero when every
+/// appended thought's vector has been applied.
+///
+/// # Examples
+///
+/// ```rust
+/// use mentisdb::search::{EmbeddingProvider, LocalTextEmbeddingProvider};
+/// use mentisdb::{EmbeddingBacklog, MentisDb, ThoughtInput, ThoughtType};
+///
+/// # fn main() -> std::io::Result<()> {
+/// let dir = tempfile::tempdir()?;
+/// let provider = LocalTextEmbeddingProvider::new();
+/// let metadata = provider.metadata().clone();
+/// let mut chain = MentisDb::open_with_key(dir.path(), "demo")?;
+/// chain.manage_vector_sidecar(provider).expect("manage sidecar");
+///
+/// chain.defer_next_embedding();
+/// chain.append_thought("agent", ThoughtInput::new(ThoughtType::FactLearned, "hello"))?;
+/// let tickets = chain.take_embed_tickets();
+/// assert_eq!(chain.embedding_backlog(&metadata).unwrap().in_flight, 1);
+///
+/// let outcomes: Vec<_> = tickets.into_iter().map(|t| t.embed()).collect();
+/// chain.commit_embeddings(outcomes);
+/// assert_eq!(chain.embedding_backlog(&metadata), Some(EmbeddingBacklog::default()));
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct EmbeddingBacklog {
+    /// Tickets issued whose outcome has not been committed (including tickets
+    /// dropped without a commit that the next commit or append has not noticed
+    /// yet).
+    pub in_flight: usize,
+    /// Vectors embedded and waiting for an earlier thought's vector.
+    pub parked: usize,
+    /// Thoughts waiting to be embedded again by a background gap repair.
+    pub missing: usize,
+}
 
 /// A vector embedded outside the chain lock that cannot be appended to the
 /// sidecar yet because an earlier thought's vector is still in flight.
@@ -4909,6 +5043,14 @@ struct ParkedVector {
 /// chain and is repaired by the background rebuild on the next open or append.
 /// Vectors are applied to the sidecar strictly in chain order even when
 /// concurrent appends finish embedding out of order.
+///
+/// # A ticket that is never committed
+///
+/// Dropping a ticket (or the [`EmbedOutcome`] it turns into) without handing
+/// it to [`MentisDb::commit_embeddings`] is safe: the sidecar entry learns
+/// which thought lost its vector and embeds that one thought again in the
+/// background. It never rebuilds the corpus for it. A slow embedding is not a
+/// lost one: later vectors wait for it (up to [`MAX_PIPELINED_EMBEDDINGS`]).
 pub struct EmbedTicket {
     metadata: crate::search::EmbeddingMetadata,
     provider: Arc<dyn ManagedEmbeddingProvider>,
@@ -4917,6 +5059,7 @@ pub struct EmbedTicket {
     hash: String,
     prev_hash: String,
     text: String,
+    guard: TicketGuard,
 }
 
 /// The result of running an [`EmbedTicket`]; hand it to
@@ -4928,6 +5071,7 @@ pub struct EmbedOutcome {
     hash: String,
     prev_hash: String,
     vector: io::Result<Vec<f32>>,
+    guard: TicketGuard,
 }
 
 impl EmbedTicket {
@@ -4939,8 +5083,9 @@ impl EmbedTicket {
     /// Run the embedding model. Call this without holding any chain lock.
     ///
     /// A provider failure is carried inside the outcome rather than returned:
-    /// [`MentisDb::commit_embeddings`] reacts by scheduling a sidecar repair,
-    /// and the already-committed thought is unaffected.
+    /// [`MentisDb::commit_embeddings`] reacts by embedding that one thought
+    /// again in the background, and the already-committed thought is
+    /// unaffected.
     pub fn embed(self) -> EmbedOutcome {
         let vector = self
             .provider
@@ -4963,6 +5108,7 @@ impl EmbedTicket {
             hash: self.hash,
             prev_hash: self.prev_hash,
             vector,
+            guard: self.guard,
         }
     }
 }
@@ -4994,7 +5140,66 @@ impl ManagedSidecarEntry {
             pending_hnsw_build: build_result.pending,
             in_flight: BTreeSet::new(),
             parked: BTreeMap::new(),
+            missing: BTreeSet::new(),
+            attempts: BTreeMap::new(),
+            ledger: Arc::new(TicketLedger::default()),
         }
+    }
+
+    /// Whether the earliest parked vector is not held back by an earlier one
+    /// still in flight or waiting to be embedded again.
+    fn has_drainable_parked(&self) -> bool {
+        self.parked.first_key_value().is_some_and(|(&first, _)| {
+            self.in_flight.range(..first).next().is_none()
+                && self.missing.range(..first).next().is_none()
+        })
+    }
+
+    /// Embeddings held between append and apply.
+    fn pipelined(&self) -> usize {
+        self.in_flight.len() + self.parked.len()
+    }
+
+    /// Forget everything in flight, parked or missing (a full rebuild covers
+    /// it).
+    fn reset_pipeline(&mut self) {
+        self.in_flight.clear();
+        self.parked.clear();
+        self.missing.clear();
+        self.attempts.clear();
+    }
+
+    /// Count one failed attempt at `index`. Returns `true` when the thought
+    /// should be embedded again alone, `false` once it has failed
+    /// [`MAX_EMBED_ATTEMPTS`] times.
+    fn record_failure(&mut self, index: u64) -> bool {
+        self.in_flight.remove(&index);
+        let attempts = self.attempts.entry(index).or_insert(0);
+        *attempts += 1;
+        if *attempts >= MAX_EMBED_ATTEMPTS {
+            return false;
+        }
+        self.missing.insert(index);
+        true
+    }
+
+    /// Move tickets dropped without a commit from `in_flight` to `missing`.
+    /// Returns `false` when one of them has now failed too often.
+    fn reclaim_abandoned(&mut self) -> bool {
+        let abandoned = std::mem::take(
+            &mut *self
+                .ledger
+                .abandoned
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        let mut retryable = true;
+        for index in abandoned {
+            if !self.parked.contains_key(&index) {
+                retryable &= self.record_failure(index);
+            }
+        }
+        retryable
     }
 
     fn with_sidecar(mut self, sidecar: crate::search::VectorSidecar) -> Self {
@@ -5245,6 +5450,97 @@ type SidecarRebuildOutcome = io::Result<(
 struct PendingSidecarRebuild {
     metadata: crate::search::EmbeddingMetadata,
     slot: Arc<Mutex<Option<SidecarRebuildOutcome>>>,
+}
+
+/// A gap repair this handle is waiting on.
+struct PendingGapRepair {
+    metadata: crate::search::EmbeddingMetadata,
+    slot: Arc<Mutex<Option<Vec<EmbedOutcome>>>>,
+}
+
+/// One thought to embed again, captured under the lock so the worker needs no
+/// chain state.
+struct GapRow {
+    id: Uuid,
+    index: u64,
+    hash: String,
+    prev_hash: String,
+    text: String,
+}
+
+/// Background work: embed a few thoughts again and report one
+/// [`EmbedOutcome`] per thought, in the order given.
+///
+/// The slot is always filled. If the job is dropped without running (the
+/// worker is gone) or panics, `Drop` reports every thought as failed so the
+/// sidecar entry retries them instead of waiting forever.
+struct GapRepairJob {
+    metadata: crate::search::EmbeddingMetadata,
+    provider: Arc<dyn ManagedEmbeddingProvider>,
+    rows: Vec<GapRow>,
+    slot: Arc<Mutex<Option<Vec<EmbedOutcome>>>>,
+}
+
+impl GapRepairJob {
+    /// Embed every row in one provider call and publish the outcomes.
+    fn run(self) {
+        let inputs: Vec<crate::search::EmbeddingInput> = self
+            .rows
+            .iter()
+            .map(|row| crate::search::EmbeddingInput::new(row.id.to_string(), row.text.clone()))
+            .collect();
+        let outcomes = match self.provider.embed_documents(&inputs) {
+            Ok(documents) if documents.len() == self.rows.len() => self
+                .rows
+                .iter()
+                .zip(documents)
+                .map(|(row, document)| self.outcome(row, Ok(document.vector)))
+                .collect(),
+            Ok(documents) => self.failures(&format!(
+                "managed embedding provider returned {} vectors for {} thoughts",
+                documents.len(),
+                self.rows.len()
+            )),
+            Err(error) => self.failures(&error.to_string()),
+        };
+        self.publish(outcomes);
+    }
+
+    fn outcome(&self, row: &GapRow, vector: io::Result<Vec<f32>>) -> EmbedOutcome {
+        EmbedOutcome {
+            metadata: self.metadata.clone(),
+            id: row.id,
+            index: row.index,
+            hash: row.hash.clone(),
+            prev_hash: row.prev_hash.clone(),
+            vector,
+            guard: TicketGuard::detached(),
+        }
+    }
+
+    fn failures(&self, message: &str) -> Vec<EmbedOutcome> {
+        self.rows
+            .iter()
+            .map(|row| self.outcome(row, Err(io::Error::other(message.to_owned()))))
+            .collect()
+    }
+
+    fn publish(&self, outcomes: Vec<EmbedOutcome>) {
+        *self.slot.lock().unwrap_or_else(|error| error.into_inner()) = Some(outcomes);
+    }
+}
+
+impl Drop for GapRepairJob {
+    fn drop(&mut self) {
+        let unpublished = self
+            .slot
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_none();
+        if unpublished {
+            self.publish(self.failures("gap repair did not run to completion"));
+        }
+    }
 }
 
 /// One thought's worth of input captured for a background rebuild.
@@ -5762,6 +6058,9 @@ pub struct MentisDb {
     /// Sidecar rebuilds handed to the process-wide background worker whose
     /// results this handle has not adopted yet.
     pending_sidecar_rebuilds: Vec<PendingSidecarRebuild>,
+    /// Gap repairs (a few thoughts embedded again) handed to the same worker
+    /// whose results this handle has not committed yet.
+    pending_gap_repairs: Vec<PendingGapRepair>,
     /// Appends applied to the in-memory implicit-edge overlay since it was
     /// last written to disk.
     overlay_unsaved_appends: std::sync::atomic::AtomicUsize,
@@ -5912,6 +6211,7 @@ impl MentisDb {
             pending_derived: std::sync::Mutex::new(PendingDerivedWrite::default()),
             derived_flush_lock: Arc::new(std::sync::Mutex::new(())),
             pending_sidecar_rebuilds: Vec::new(),
+            pending_gap_repairs: Vec::new(),
             overlay_unsaved_appends: std::sync::atomic::AtomicUsize::new(0),
             defer_derived_flush: false,
             defer_embedding: false,
@@ -6840,11 +7140,33 @@ impl MentisDb {
         std::mem::take(&mut self.embed_tickets)
     }
 
+    /// How many embeddings the managed sidecar for `metadata` has in flight,
+    /// parked behind a slower one, or waiting to be embedded again.
+    ///
+    /// Returns `None` when no sidecar is managed for that embedding space. A
+    /// steadily growing `parked` or `missing` means an embedding provider is
+    /// stalling; see [`MAX_PIPELINED_EMBEDDINGS`].
+    pub fn embedding_backlog(
+        &self,
+        metadata: &crate::search::EmbeddingMetadata,
+    ) -> Option<EmbeddingBacklog> {
+        self.managed_vector_sidecars
+            .get(metadata)
+            .map(|entry| EmbeddingBacklog {
+                in_flight: entry.in_flight.len(),
+                parked: entry.parked.len(),
+                missing: entry.missing.len(),
+            })
+    }
+
     /// Record one ticket per auto-syncing managed sidecar for `thought`.
     ///
     /// Cheap and lock-friendly: no model call, no disk I/O. A sidecar with a
     /// background rebuild in flight is skipped, exactly as the synchronous
-    /// path does; the adopted rebuild covers the thought.
+    /// path does; the adopted rebuild covers the thought. A sidecar whose
+    /// pipeline already holds [`MAX_PIPELINED_EMBEDDINGS`] embeddings issues no
+    /// ticket either: the thought is recorded as missing and embedded again,
+    /// alone, once the stall clears.
     fn queue_embed_tickets(&mut self, thought: &Thought) -> io::Result<()> {
         self.poll_vector_backend_upgrades();
         if self.persistence.is_none() {
@@ -6868,9 +7190,18 @@ impl MentisDb {
             let Some(entry) = self.managed_vector_sidecars.get_mut(&metadata) else {
                 continue;
             };
+            if !entry.reclaim_abandoned() {
+                self.fall_back_to_full_repair(&metadata);
+                continue;
+            }
+            if entry.pipelined() >= MAX_PIPELINED_EMBEDDINGS {
+                entry.missing.insert(thought.index);
+                continue;
+            }
             entry.in_flight.insert(thought.index);
             self.embed_tickets.push(EmbedTicket {
                 provider: Arc::clone(&entry.provider),
+                guard: TicketGuard::issued(&entry.ledger, thought.index),
                 metadata,
                 id: thought.id,
                 index: thought.index,
@@ -6879,6 +7210,7 @@ impl MentisDb {
                 text: text.clone(),
             });
         }
+        self.schedule_pending_gap_repairs();
         Ok(())
     }
 
@@ -6888,57 +7220,101 @@ impl MentisDb {
     /// disk I/O beyond queueing WAL records for
     /// [`Self::flush_pending_derived`]. Vectors are appended to a sidecar
     /// strictly in chain order: one that arrives before an earlier thought's
-    /// vector is parked until the gap closes. If the chain moved on in a way
-    /// the sidecar cannot follow (a vector was lost, the sidecar was replaced)
-    /// the sidecar is handed to the background rebuild instead, so the race
-    /// costs a rebuild at worst and never a wrong or out-of-order vector. A
-    /// failed embedding schedules the same repair.
+    /// vector is parked until the gap closes.
+    ///
+    /// A vector that never arrives (a failed model call, a ticket dropped
+    /// without being committed, an append shed because
+    /// [`MAX_PIPELINED_EMBEDDINGS`] were already pending) is embedded again on
+    /// the background worker, that one thought at a time, while the vectors
+    /// behind it wait. The sidecar is rebuilt from the whole chain only when
+    /// the sidecar itself cannot be used (missing, unreadable, rejects a
+    /// vector) or one thought has failed [`MAX_EMBED_ATTEMPTS`] times, so a
+    /// slow or flaky provider never costs a corpus re-embed. Cost under the
+    /// lock is bounded by the outcomes passed in plus at most
+    /// `EMBED_REPAIR_BATCH` re-embedding requests.
     pub fn commit_embeddings(&mut self, mut outcomes: Vec<EmbedOutcome>) {
         outcomes.sort_by_key(|outcome| outcome.index);
         let mut touched: Vec<crate::search::EmbeddingMetadata> = Vec::new();
+        let mut escalate: Vec<crate::search::EmbeddingMetadata> = Vec::new();
         for outcome in outcomes {
-            let Some(entry) = self.managed_vector_sidecars.get_mut(&outcome.metadata) else {
+            let EmbedOutcome {
+                metadata,
+                id,
+                index,
+                hash,
+                prev_hash,
+                vector,
+                guard,
+            } = outcome;
+            guard.disarm();
+            let Some(entry) = self.managed_vector_sidecars.get_mut(&metadata) else {
                 continue;
             };
-            entry.in_flight.remove(&outcome.index);
-            match outcome.vector {
+            entry.in_flight.remove(&index);
+            match vector {
                 Ok(vector) => {
+                    entry.attempts.remove(&index);
                     entry.parked.insert(
-                        outcome.index,
+                        index,
                         ParkedVector {
-                            id: outcome.id,
-                            hash: outcome.hash,
-                            prev_hash: outcome.prev_hash,
+                            id,
+                            hash,
+                            prev_hash,
                             vector,
                         },
                     );
-                    if entry.parked.len() > MAX_PARKED_VECTORS {
-                        // An earlier ticket was dropped without being
-                        // committed (a cancelled caller). Waiting longer would
-                        // wedge the sidecar behind a vector that never comes,
-                        // so give up on in-order arrival and repair instead.
-                        entry.parked.clear();
-                        entry.in_flight.clear();
-                        self.schedule_repair_for(&outcome.metadata);
-                        continue;
+                    if !touched.contains(&metadata) {
+                        touched.push(metadata);
                     }
                 }
                 Err(error) => {
                     log_derived_failure("vector sidecar embed", &error);
-                    entry.parked.clear();
-                    self.schedule_repair_for(&outcome.metadata);
-                    continue;
+                    if !entry.record_failure(index) && !escalate.contains(&metadata) {
+                        escalate.push(metadata);
+                    }
                 }
             }
-            if !touched.contains(&outcome.metadata) {
-                touched.push(outcome.metadata);
+        }
+        for entry_metadata in self
+            .managed_vector_sidecars
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let abandoned_too_often = self
+                .managed_vector_sidecars
+                .get_mut(&entry_metadata)
+                .is_some_and(|entry| !entry.reclaim_abandoned());
+            if abandoned_too_often && !escalate.contains(&entry_metadata) {
+                escalate.push(entry_metadata);
             }
         }
-        for metadata in touched {
-            if let Err(error) = self.drain_parked_vectors(&metadata) {
+        for metadata in &escalate {
+            self.fall_back_to_full_repair(metadata);
+        }
+        for metadata in touched
+            .iter()
+            .filter(|metadata| !escalate.contains(metadata))
+        {
+            if let Err(error) = self.drain_parked_vectors(metadata) {
                 log_derived_failure("vector sidecar sync", &error);
             }
         }
+        self.schedule_pending_gap_repairs();
+    }
+
+    /// Give up on in-order catch-up for `metadata` and hand the whole sidecar
+    /// to the background rebuild.
+    ///
+    /// The last resort: reached when the sidecar cannot be extended in place or
+    /// one thought's embedding keeps failing. It builds one input row per
+    /// thought of the chain, so it is never taken for a slow or occasionally
+    /// failing provider (see [`Self::commit_embeddings`]).
+    fn fall_back_to_full_repair(&mut self, metadata: &crate::search::EmbeddingMetadata) {
+        if let Some(entry) = self.managed_vector_sidecars.get_mut(metadata) {
+            entry.reset_pipeline();
+        }
+        self.schedule_repair_for(metadata);
     }
 
     /// Queue a background rebuild of the sidecar for `metadata`, logging (not
@@ -6955,6 +7331,150 @@ impl MentisDb {
             self.schedule_sidecar_rebuild_job(metadata.clone(), move || Ok(provider))
         {
             log_derived_failure("vector sidecar repair scheduling", &error);
+        }
+    }
+
+    /// Start a gap repair for every sidecar that has thoughts to embed again.
+    fn schedule_pending_gap_repairs(&mut self) {
+        let wanting: Vec<crate::search::EmbeddingMetadata> = self
+            .managed_vector_sidecars
+            .iter()
+            .filter(|(_, entry)| !entry.missing.is_empty())
+            .map(|(metadata, _)| metadata.clone())
+            .collect();
+        for metadata in wanting {
+            self.schedule_gap_repair(&metadata);
+        }
+    }
+
+    /// Embed up to `EMBED_REPAIR_BATCH` of the thoughts `metadata`'s sidecar is
+    /// missing on the background worker; their vectors come back through
+    /// [`Self::commit_embeddings`] when the worker finishes and a poll adopts
+    /// the result.
+    ///
+    /// Only thoughts with no earlier embedding still in flight are picked:
+    /// embedding a thought whose predecessor is still on its way would only
+    /// park the result. At most one repair per sidecar runs at a time, and the
+    /// work under the lock is the text of the few thoughts picked, never of the
+    /// corpus.
+    fn schedule_gap_repair(&mut self, metadata: &crate::search::EmbeddingMetadata) {
+        if self
+            .pending_gap_repairs
+            .iter()
+            .any(|pending| &pending.metadata == metadata)
+        {
+            return;
+        }
+        let rebuild_pending = self
+            .pending_sidecar_rebuilds
+            .iter()
+            .any(|pending| &pending.metadata == metadata);
+        let Some(entry) = self.managed_vector_sidecars.get_mut(metadata) else {
+            return;
+        };
+        if rebuild_pending {
+            // The adopted rebuild embeds every thought, these included.
+            entry.reset_pipeline();
+            return;
+        }
+        // A rebuild adopted meanwhile may already cover some of them.
+        let covered = entry
+            .cached_sidecar
+            .as_ref()
+            .map_or(0, |sidecar| sidecar.entries.len() as u64);
+        entry.missing.retain(|&index| index >= covered);
+        let floor = entry.in_flight.first().copied().unwrap_or(u64::MAX);
+        let picked: Vec<u64> = entry
+            .missing
+            .range(..floor)
+            .take(EMBED_REPAIR_BATCH)
+            .copied()
+            .collect();
+        if picked.is_empty() {
+            return;
+        }
+        let provider = Arc::clone(&entry.provider);
+        let rows: Vec<GapRow> = picked
+            .iter()
+            .filter_map(|&index| self.thoughts.get(index as usize))
+            .map(|thought| GapRow {
+                id: thought.id,
+                index: thought.index,
+                hash: thought.hash.clone(),
+                prev_hash: thought.prev_hash.clone(),
+                text: self.thought_embedding_text(thought),
+            })
+            .collect();
+        let Some(queue) = sidecar_rebuild_queue() else {
+            log_derived_failure(
+                "vector sidecar gap repair",
+                &io::Error::other("sidecar rebuild worker thread is unavailable"),
+            );
+            return;
+        };
+        let Some(entry) = self.managed_vector_sidecars.get_mut(metadata) else {
+            return;
+        };
+        for index in &picked {
+            entry.missing.remove(index);
+            entry.in_flight.insert(*index);
+        }
+        let slot: Arc<Mutex<Option<Vec<EmbedOutcome>>>> = Arc::new(Mutex::new(None));
+        let job = GapRepairJob {
+            metadata: metadata.clone(),
+            provider,
+            rows,
+            slot: Arc::clone(&slot),
+        };
+        self.pending_gap_repairs.push(PendingGapRepair {
+            metadata: metadata.clone(),
+            slot,
+        });
+        // A send that fails drops the job, which reports every row as failed
+        // (see `GapRepairJob`'s `Drop`), so the thoughts are retried rather
+        // than stuck in flight.
+        let _ = queue.send(Box::new(move || job.run()));
+    }
+
+    /// Whether some sidecar has parked vectors that nothing earlier blocks, so
+    /// a drain would make progress.
+    fn has_drainable_parked_vectors(&self) -> bool {
+        self.managed_vector_sidecars
+            .values()
+            .any(ManagedSidecarEntry::has_drainable_parked)
+    }
+
+    /// Apply parked vectors a bounded drain left behind.
+    fn drain_leftover_parked_vectors(&mut self) {
+        let drainable: Vec<crate::search::EmbeddingMetadata> = self
+            .managed_vector_sidecars
+            .iter()
+            .filter(|(_, entry)| entry.has_drainable_parked())
+            .map(|(metadata, _)| metadata.clone())
+            .collect();
+        for metadata in drainable {
+            if let Err(error) = self.drain_parked_vectors(&metadata) {
+                log_derived_failure("vector sidecar sync", &error);
+            }
+        }
+    }
+
+    /// Commit the gap repairs the worker has finished.
+    fn adopt_finished_gap_repairs(&mut self) {
+        let mut finished: Vec<Vec<EmbedOutcome>> = Vec::new();
+        for pending in std::mem::take(&mut self.pending_gap_repairs) {
+            let outcomes = pending
+                .slot
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            match outcomes {
+                Some(outcomes) => finished.push(outcomes),
+                None => self.pending_gap_repairs.push(pending),
+            }
+        }
+        for outcomes in finished {
+            self.commit_embeddings(outcomes);
         }
     }
 
@@ -6978,7 +7498,7 @@ impl MentisDb {
         {
             // The adopted rebuild covers these thoughts.
             if let Some(entry) = self.managed_vector_sidecars.get_mut(metadata) {
-                entry.parked.clear();
+                entry.reset_pipeline();
             }
             return Ok(());
         }
@@ -6990,16 +7510,16 @@ impl MentisDb {
         let Some(mut sidecar) =
             cached.or_else(|| crate::search::VectorSidecar::load_from_path(&path).ok())
         else {
-            if let Some(entry) = self.managed_vector_sidecars.get_mut(metadata) {
-                entry.parked.clear();
-            }
-            self.schedule_repair_for(metadata);
+            self.fall_back_to_full_repair(metadata);
             return Ok(());
         };
         let mut result = Ok(());
         let mut needs_repair = false;
         let mut applied: Vec<(Uuid, u64, String, Vec<f32>)> = Vec::new();
         while let Some(entry) = self.managed_vector_sidecars.get_mut(metadata) {
+            if applied.len() >= MAX_DRAIN_PER_CALL {
+                break; // the rest drains on the next commit or poll
+            }
             let Some((&index, _)) = entry.parked.iter().next() else {
                 break;
             };
@@ -7016,10 +7536,12 @@ impl MentisDb {
                 crate::search::VectorSidecarFreshness::Fresh
             );
             if !fresh {
-                if entry.in_flight.iter().any(|&earlier| earlier < index) {
-                    break; // an earlier vector is still being embedded; wait
+                let earlier = |set: &BTreeSet<u64>| set.range(..index).next().is_some();
+                if earlier(&entry.in_flight) || earlier(&entry.missing) {
+                    break; // an earlier vector is on its way or being redone; wait
                 }
-                entry.parked.clear();
+                // Nothing accounts for the gap: the sidecar and the chain have
+                // drifted apart in a way only a rebuild repairs.
                 needs_repair = true;
                 break;
             }
@@ -7072,7 +7594,7 @@ impl MentisDb {
             }
         }
         if needs_repair {
-            self.schedule_repair_for(metadata);
+            self.fall_back_to_full_repair(metadata);
         }
         result
     }
@@ -9952,20 +10474,33 @@ impl MentisDb {
         Ok(true)
     }
 
-    /// Whether this handle is still waiting on a background sidecar rebuild.
+    /// Whether this handle is still waiting on a background sidecar rebuild, on
+    /// thoughts a gap repair is embedding again, or on parked vectors a bounded
+    /// drain has yet to apply.
+    ///
+    /// Services poll [`MentisDb::poll_vector_backend_upgrades`] while this is
+    /// `true`.
     pub fn has_pending_sidecar_rebuilds(&self) -> bool {
         !self.pending_sidecar_rebuilds.is_empty()
+            || !self.pending_gap_repairs.is_empty()
+            || self.has_drainable_parked_vectors()
     }
 
-    /// Cheap `&self` check: has any background sidecar rebuild finished and
-    /// is it waiting to be adopted by [`MentisDb::poll_vector_backend_upgrades`]?
+    /// Cheap `&self` check: has any background sidecar rebuild or gap repair
+    /// finished, or are vectors parked and ready to apply, so that
+    /// [`MentisDb::poll_vector_backend_upgrades`] has work to do?
     pub fn has_finished_sidecar_rebuilds(&self) -> bool {
         self.pending_sidecar_rebuilds.iter().any(|item| {
             item.slot
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .is_some()
-        })
+        }) || self.pending_gap_repairs.iter().any(|item| {
+            item.slot
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_some()
+        }) || self.has_drainable_parked_vectors()
     }
 
     /// Cheap `&self` check: is the implicit-edge overlay missing (in memory or
@@ -9999,8 +10534,15 @@ impl MentisDb {
         self.has_finished_sidecar_rebuilds() || self.implicit_edge_overlay_repair_needed()
     }
 
-    /// Adopt background sidecar rebuilds that have finished.
+    /// Adopt background sidecar rebuilds and gap repairs that have finished.
     fn adopt_finished_sidecar_rebuilds(&mut self) {
+        self.adopt_finished_full_rebuilds();
+        self.adopt_finished_gap_repairs();
+        self.drain_leftover_parked_vectors();
+    }
+
+    /// Adopt full background sidecar rebuilds that have finished.
+    fn adopt_finished_full_rebuilds(&mut self) {
         for item in std::mem::take(&mut self.pending_sidecar_rebuilds) {
             let outcome = item
                 .slot
@@ -11035,6 +11577,20 @@ impl MentisDb {
             {
                 continue;
             }
+            let pipeline_busy = self
+                .managed_vector_sidecars
+                .get(&metadata)
+                .is_some_and(|entry| entry.pipelined() > 0 || !entry.missing.is_empty());
+            if pipeline_busy {
+                // Deferred appends have vectors in flight, so the sidecar is
+                // legitimately behind the chain and this thought cannot extend
+                // it yet. Embed here (this path always embeds under the
+                // caller's lock) but apply it in chain order like any other
+                // vector instead of mistaking the gap for a stale sidecar and
+                // rebuilding it.
+                self.embed_and_park(&metadata, thought)?;
+                continue;
+            }
             let path =
                 chain_vector_sidecar_path(&persist_dir, &persist_key, persist_kind, &metadata);
             // Take (not clone) the live sidecar: it is put back below, so the
@@ -11192,20 +11748,77 @@ impl MentisDb {
         Ok(())
     }
 
+    /// Embed one thought with `provider`, in the caller's thread.
+    fn embed_thought_vector(
+        &self,
+        provider: &dyn ManagedEmbeddingProvider,
+        thought: &Thought,
+    ) -> io::Result<Vec<f32>> {
+        let mut documents = provider.embed_documents(&[crate::search::EmbeddingInput::new(
+            thought.id.to_string(),
+            self.thought_embedding_text(thought),
+        )])?;
+        documents
+            .pop()
+            .map(|document| document.vector)
+            .ok_or_else(|| io::Error::other("managed embedding provider returned no vectors"))
+    }
+
+    /// Embed `thought` now and hand its vector to the in-order pipeline of
+    /// the sidecar for `metadata`, for the synchronous append path to use
+    /// while deferred appends still have vectors in flight.
+    ///
+    /// A failed embedding is retried for this one thought like any other
+    /// (see [`Self::commit_embeddings`]) and also returned to the caller.
+    fn embed_and_park(
+        &mut self,
+        metadata: &crate::search::EmbeddingMetadata,
+        thought: &Thought,
+    ) -> io::Result<()> {
+        let Some(provider) = self
+            .managed_vector_sidecars
+            .get(metadata)
+            .map(|entry| Arc::clone(&entry.provider))
+        else {
+            return Ok(());
+        };
+        match self.embed_thought_vector(provider.as_ref(), thought) {
+            Ok(vector) => {
+                if let Some(entry) = self.managed_vector_sidecars.get_mut(metadata) {
+                    entry.parked.insert(
+                        thought.index,
+                        ParkedVector {
+                            id: thought.id,
+                            hash: thought.hash.clone(),
+                            prev_hash: thought.prev_hash.clone(),
+                            vector,
+                        },
+                    );
+                }
+                self.drain_parked_vectors(metadata)
+            }
+            Err(error) => {
+                let retryable = self
+                    .managed_vector_sidecars
+                    .get_mut(metadata)
+                    .is_none_or(|entry| entry.record_failure(thought.index));
+                if retryable {
+                    self.schedule_gap_repair(metadata);
+                } else {
+                    self.fall_back_to_full_repair(metadata);
+                }
+                Err(error)
+            }
+        }
+    }
+
     fn extend_fresh_vector_sidecar(
         &self,
         provider: &dyn ManagedEmbeddingProvider,
         sidecar: &mut crate::search::VectorSidecar,
         thought: &Thought,
     ) -> io::Result<crate::search::VectorSidecarWalRecord> {
-        let mut documents = provider.embed_documents(&[crate::search::EmbeddingInput::new(
-            thought.id.to_string(),
-            self.thought_embedding_text(thought),
-        )])?;
-        let vector = documents
-            .pop()
-            .map(|document| document.vector)
-            .ok_or_else(|| io::Error::other("managed embedding provider returned no vectors"))?;
+        let vector = self.embed_thought_vector(provider, thought)?;
         // Coverage is the thought's own position, not the live chain head, so
         // the same call is correct when the chain has already moved on.
         sidecar.extend_with_entry(
