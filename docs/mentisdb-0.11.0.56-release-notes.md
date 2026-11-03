@@ -24,11 +24,14 @@ earlier. Upgrade if any of the following describes your deployment:
   your chains.
 - **You rely on agent keys or thought signatures.** Any client that could call the API
   could register a signing key for any agent (with any bytes as the key), revoke keys,
-  disable agents or change an agent's status, and stored thought signatures were never
-  verified. Key and agent administration is now operator-only (dashboard PIN or local
+  disable agents or change an agent's status, and a thought's signature was stored without
+  being checked. Key and agent administration is now operator-only (dashboard PIN or local
   CLI), keys must be valid Ed25519 points, and a thought that carries a signature must
-  verify against an active key of its agent or the append is refused. Treat the signed
-  status of thoughts written before 0.11 as unverified, and after upgrading review the
+  verify against an active key of its agent or the append is refused. Thoughts stored
+  earlier are checked when they are returned: `provenance.signature` says `valid`,
+  `invalid` or `unsigned`, and `verified_agent` is set only for a valid signature by an
+  active key; `mentisdb chain access verify` checks a whole chain. A signature is only as
+  trustworthy as the registered key that verifies it, so after upgrading review the
   registered keys (dashboard, or `mentisdb agent registry`) and revoke any you do not
   recognize with `mentisdb agent key revoke`.
 - **Your dashboard is reachable from other machines.** The PIN could be guessed without
@@ -331,9 +334,12 @@ same-origin`; cross-site pages are still refused.
   `entity-type`, `memory`, `skill`, `webhook`, `vectors`, `daemon`, `key` and `migrate` reach
   every MCP tool, REST route and dashboard action, with typed arguments, `--json` output and
   `--help` examples. `docs/CLI_PARITY.md` maps each one, and a test keeps it in sync.
-- **pymentisdb** (in the repository's `pymentisdb/` package): compact `ranked_search`, a new
-  `federated_search`, the ranking knobs, `provenance` and version fields on thoughts, and
-  `ReadSigner` for private chains (`pymentisdb[signing]`).
+- **pymentisdb 0.10.0 on PyPI** (`pip install 'pymentisdb[signing]'`): compact
+  `ranked_search`, a new `federated_search`, the ranking knobs, `provenance` and version
+  fields on thoughts, and `ReadSigner` for private chains. It also fixes the package
+  itself: the 0.9.0 wheel contained no code, and `import pymentisdb` failed without
+  LangChain or on langchain-core 1.x. LangChain is now optional (`pymentisdb[langchain]`),
+  and `MentisDbMemory` works on langchain-core 1.x through `langchain-classic`.
 - `rest_router`, the public way to embed the REST API, now serves the same routes as the
   daemon; chain keys are validated at every entry point (`mentisdb::validate_chain_key`).
 - `Cargo.toml` declares `rust-version = "1.90"`, checked in CI.
@@ -347,6 +353,7 @@ cargo install mentisdb --locked --force
 ```
 
 Or download a release binary, or `docker pull ghcr.io/cloudllm-ai/mentisdb:0.11.0.56`.
+Python clients: `pip install -U 'pymentisdb[signing]'` (0.10.0).
 
 - **First start may migrate.** If a chain needs a format upgrade, the daemon starts anyway
   and migrates in the background. Until a chain is done, requests for it get `503` with
