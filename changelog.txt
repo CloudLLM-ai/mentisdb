@@ -195,6 +195,15 @@ UNRELEASED
     by another agent, check it]`, and the operating skill tells agents to check them.
     A write that would make a chain of more than `MAX_LINEAGE_DEPTH` (64) versions of
     one thought is refused (reads follow supersessions only that far).
+  - fix(server): federated search, and branch search with ancestors, could deadlock
+    both chains. Resolving cross-chain lineage held a read lock on every searched
+    chain while waiting for the next, in the caller's order; two searches over the
+    same chains in opposite order, each with a writer queued behind it (tokio's
+    lock is write-preferring), blocked each other and every later reader and
+    writer of those chains until restart. It now reads one chain at a time and
+    never holds two. Every other multi-chain path in the crate was audited and
+    already did. New `lineage::cross_chain_successor_on` is the per-chain half of
+    `cross_chain_successor` and `CrossSuccessor::is_newer_than` combines them.
   - build: Cargo.toml now declares `rust-version = "1.90"`, the real floor of the
     locked dependency set (roaring needs 1.90, uuid 1.89); a new `msrv` CI job
     checks all features and no default features on 1.90.

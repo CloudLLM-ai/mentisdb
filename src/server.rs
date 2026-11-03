@@ -3833,64 +3833,53 @@ impl MentisDbService {
     /// chains are visible to the caller, and only through edges whose source
     /// the caller's audience on its chain may see. With `include_invalidated`
     /// the hit is annotated; otherwise it is replaced by the live successor.
+    ///
+    /// Chains are read strictly one at a time: no chain's lock is held while
+    /// another is awaited. Holding several at once, in the caller's order,
+    /// deadlocks two opposite-ordered searches as soon as a writer queues on
+    /// each chain (tokio's `RwLock` is write-preferring, so a new reader waits
+    /// behind a queued writer that waits behind the other search's reader).
     async fn cross_lineage(
         &self,
         searched: &[String],
         hits: &[(String, Uuid)],
         include_invalidated: bool,
     ) -> Vec<CrossAction> {
-        let keep = |n: usize| (0..n).map(|_| CrossAction::Keep).collect::<Vec<_>>();
         if searched.len() < 2 || hits.is_empty() {
-            return keep(hits.len());
+            return hits.iter().map(|_| CrossAction::Keep).collect();
         }
-        let mut arcs = Vec::new();
+        let mut best: Vec<Option<CrossCandidate>> = hits.iter().map(|_| None).collect();
         for key in searched {
-            if let Ok(arc) = self.get_chain(Some(key), None).await {
-                arcs.push((key.clone(), arc));
+            let Ok(arc) = self.get_chain(Some(key), None).await else {
+                continue;
+            };
+            let guard = arc.read().await;
+            let audience = audience_for(&guard);
+            for ((chain_key, id), slot) in hits.iter().zip(best.iter_mut()) {
+                let Some(found) =
+                    crate::lineage::cross_chain_successor_on(key, &guard, audience, chain_key, *id)
+                else {
+                    continue;
+                };
+                if slot
+                    .as_ref()
+                    .is_none_or(|b| (found.thought.timestamp, found.thought.index) > b.rank)
+                {
+                    *slot = Some(CrossCandidate {
+                        rank: (found.thought.timestamp, found.thought.index),
+                        action: cross_action_for(
+                            &guard,
+                            audience,
+                            &found,
+                            (chain_key, *id),
+                            include_invalidated,
+                        ),
+                    });
+                }
             }
         }
-        let mut guards = Vec::with_capacity(arcs.len());
-        for (_, arc) in &arcs {
-            guards.push(arc.read().await);
-        }
-        let view: Vec<(&str, &MentisDb, Audience)> = arcs
-            .iter()
-            .zip(guards.iter())
-            .map(|((key, _), guard)| (key.as_str(), &**guard, audience_for(guard)))
-            .collect();
-        hits.iter()
-            .map(|(chain_key, id)| {
-                let Some(found) = crate::lineage::cross_chain_successor(&view, chain_key, *id)
-                else {
-                    return CrossAction::Keep;
-                };
-                let Some((_, chain, audience)) =
-                    view.iter().find(|(key, _, _)| *key == found.chain_key)
-                else {
-                    return CrossAction::Keep;
-                };
-                let note = json!({
-                    "thought_id": found.thought.id,
-                    "chain_key": found.chain_key,
-                    "kind": found.kind,
-                    "thought_type": found.thought.thought_type,
-                    "timestamp": found.thought.timestamp,
-                });
-                if include_invalidated {
-                    return CrossAction::Annotate(note);
-                }
-                let mut thought = chain.thought_json_for(found.thought, *audience);
-                if let Value::Object(map) = &mut thought {
-                    map.insert("successor_of".into(), json!([id]));
-                    map.insert("successor_of_chain".into(), json!(chain_key));
-                }
-                CrossAction::Redirect {
-                    chain_key: found.chain_key,
-                    id: found.thought.id,
-                    index: found.thought.index,
-                    thought,
-                }
-            })
+        best.into_iter()
+            .map(|candidate| candidate.map_or(CrossAction::Keep, |c| c.action))
             .collect()
     }
 
@@ -10130,6 +10119,44 @@ enum CrossAction {
     },
 }
 
+/// The best cross-chain successor found for one hit so far, with the
+/// `(timestamp, index)` it is ranked by so a newer one on a later chain wins.
+struct CrossCandidate {
+    rank: (DateTime<Utc>, u64),
+    action: CrossAction,
+}
+
+/// Build the [`CrossAction`] for one hit from the successor found on `chain`,
+/// the chain `found` lives on (the caller holds its lock for the duration).
+fn cross_action_for(
+    chain: &MentisDb,
+    audience: Audience,
+    found: &crate::lineage::CrossSuccessor<'_>,
+    (hit_chain_key, hit_id): (&str, Uuid),
+    include_invalidated: bool,
+) -> CrossAction {
+    if include_invalidated {
+        return CrossAction::Annotate(json!({
+            "thought_id": found.thought.id,
+            "chain_key": found.chain_key,
+            "kind": found.kind,
+            "thought_type": found.thought.thought_type,
+            "timestamp": found.thought.timestamp,
+        }));
+    }
+    let mut thought = chain.thought_json_for(found.thought, audience);
+    if let Value::Object(map) = &mut thought {
+        map.insert("successor_of".into(), json!([hit_id]));
+        map.insert("successor_of_chain".into(), json!(hit_chain_key));
+    }
+    CrossAction::Redirect {
+        chain_key: found.chain_key.clone(),
+        id: found.thought.id,
+        index: found.thought.index,
+        thought,
+    }
+}
+
 /// Mark a hit's thought JSON as superseded by a thought on another chain.
 fn annotate_cross_superseded(thought: &mut Value, note: Value) {
     if let Value::Object(map) = thought {
@@ -10980,5 +11007,81 @@ mod compact_search_tests {
     fn returns_non_objects_unchanged() {
         assert_eq!(compact_thought_json(json!(null)), json!(null));
         assert_eq!(compact_thought_json(json!("text")), json!("text"));
+    }
+}
+
+#[cfg(test)]
+mod cross_lineage_lock_order_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// `cross_lineage` must never hold one chain's read guard while it awaits
+    /// another's.
+    ///
+    /// The old code took a read guard on every searched chain, in the caller's
+    /// order. With tokio's write-preferring `RwLock` that deadlocks two
+    /// opposite-ordered searches once a writer is queued on each chain. This
+    /// test builds that exact cycle on a current-thread runtime, so every step
+    /// is ordered by explicit yields rather than by timing: search A reads `x`
+    /// then waits for `y` (a writer is queued there behind this test's read
+    /// guard), a writer queues on `x`, and this test, standing in for search B,
+    /// then wants `x` while still holding `y`. Under the old code A pins `x`, so
+    /// the writer on `x` never runs and B never gets `x`; with the fix A
+    /// releases `x` first and B gets it at once.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_cross_lineage_does_not_hold_one_chain_while_awaiting_another() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = Arc::new(MentisDbService::new(MentisDbServiceConfig::new(
+            dir.path().to_path_buf(),
+            "x",
+            StorageAdapterKind::Binary,
+        )));
+        let x = service.get_or_create_chain(Some("x"), None).await.unwrap();
+        let y = service.get_or_create_chain(Some("y"), None).await.unwrap();
+
+        // B holds `y` for reading; a writer queues behind it.
+        let b_holds_y = y.clone().read_owned().await;
+        let writer_y = tokio::spawn({
+            let y = y.clone();
+            async move {
+                let _guard = y.write().await;
+            }
+        });
+        while y.try_read().is_ok() {
+            tokio::task::yield_now().await;
+        }
+
+        // A: resolves lineage over [x, y]; it can read `x` but not `y`.
+        let searched = vec!["x".to_string(), "y".to_string()];
+        let hits = vec![("x".to_string(), Uuid::new_v4())];
+        let search_a = tokio::spawn({
+            let service = Arc::clone(&service);
+            async move { service.cross_lineage(&searched, &hits, false).await.len() }
+        });
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+
+        // A writer queues on `x`; B then wants `x` as well.
+        let writer_x = tokio::spawn({
+            let x = x.clone();
+            async move {
+                let _guard = x.write().await;
+            }
+        });
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        let b_gets_x = tokio::time::timeout(Duration::from_secs(10), x.read()).await;
+        assert!(
+            b_gets_x.is_ok(),
+            "cross_lineage held a read guard on one chain while awaiting another: deadlock"
+        );
+        drop(b_gets_x);
+
+        drop(b_holds_y);
+        assert_eq!(search_a.await.unwrap(), 1);
+        writer_y.await.unwrap();
+        writer_x.await.unwrap();
     }
 }

@@ -1280,6 +1280,15 @@ pub struct CrossSuccessor<'a> {
     pub kind: SuccessorKind,
 }
 
+impl CrossSuccessor<'_> {
+    /// Whether this successor is strictly newer than `other` (by timestamp,
+    /// then chain index), so on a tie the one seen first wins.
+    pub fn is_newer_than(&self, other: &CrossSuccessor<'_>) -> bool {
+        (self.thought.timestamp, self.thought.index)
+            > (other.thought.timestamp, other.thought.index)
+    }
+}
+
 /// Find the newest live thought, on any of `chains` other than the target's
 /// own, that supersedes, corrects or invalidates `target` on `target_chain`
 /// through a relation carrying that chain's key.
@@ -1324,32 +1333,89 @@ pub fn cross_chain_successor<'a>(
     target_chain: &str,
     target: Uuid,
 ) -> Option<CrossSuccessor<'a>> {
+    let mut best: Option<CrossSuccessor<'a>> = None;
+    for (chain_key, chain, audience) in chains {
+        let Some(found) =
+            cross_chain_successor_on(chain_key, chain, *audience, target_chain, target)
+        else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|b| found.is_newer_than(b)) {
+            best = Some(found);
+        }
+    }
+    best
+}
+
+/// The newest live successor of `target` (a thought on `target_chain`) that
+/// lives on the single chain `chain_key`, or `None` when that chain holds none.
+///
+/// This is the per-chain half of [`cross_chain_successor`]: it needs only the
+/// one chain it is given, so a caller that reads several chains can take them
+/// one at a time (holding one lock, never two) and combine the answers with
+/// [`CrossSuccessor::is_newer_than`], which is exactly what
+/// [`cross_chain_successor`] does. A `chain_key` equal to `target_chain` never
+/// matches: a relation on the target's own chain is ordinary lineage.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::audience::Audience;
+/// use mentisdb::lineage::cross_chain_successor_on;
+/// use mentisdb::{MentisDb, StorageAdapterKind, ThoughtInput, ThoughtRelation, ThoughtRelationKind, ThoughtType};
+///
+/// # fn main() -> std::io::Result<()> {
+/// let dir = tempfile::tempdir()?;
+/// let mut parent = MentisDb::open_with_key_and_storage_kind(dir.path(), "parent", StorageAdapterKind::Binary)?;
+/// let old = parent.append_thought("a", ThoughtInput::new(ThoughtType::Decision, "Deploy on Fridays."))?.clone();
+/// let mut sibling = MentisDb::open_with_key_and_storage_kind(dir.path(), "sibling", StorageAdapterKind::Binary)?;
+/// let new = sibling
+///     .append_thought("a", ThoughtInput::new(ThoughtType::Decision, "Never deploy on Fridays.").with_relations(vec![ThoughtRelation {
+///         kind: ThoughtRelationKind::Supersedes,
+///         target_id: old.id,
+///         chain_key: Some("parent".into()),
+///         valid_at: None,
+///         invalid_at: None,
+///     }]))?
+///     .clone();
+/// let found = cross_chain_successor_on("sibling", &sibling, Audience::Authorized, "parent", old.id).unwrap();
+/// assert_eq!(found.thought.id, new.id);
+/// assert!(cross_chain_successor_on("parent", &parent, Audience::Authorized, "parent", old.id).is_none());
+/// # Ok(())
+/// # }
+/// ```
+pub fn cross_chain_successor_on<'a>(
+    chain_key: &str,
+    chain: &'a MentisDb,
+    audience: Audience,
+    target_chain: &str,
+    target: Uuid,
+) -> Option<CrossSuccessor<'a>> {
+    if chain_key == target_chain {
+        return None;
+    }
     let key = (target_chain.to_owned(), target);
     let mut best: Option<CrossSuccessor<'a>> = None;
-    for (chain_key, chain, audience) in chains.iter().filter(|(k, _, _)| *k != target_chain) {
-        for edge in chain.lineage.cross.get(&key).into_iter().flatten() {
-            if !edge.in_force_at(None) || !chain.is_visible_index(edge.source_index, *audience) {
-                continue;
-            }
-            let Some(source) = chain.get_thought_by_id(edge.source_id) else {
-                continue;
-            };
-            let live = if chain.invalidated_at(source.id, None, *audience) {
-                chain.live_successor(source.id, None, *audience)
-            } else {
-                Some(source)
-            };
-            let Some(thought) = live else { continue };
-            let newer = best.as_ref().is_none_or(|b| {
-                (thought.timestamp, thought.index) > (b.thought.timestamp, b.thought.index)
-            });
-            if newer {
-                best = Some(CrossSuccessor {
-                    chain_key: (*chain_key).to_owned(),
-                    thought,
-                    kind: edge.kind,
-                });
-            }
+    for edge in chain.lineage.cross.get(&key).into_iter().flatten() {
+        if !edge.in_force_at(None) || !chain.is_visible_index(edge.source_index, audience) {
+            continue;
+        }
+        let Some(source) = chain.get_thought_by_id(edge.source_id) else {
+            continue;
+        };
+        let live = if chain.invalidated_at(source.id, None, audience) {
+            chain.live_successor(source.id, None, audience)
+        } else {
+            Some(source)
+        };
+        let Some(thought) = live else { continue };
+        let candidate = CrossSuccessor {
+            chain_key: chain_key.to_owned(),
+            thought,
+            kind: edge.kind,
+        };
+        if best.as_ref().is_none_or(|b| candidate.is_newer_than(b)) {
+            best = Some(candidate);
         }
     }
     best
