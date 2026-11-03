@@ -123,7 +123,7 @@
 
 \title{\textbf{MentisDB}\\[0.3em]\large Durable, Verifiable Memory for Software Agents}
 \author{Angel Leon}
-\date{master after 0.10.10.55 (unreleased changes included) --- 2026-11-01}
+\date{0.11.0.56 --- 2026-11-02}
 
 \begin{document}
 \maketitle
@@ -802,9 +802,9 @@ Writes respect the boundary too. An unsigned writer cannot link to,
 supersede or deduplicate against a thought in a private segment, and a
 refused write does not reveal which agents or keys exist. Push channels
 respect it as well. Webhooks never receive private thoughts or
-governance records, and the MCP event stream carries only
-\passthrough{\lstinline!tool\_called!} events (tool, chain, outcome and
-duration), never arguments or results.
+governance records, and the MCP event stream carries metadata only
+(tool, chain, outcome, duration, method and client address), never
+arguments, results or error text.
 
 Some metadata stays public by design, so that the chain remains
 verifiable. A public reader can see that a chain has private segments
@@ -891,16 +891,18 @@ While tokens are off, requests that come from a browser (they carry
 \passthrough{\lstinline!Origin!} or
 \passthrough{\lstinline!Sec-Fetch-Site!}) must name an allowed host,
 which blocks DNS-rebinding and cross-site requests to the loopback
-listeners. The dashboard sits behind an optional PIN with a per-IP limit
-of five failures per five minutes, sends a strict
+listeners. On a loopback bind the MCP listener also refuses every client
+whose \passthrough{\lstinline!Host!} is not on the same allowlist,
+whether or not tokens are on. The dashboard sits behind an optional PIN
+with a per-IP limit of five failures per five minutes, sends a strict
 Content-Security-Policy and frame-denial headers, and guards
 state-changing calls against cross-site requests.
 
 Several authorization bypasses have been found and fixed, in 0.10.9 and
-again in the unreleased changes, including decoy chain-key fields that
-let a chain-scoped token read another chain and a fail-open default for
+again in 0.11.0.56, including decoy chain-key fields that let a
+chain-scoped token read another chain and a fail-open default for
 unlisted MCP tools. Deployments that expose the daemon beyond loopback
-should run current master and enable tokens.
+should run 0.11.0.56 or later and enable tokens.
 
 
 \subsection{5. Storage and Durability}
@@ -1236,7 +1238,7 @@ fields and a case-insensitive substring, in append order. \emph{Ranked
 search} (\passthrough{\lstinline!query\_ranked!}) scores candidates with
 several signals and returns them best first. Agents use ranked search
 almost always. This section describes ranked search with its defaults as
-of current master.
+of 0.11.0.56.
 
 \subsubsection{6.1 Candidates}
 
@@ -1730,12 +1732,12 @@ differs between runs and is stated with each result.
 
 \subsubsection{9.2 Results}
 
-The full protocol was re-run on master on 2026-11-01 with the current
-defaults (relative fusion at 0.8, duplicate collapse at 0.9, synonym
-weight 0.3, global document frequency), MiniLM embeddings, a fresh
-daemon and data directory, and fresh ingestion. The scripts and question
-sets are the same as for the release run below. Raw outputs and the
-protocol are in
+The full protocol was re-run on 2026-11-01, on the master build that
+became 0.11.0.56, with its defaults (relative fusion at 0.8, duplicate
+collapse at 0.9, synonym weight 0.3, global document frequency), MiniLM
+embeddings, a fresh daemon and data directory, and fresh ingestion. The
+scripts and question sets are the same as for the release run below. Raw
+outputs and the protocol are in
 \passthrough{\lstinline!results/benchmarks/2026-11-01-full-protocol/!}.
 
 {\def\LTcaptype{none} % do not increment counter
@@ -1819,10 +1821,10 @@ Earlier full runs show where the gains came from:
 
 {\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.1837}}
-  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.5102}}
-  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.1531}}
-  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.1531}}@{}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.1011}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.5618}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.1685}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.1685}}@{}}
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
 Release
@@ -1844,8 +1846,8 @@ LongMemEval R@5
 0.9.9 & automatic thesaurus, real embeddings & 72.6\% & 66.8\% \\
 0.10.9.54 & stemmed thesaurus keys, damped synonyms, RRF fix & 73.5\% &
 68.0\% \\
-master, 2026-11-01 & valid-version retrieval, relative fusion, collapse
-& 76.7\% & 69.8\% \\
+0.11.0.56 & valid-version retrieval, relative fusion, collapse & 76.7\%
+& 69.8\% \\
 \end{longtable}
 }
 

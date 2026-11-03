@@ -1,8 +1,8 @@
 # MentisDB: Durable, Verifiable Memory for Software Agents
 
 **Author:** Angel Leon
-**Version:** master after 0.10.10.55 (unreleased changes included)
-**Date:** 2026-11-01
+**Version:** 0.11.0.56
+**Date:** 2026-11-02
 
 ---
 
@@ -512,10 +512,10 @@ client whose `Host` is not on the same allowlist, whether or not tokens are on. 
 per-IP limit of five failures per five minutes, sends a strict Content-Security-Policy and
 frame-denial headers, and guards state-changing calls against cross-site requests.
 
-Several authorization bypasses have been found and fixed, in 0.10.9 and again in the
-unreleased changes, including decoy chain-key fields that let a chain-scoped token read
+Several authorization bypasses have been found and fixed, in 0.10.9 and again in
+0.11.0.56, including decoy chain-key fields that let a chain-scoped token read
 another chain and a fail-open default for unlisted MCP tools. Deployments that expose the
-daemon beyond loopback should run current master and enable tokens.
+daemon beyond loopback should run 0.11.0.56 or later and enable tokens.
 
 ---
 
@@ -731,7 +731,7 @@ Two read paths exist. *Filter search* (`query`) returns thoughts that match inde
 fields and a case-insensitive substring, in append order. *Ranked search*
 (`query_ranked`) scores candidates with several signals and returns them best first.
 Agents use ranked search almost always. This section describes ranked search with its
-defaults as of current master.
+defaults as of 0.11.0.56.
 
 ### 6.1 Candidates
 
@@ -1074,7 +1074,7 @@ and is stated with each result.
 
 ### 9.2 Results
 
-The full protocol was re-run on master on 2026-11-01 with the current defaults (relative
+The full protocol was re-run on 2026-11-01, on the master build that became 0.11.0.56, with its defaults (relative
 fusion at 0.8, duplicate collapse at 0.9, synonym weight 0.3, global document frequency),
 MiniLM embeddings, a fresh daemon and data directory, and fresh ingestion. The scripts and
 question sets are the same as for the release run below. Raw outputs and the protocol are
@@ -1138,7 +1138,7 @@ Earlier full runs show where the gains came from:
 | 0.8.9 | irregular lemmas | 71.9% | 66.8% |
 | 0.9.9 | automatic thesaurus, real embeddings | 72.6% | 66.8% |
 | 0.10.9.54 | stemmed thesaurus keys, damped synonyms, RRF fix | 73.5% | 68.0% |
-| master, 2026-11-01 | valid-version retrieval, relative fusion, collapse | 76.7% | 69.8% |
+| 0.11.0.56 | valid-version retrieval, relative fusion, collapse | 76.7% | 69.8% |
 
 On a two-conversation LoCoMo subset, 0.8.1 reached 88.7% R@10. That number is for the
 subset only and should not be compared with full-benchmark results.
