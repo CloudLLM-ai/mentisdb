@@ -26,6 +26,7 @@
 //! - `MENTISDB_THOUGHT_SOUNDS` (default `false`; set `1`/`true`/`yes`/`on` to enable per-thought and per-read sounds)
 //! - `MENTISDB_DEDUP_THRESHOLD` (optional; unset = auto-dedup off; recommended `0.85` for long-lived chains)
 //! - `MENTISDB_DEDUP_SCAN_WINDOW` (default `64`; only used when dedup threshold is set)
+//! - `MENTISDB_MAX_BODY_BYTES` (default `67108864`, 64 MiB; never below 1 MiB; larger request bodies get `413`)
 //! - `RUST_LOG`
 
 #![cfg_attr(test, allow(dead_code))]
@@ -2447,6 +2448,12 @@ Important environment variables:
   MENTISDB_DEDUP_SCAN_WINDOW
     How many recent thoughts to scan for auto-dedup. Default: 64. Only used when
     MENTISDB_DEDUP_THRESHOLD is set.
+
+  MENTISDB_MAX_BODY_BYTES
+    Largest request body any REST or MCP endpoint accepts, in bytes. Default: 67108864
+    (64 MiB); values below 1048576 are raised to it. Over it the answer is 413. A read
+    proof without X-Mentis-Content-Sha256 is still limited to 1 MiB (the CLI and
+    pymentisdb send the header).
 
   MENTISDB_TLS_CERT
   MENTISDB_TLS_KEY

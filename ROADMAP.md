@@ -24,7 +24,7 @@
 - **Issue #23 memory blow-up** — one shared FastEmbed model per process, bounded inference chunks, single background sidecar rebuild worker, model cache under `<MENTISDB_DIR>`, `MENTISDB_EMBEDDINGS` opt-out. 13 chains / 2,704 thoughts: previously >6 GB (reporter OOM at 28.8 GiB), now ~1.7 GB peak.
 - **Retrieval** — RRF rerank is a scaled consensus bonus (LoCoMo rerank R@10 5.9% -> 74.1%, LongMemEval rerank R@5 2.8% -> 68.6%); stemmed thesaurus damped to weight 0.3 / cap 3; federated RRF keyed by (chain, id); filtered HNSW recall. Default LoCoMo R@10 72.7 -> 73.5, LongMemEval R@5 66.8 -> 68.0; query throughput ~206/159 -> ~384/385 q/s.
 - **Durability** — torn-tail repair limited to a strict partial final record (mid-file corruption fails open); atomic registries; overlay coverage metadata with crash catch-up; opt-in `MENTISDB_FSYNC`; lone durable appends skip the group-commit wait. Per-append cost 6.3-7.8 ms -> 1.4 ms.
-- **Server behaviour** — unknown-chain reads return 404; accurate error statuses; 413 over 1 MiB; single-flight off-thread chain open; `<MENTISDB_DIR>/.env` loaded.
+- **Server behaviour** — unknown-chain reads return 404; accurate error statuses; 413 over `MENTISDB_MAX_BODY_BYTES` (64 MiB; 1 MiB for a read proof without a content digest); single-flight off-thread chain open; `<MENTISDB_DIR>/.env` loaded.
 - **CI and deps** — Intel macOS binary returns without `local-embeddings`; ureq 3, sha2 0.11, ed25519-dalek 3, zip 9, crossterm 0.29 and more; fastembed kept on 5.x (fastembed 7 / ort rc.15 auto-registers CoreML on macOS, ~2.5x slower queries).
 - Audit run as parallel agent workstreams coordinated through MentisDB. Full LoCoMo/LongMemEval re-run.
 

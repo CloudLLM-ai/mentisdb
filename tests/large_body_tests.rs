@@ -367,3 +367,26 @@ async fn the_cli_imports_a_large_file_with_a_read_key() {
     assert!(out.contains("\"count\":5"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// ---------------------------------------------------------------- the setting
+
+/// `MENTISDB_MAX_BODY_BYTES` is read by the daemon's configuration: 64 MiB when
+/// unset or unparsable, the value when valid, never below 1 MiB.
+#[test]
+fn the_cap_comes_from_the_environment() {
+    use mentisdb::server::{MentisDbServerConfig, DEFAULT_MAX_BODY_BYTES};
+    // The only test in this binary that touches the process environment.
+    let read = |value: Option<&str>| {
+        match value {
+            Some(value) => std::env::set_var("MENTISDB_MAX_BODY_BYTES", value),
+            None => std::env::remove_var("MENTISDB_MAX_BODY_BYTES"),
+        }
+        MentisDbServerConfig::from_env().service.max_body_bytes
+    };
+    assert_eq!(read(None), DEFAULT_MAX_BODY_BYTES);
+    assert_eq!(read(Some("not a number")), DEFAULT_MAX_BODY_BYTES);
+    assert_eq!(read(Some("5242880")), 5 * 1024 * 1024);
+    assert_eq!(read(Some(" 2097152 ")), 2 * 1024 * 1024);
+    assert_eq!(read(Some("10")), MIN_MAX_BODY_BYTES);
+    std::env::remove_var("MENTISDB_MAX_BODY_BYTES");
+}

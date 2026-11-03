@@ -549,6 +549,12 @@ and `cert` work on the data directory directly and do not need the daemon.
   blocked; an invalid value or an entry broader than `/8` (IPv4 or IPv6) stops the daemon
   from starting. Set it in the
   environment or a `.env` file (`./.env` or `<MENTISDB_DIR>/.env`). See "Webhook targets" below.
+- `MENTISDB_MAX_BODY_BYTES`
+  Largest request body, in bytes, any REST or MCP endpoint accepts. Default: `67108864` (64 MiB);
+  values below `1048576` (1 MiB) are raised to it. Over it the answer is `413`. It bounds the memory
+  one request can make the daemon hold while it checks who is asking (bearer-token authorization reads
+  the body to find the `chain_key`), so raise it only as far as your biggest import needs. See
+  [Large request bodies](#large-request-bodies).
 - `MENTISDB_BEARER_TOKEN_ACCESS`
   Require bearer tokens for MCP requests. Default: `false`. Set `true` for remote
   or multi-user MCP servers. This can also be toggled live from the dashboard Settings screen.
@@ -959,10 +965,28 @@ REST and MCP errors map to HTTP statuses as follows:
 | `403` | Permission denied: missing or invalid signature on a signed skill upload, inactive agent, a write the chain's access policy refused, a `Host` outside the allowlist, or an operator-only route (`/v1/agents/keys`, `/v1/agents/keys/revoke`, `/v1/agents/disable`, `/v1/access/policy/set`) |
 | `404` | Unknown chain (see above) or another missing resource |
 | `409` | Conflict, e.g. `POST /v1/chains/branch` into a chain key that already exists |
-| `413` | Request body over 1 MiB, for requests carrying a read proof (`X-Mentis-Auth`) and for REST while bearer-token access is enabled. A large `mentisdb memory import` with a read key hits this: import in batches |
+| `413` | Request body over `MENTISDB_MAX_BODY_BYTES` (default 64 MiB), or over 1 MiB for a read proof (`X-Mentis-Auth`) that does not also send `X-Mentis-Content-Sha256` (see [Large request bodies](#large-request-bodies)). The `mentisdb` CLI and `pymentisdb` send it, so a large `memory import` works |
 | `500` | Server fault; the body says only `"internal server error"` and details go to the daemon log |
 | `501` | `POST /v1/extract-memories` on a build without the `llm-extraction` feature |
 | `503` | The chain is being migrated or is quarantined; the body names the state, and a migrating chain adds `Retry-After` and `retry_after_secs` (see [Upgrading and chain migrations](#upgrading-and-chain-migrations)) |
+
+### Large request bodies
+
+Every REST and MCP body is limited to `MENTISDB_MAX_BODY_BYTES` (default 64 MiB). Two paths
+decide who is asking, and they treat a large body differently:
+
+- **Bearer token.** The daemon reads the body (up to the cap) to find the `chain_key` the token must
+  cover, then hands it to the handler.
+- **Read proof (`X-Mentis-Auth`).** The signature covers `SHA-256(body)`, so by itself the daemon must
+  read the whole body to check it, which it only does up to **1 MiB**. A client that also sends
+  `X-Mentis-Content-Sha256: <64 lowercase hex>` (the same digest the proof signed) lets the daemon verify
+  the proof **before** reading the body and then hash the body as it streams. The signed body goes through;
+  any other body fails at its end with `400` and no handler has run, so nothing is imported or changed. The
+  proof format is unchanged: older clients (and a daemon that predates the header) work as before.
+
+`mentisdb` (CLI) and `pymentisdb` send the digest header with every proof. If you sign requests yourself, add
+the header and keep the body bytes you hash identical to the ones you send. Code on the daemon side that
+streams a body must not act on it before the end: the digest is only confirmed there.
 
 ### Append Thought — `POST /v1/thoughts`
 

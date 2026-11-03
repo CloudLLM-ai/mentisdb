@@ -57,7 +57,7 @@ with read access to a backup; someone with write access to the data directory.
 | Tampering | Chain, policy, key set | Hash chain; governance records are signed, linked (`prev_policy`) and committed (`keys_root`); an invalid record is ignored and reported |
 | Repudiation | Who changed access | Every change is a signed record in the chain; the operator signs with a key kept on the host |
 | Information disclosure | Private segments | Audience filter at the library (queries, ranking statistics, graph, lineage, advice, export) and at every server route; see *What a public reader can still learn* |
-| Denial of service | Read proofs, nonce cache, bodies | 1 MiB body cap, replay cache written only for authorized keys, bounded per key and in total, failing closed to the public view; constant-work header grammar |
+| Denial of service | Read proofs, nonce cache, bodies | `MENTISDB_MAX_BODY_BYTES` cap (64 MiB default; 1 MiB for a proof without a content digest), replay cache written only for authorized keys, bounded per key and in total, failing closed to the public view; constant-work header grammar |
 | Elevation of privilege | Key administration | Operator-only; REST/MCP routes answer 403; the operator key is always a governor so a policy can never lock itself out |
 
 Out of scope, documented limits:
@@ -131,6 +131,26 @@ reader* of that chain. A valid proof by a key that is not allowed gains
 nothing, and a request without the header is a public reader. A header that
 is present but fails steps 1 to 3 is refused with 401 so a client with a
 stale clock learns why.
+
+### Large bodies: `X-Mentis-Content-Sha256`
+
+Because the signature covers `SHA-256(body)`, a server holding only the proof must read the whole body
+to check it, which it does only up to 1 MiB. A client may add an optional second header,
+
+```text
+X-Mentis-Content-Sha256: <64 lowercase hex>
+```
+
+carrying the digest the proof signed. The signed bytes are unchanged, so every existing client (including
+`mentischat` and the interop vectors) verifies as before. A server that knows the header verifies the
+signature against the declared digest *without reading the body*, then hashes the body as it streams and
+fails the request at its end (`400`) if the bytes are not the signed ones; the body is limited only by
+`MENTISDB_MAX_BODY_BYTES` (default 64 MiB). The header is strict (exactly 64 lowercase hex characters, given
+once; anything else is `400`) and a digest that is not the signed body's fails the signature (`401`).
+
+The digest is confirmed only at the end of the body. MentisDB's handlers collect the whole body before they
+run, so a mismatching body never reaches one and nothing is committed. Anything that streams a body must buffer
+or spool it and commit after the end.
 
 A proof is verified against the public key written in its own header, so
 *anyone* can make a valid proof with a fresh keypair. For that reason the

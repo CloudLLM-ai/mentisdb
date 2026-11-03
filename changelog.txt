@@ -47,6 +47,11 @@ UNRELEASED
     cap, `MENTISDB_MAX_BODY_BYTES` (default 64 MiB, never below 1 MiB), also
     `MentisDbServiceConfig::with_max_body_bytes`. Over it, `413`. The bearer path
     still buffers the body (it reads `chain_key` from it) up to the cap.
+  - docs(limits): README, `docs/CHAIN_ACCESS.md`, `mentisdb --help`, ROADMAP and
+    docs.mentisdb.com drop the "1 MiB, import in batches" limitation: new "Large
+    request bodies" section, `MENTISDB_MAX_BODY_BYTES` in the env table, the `413` row
+    corrected. The CLI (`memory import` and every other command with a read key) and
+    pymentisdb send `X-Mentis-Content-Sha256` with every proof.
   - feat(auth): the proof format is unchanged (old clients, mentischat and
     pymentisdb verify as before); `read_auth::{body_digest, parse_content_digest,
     verify_request_for_digest, CONTENT_DIGEST_HEADER}` and a `content_digest` fuzz
