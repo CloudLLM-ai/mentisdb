@@ -11,6 +11,24 @@
 *.pem
 *.key
 **/*keypair*.json
+*.p12
+*.pfx
+# Data and backups: chains, registries, backup archives and the operator key
+# directory hold plaintext memory (private segments included) and keys. A copy
+# of a data directory lying in the working tree must never end up in an image.
+*.mentis
+*.mbak
+*.tcbin
+*.bak
+**/*~
+.env~
+results/
+promo/
+operator/
+tls/
+mentisdb-registry.json
+mentisdb-webhooks.json
+mentisdb-skills.bin
 target/
 **/target/
 .git/

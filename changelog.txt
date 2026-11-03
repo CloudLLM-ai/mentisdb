@@ -1,4 +1,16 @@
 UNRELEASED
+  - security(ci): release workflow least privilege and pinned third-party actions.
+    `build.yml` gave `contents: write` to the build jobs, which also run on pull
+    requests; every job is now read-only and a new `release` job (tag pushes only, after
+    all seven builds succeeded) is the only one that can write, downloading the seven
+    binaries from the build artifacts and attaching them with `softprops/action-gh-release`.
+    `test.yml` and `clippy.yml` get an explicit `contents: read`. Third-party actions
+    (`softprops/action-gh-release`, `pypa/gh-action-pypi-publish`, `dtolnay/rust-toolchain`)
+    are pinned to full commit SHAs with a version comment (the toolchain is now chosen with
+    the `toolchain:` input); `actions/*` and `docker/*` keep version tags. `.dockerignore`
+    now also excludes `*.mentis`, `*.mbak`, `*.tcbin`, `*.bak`, `*~`, `.env~`, `results/`,
+    `promo/`, `operator/`, `tls/`, the registry, webhook and skill files and `*.p12`/`*.pfx`,
+    so a data directory or backup lying in the working tree cannot enter an image.
   - security(mcp): the event stream (`GET /`, action `events/subscribe`) is global-token only.
     It reports every tool call on every chain (tool name, chain key, outcome), but was
     authorized for any active token, so a token scoped to one chain could learn which other

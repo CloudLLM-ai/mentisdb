@@ -32,7 +32,7 @@ jobs:
           python3 -m zipfile -l pymentisdb/dist/*.whl | grep -q 'pymentisdb/client.py'
 
       - name: Publish to PyPI with trusted publishing
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: pymentisdb/dist
           skip-existing: true

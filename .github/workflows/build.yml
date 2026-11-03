@@ -7,6 +7,12 @@ on:
   pull_request:
     branches: ["master", "main"]
 
+# Least privilege: nothing here writes to the repository. Only the `release`
+# job at the bottom has `contents: write`, and it runs on tag pushes only, so
+# pull-request code never executes with a token that can edit releases.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -25,7 +31,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     container: ubuntu:22.04
     permissions:
-      contents: write
+      contents: read
 
     strategy:
       fail-fast: false
@@ -52,8 +58,9 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Cache Cargo registry + build
@@ -101,18 +108,12 @@ jobs:
           path: dist/${{ matrix.artifact }}
           retention-days: 30
 
-      - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v3
-        with:
-          files: dist/${{ matrix.artifact }}
-          token: ${{ secrets.GITHUB_TOKEN }}
 
   build:
     name: mentisdb (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     permissions:
-      contents: write
+      contents: read
 
     strategy:
       fail-fast: false
@@ -150,8 +151,9 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Install Linux audio build deps
@@ -188,10 +190,32 @@ jobs:
           path: dist/${{ matrix.artifact }}
           retention-days: 30
 
-      # On tagged releases, attach binaries to the GitHub Release
-      - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v3
+  # On tagged releases, attach the seven binaries (five `build` legs and two
+  # `build-linux-compat` legs, uploaded above as artifacts) to the GitHub
+  # Release. The only job with write access, and only on tag pushes; it waits
+  # for every build leg, so a release never carries a partial set.
+  release:
+    name: attach binaries to the release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build-linux-compat, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the build artifacts
+        uses: actions/download-artifact@v8
         with:
-          files: dist/${{ matrix.artifact }}
+          path: dist
+          pattern: mentisdb-*
+          merge-multiple: true
+
+      - name: Check the seven assets
+        run: |
+          ls -l dist
+          test "$(find dist -type f | wc -l)" -eq 7
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: dist/*
           token: ${{ secrets.GITHUB_TOKEN }}
