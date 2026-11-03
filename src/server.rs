@@ -10,6 +10,9 @@
 //! - legacy CloudLLM-compatible endpoints:
 //!   - `POST /tools/list`
 //!   - `POST /tools/execute`
+//!   - `POST /resources/list`
+//!   - `POST /resources/read`
+//! - a server-sent event stream at `GET /` (see "Event stream" below)
 //!
 //! The REST surface exposes MentisDB operations directly:
 //!
@@ -61,6 +64,47 @@
 //! - `POST /v1/extract-memories`
 //! - `POST /v1/admin/flush`
 //!
+//! # Host and Origin policy
+//!
+//! A web page whose host name is re-resolved to `127.0.0.1` (DNS rebinding)
+//! reaches a loopback listener as "same-origin", so every listener checks the
+//! `Host` header against one allowlist, the same one the dashboard uses:
+//! `localhost`, `127.0.0.1`, `[::1]`, the `my.mentisdb.com` alias, the
+//! `MENTISDB_BIND_HOST` value, every comma-separated entry of
+//! `MENTISDB_DASHBOARD_ALLOWED_HOSTS`, and, when `MENTISDB_BIND_HOST` is a
+//! wildcard address, the machine's own interface IPs.
+//!
+//! How each transport applies it:
+//!
+//! | Listener | Check |
+//! |---|---|
+//! | MCP on a loopback bind (default) | `cloudllm_mcp` rejects any other `Host` with `403`, for every client, on `POST /`, `GET /` and the legacy routes. MentisDB passes it the allowlist, so the alias and configured names keep working. |
+//! | MCP on a wildcard bind (Docker, LAN) | No `Host` check for programmatic clients, who legitimately use service names and DHCP addresses. |
+//! | REST, and MCP with bearer tokens off | A request from a browser (it carries `Origin` or `Sec-Fetch-Site`) must name an allowed `Host` and, if present, an allowed `Origin` host, else `403`. |
+//! | Dashboard | Every route checks `Host`; state-changing calls also check `Origin`. |
+//!
+//! The library's own `Origin` check admits loopback origins only, which would
+//! refuse `https://my.mentisdb.com` although its `Host` is allowed, so it is
+//! switched off and the `Origin` host is compared against the same allowlist
+//! by MentisDB's browser guard. The allowlist handed to the library is read
+//! when a router is built: set `MENTISDB_DASHBOARD_ALLOWED_HOSTS` before the
+//! daemon starts. IPv6 entries are matched in their canonical form
+//! (`[2001:db8::7]`).
+//!
+//! # Event stream
+//!
+//! `GET /` on the MCP listener is `cloudllm_mcp`'s event stream
+//! (`text/event-stream`), available when the router was built with an
+//! [`SseBroadcaster`] ([`standard_mcp_router`], [`start_mcp_server`]). It goes
+//! through the same `Host`, bearer and `Origin` checks as `POST /`; with bearer
+//! enforcement on, any active token (global or chain-scoped) may subscribe,
+//! because the stream carries metadata only. Events never carry tool
+//! arguments, tool results or error text (`SsePayloadMode::Minimal`, which
+//! MentisDB never overrides): the library reports each JSON-RPC method and
+//! each legacy tool call with its client address and outcome, and MentisDB adds
+//! one `tool_called` event per tool call with the tool name, chain key,
+//! outcome and duration.
+//!
 //! # Compact search results
 //!
 //! `POST /v1/ranked-search` and `POST /v1/federated-search`, and the MCP tools
@@ -108,12 +152,13 @@ use axum::routing::{delete, get, post};
 use axum::{body::Body, Json, Router};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use mcp::http::axum_router as shared_mcp_router;
+use mcp::http::axum_router_with_guard as shared_mcp_router;
+use mcp::streamable_http::SSE_SUBSCRIBE_ACTION;
 use mcp::{
     streamable_http_router_with_sse, BearerAuthContext, BearerTokenAuthorizer, HttpServerConfig,
-    IpFilter, ResourceError, ResourceMetadata, SseBroadcaster, SseEventHandler, SseMessage,
-    StreamableHttpConfig, ToolError, ToolMetadata, ToolParameter, ToolParameterType, ToolProtocol,
-    ToolResult,
+    IpFilter, RequestGuard, ResourceError, ResourceMetadata, SseBroadcaster, SseEventHandler,
+    SseMessage, StreamableHttpConfig, ToolError, ToolMetadata, ToolParameter, ToolParameterType,
+    ToolProtocol, ToolResult,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -137,50 +182,6 @@ const MENTISDB_REGISTRY_FILENAME: &str = "mentisdb-registry.json";
 const LEGACY_THOUGHTCHAIN_REGISTRY_FILENAME: &str = "thoughtchain-registry.json";
 const MENTISDB_PROTOCOL_NAME: &str = "mentisdb";
 
-/// Server-sent event bridge that never carries tool arguments.
-///
-/// The MCP transport reports every tool call, with its raw JSON parameters, to
-/// an event handler, and [`SseEventHandler`] broadcasts those events to every
-/// connected SSE client. The parameters of `mentisdb_append` are the thought
-/// text and those of the search tools are the query, so a subscriber would read
-/// private writes and reads as they happen. This wrapper keeps the event but
-/// replaces its parameters with the chain key alone.
-#[derive(Clone)]
-pub(crate) struct RedactingEventHandler {
-    inner: SseEventHandler,
-}
-
-#[async_trait]
-impl mcp::McpEventHandler for RedactingEventHandler {
-    async fn on_mcp_event(&self, event: &mcp::McpEvent) {
-        match event {
-            mcp::McpEvent::ToolCallReceived {
-                client_addr,
-                tool_name,
-                parameters,
-            } => {
-                let redacted = match parameters.get("chain_key") {
-                    Some(chain_key) => json!({ "chain_key": chain_key, "redacted": true }),
-                    None => json!({ "redacted": true }),
-                };
-                self.inner
-                    .on_mcp_event(&mcp::McpEvent::ToolCallReceived {
-                        client_addr: client_addr.clone(),
-                        tool_name: tool_name.clone(),
-                        parameters: redacted,
-                    })
-                    .await;
-            }
-            other => self.inner.on_mcp_event(other).await,
-        }
-    }
-}
-
-/// A broadcaster and the event handler that feeds it (see [`RedactingEventHandler`]).
-pub(crate) fn redacting_sse_handler(buffer: usize) -> (RedactingEventHandler, SseBroadcaster) {
-    let (inner, broadcaster) = SseEventHandler::new(buffer);
-    (RedactingEventHandler { inner }, broadcaster)
-}
 const MENTISDB_SKILL_MD: &str = include_str!("../MENTISDB_SKILL.md");
 const MENTISDB_SKILL_RESOURCE_URI: &str = "mentisdb://skill/core";
 const MENTISDB_MCP_BOOTSTRAP_INSTRUCTIONS: &str = "\
@@ -1267,7 +1268,7 @@ pub async fn start_mcp_server(
     config: MentisDbServiceConfig,
 ) -> Result<(ServerHandle, SseBroadcaster), Box<dyn Error + Send + Sync>> {
     let service = Arc::new(MentisDbService::new(config));
-    let (event_handler, broadcaster) = redacting_sse_handler(256);
+    let (event_handler, broadcaster) = SseEventHandler::new(256);
     let router = standard_and_legacy_mcp_router(
         service,
         addr,
@@ -1380,7 +1381,7 @@ pub async fn start_https_mcp_server(
     key_path: PathBuf,
 ) -> Result<(ServerHandle, SseBroadcaster), Box<dyn Error + Send + Sync>> {
     let service = Arc::new(MentisDbService::new(config));
-    let (event_handler, broadcaster) = redacting_sse_handler(256);
+    let (event_handler, broadcaster) = SseEventHandler::new(256);
     let router = standard_and_legacy_mcp_router(
         service,
         addr,
@@ -1530,7 +1531,7 @@ pub async fn start_servers_with_migrations(
         service.set_migration_manager(manager);
     }
 
-    let (event_handler, broadcaster) = redacting_sse_handler(256);
+    let (event_handler, broadcaster) = SseEventHandler::new(256);
 
     let mcp = start_mcp_server_with_service(
         config.mcp_addr,
@@ -1923,14 +1924,15 @@ pub fn mcp_router(config: MentisDbServiceConfig) -> Router {
 /// A tuple of `(Router, SseBroadcaster)`:
 /// - `Router` — the Axum router with streamable-HTTP MCP (`POST /`) and health check (`GET /health`).
 /// - `SseBroadcaster` — a broadcast channel for server-sent events. Call `.subscribe()` to receive
-///   live MCP events (tool calls, results, errors) as SSE frames. Useful for real-time dashboards,
-///   logging, or downstream event processing.
+///   live MCP events as SSE frames: which methods and tools ran, for whom and how it went, never
+///   tool arguments or results (see the module docs, "Event stream"). The router serves the same
+///   stream at `GET /`.
 pub fn standard_mcp_router(
     config: MentisDbServiceConfig,
     bind_host: IpAddr,
 ) -> (Router, SseBroadcaster) {
     let service = Arc::new(MentisDbService::new(config));
-    let (event_handler, broadcaster) = redacting_sse_handler(256);
+    let (event_handler, broadcaster) = SseEventHandler::new(256);
     let bearer_authorizer = Arc::new(MentisDbBearerAuthorizer::new(&service.config));
     let router = standard_mcp_only_router(
         service,
@@ -2353,9 +2355,11 @@ enum BearerAuthTarget {
 
 fn bearer_auth_target(context: &BearerAuthContext, default_chain_key: &str) -> BearerAuthTarget {
     match context.action.as_str() {
-        "tools/list" | "resources/list" | "resources/read" | "initialize" => {
-            BearerAuthTarget::AnyActiveToken
-        }
+        // `SSE_SUBSCRIBE_ACTION` is the `GET /` event stream: metadata only,
+        // so any active token may listen. Named here so a new `_` arm cannot
+        // silently change who can subscribe.
+        "tools/list" | "resources/list" | "resources/read" | "initialize"
+        | SSE_SUBSCRIBE_ACTION => BearerAuthTarget::AnyActiveToken,
         "tools/call" | "tools/execute" => context
             .payload
             .as_ref()
@@ -2968,6 +2972,7 @@ fn standard_and_legacy_mcp_router(
             event_handler: event_handler.clone(),
         },
         Arc::new(MentisDbMcpProtocol::new(service.clone())),
+        &mcp_request_guard(&mcp_allowed_hosts(addr)),
     )
     .layer(middleware::from_fn_with_state(
         service.clone(),
@@ -2979,7 +2984,8 @@ fn standard_and_legacy_mcp_router(
     ))
     .layer(middleware::from_fn(
         crate::server_lens::read_auth_middleware,
-    ));
+    ))
+    .layer(middleware::from_fn(mcp_unauthorized_guidance_middleware));
     standard_mcp_only_router(
         service,
         addr,
@@ -2997,7 +3003,7 @@ fn standard_mcp_only_router(
     event_handler: Option<Arc<dyn mcp::McpEventHandler>>,
     bearer_authorizer: Arc<dyn BearerTokenAuthorizer>,
 ) -> Router {
-    let skip_origin = addr.ip().is_unspecified();
+    let hosts = mcp_allowed_hosts(addr);
     Router::new()
         .route("/health", get(health_handler))
         .merge(streamable_http_router_with_sse(
@@ -3008,23 +3014,14 @@ fn standard_mcp_only_router(
                 ip_filter: IpFilter::new(),
                 event_handler,
             },
-            &StreamableHttpConfig::new(MENTISDB_PROTOCOL_NAME, env!("CARGO_PKG_VERSION"))
-                .with_server_title("MentisDB")
-                .with_instructions(MENTISDB_MCP_BOOTSTRAP_INSTRUCTIONS)
-                .with_skip_origin_validation(skip_origin),
+            &mcp_streamable_config(hosts),
             Arc::new(
                 MentisDbMcpProtocol::new(service.clone()).with_events(sse_broadcaster.clone()),
             ),
-            // The library would stream every tool result to any subscriber of
-            // `GET /`; MentisDB serves a sanitized stream itself instead.
-            None,
-        ))
-        .layer(middleware::from_fn_with_state(
-            SseGate {
-                service: service.clone(),
-                broadcaster: sse_broadcaster,
-            },
-            sse_events_middleware,
+            // `GET /` is the library's event stream: it runs the same Host,
+            // bearer (action `events/subscribe`) and Origin checks as `POST`
+            // and carries metadata only (`SsePayloadMode::Minimal`).
+            sse_broadcaster,
         ))
         .layer(middleware::from_fn_with_state(
             service.clone(),
@@ -3037,85 +3034,50 @@ fn standard_mcp_only_router(
         .layer(middleware::from_fn(
             crate::server_lens::read_auth_middleware,
         ))
+        .layer(middleware::from_fn(mcp_unauthorized_guidance_middleware))
 }
 
-/// State of [`sse_events_middleware`].
-#[derive(Clone)]
-struct SseGate {
-    service: Arc<MentisDbService>,
-    broadcaster: Option<SseBroadcaster>,
-}
-
-/// Serves `GET /` as a stream of `tool_called` events (see
-/// [`MentisDbMcpProtocol::execute`]) and nothing else: no arguments, no
-/// results, so a subscriber learns that tools ran and how long they took, not
-/// what was read or written. With bearer enforcement on, a valid token is
-/// required to subscribe.
-async fn sse_events_middleware(
-    State(gate): State<SseGate>,
-    request: axum::extract::Request,
-    next: middleware::Next,
-) -> axum::response::Response {
-    use tokio_stream::StreamExt;
-    let wants_stream = request.method() == axum::http::Method::GET
-        && request.uri().path() == "/"
-        && request
-            .headers()
-            .get(axum::http::header::ACCEPT)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.contains("text/event-stream"));
-    let (true, Some(broadcaster)) = (wants_stream, gate.broadcaster.as_ref()) else {
-        return next.run(request).await;
-    };
-    if gate
-        .service
-        .config
-        .bearer_token_access
-        .load(Ordering::Relaxed)
-    {
-        let authorized = request
-            .headers()
-            .get("Authorization")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .map(str::trim)
-            .is_some_and(|token| {
-                gate.service
-                    .config
-                    .bearer_token_store
-                    .active_scope(token)
-                    .is_some()
-            });
-        if !authorized {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "a valid bearer token is required to subscribe" })),
-            )
-                .into_response();
-        }
+/// The `Host` values `cloudllm_mcp` is told to accept on a listener bound to
+/// `addr`; empty means the library performs no `Host` check.
+///
+/// `cloudllm_mcp` 0.4 turns away any `Host` that is not `localhost`,
+/// `127.0.0.1` or `[::1]` on a loopback bind (DNS rebinding). MentisDB also
+/// answers to `my.mentisdb.com`, `MENTISDB_BIND_HOST` and
+/// `MENTISDB_DASHBOARD_ALLOWED_HOSTS`, so on a loopback bind the library is
+/// given [`crate::dashboard::HostPolicy::library_hosts`], the very policy the
+/// dashboard and [`browser_guard_middleware`] decide by. On any other bind
+/// the library performs no `Host` check, as before: a Docker or LAN client
+/// legitimately reaches the daemon by service name or DHCP address, and the
+/// browser guard still refuses foreign names from browsers.
+fn mcp_allowed_hosts(addr: SocketAddr) -> Vec<String> {
+    if addr.ip().is_loopback() {
+        crate::dashboard::HostPolicy::from_env().library_hosts()
+    } else {
+        Vec::new()
     }
-    let stream =
-        tokio_stream::wrappers::BroadcastStream::new(broadcaster.subscribe()).map(|message| {
-            Ok::<_, std::convert::Infallible>(match message {
-                Ok(mut message) => {
-                    // A CR or LF in `event` or `id` would end the field and let
-                    // its author forge further fields or whole events.
-                    let strip = |value: String| value.replace(['\r', '\n'], "");
-                    message.event = message.event.take().map(strip);
-                    message.id = message.id.take().map(strip);
-                    message.format()
-                }
-                Err(_) => {
-                    "event: warning\ndata: {\"message\":\"events were dropped\"}\n\n".to_string()
-                }
-            })
-        });
-    axum::response::Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/event-stream")
-        .header("cache-control", "no-cache")
-        .body(Body::from_stream(stream))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// The request guard for the legacy `/tools/*` and `/resources/*` routes.
+///
+/// The library's `Origin` check accepts loopback origins only, which would
+/// refuse `https://my.mentisdb.com` and every allowlisted name even though
+/// the `Host` policy admits them. [`browser_guard_middleware`] already
+/// compares the `Origin` host exactly against that same policy, so the
+/// library's own check is switched off rather than left to disagree.
+fn mcp_request_guard(hosts: &[String]) -> RequestGuard {
+    RequestGuard::new()
+        .with_allowed_hosts(hosts)
+        .with_skip_origin_validation(true)
+}
+
+/// The streamable-HTTP transport configuration: the same `Host` list and
+/// `Origin` stance as [`mcp_request_guard`], as plain fields.
+fn mcp_streamable_config(hosts: Vec<String>) -> StreamableHttpConfig {
+    StreamableHttpConfig::new(MENTISDB_PROTOCOL_NAME, env!("CARGO_PKG_VERSION"))
+        .with_server_title("MentisDB")
+        .with_instructions(MENTISDB_MCP_BOOTSTRAP_INSTRUCTIONS)
+        .with_allowed_hosts(hosts)
+        .with_skip_origin_validation(true)
 }
 
 #[async_trait]
@@ -7840,17 +7802,81 @@ pub const MENTISDB_BEARER_TOKEN_REQUIRED_MESSAGE: &str =
      Either supply a valid token, or restart mentisdb with `MENTISDB_BEARER_TOKEN_ACCESS=false` \
      to disable bearer-token enforcement for the daemon.";
 
+/// The remediation hint that goes with [`MENTISDB_BEARER_TOKEN_REQUIRED_MESSAGE`].
+const MENTISDB_BEARER_TOKEN_HINT: &str = "Send `Authorization: Bearer <token>` with a token issued by `mentisdb bearertoken create --alias <name>`. \
+                 Alternatively, restart the daemon with `MENTISDB_BEARER_TOKEN_ACCESS=false` to disable enforcement.";
+
 /// Build the JSON response body for a bearer-token rejection on a given route.
 fn bearer_token_required_response(route: &str) -> (StatusCode, Json<Value>) {
     let body = json!({
         "error": "Unauthorized",
         "error_description": MENTISDB_BEARER_TOKEN_REQUIRED_MESSAGE,
         "message": MENTISDB_BEARER_TOKEN_REQUIRED_MESSAGE,
-        "hint": "Send `Authorization: Bearer <token>` with a token issued by `mentisdb bearertoken create --alias <name>`. \
-                 Alternatively, restart the daemon with `MENTISDB_BEARER_TOKEN_ACCESS=false` to disable enforcement.",
+        "hint": MENTISDB_BEARER_TOKEN_HINT,
         "route": route,
     });
     (StatusCode::UNAUTHORIZED, Json(body))
+}
+
+/// Largest 401 body [`mcp_unauthorized_guidance_middleware`] will rewrite.
+const MAX_UNAUTHORIZED_BODY_BYTES: usize = 16 * 1024;
+
+/// Replace `cloudllm_mcp`'s product-neutral 401 text with MentisDB's own.
+///
+/// Since `cloudllm_mcp` 0.4 the library's 401 body no longer names MentisDB's
+/// environment variable or CLI, so an agent harness that surfaces it would
+/// show no way forward. Every string equal to the library's message becomes
+/// [`MENTISDB_BEARER_TOKEN_REQUIRED_MESSAGE`] and every `hint` next to it
+/// becomes [`MENTISDB_BEARER_TOKEN_HINT`]. Returns whether anything changed.
+fn with_mentisdb_unauthorized_guidance(value: &mut Value) -> bool {
+    match value {
+        Value::String(text) if text == mcp::http::BEARER_TOKEN_REQUIRED_MESSAGE => {
+            *text = MENTISDB_BEARER_TOKEN_REQUIRED_MESSAGE.to_string();
+            true
+        }
+        // Every element is visited (no short-circuit): each may hold the text.
+        Value::Array(items) => items
+            .iter_mut()
+            .map(with_mentisdb_unauthorized_guidance)
+            .collect::<Vec<_>>()
+            .contains(&true),
+        Value::Object(map) => {
+            let hit = map
+                .values_mut()
+                .map(with_mentisdb_unauthorized_guidance)
+                .collect::<Vec<_>>()
+                .contains(&true);
+            if hit && map.get("hint").is_some_and(Value::is_string) {
+                map.insert("hint".into(), json!(MENTISDB_BEARER_TOKEN_HINT));
+            }
+            hit
+        }
+        _ => false,
+    }
+}
+
+/// Gives `cloudllm_mcp`'s 401 responses MentisDB's remediation text (see
+/// [`with_mentisdb_unauthorized_guidance`]). Any other response, including
+/// MentisDB's own 401 bodies, passes through untouched.
+async fn mcp_unauthorized_guidance_middleware(
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    let response = next.run(request).await;
+    if response.status() != StatusCode::UNAUTHORIZED {
+        return response;
+    }
+    let (mut parts, body) = response.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, MAX_UNAUTHORIZED_BODY_BYTES).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let rewritten = serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|mut value| with_mentisdb_unauthorized_guidance(&mut value).then_some(value))
+        .and_then(|value| serde_json::to_vec(&value).ok());
+    let bytes = rewritten.map_or(bytes, axum::body::Bytes::from);
+    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+    axum::response::Response::from_parts(parts, Body::from(bytes))
 }
 
 /// Whether an `Origin` header value names one of this daemon's own hosts.

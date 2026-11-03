@@ -2359,7 +2359,8 @@ Important environment variables:
     New-chain storage format: binary
 
   MENTISDB_BIND_HOST
-    Bind address host. Default: 127.0.0.1
+    Bind address host. Default: 127.0.0.1. Also a name the daemon answers to in
+    the Host header (see MENTISDB_DASHBOARD_ALLOWED_HOSTS)
 
   MENTISDB_MCP_PORT
     HTTP MCP port. Default: 9471
@@ -2378,6 +2379,13 @@ Important environment variables:
 
   MENTISDB_DASHBOARD_PIN
     Optional PIN required to open the HTTPS dashboard
+
+  MENTISDB_DASHBOARD_ALLOWED_HOSTS
+    Comma-separated extra host names or IPs accepted in the Host header (a public
+    DNS name or IP, or the name a reverse proxy forwards). The dashboard, REST and
+    MCP share one list: localhost, 127.0.0.1, [::1], my.mentisdb.com,
+    MENTISDB_BIND_HOST and these entries. On a loopback bind, MCP answers any
+    other Host with 403 (DNS-rebinding defence). Set it before the daemon starts
 
   MENTISDB_BEARER_TOKEN_ACCESS
     Require bearer tokens for MCP HTTP/HTTPS access. Default: false

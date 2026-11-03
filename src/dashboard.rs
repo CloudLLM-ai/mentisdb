@@ -41,6 +41,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -287,6 +288,13 @@ async fn security_headers_middleware(request: axum::extract::Request, next: Next
 /// accepts in the `Host` header (e.g. a reverse-proxy or public DNS name).
 pub(crate) const DASHBOARD_ALLOWED_HOSTS_ENV: &str = "MENTISDB_DASHBOARD_ALLOWED_HOSTS";
 
+/// Environment variable naming the address or DNS name the daemon is reached by.
+const BIND_HOST_ENV: &str = "MENTISDB_BIND_HOST";
+
+/// Well-known alias that resolves to `127.0.0.1` and that the generated TLS
+/// certificate always covers.
+const ALIAS_HOST: &str = "my.mentisdb.com";
+
 /// Strip the port and IPv6 brackets from a `Host` authority and lowercase it.
 fn normalize_host(authority: &str) -> String {
     let authority = authority.trim();
@@ -304,56 +312,163 @@ fn normalize_host(authority: &str) -> String {
     host.trim_end_matches('.').to_ascii_lowercase()
 }
 
-/// Decide whether `authority` (a `Host` header value) names this daemon.
+/// The set of `Host` values this daemon answers to, on every listener.
+///
+/// One policy serves the dashboard, the REST and MCP browser guard and the
+/// `cloudllm_mcp` host allowlist, so the listeners cannot drift apart:
+/// [`allows`](Self::allows) answers one `Host` header, and
+/// [`library_hosts`](Self::library_hosts) renders the same decision as the
+/// static list `cloudllm_mcp` 0.4 wants (its check cannot call back into
+/// MentisDB, and on a loopback bind it would otherwise accept only
+/// `localhost`, `127.0.0.1` and `[::1]`).
 ///
 /// Allowed: `localhost`, `127.0.0.1`, `[::1]`, the documented `my.mentisdb.com`
-/// alias, the configured `MENTISDB_BIND_HOST`, every `MENTISDB_DASHBOARD_ALLOWED_HOSTS`
-/// entry, and, when the daemon is bound to a wildcard address, the machine's
-/// own interface IPs.
-pub(crate) fn dashboard_host_allowed(authority: &str) -> bool {
-    use std::net::IpAddr;
-    let host = normalize_host(authority);
-    if host.is_empty() {
-        return false;
+/// alias, the configured `MENTISDB_BIND_HOST`, every
+/// `MENTISDB_DASHBOARD_ALLOWED_HOSTS` entry, and, when `MENTISDB_BIND_HOST` is
+/// a wildcard address, the machine's own interface IPs.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct HostPolicy {
+    /// Entries of `MENTISDB_DASHBOARD_ALLOWED_HOSTS`, trimmed and non-empty.
+    extra: Vec<String>,
+    /// `MENTISDB_BIND_HOST`, trimmed, when set and non-empty.
+    bind: Option<String>,
+}
+
+impl HostPolicy {
+    /// Read the policy from the environment as it is right now.
+    pub(crate) fn from_env() -> Self {
+        let extra = std::env::var(DASHBOARD_ALLOWED_HOSTS_ENV)
+            .map(|list| {
+                list.split(',')
+                    .map(str::trim)
+                    .filter(|entry| !entry.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let bind = std::env::var(BIND_HOST_ENV)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        Self::new(extra, bind)
     }
-    if matches!(
-        host.as_str(),
-        "localhost" | "127.0.0.1" | "::1" | "my.mentisdb.com"
-    ) {
-        return true;
-    }
-    let host_ip = host.parse::<IpAddr>().ok();
-    let same = |candidate: &str| {
-        let candidate = normalize_host(candidate);
-        match (candidate.parse::<IpAddr>().ok(), host_ip) {
-            (Some(a), Some(b)) => a == b,
-            _ => candidate == host,
+
+    /// A policy from explicit values, as [`from_env`](Self::from_env) would
+    /// read them: the entries of `MENTISDB_DASHBOARD_ALLOWED_HOSTS` and the
+    /// value of `MENTISDB_BIND_HOST`. Empty entries and an empty bind host
+    /// are dropped, so tests need not touch the process environment.
+    pub(crate) fn new(extra: Vec<String>, bind: Option<String>) -> Self {
+        Self {
+            extra: extra
+                .into_iter()
+                .map(|entry| entry.trim().to_string())
+                .filter(|entry| !entry.is_empty())
+                .collect(),
+            bind: bind
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
         }
-    };
-    if let Ok(extra) = std::env::var(DASHBOARD_ALLOWED_HOSTS_ENV) {
-        if extra
-            .split(',')
-            .map(str::trim)
-            .any(|entry| !entry.is_empty() && same(entry))
-        {
+    }
+
+    /// Whether `authority` (a `Host` header value) names this daemon.
+    pub(crate) fn allows(&self, authority: &str) -> bool {
+        let host = normalize_host(authority);
+        if host.is_empty() {
+            return false;
+        }
+        if matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1") || host == ALIAS_HOST {
             return true;
         }
-    }
-    if let Ok(bind) = std::env::var("MENTISDB_BIND_HOST") {
-        let bind = bind.trim();
-        if let Ok(bind_ip) = bind.parse::<IpAddr>() {
-            if bind_ip.is_unspecified() {
-                // Wildcard bind (LAN/VPS use): accept our own interface IPs.
-                if let (Some(ip), Ok(interfaces)) = (host_ip, if_addrs::get_if_addrs()) {
-                    return interfaces.iter().any(|iface| iface.addr.ip() == ip);
-                }
-                return false;
+        let host_ip = host.parse::<IpAddr>().ok();
+        let same = |candidate: &str| {
+            let candidate = normalize_host(candidate);
+            match (candidate.parse::<IpAddr>().ok(), host_ip) {
+                (Some(a), Some(b)) => a == b,
+                _ => candidate == host,
             }
-            return host_ip == Some(bind_ip);
+        };
+        if self.extra.iter().any(|entry| same(entry)) {
+            return true;
         }
-        return !bind.is_empty() && same(bind);
+        let Some(bind) = &self.bind else {
+            return false;
+        };
+        match bind.parse::<IpAddr>() {
+            Ok(bind_ip) if bind_ip.is_unspecified() => {
+                // Wildcard bind (LAN/VPS use): accept our own interface IPs.
+                match (host_ip, if_addrs::get_if_addrs()) {
+                    (Some(ip), Ok(interfaces)) => {
+                        interfaces.iter().any(|iface| iface.addr.ip() == ip)
+                    }
+                    _ => false,
+                }
+            }
+            Ok(bind_ip) => host_ip == Some(bind_ip),
+            Err(_) => same(bind),
+        }
     }
-    false
+
+    /// This policy as the `Host` list `cloudllm_mcp` expects: host names and
+    /// IPs without a port, IPv6 in brackets.
+    ///
+    /// The list says what [`allows`](Self::allows) says at the time of the
+    /// call, so build the router after the environment is final. An IPv6
+    /// address is listed in its canonical form; a client that writes the same
+    /// address in a longer form (`[0:0:0:0:0:0:0:1]`) is turned away by the
+    /// library but still accepted by the dashboard.
+    // Used by `server.rs`; several integration tests compile this file on its
+    // own (`#[path]`) and never reach it.
+    #[allow(dead_code)]
+    pub(crate) fn library_hosts(&self) -> Vec<String> {
+        let mut hosts: Vec<String> = ["localhost", "127.0.0.1", "[::1]", ALIAS_HOST]
+            .map(str::to_string)
+            .into();
+        hosts.extend(self.extra.iter().map(|entry| listed(entry)));
+        if let Some(bind) = &self.bind {
+            match bind.parse::<IpAddr>() {
+                Ok(ip) if ip.is_unspecified() => {
+                    if let Ok(interfaces) = if_addrs::get_if_addrs() {
+                        hosts.extend(interfaces.iter().map(|iface| bracketed(iface.addr.ip())));
+                    }
+                }
+                _ => hosts.push(listed(bind)),
+            }
+        }
+        hosts.sort();
+        hosts.dedup();
+        hosts
+    }
+}
+
+/// A configured host name or IP as `cloudllm_mcp` lists it: no port, IPv6 in
+/// brackets, lower case.
+// Used through `HostPolicy::library_hosts`; see the note there.
+#[allow(dead_code)]
+fn listed(entry: &str) -> String {
+    let host = normalize_host(entry);
+    match host.parse::<IpAddr>() {
+        Ok(ip) => bracketed(ip),
+        Err(_) => host,
+    }
+}
+
+/// An IP as it appears in a `Host` header: IPv6 in brackets.
+// Used through `HostPolicy::library_hosts`; see the note there.
+#[allow(dead_code)]
+fn bracketed(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => format!("[{v6}]"),
+    }
+}
+
+/// Decide whether `authority` (a `Host` header value) names this daemon.
+///
+/// See [`HostPolicy`] for the rules; this reads the policy from the
+/// environment on every call so a change to `.env`-sourced variables in tests
+/// takes effect at once.
+pub(crate) fn dashboard_host_allowed(authority: &str) -> bool {
+    HostPolicy::from_env().allows(authority)
 }
 
 /// Reject requests whose `Host` is not one of this daemon's own names.
