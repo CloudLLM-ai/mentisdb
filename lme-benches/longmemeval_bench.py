@@ -51,13 +51,29 @@ DEFAULT_TOP_K     = 5
 DEFAULT_WORKERS   = 4   # ingestion workers (write-heavy; conservative)
 DEFAULT_EVAL_W    = 8   # evaluation workers (read-only; safe to push higher)
 NEAR_MISS_K       = 20  # also compute R@10 and R@20 for near-miss analysis
+DEFAULT_REQUEST_TIMEOUT = 60    # seconds per append / ranked-search request
+DEFAULT_REBUILD_TIMEOUT = 3600  # seconds for one synchronous /v1/vectors/rebuild call
+EXIT_PHASE_FAILED = 2           # ingest, vector rebuild or evaluation could not finish
+
+# Set from --request-timeout / --rebuild-timeout in main().
+_REQUEST_TIMEOUT = DEFAULT_REQUEST_TIMEOUT
+_REBUILD_TIMEOUT = DEFAULT_REBUILD_TIMEOUT
+
+
+def _fail_phase(phase: str, err: Exception, hint: str) -> None:
+    """Stop the run: a phase that did not finish makes every later number meaningless."""
+    sys.stdout.flush()
+    print(f"\nPHASE FAILED: {phase}: {type(err).__name__}: {err}\n  {hint}",
+          file=sys.stderr, flush=True)
+    sys.exit(EXIT_PHASE_FAILED)
 
 
 # ---------------------------------------------------------------------------
 # REST helpers
 # ---------------------------------------------------------------------------
 
-def _post(base_url: str, path: str, payload: dict, timeout: int = 15) -> dict:
+def _post(base_url: str, path: str, payload: dict, timeout: float | None = None) -> dict:
+    timeout = _REQUEST_TIMEOUT if timeout is None else timeout
     r = _session().post(f"{base_url}{path}", json=payload, timeout=timeout)
     if not r.ok:
         raise requests.HTTPError(
@@ -117,16 +133,27 @@ def append_turn(base_url: str, chain_key: str, content: str, role: str,
 
 
 def rebuild_vectors(base_url: str, chain_key: str, provider_key: str = "fastembed-minilm") -> None:
-    """Trigger vector sidecar rebuild for the given provider (default: fastembed-minilm)."""
+    """Rebuild the vector sidecar for the given provider (default: fastembed-minilm).
+
+    The endpoint is synchronous, so the request is held for the whole rebuild
+    (up to --rebuild-timeout). An HTTP error is the daemon's answer (e.g. the
+    provider is not compiled in) and only warns. A timeout or dropped connection
+    stops the run: the daemon is still embedding, and evaluating now would
+    measure a half-built sidecar and time out queries behind it.
+    """
     try:
         resp = _post(base_url, "/v1/vectors/rebuild", {
             "chain_key": chain_key,
             "provider_key": provider_key,
-        }, timeout=600)
+        }, timeout=_REBUILD_TIMEOUT)
         indexed = resp.get("status", {}).get("indexed_thought_count")
         print(f"  [{provider_key}] Vector sidecar rebuilt — {indexed} thoughts indexed.", flush=True)
-    except Exception as e:
+    except requests.HTTPError as e:
         print(f"  WARNING: vector rebuild failed ({provider_key}): {e}", flush=True)
+    except requests.RequestException as e:
+        _fail_phase(f"vector rebuild ({provider_key})", e,
+                    f"The daemon may still be rebuilding. Raise --rebuild-timeout "
+                    f"(now {_REBUILD_TIMEOUT:g}s) on a slow or throttled machine.")
 
 
 def ranked_search(base_url: str, chain_key: str, query: str, limit: int,
@@ -224,7 +251,14 @@ def ingest(base_url: str, chain_key: str, instances: list[dict], workers: int) -
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futs = [pool.submit(_ingest_session, sid) for sid in sessions]
         for f in as_completed(futs):
-            f.result()
+            try:
+                f.result()
+            except Exception as e:
+                pool.shutdown(wait=False, cancel_futures=True)
+                _fail_phase("ingest", e,
+                            f"An append failed after retries. Check the daemon at --base-url; "
+                            f"on a slow or throttled machine raise --request-timeout "
+                            f"(now {_REQUEST_TIMEOUT:g}s).")
 
     return total_turns
 
@@ -269,7 +303,14 @@ def evaluate(
     with ThreadPoolExecutor(max_workers=eval_workers) as pool:
         futs = [pool.submit(_eval_one, i, inst) for i, inst in enumerate(instances)]
         for f in as_completed(futs):
-            idx, inst, evidence, raw, hit_k, hit_10, hit_20 = f.result()
+            try:
+                idx, inst, evidence, raw, hit_k, hit_10, hit_20 = f.result()
+            except Exception as e:
+                pool.shutdown(wait=False, cancel_futures=True)
+                _fail_phase("evaluation", e,
+                            f"A ranked-search request failed. Check the daemon at --base-url; "
+                            f"on a slow or throttled machine raise --request-timeout "
+                            f"(now {_REQUEST_TIMEOUT:g}s).")
             ordered[idx] = (inst, evidence, raw, hit_k, hit_10, hit_20)
             with lock:
                 done_count[0] += 1
@@ -421,7 +462,15 @@ def main():
                     help="Enable RRF reranking in ranked search")
     ap.add_argument("--rerank-k", type=int, default=50,
                     help="RRF candidates window size (default 50)")
+    ap.add_argument("--request-timeout", type=float, default=DEFAULT_REQUEST_TIMEOUT,
+                    help="Seconds to wait for each append or ranked-search request "
+                         f"(default {DEFAULT_REQUEST_TIMEOUT})")
+    ap.add_argument("--rebuild-timeout", type=float, default=DEFAULT_REBUILD_TIMEOUT,
+                    help="Seconds to wait for the synchronous vector sidecar rebuild "
+                         f"(default {DEFAULT_REBUILD_TIMEOUT}); raise it on throttled machines")
     args = ap.parse_args()
+    global _REQUEST_TIMEOUT, _REBUILD_TIMEOUT
+    _REQUEST_TIMEOUT, _REBUILD_TIMEOUT = args.request_timeout, args.rebuild_timeout
 
     with open(args.data) as f:
         instances = json.load(f)
@@ -434,7 +483,8 @@ def main():
     print(f"  chain        : {args.chain}")
     print(f"  endpoint     : {args.base_url}")
     print(f"  eval-workers : {args.eval_workers}")
-    print(f"  reranking    : enabled={args.enable_reranking} k={args.rerank_k}\n")
+    print(f"  reranking    : enabled={args.enable_reranking} k={args.rerank_k}")
+    print(f"  timeouts     : request={args.request_timeout:g}s rebuild={args.rebuild_timeout:g}s\n")
 
     if args.force_reingest:
         args.chain = f"lme-{int(time.time())}"
