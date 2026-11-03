@@ -1,0 +1,115 @@
+  reranking    : enabled=True k=50
+
+LoCoMo × mentisdb
+  top-k        : 5  (also computing R@10, R@20, R@50)
+  limit        : full
+  chain        : locomo-full
+  data-dir     : <scratch>/bench-data/locomo
+  endpoint     : http://127.0.0.1:19492
+
+  Loaded 5882 conversation turns, 1977 test queries
+
+  Chain 'locomo-full' already exists (5882 thoughts) — skipping ingestion.
+
+  50/1977 QAs — R@5: 52.0%
+  100/1977 QAs — R@5: 59.0%
+  150/1977 QAs — R@5: 68.0%
+  200/1977 QAs — R@5: 72.5%
+  250/1977 QAs — R@5: 72.8%
+  300/1977 QAs — R@5: 72.7%
+  350/1977 QAs — R@5: 68.9%
+  400/1977 QAs — R@5: 70.0%
+  450/1977 QAs — R@5: 70.2%
+  500/1977 QAs — R@5: 70.4%
+  550/1977 QAs — R@5: 69.5%
+  600/1977 QAs — R@5: 67.8%
+  650/1977 QAs — R@5: 67.8%
+  700/1977 QAs — R@5: 68.1%
+  750/1977 QAs — R@5: 68.1%
+  800/1977 QAs — R@5: 67.8%
+  850/1977 QAs — R@5: 68.6%
+  900/1977 QAs — R@5: 69.4%
+  950/1977 QAs — R@5: 69.7%
+  1000/1977 QAs — R@5: 70.2%
+  1050/1977 QAs — R@5: 68.2%
+  1100/1977 QAs — R@5: 68.5%
+  1150/1977 QAs — R@5: 68.7%
+  1200/1977 QAs — R@5: 68.1%
+  1250/1977 QAs — R@5: 68.4%
+  1300/1977 QAs — R@5: 69.0%
+  1350/1977 QAs — R@5: 69.5%
+  1400/1977 QAs — R@5: 69.5%
+  1450/1977 QAs — R@5: 69.5%
+  1500/1977 QAs — R@5: 70.0%
+  1550/1977 QAs — R@5: 69.9%
+  1600/1977 QAs — R@5: 69.9%
+  1650/1977 QAs — R@5: 69.4%
+  1700/1977 QAs — R@5: 69.1%
+  1750/1977 QAs — R@5: 69.1%
+  1800/1977 QAs — R@5: 68.8%
+  1850/1977 QAs — R@5: 68.5%
+  1900/1977 QAs — R@5: 68.5%
+  1950/1977 QAs — R@5: 68.6%
+  1977/1977 QAs — R@5: 68.6%
+
+=======================================================
+LoCoMo  R@5: 68.6%  (1356/1977)
+Evaluation time: 10s  (199.3 q/s)
+
+By question type:
+  multi         53.2%  (225/423)  ██████████
+  single        72.8%  (1131/1554)  ██████████████
+
+Near-miss analysis:
+  type         total  R@5    R@10  R@20  R@50
+  -------------------------------------------------------
+  multi          423   53.2%   64.3%   74.5%   87.7%
+  single        1554   72.8%   80.4%   86.0%   91.9%
+
+Avg top-1 score breakdown on MISSES (621 samples):
+  lexical        13.2918
+  vector         0.1526
+  graph          0.0330
+  relation       0.0148
+  seed_support   0.0052
+  recency        0.0263
+  total          17.2288
+
+Of 621 misses:
+  166 ( 26.7%) appear in top-10 (ranking problem)
+  296 ( 47.7%) appear in top-20
+  443 ( 71.3%) appear in top-50
+  178 ( 28.7%) not in top-50 (lexical gap)
+
+Miss counts by type:
+  single       423/1554 misses  (119 near top-10)
+  multi        198/423 misses  (47 near top-10)
+
+Sample misses from 'single' (5 of 423):
+
+  Q:         what did caroline research?
+  Evidence:  researching adoption agencies — it's been a dream to have a family and give a loving home to kids who need it.…
+  Top-1 ret: wow, that's cool, caroline! what happened that was so awesome? did you hear any inspiring stories?…
+  Score:     lexical=10.189  vector=0.211  graph=0.000  recency=0.000  total=13.211
+
+  Q:         when did caroline give a speech at a school?
+  Evidence:  hey melanie! how's it going? i wanted to tell you about my school event last week. it was awesome! i talked about my tra…
+  Top-1 ret: looks good! how did the extra funding help with building the school?…
+  Score:     lexical=10.915  vector=0.136  graph=0.000  recency=0.007  total=14.220
+
+  Q:         what is caroline's identity?
+  Evidence:  the transgender stories were so inspiring! i was so happy and thankful for all the support.…
+  Top-1 ret: wow, caroline!  all those colors are incredible and the story it tells is so inspiring.…
+  Score:     lexical=6.580  vector=0.238  graph=0.500  recency=0.001  total=11.755
+
+  Q:         how long has caroline had her current group of friends for?
+  Evidence:  yeah, i'm really lucky to have them. they've been there through everything, i've known these friends for 4 years, since …
+  Top-1 ret: since speaking last, i reconnected with my mom's old friends. their stories made me tear up and reminded me how lucky i …
+  Score:     lexical=13.316  vector=0.169  graph=0.000  recency=0.039  total=18.077
+
+  Q:         when did caroline have a picnic?
+  Evidence:  wow, that's great! it sure shows how important friendship and compassion are. it's made me appreciate how lucky i am to …
+  Top-1 ret: sounds good, jolene! when did you have in mind? that cafe rocks.…
+  Score:     lexical=9.661  vector=0.000  graph=0.000  recency=0.039  total=11.388
+
+Results written to <scratch>/results/full/locomo_rerank_k5.json
