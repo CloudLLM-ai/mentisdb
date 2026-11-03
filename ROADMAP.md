@@ -1,6 +1,15 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 -> 0.10.10.55)
+## Shipped (0.8.2 -> 0.11.0.56)
+
+### 0.11.0.56 - Valid-version retrieval, public and private chains, background migrations
+- **Security** — browser-driven access to REST/MCP with bearer tokens off (DNS rebinding, cross-site; one `Host` policy for dashboard, REST and MCP on `cloudllm_mcp` 0.4.0); chain-scoped tokens reaching other chains (alternative chain fields, blank federated keys, fail-open MCP tool list, branch ancestors); open agent-key registration, unverified thought signatures; dashboard PIN guessing via bearer path, security headers; `0600` token registry; bounded decode of forged length prefixes; capped traverse reservation. Upgrade recommended.
+- **Valid-version retrieval** — superseded hits replaced by their live successor (`successor_of`), weakly linked corrections mark the old thought `contested` and rank above it, `version_status`/`successors`/`current_version` on every thought JSON, append `warnings` for corrections without a typed link, cross-chain and branch lineage, bundles/standing context/MEMORY.md export follow suit. Root cause: on a real chain 0 of 14 corrections and 0 of ~90 decisions carried a typed link.
+- **Ranking** — relative vector fusion, result-time duplicate collapse (Jaccard 0.9), ranking knobs on REST/MCP/CLI, library/server default parity (thesaurus 0.3); `llm_rerank` and `ppr` deprecated. Full protocol: LoCoMo-10P R@10 73.5 -> 76.7, LongMemEval R@5 68.0 -> 69.8.
+- **Public and private chains** — mode transitions as signed on-chain records opening segments; Ed25519 read proofs (`X-Mentis-Auth`); operator-only key/mode administration (dashboard PIN or CLI `--offline`); open-time signature verification with quarantine and operator-signed checkpoint; per-hit `provenance` with `trust: untrusted_data`; private data refused by merge/copy and governed-chain restores imported as a new chain.
+- **Storage** — journaled, backed-up, resumable background migrations (`mentisdb migrate ...`, `GET /v1/migrations`, `mentisdb_migration_status`, 503 + `Retry-After`); embedding outside the write lock (lock hold ~9.5 ms -> ~0.5 ms); one daemon per data directory; schema-4 alias for March/April 2026 chains; HNSW content digest; torn-tail and group-commit fixes; empty signatures count as unsigned.
+- **Compact search results** (Austin Faulkner-Pearce, #25) — ~24% smaller on real chains, 34% on a generated corpus; provenance and version fields kept; pymentisdb support.
+- **Recall and tooling** — standing context at startup (`mentisdb_standing_context`), RECALL TRIGGERS in the skill; CLI parity with every MCP tool, REST route and dashboard action; dashboard PIN login fix; whitepaper rewritten; `rust-version = "1.90"`.
 
 ### 0.10.10.55 - Docker image, private webhook targets, Linux compat binaries
 - **`MENTISDB_WEBHOOK_ALLOWED_CIDRS` (issue #22)** — operator-listed CIDRs/addresses that webhooks may target despite the SSRF guard (WireGuard, Tailscale, LAN consumers). Applied at registration, reload, delivery-time DNS resolution and literal-IP re-check; IPv4-mapped IPv6 matches v4 ranges; localhost names still rejected; entries broader than `/8` and malformed lists fail startup; loopback/metadata coverage is warned about.
@@ -210,7 +219,7 @@ Reference scores (MemPalace BENCHMARKS.md):
 The next phase closes the remaining competitive gaps and ships what enterprise users need:
 
 ### Retrieval Quality (High Priority)
-- **Multi-hop recall** — 19pp gap (59.1% vs 78.0% single-hop); entity coreference, deeper graph traversal, query expansion
+- **Multi-hop recall** — 17.5pp gap on LoCoMo-10P R@10 (62.9% multi-hop vs 80.4% single-hop, 0.11.0.56); entity coreference, deeper graph traversal, query expansion
 - **Vector sidecar debugging** — near-zero vector scores on misses; FastEmbed loading issues
 - **Auto-capture hooks** — agentmemory-style hooks for automatic memory capture (Hindsight retain pattern)
 
@@ -249,6 +258,15 @@ The next phase closes the remaining competitive gaps and ships what enterprise u
 | Enterprise | Custom | Unlimited, VPC, SLA, dedicated infra, audit logs, support |
 
 **Go/No-Go Gate for Track B**: Library reaches ≥85% LoCoMo R@10, 3+ design partners committed, cookbook published, crates.io downloads >1k/mo.
+
+### Carried over from 0.11.0.56
+- **Faster open of governed chains** — persist the verified prefix so open-time verification is not O(n)
+- **Checkpoint re-issue** after a hash-changing migration (today the signed checkpoint is dropped)
+- **Thought schema 5** — hash `entity_type` and `source_episode` (schema 4 is a taken historical alias)
+- **General request rate limiting** (only the dashboard PIN is rate limited)
+- **Migration fixtures from real old releases**
+- **Compact context bundles** (bundles accept `compact` and ignore it)
+- **Remove `llm_rerank` and `ppr`** at the next breaking release
 
 ### Developer Experience
 - **Browser extension** — read/write memories from any webpage
