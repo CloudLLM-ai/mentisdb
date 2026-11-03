@@ -114,7 +114,7 @@ chmod +x mentisdb && ./mentisdb --help
 
 Release images are published to GitHub Container Registry for `linux/amd64` and
 `linux/arm64` (first published with 0.10.10.55). Tags: the release tag (for example
-`0.10.10.55`), the crate version (`0.10.10`, moves with each release of that version)
+`0.11.0.56`), the crate version (`0.11.0`, moves with each release of that version)
 and `latest`. This is also the way to get full features, including local embeddings,
 on Linux distros older than glibc 2.39 (see [Prebuilt binaries](#prebuilt-binaries)).
 
@@ -176,7 +176,11 @@ published ports to work), and a fresh daemon has no authentication. Therefore:
 - For any access beyond the host, set `MENTISDB_BEARER_TOKEN_ACCESS=true` and create
   tokens: `docker exec mentisdb mentisdb bearertoken create --global admin`.
 - Set `MENTISDB_DASHBOARD_PIN`, and list the hostnames you reach the dashboard by in
-  `MENTISDB_DASHBOARD_ALLOWED_HOSTS` (the dashboard rejects unknown `Host` headers).
+  `MENTISDB_DASHBOARD_ALLOWED_HOSTS` (the dashboard rejects unknown `Host` headers, and
+  browsers calling REST or MCP must name an allowed host too; see
+  [Host allowlist](#host-allowlist)).
+- Run one container per data volume. Since 0.11 a second daemon on a data directory that
+  is already in use refuses to start.
 - Back up the volume (`docker run --rm -v mentisdb-data:/d -v "$PWD":/b debian tar czf /b/mentisdb.tgz -C /d .`)
   after stopping the container.
 
@@ -689,8 +693,13 @@ about **lineage** (`mentisdb::lineage`):
   (`MAX_LINEAGE_DEPTH`) is refused at write time.
 
 Lineage is derived from the stored chain when it is opened, so existing chains benefit
-with no migration. Cross-chain `Supersedes` (a relation with `chain_key`) is not yet
-applied to the target chain.
+with no migration. A `Supersedes`, `Corrects` or `Invalidates` relation that carries a
+`chain_key` applies wherever one read sees both chains: branch search (a branch plus its
+ancestors) and federated search replace the superseded hit with the live successor on the
+other chain (`successor_of`, `successor_of_chain`), or annotate it `superseded` with
+`current_version.chain_key` under `include_invalidated`. Only edges the caller's audience
+may see count, so a public reader is never redirected to a private successor. A chain read
+on its own is unchanged, and untyped links never apply across chains.
 
 MentisDB loads environment variables at startup from a `.env` file in the current working
 directory, then from `<MENTISDB_DIR>/.env` (where the dashboard Settings tab saves its
@@ -828,10 +837,14 @@ daemon stopped, because a running daemon holds the chain in memory. Everything u
 never part of a migration's critical path: when a chain's hashes change they are deleted and
 rebuilt lazily in the background; otherwise they are kept.
 
-**Upgrade note (this release).** Chains in the current layout with current hashes are not touched.
+**Upgrade note (0.11).** Chains in the current layout with current hashes are not touched.
 HNSW graph files gain a header (a magic and a SHA-256 digest of the embedding space and its
-documents); existing graphs are rebuilt once in the background. Nothing else changes on disk, so
-a migrated chain is still readable by the previous release.
+documents); existing graphs are rebuilt once in the background. Chains written by builds from
+March and April 2026, which stamp `schema_version = 4` on schema-3 records, open again (0.11
+accepts 4 as a historical alias and verifies those records under the rule that wrote them);
+chains from schemas 0 to 2 are verified link by link before their hashes are rebuilt. Nothing else changes on
+disk, so a chain that needed no migration is still readable by the previous release, except a
+chain that holds an `AccessPolicy` record, which releases before the type cannot read.
 
 ### Automatic Update Check
 
@@ -859,6 +872,7 @@ MCP endpoints:
 
 - `GET /health`
 - `POST /`
+- `GET /` (event stream; same `Host`, bearer and `Origin` checks as `POST /`)
 - `POST /tools/list`
 - `POST /tools/execute`
 
@@ -882,6 +896,9 @@ REST endpoints:
 - `POST /v1/agents/keys` (403: operator-only)
 - `POST /v1/agents/keys/revoke` (403: operator-only)
 - `POST /v1/agents/disable` (403: operator-only)
+- `POST /v1/access/policy`
+- `POST /v1/access/policy/set` (403: operator-only)
+- `POST /v1/access/verify`
 - `POST /v1/thought`
 - `POST /v1/thoughts`
 - `POST /v1/thoughts/genesis`
@@ -892,6 +909,7 @@ REST endpoints:
 - `POST /v1/ranked-search`
 - `POST /v1/context-bundles`
 - `POST /v1/recent-context`
+- `POST /v1/standing-context`
 - `POST /v1/memory-markdown`
 - `POST /v1/import-markdown`
 - `POST /v1/skills/upload`
@@ -911,6 +929,9 @@ REST endpoints:
 - `POST /v1/entity-types/upsert`
 - `POST /v1/extract-memories`
 - `POST /v1/admin/flush`
+- `GET /v1/migrations`
+- `POST /v1/migrations/retry` (global token)
+- `POST /v1/migrations/skip` (global token)
 
 #### Chain resolution and error statuses
 
@@ -935,12 +956,13 @@ REST and MCP errors map to HTTP statuses as follows:
 |---|---|
 | `400` | Invalid input: malformed JSON, bad UUID, unknown thought type/role, invalid `chain_key` |
 | `401` | Missing/invalid bearer token, or a token whose scope does not cover the operation |
-| `403` | Permission denied (e.g. missing or invalid signature on a signed skill upload, inactive agent) |
+| `403` | Permission denied: missing or invalid signature on a signed skill upload, inactive agent, a write the chain's access policy refused, a `Host` outside the allowlist, or an operator-only route (`/v1/agents/keys`, `/v1/agents/keys/revoke`, `/v1/agents/disable`, `/v1/access/policy/set`) |
 | `404` | Unknown chain (see above) or another missing resource |
 | `409` | Conflict, e.g. `POST /v1/chains/branch` into a chain key that already exists |
 | `413` | Request body over 1 MiB (enforced while bearer-token access is enabled) |
 | `500` | Server fault; the body says only `"internal server error"` and details go to the daemon log |
 | `501` | `POST /v1/extract-memories` on a build without the `llm-extraction` feature |
+| `503` | The chain is being migrated or is quarantined; the body names the state, and a migrating chain adds `Retry-After` and `retry_after_secs` (see [Upgrading and chain migrations](#upgrading-and-chain-migrations)) |
 
 ### Append Thought — `POST /v1/thoughts`
 
@@ -1361,11 +1383,13 @@ The run applied the built-in thesaurus transparently on every `ranked_search` ca
 - **Filtered HNSW recall** — when filters are active, the HNSW backend switches to an exact scan over the filtered set or oversamples, so filtered vector searches no longer lose matches the approximate graph skipped.
 - **Benchmarks (0.10.9.54 vs the 0.10.8 code line, `fastembed-minilm`)** — LoCoMo-10P default R@5/R@10 63.8/72.7% → 63.9/73.5%; LoCoMo rerank R@5/R@10 3.6/5.9% → 66.0/74.1%; LongMemEval default R@5/R@10/R@20 66.8/72.0/78.2% → 68.0/72.8/78.8%; LongMemEval rerank R@5 2.8% → 68.6%; query throughput about 206/159 → 384/385 queries/s (LoCoMo/LongMemEval).
 
-### Search Scoring (current master, unreleased)
+### Search Scoring (0.11.0)
 
 - **Valid-version retrieval** — a superseded hit is replaced by its live successor, a thought a newer correction or decision only references is shown as `contested` with the newer one ranked above it, and every hit carries `version_status`.
 - **Relative vector fusion** (`MENTISDB_VECTOR_FUSION=relative`, decay 0.8) and **result-time duplicate collapse** (Jaccard 0.9).
-- **Full-protocol benchmarks (2026-11-01, `fastembed-minilm`, fresh ingest, same scripts as 0.10.9.54)** — LoCoMo-10P default R@5/R@10/R@20 67.9/76.7/83.4%; LongMemEval default R@5/R@10/R@20 69.8/75.6/81.4%; about 428/371 queries/s. Raw outputs: `results/benchmarks/2026-11-01-full-protocol/`.
+- **Library and server share the defaults** — `RankedSearchQuery::new()` now applies relative fusion, duplicate collapse, successor redirection and thesaurus expansion at weight 0.3, like the daemon. Opt out per query (`with_vector_fusion(VectorFusion::Absolute)`, `with_collapse_duplicates(None)`, `with_resolve_successors(false)`, `with_thesaurus(false)`) or per request (`vector_fusion: "absolute"`, `collapse_duplicates: 0`, `resolve_successors: false`, `synonym_weight: 0`).
+- **Deprecated** — `RankedSearchQuery::{llm_rerank, llm_model, llm_rerank_top_k, with_llm_reranking}`, `RankedSearchScore::llm_score` (LLM reranking was never implemented) and `search::ppr` (never called by ranked search) are no-ops marked `#[deprecated]`, to be removed in the next breaking release.
+- **Full-protocol benchmarks (2026-11-01, `fastembed-minilm`, fresh ingest, same scripts as 0.10.9.54)** — LoCoMo-10P default R@5/R@10/R@20 67.9/76.7/83.4% (0.10.9.54: 63.9/73.5/–); LongMemEval default R@5/R@10/R@20 69.8/75.6/81.4% (0.10.9.54: 68.0/72.8/78.8%); about 428/371 queries/s. Raw outputs: `results/benchmarks/2026-11-01-full-protocol/`.
 
 ### Vector Sidecars
 
