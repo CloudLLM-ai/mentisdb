@@ -355,3 +355,58 @@ fn a_clock_that_steps_back_never_shortens_a_remembered_nonce() {
         Err(ReadAuthError::Replayed)
     );
 }
+
+// ------------------------------------------------------- content digest header
+
+use mentisdb::read_auth::{
+    body_digest, content_digest_header_value, parse_content_digest, verify_request_for_digest,
+};
+
+/// A proof verified from the declared digest agrees with the whole-body check,
+/// for the signed body and for no other: the old-style proof is unchanged.
+#[test]
+fn a_proof_verifies_from_the_declared_digest_exactly_when_the_body_does() {
+    let body = br#"{"chain_key":"vault","markdown":"..."}"#;
+    let proof = header(body);
+    let digest = body_digest(body);
+    assert!(verify_request_for_digest(&proof, "POST", "/v1/search?x=1", &digest, NOW).is_ok());
+    assert!(verify_request(&proof, "POST", "/v1/search?x=1", body, NOW).is_ok());
+    let other = body_digest(b"tampered");
+    assert_eq!(
+        verify_request_for_digest(&proof, "POST", "/v1/search?x=1", &other, NOW),
+        Err(ReadAuthError::BadSignature)
+    );
+    // The other bindings still hold: method, target and clock.
+    assert!(verify_request_for_digest(&proof, "GET", "/v1/search?x=1", &digest, NOW).is_err());
+    assert!(verify_request_for_digest(&proof, "POST", "/v1/other", &digest, NOW).is_err());
+    assert!(matches!(
+        verify_request_for_digest(&proof, "POST", "/v1/search?x=1", &digest, NOW + 3600),
+        Err(ReadAuthError::Stale { .. })
+    ));
+}
+
+/// The digest header has one spelling: 64 lowercase hex characters.
+#[test]
+fn the_digest_header_grammar_is_strict_and_round_trips() {
+    let digest = body_digest(b"hello");
+    let text = content_digest_header_value(&digest);
+    assert_eq!(text.len(), 64);
+    assert_eq!(parse_content_digest(&text).unwrap(), digest);
+    for bad in [
+        "",
+        " ",
+        &text[..63],
+        &format!("{text}0"),
+        &text.to_ascii_uppercase(),
+        &format!(" {text}"),
+        &format!("{text} "),
+        &format!("sha256={text}"),
+        &format!("{}g", &text[..63]),
+        &"é".repeat(32),
+    ] {
+        assert!(
+            matches!(parse_content_digest(bad), Err(ReadAuthError::Malformed(_))),
+            "{bad:?}"
+        );
+    }
+}

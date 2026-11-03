@@ -78,6 +78,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "content_digest"
+path = "fuzz_targets/content_digest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "operator_op"
 path = "fuzz_targets/operator_op.rs"
 test = false

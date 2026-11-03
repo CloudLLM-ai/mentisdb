@@ -33,6 +33,29 @@
 //! The proof authenticates the reader, it does not encrypt the response. Serve
 //! private chains over TLS.
 //!
+//! # Large bodies: the content digest header
+//!
+//! The signature covers `sha256(body)`, so a server that has only the proof must
+//! read the whole body to check it. Buffering a large body in memory for that is
+//! what limits a plain proof to [`LEGACY_SIGNED_BODY_BYTES`] (1 MiB). A client may
+//! instead **opt in** by also sending the digest it signed in a second header,
+//! [`CONTENT_DIGEST_HEADER`] (`X-Mentis-Content-Sha256: <64 lowercase hex>`).
+//! The signature scheme is unchanged, so an old client's proof still verifies
+//! exactly as before and a server that does not know the header ignores it.
+//!
+//! A server that knows the header verifies the signature against the *declared*
+//! digest first (cheap, no body read), then streams the body through a hasher and
+//! fails the request at end of body if the bytes do not hash to that digest
+//! ([`verify_request_for_digest`]). A body is therefore accepted only if it is
+//! the one that was signed, with memory use independent of its size, up to the
+//! server's overall cap (`MENTISDB_MAX_BODY_BYTES`).
+//!
+//! The digest is confirmed only at the **end** of the body. Whatever reads the
+//! body must not act on it before then: MentisDB's handlers collect the whole
+//! body into a typed value first and only then run, so a mismatching body is
+//! rejected before any chain is touched. Code that streams a body must buffer or
+//! spool it until the end and commit afterwards.
+//!
 //! # Examples
 //!
 //! ```
@@ -62,6 +85,13 @@ use std::sync::Mutex;
 
 /// Lowercase name of the HTTP header that carries the proof.
 pub const READ_AUTH_HEADER: &str = "x-mentis-auth";
+/// Lowercase name of the optional header that declares the SHA-256 of the body
+/// the proof signed, so the server can verify the proof before reading the body.
+/// See the [module documentation](crate::read_auth), "Large bodies".
+pub const CONTENT_DIGEST_HEADER: &str = "x-mentis-content-sha256";
+/// Largest body a proof **without** [`CONTENT_DIGEST_HEADER`] can sign: the
+/// server must buffer the whole body to hash it.
+pub const LEGACY_SIGNED_BODY_BYTES: usize = 1024 * 1024;
 /// Domain tag every read-auth preimage starts with.
 pub const READ_AUTH_DOMAIN: &[u8] = b"mentisdb/read-auth/v1\0";
 /// Seconds a proof stays valid on either side of the server clock.
@@ -287,14 +317,86 @@ pub fn read_auth_payload(
     body: &[u8],
     header: &ReadAuthHeader,
 ) -> Vec<u8> {
+    read_auth_payload_for_digest(method, target, &body_digest(body), header)
+}
+
+/// [`read_auth_payload`] for a body known only by its SHA-256 `digest`: the
+/// same bytes, which is what lets a server verify a proof before it has read
+/// the body.
+#[must_use]
+pub fn read_auth_payload_for_digest(
+    method: &str,
+    target: &str,
+    digest: &[u8; 32],
+    header: &ReadAuthHeader,
+) -> Vec<u8> {
     let mut p = Payload::new(READ_AUTH_DOMAIN);
     p.str(&method.to_ascii_uppercase()).str(target);
-    p.raw(&Sha256::digest(body));
+    p.raw(digest);
     p.str(&header.agent_id)
         .str(&header.key_id)
         .raw(&header.public_key);
     p.i64(header.timestamp).str(&header.nonce);
     p.0
+}
+
+/// SHA-256 of a request body, the value a proof signs and
+/// [`CONTENT_DIGEST_HEADER`] declares.
+#[must_use]
+pub fn body_digest(body: &[u8]) -> [u8; 32] {
+    Sha256::digest(body).into()
+}
+
+/// The [`CONTENT_DIGEST_HEADER`] value for `digest`: 64 lowercase hex characters.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::read_auth::{body_digest, content_digest_header_value, parse_content_digest};
+///
+/// let digest = body_digest(b"{}");
+/// let value = content_digest_header_value(&digest);
+/// assert_eq!(value.len(), 64);
+/// assert_eq!(parse_content_digest(&value).unwrap(), digest);
+/// ```
+#[must_use]
+pub fn content_digest_header_value(digest: &[u8; 32]) -> String {
+    to_hex(digest)
+}
+
+/// Parse a [`CONTENT_DIGEST_HEADER`] value.
+///
+/// Strict: exactly 64 lowercase hex characters, nothing else (no whitespace,
+/// prefix, uppercase or padding), so there is one spelling of every digest.
+///
+/// # Errors
+///
+/// [`ReadAuthError::Malformed`] for any other value.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::read_auth::parse_content_digest;
+///
+/// assert!(parse_content_digest(&"ab".repeat(32)).is_ok());
+/// assert!(parse_content_digest(&"AB".repeat(32)).is_err()); // uppercase
+/// assert!(parse_content_digest(&"ab".repeat(31)).is_err()); // short
+/// assert!(parse_content_digest("sha256=00").is_err());
+/// ```
+pub fn parse_content_digest(value: &str) -> Result<[u8; 32], ReadAuthError> {
+    let malformed =
+        || ReadAuthError::Malformed("content digest must be 64 lowercase hex characters");
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(malformed());
+    }
+    from_hex(value)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(malformed)
 }
 
 /// A fresh random nonce: 32 lowercase hex characters from a UUIDv4 (the
@@ -365,12 +467,54 @@ pub fn verify_request(
     body: &[u8],
     now_unix_secs: i64,
 ) -> Result<ReadAuthHeader, ReadAuthError> {
+    verify_request_for_digest(
+        header_value,
+        method,
+        target,
+        &body_digest(body),
+        now_unix_secs,
+    )
+}
+
+/// [`verify_request`] for a body known only by its SHA-256 `digest` (the value
+/// of [`CONTENT_DIGEST_HEADER`], see [`parse_content_digest`]).
+///
+/// **A success only means the proof signed that digest, not that the body is the
+/// signed one.** The caller must hash the body it then reads and refuse the
+/// request unless it equals `digest`, and must not act on the body before it has
+/// seen the whole of it. MentisDB's server does this with a streaming hasher.
+///
+/// # Errors
+///
+/// As [`verify_request`].
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::read_auth::{body_digest, sign_request, verify_request_for_digest};
+///
+/// let body = vec![b'x'; 5_000_000];
+/// let header = sign_request(&[7; 32], "alice", "alice-1", "POST", "/v1/import-markdown", &body, 1_767_225_600, "00112233445566778899aabbccddeeff");
+/// // The server checks the proof from the declared digest alone...
+/// let digest = body_digest(&body);
+/// assert!(verify_request_for_digest(&header, "POST", "/v1/import-markdown", &digest, 1_767_225_600).is_ok());
+/// // ...and a digest of any other body is refused.
+/// let other = body_digest(b"other");
+/// assert!(verify_request_for_digest(&header, "POST", "/v1/import-markdown", &other, 1_767_225_600).is_err());
+/// ```
+pub fn verify_request_for_digest(
+    header_value: &str,
+    method: &str,
+    target: &str,
+    digest: &[u8; 32],
+    now_unix_secs: i64,
+) -> Result<ReadAuthHeader, ReadAuthError> {
     let header = ReadAuthHeader::parse(header_value)?;
     let skew_secs = now_unix_secs.saturating_sub(header.timestamp);
     if skew_secs.unsigned_abs() > READ_AUTH_WINDOW_SECS.unsigned_abs() {
         return Err(ReadAuthError::Stale { skew_secs });
     }
-    let payload = read_auth_payload(method, target, body, &header);
+    let payload = read_auth_payload_for_digest(method, target, digest, &header);
     verify_ed25519_signature(&header.public_key, &payload, &header.signature)
         .map_err(|_| ReadAuthError::BadSignature)?;
     Ok(header)
