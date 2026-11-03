@@ -1034,6 +1034,16 @@ fn update_registry(
         .get(&paths.chain_key)
         .map(|entry| entry.created_at)
         .unwrap_or(now);
+    // Whether the chain has private segments is derived from the chain itself
+    // and is rewritten by the first normal open. Until then keep what the
+    // registry already says; for a chain it has never seen, assume private
+    // (the open that follows corrects it) so a listing masks its counts and
+    // path instead of reporting the totals of a chain that may be private.
+    let (has_private, public_thought_count) = registry
+        .chains
+        .get(&paths.chain_key)
+        .map(|entry| (entry.has_private, entry.public_thought_count))
+        .unwrap_or((true, 0));
     let agents = crate::load_agent_registry(
         &paths.chain_dir,
         &paths.chain_key,
@@ -1058,10 +1068,12 @@ fn update_registry(
             thought_count: journal.thoughts_total,
             agent_count: agents,
             entity_type_count: entity_types,
-            // Segment information is rewritten with the first normal flush
-            // after the chain is opened (it is derived from the chain itself).
-            has_private: false,
-            public_thought_count: journal.thoughts_total,
+            has_private,
+            public_thought_count: if has_private {
+                public_thought_count
+            } else {
+                journal.thoughts_total
+            },
             created_at,
             updated_at: now,
         },

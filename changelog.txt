@@ -1,4 +1,13 @@
 UNRELEASED
+  - security(list): `GET /v1/chains` (and the MCP list tool) no longer leaks private-chain
+    totals or paths. A chain the registry flags as private that could not be opened (the
+    error was swallowed with `let _ =`) was listed with the registry's stored thought and
+    agent counts, which include private thoughts, and its absolute storage path. It is now
+    listed with only its public thought count, no agents and an empty path, and the failed
+    open is logged at warn level. Finalizing a storage migration wrote `has_private:
+    false` and the whole thought count as the public count, so a private chain was listed
+    unmasked until something opened it; it now keeps the registry's flag, and a chain the
+    registry has never seen is assumed private until its first open writes the real value.
   - security(dashboard): destructive and administrative routes now follow the private-chain
     PIN rule. `DELETE /dashboard/api/chains/{key}` never opened the chain, so a dashboard
     with no PIN would delete a private chain that every other route refuses to show; it now

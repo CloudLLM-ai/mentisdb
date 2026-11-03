@@ -4866,6 +4866,12 @@ impl MentisDbService {
         let registry = load_registered_chains(&self.config.chain_dir)?;
         chain_keys.extend(registry.chains.keys().cloned());
 
+        // A chain the registry flags as having private segments is listed with
+        // only its public thought count, no agent count and no storage path: the
+        // stored totals include private thoughts and the path is host detail.
+        // Chains that open below are re-computed for this caller's audience; the
+        // masked entry stays for one that cannot be opened (or that this
+        // caller may not see), so a failed open never falls back to the totals.
         let mut chains_by_key: BTreeMap<String, ChainSummary> = registry
             .chains
             .values()
@@ -4876,9 +4882,21 @@ impl MentisDbService {
                         chain_key: entry.chain_key.clone(),
                         version: entry.version,
                         storage_adapter: entry.storage_adapter.to_string(),
-                        thought_count: entry.thought_count,
-                        agent_count: entry.agent_count,
-                        storage_location: entry.storage_location.clone(),
+                        thought_count: if entry.has_private {
+                            entry.public_thought_count
+                        } else {
+                            entry.thought_count
+                        },
+                        agent_count: if entry.has_private {
+                            0
+                        } else {
+                            entry.agent_count
+                        },
+                        storage_location: if entry.has_private {
+                            String::new()
+                        } else {
+                            entry.storage_location.clone()
+                        },
                     },
                 )
             })
@@ -4886,11 +4904,15 @@ impl MentisDbService {
 
         // Counts must not reveal how much of a chain is private. The registry
         // records which chains have private segments; open those (idempotent,
-        // cached) so the counts below are computed for this caller's audience,
-        // and mask the stored totals of the rest of them anyway.
+        // cached) so the counts below are computed for this caller's audience.
         for (chain_key, entry) in &registry.chains {
             if entry.has_private && !self.chains.contains_key(chain_key) {
-                let _ = self.get_chain(Some(chain_key), None).await;
+                if let Err(error) = self.get_chain(Some(chain_key), None).await {
+                    log::warn!(
+                        "list_chains: private chain '{chain_key}' could not be opened, \
+                         listing it with masked counts: {error}"
+                    );
+                }
             }
         }
 
