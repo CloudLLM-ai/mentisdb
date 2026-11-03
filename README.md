@@ -954,12 +954,12 @@ REST and MCP errors map to HTTP statuses as follows:
 
 | Status | Meaning |
 |---|---|
-| `400` | Invalid input: malformed JSON, bad UUID, unknown thought type/role, invalid `chain_key` |
+| `400` | Invalid input: malformed JSON, bad UUID, unknown thought type/role, invalid `chain_key`, a result window (`offset + limit`) above 10,000 or a standing-context `per_type_limit` above 100 |
 | `401` | Missing/invalid bearer token, or a token whose scope does not cover the operation |
 | `403` | Permission denied: missing or invalid signature on a signed skill upload, inactive agent, a write the chain's access policy refused, a `Host` outside the allowlist, or an operator-only route (`/v1/agents/keys`, `/v1/agents/keys/revoke`, `/v1/agents/disable`, `/v1/access/policy/set`) |
 | `404` | Unknown chain (see above) or another missing resource |
 | `409` | Conflict, e.g. `POST /v1/chains/branch` into a chain key that already exists |
-| `413` | Request body over 1 MiB (enforced while bearer-token access is enabled) |
+| `413` | Request body over 1 MiB, for requests carrying a read proof (`X-Mentis-Auth`) and for REST while bearer-token access is enabled. A large `mentisdb memory import` with a read key hits this: import in batches |
 | `500` | Server fault; the body says only `"internal server error"` and details go to the daemon log |
 | `501` | `POST /v1/extract-memories` on a build without the `llm-extraction` feature |
 | `503` | The chain is being migrated or is quarantined; the body names the state, and a migrating chain adds `Retry-After` and `retry_after_secs` (see [Upgrading and chain migrations](#upgrading-and-chain-migrations)) |
