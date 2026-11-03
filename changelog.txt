@@ -208,6 +208,19 @@ UNRELEASED
     turns the append into a `500`. The thought was already durable, so clients
     that retried errors wrote it twice. The failure is logged and the queued
     writes are retried on the next append.
+  - fix(migration): restarting the daemon no longer pushes a chain toward
+    quarantine. Every start counted as an attempt and three interruptions of any
+    kind quarantined the chain, so three ordinary restarts (`SIGTERM`, `systemctl
+    restart`, quitting the TUI) during a long migration locked the chain out until
+    an operator ran `migrate retry`. The signal and quit paths now call
+    `MigrationManager::shutdown`, which halts the migration in flight at its next
+    record and hands its attempt back (new `run_chain_migration_cancellable`,
+    `MigrationOutcome::Interrupted`, `MigrationError::Interrupted`,
+    `MigrationManager::wait_stopped`); the daemon waits up to 15 s for it. Only a
+    crash (`kill -9`, out of memory, power loss) still counts, so a chain that
+    crash-loops the daemon is still quarantined after three attempts. Verified on
+    the real daemon: four `SIGTERM`s in the middle of a 1.5M-thought migration left
+    the attempt count at 0 and the fifth start migrated it.
   - fix(server): caller-sized numbers can no longer make a search or a standing
     context cost minutes. `offset + limit` above 10,000 on `ranked-search`,
     `lexical-search`, `federated-search` and `context-bundles` (REST, MCP and the

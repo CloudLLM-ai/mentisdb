@@ -12,7 +12,8 @@ use mentisdb::migration::{
 use mentisdb::{chain_storage_filename, MentisDb, StorageAdapterKind};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
@@ -421,4 +422,82 @@ fn test_large_chain_migrates_and_is_timed() {
         start_latency < Duration::from_secs(2),
         "startup must stay non-blocking"
     );
+}
+
+/// Options whose hook parks the worker at the first record of a chain: it tells
+/// `entered` the migration is under way, then waits for `release`.
+fn parked(entered: Sender<()>, release: Receiver<()>) -> MigrationOptions {
+    let entered = Mutex::new(entered);
+    let release = Mutex::new(release);
+    MigrationOptions {
+        failpoint: Some(Arc::new(move |fp| {
+            if matches!(fp, Failpoint::DuringStage { thought: 0 }) {
+                let _ = entered.lock().unwrap().send(());
+                let _ = release.lock().unwrap().recv();
+            }
+            false
+        })),
+        progress: None,
+    }
+}
+
+/// Stopping the daemon while a chain migrates (`SIGTERM`, a restart) is a clean
+/// stop, not a crash: the manager halts the running migration, the chain is
+/// untouched and waits as `Pending`, and no attempt is charged, so any number of
+/// restarts (well over the three that quarantine a crashing chain) never
+/// quarantine it. The start after them migrates it.
+#[test]
+fn test_shutdown_during_migration_does_not_count_toward_quarantine() {
+    let dir = TempDir::new().unwrap();
+    put(dir.path(), "slowpoke", FixtureFormat::Schema1, 50);
+    let live = dir.path().join(chain_storage_filename(
+        "slowpoke",
+        StorageAdapterKind::Binary,
+    ));
+    let original = std::fs::read(&live).unwrap();
+    for restart in 0..5 {
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let mut cfg = config(dir.path());
+        cfg.options = parked(entered_tx, release_rx);
+        let manager = MigrationManager::start(cfg).unwrap();
+        entered_rx.recv().unwrap();
+        // The migration is mid-flight and parked; stop the daemon.
+        manager.shutdown();
+        release_tx.send(()).unwrap();
+        assert!(
+            manager.wait_stopped(Duration::from_secs(60)),
+            "restart {restart}"
+        );
+        let status = manager.status("slowpoke").unwrap();
+        assert_eq!(
+            status.phase,
+            MigrationPhase::Pending,
+            "restart {restart}: {status:?}"
+        );
+        assert_eq!(status.error, None);
+        assert_eq!(std::fs::read(&live).unwrap(), original, "chain untouched");
+    }
+    let manager = MigrationManager::start(config(dir.path())).unwrap();
+    assert!(manager.wait_idle(Duration::from_secs(60)));
+    let status = manager.status("slowpoke").unwrap();
+    assert_eq!(status.phase, MigrationPhase::Completed, "{status:?}");
+    assert_eq!(status.attempts, 1, "only the run that finished is counted");
+    assert!(manager.gate("slowpoke").is_none());
+    assert_eq!(
+        MentisDb::open_with_key(dir.path(), "slowpoke")
+            .unwrap()
+            .thoughts()
+            .len(),
+        50
+    );
+}
+
+/// `wait_stopped` reports true once every worker has exited.
+#[test]
+fn test_wait_stopped_returns_after_shutdown() {
+    let dir = TempDir::new().unwrap();
+    let manager = MigrationManager::start(config(dir.path())).unwrap();
+    manager.shutdown();
+    assert!(manager.wait_stopped(Duration::from_secs(30)));
 }

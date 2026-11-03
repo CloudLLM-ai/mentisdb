@@ -401,6 +401,9 @@ fn run_one(
             error.unwrap_or_default()
         )
         .map(|()| false),
+        Ok(MigrationOutcome::Interrupted) => {
+            writeln!(out, "{key}: stopped; run again to resume").map(|()| false)
+        }
         Err(MigrationError::Busy { .. }) => {
             writeln!(out, "{key}: busy (a running daemon is migrating it)").map(|()| true)
         }

@@ -50,6 +50,19 @@
 //! | `staging/<stem>.staged` | the new chain file before the atomic rename |
 //! | `backup/<stem>/` | the original chain file and its registries |
 //!
+//! # Stopping and crashing
+//!
+//! Two kinds of interruption are told apart. A **clean stop** (the daemon gets
+//! `SIGTERM` or Ctrl+C, or the operator quits the TUI) calls
+//! [`MigrationManager::shutdown`]: the migration in flight halts at its next
+//! record ([`run_chain_migration_cancellable`]), staging is discarded, the live
+//! chain is untouched and the attempt is handed back, so restarting a daemon
+//! during a long migration any number of times never quarantines the chain. A
+//! **crash** (`kill -9`, out of memory, power loss) cannot hand anything back
+//! and counts as an attempt; a chain cut off [`MAX_ATTEMPTS`](engine::MAX_ATTEMPTS)
+//! (3) times is quarantined so it cannot crash-loop the daemon, and
+//! `mentisdb migrate retry` clears it.
+//!
 //! # Downgrading
 //!
 //! A migrated chain keeps the current thought layout, so the previous release
@@ -76,9 +89,9 @@ pub use codec::{
 pub(crate) use engine::preserve_before_rewrite;
 pub use engine::{
     detect_migration, dry_run_chain, purge_backups, quarantine_chain, recover_chain, retry_chain,
-    rollback_chain, run_chain_migration, skip_chain, verify_chain_file, DryRunReport, JournalState,
-    MigrationJournal, MigrationOutcome, MigrationPaths, MigrationReason, MigrationReport,
-    RecoveryOutcome, VerifyReport,
+    rollback_chain, run_chain_migration, run_chain_migration_cancellable, skip_chain,
+    verify_chain_file, DryRunReport, JournalState, MigrationJournal, MigrationOutcome,
+    MigrationPaths, MigrationReason, MigrationReport, RecoveryOutcome, VerifyReport,
 };
 pub use manager::{
     check_format_stamp, discover_chain_keys, manager_for_dir, write_format_stamp,
@@ -167,7 +180,7 @@ pub type FailpointHook = Arc<dyn Fn(&Failpoint) -> bool + Send + Sync>;
 
 /// Why a migration did not complete.
 ///
-/// Every variant other than [`Self::Injected`] and [`Self::Busy`] quarantines
+/// Every variant other than [`Self::Injected`], [`Self::Busy`] and [`Self::Interrupted`] quarantines
 /// the chain (journal state `Failed`) with the error text preserved.
 #[derive(Debug)]
 pub enum MigrationError {
@@ -207,6 +220,12 @@ pub enum MigrationError {
     Refused(String),
     /// A test failpoint fired; the disk was deliberately left mid-flight.
     Injected(Failpoint),
+    /// The run was asked to stop ([`run_chain_migration_cancellable`]). Not a
+    /// failure: the live chain is untouched and the attempt is handed back.
+    /// [`run_chain_migration_cancellable`] turns it into
+    /// [`MigrationOutcome::Interrupted`], so callers of the public entry points
+    /// do not normally see it.
+    Interrupted,
 }
 
 impl MigrationError {
@@ -250,6 +269,7 @@ impl fmt::Display for MigrationError {
             }
             Self::Refused(message) => f.write_str(message),
             Self::Injected(failpoint) => write!(f, "injected crash at {failpoint}"),
+            Self::Interrupted => f.write_str("migration stopped on request"),
         }
     }
 }

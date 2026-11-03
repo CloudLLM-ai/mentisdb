@@ -1386,6 +1386,28 @@ fn start_background_migrations(
     Ok(manager)
 }
 
+/// Stop the background migrations before the process exits.
+///
+/// Asks the manager to stop (the migration in flight halts at its next record
+/// and hands its attempt back) and waits a bounded time for the workers, so a
+/// `SIGTERM`, a Ctrl+C or a quit from the TUI is a clean stop. Exiting with a
+/// migration still running would look like a crash and count toward quarantine;
+/// if the workers do not stop within the bound that is what happens, and it is
+/// logged.
+fn stop_background_migrations(migrations: &Option<MigrationManager>) {
+    let Some(manager) = migrations else { return };
+    manager.shutdown();
+    if !manager.wait_stopped(MIGRATION_STOP_TIMEOUT) {
+        log::warn!(
+            "background migrations did not stop within {} s; they resume on the next start",
+            MIGRATION_STOP_TIMEOUT.as_secs()
+        );
+    }
+}
+
+/// How long shutdown waits for a migration step to finish stopping.
+const MIGRATION_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// One-line-per-fact summary of the migration manager for the operator TUI.
 fn migration_summary_lines(manager: &Option<MigrationManager>) -> Vec<String> {
     let Some(manager) = manager else {
@@ -1463,7 +1485,7 @@ async fn run_headless() -> Result<(), Box<dyn std::error::Error + Send + Sync>> 
     let shutdown_signal = wait_for_shutdown_signal();
 
     // Start servers
-    let mut handles = start_servers_with_migrations(config, None, migrations).await?;
+    let mut handles = start_servers_with_migrations(config, None, migrations.clone()).await?;
 
     eprintln!(
         "[mentisdb headless] MCP http://{} REST http://{}",
@@ -1474,6 +1496,9 @@ async fn run_headless() -> Result<(), Box<dyn std::error::Error + Send + Sync>> 
     shutdown_signal.await;
     eprintln!("[mentisdb headless] shutdown signal received, draining servers");
     shutdown_handles(&mut handles);
+    // A migration cut off by the exit would count toward quarantine; stop it
+    // cleanly first (this also gives in-flight writers time to finish).
+    stop_background_migrations(&migrations);
     // Give in-flight requests and group-commit writers a moment to finish.
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     Ok(())
@@ -1772,6 +1797,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         eprintln!("TUI error: {te}");
     }
     ctrlc_handle.abort();
+    stop_background_migrations(&migrations);
 
     Ok(())
 }
@@ -2233,6 +2259,7 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
         eprintln!("TUI error: {te}");
     }
     ctrlc_handle.abort();
+    stop_background_migrations(&migrations);
 
     Ok(())
 }

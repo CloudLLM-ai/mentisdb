@@ -364,7 +364,11 @@ struct Inner {
     wake: Condvar,
     outstanding: Mutex<usize>,
     idle: Condvar,
+    /// Set by [`MigrationManager::shutdown`]. It stops the workers taking new
+    /// chains and is also the cancel flag of the migration in flight.
     shutdown: AtomicBool,
+    /// Worker threads, so [`MigrationManager::wait_stopped`] can wait for them.
+    workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 /// Runs and tracks chain migrations in the background.
@@ -409,15 +413,22 @@ impl MigrationManager {
                 outstanding: Mutex::new(0),
                 idle: Condvar::new(),
                 shutdown: AtomicBool::new(false),
+                workers: Mutex::new(Vec::new()),
             }),
         };
         manager.scan_and_enqueue();
         for number in 0..workers {
             let worker = manager.clone();
-            std::thread::Builder::new()
+            let handle = std::thread::Builder::new()
                 .name(format!("mentisdb-migrate-{number}"))
                 .spawn(move || worker.work_loop())
                 .map_err(MigrationError::Io)?;
+            manager
+                .inner
+                .workers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(handle);
         }
         write_format_stamp(&manager.inner.config.chain_dir)?;
         MANAGERS.lock().unwrap_or_else(|e| e.into_inner()).insert(
@@ -518,7 +529,16 @@ impl MigrationManager {
         Ok(())
     }
 
-    /// Ask the workers to stop after their current chain.
+    /// Ask the workers to stop, without waiting for them.
+    ///
+    /// No further chain is taken from the queue, and the migration in flight
+    /// stops at its next record
+    /// ([`run_chain_migration_cancellable`](super::run_chain_migration_cancellable)),
+    /// leaving its chain untouched and resumable. A stop on request is not a crash: it does not count toward
+    /// [`MAX_ATTEMPTS`](super::engine::MAX_ATTEMPTS), so stopping and restarting
+    /// a daemon during a long migration never quarantines the chain. Call
+    /// [`Self::wait_stopped`] afterwards to let the workers finish that stop
+    /// before the process exits.
     pub fn shutdown(&self) {
         MANAGERS
             .lock()
@@ -526,6 +546,43 @@ impl MigrationManager {
             .remove(&registry_key(&self.inner.config.chain_dir));
         self.inner.shutdown.store(true, Ordering::SeqCst);
         self.inner.wake.notify_all();
+    }
+
+    /// Wait until every worker thread has exited, or `timeout` elapses.
+    /// Returns `true` when all have. Meant for after [`Self::shutdown`], so the
+    /// process does not exit in the middle of a migration step: a worker that
+    /// is still running when the process ends is indistinguishable from a
+    /// crash and counts as an interrupted attempt.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::migration::{MigrationConfig, MigrationManager};
+    /// use std::time::Duration;
+    ///
+    /// let dir = tempfile::tempdir().unwrap();
+    /// let manager = MigrationManager::start(MigrationConfig::new(dir.path())).unwrap();
+    /// manager.shutdown();
+    /// assert!(manager.wait_stopped(Duration::from_secs(10)));
+    /// ```
+    pub fn wait_stopped(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let all_done = self
+                .inner
+                .workers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .all(std::thread::JoinHandle::is_finished);
+            if all_done {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     fn lock_statuses(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, ChainMigrationStatus>> {
@@ -673,7 +730,12 @@ impl MigrationManager {
         let dir = self.inner.config.chain_dir.clone();
         let key_owned = key.to_owned();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            engine::run_chain_migration(&dir, &key_owned, &options)
+            engine::run_chain_migration_cancellable(
+                &dir,
+                &key_owned,
+                &options,
+                &self.inner.shutdown,
+            )
         }));
         let finished = Utc::now();
         let attempts = MigrationJournal::load(&engine::MigrationPaths::new(&dir, key).journal)
@@ -695,6 +757,15 @@ impl MigrationManager {
             Ok(Ok(MigrationOutcome::NotNeeded)) => {
                 self.lock_statuses().remove(key);
             }
+            // Stopped on request (shutdown): not a failure, and the attempt was
+            // handed back, so the chain simply waits for the next start.
+            Ok(Ok(MigrationOutcome::Interrupted)) => self.update(key, |status| {
+                status.phase = MigrationPhase::Pending;
+                status.step = None;
+                status.percent = 0;
+                status.thoughts_done = 0;
+                status.started_at = None;
+            }),
             Ok(Ok(MigrationOutcome::Quarantined { state, error })) => self.update(key, |status| {
                 status.phase = match state {
                     JournalState::Skipped => MigrationPhase::Skipped,

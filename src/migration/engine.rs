@@ -21,11 +21,16 @@ use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-/// A chain interrupted this many times is quarantined instead of retried, so a
-/// chain that crashes the process (out of memory, a decoder bug) cannot turn
-/// every start into a crash loop.
+/// A chain whose migration was *cut off* this many times is quarantined
+/// instead of retried, so a chain that crashes the process (out of memory, a
+/// decoder bug, `kill -9`) cannot turn every start into a crash loop.
+///
+/// Only unclean stops count. A migration that stops because the daemon was
+/// asked to shut down ([`run_chain_migration_cancellable`]) hands its attempt
+/// back, so restarting a daemon any number of times never quarantines a chain.
 pub const MAX_ATTEMPTS: u32 = 3;
 
 /// Records between progress samples while staging.
@@ -209,6 +214,11 @@ pub enum MigrationOutcome {
         /// The recorded error, if any.
         error: Option<String>,
     },
+    /// The run was stopped on request ([`run_chain_migration_cancellable`])
+    /// before the live chain was touched. Staging is discarded, the live chain
+    /// is untouched, and the attempt is not counted toward [`MAX_ATTEMPTS`], so
+    /// the next run starts over cleanly.
+    Interrupted,
 }
 
 /// Summary of a completed (or dry-run) migration.
@@ -666,6 +676,7 @@ fn stream_upgrade<W: Write>(
     kind: StorageAdapterKind,
     out: &mut W,
     options: &MigrationOptions,
+    cancel: &AtomicBool,
 ) -> Result<StageSummary, MigrationError> {
     let source = paths.source(kind);
     let source_len = fs::metadata(source)?.len();
@@ -680,6 +691,7 @@ fn stream_upgrade<W: Write>(
         kind,
         &bytes_read,
         |thought, layout, stored_schema, applied, index| {
+            ensure_not_cancelled(cancel)?;
             options.check(Failpoint::DuringStage { thought: index })?;
             from_schema = from_schema.min(layout.schema_version());
             steps.extend(applied);
@@ -814,6 +826,45 @@ pub fn run_chain_migration(
     chain_key: &str,
     options: &MigrationOptions,
 ) -> Result<MigrationOutcome, MigrationError> {
+    run_chain_migration_cancellable(chain_dir, chain_key, options, &AtomicBool::new(false))
+}
+
+/// [`run_chain_migration`] that stops early when `cancel` becomes `true`.
+///
+/// The flag is checked before the backup, before every record while staging
+/// and before the staged file is verified; the commit and finalize steps are
+/// short and always run to completion once reached. A stop returns
+/// [`MigrationOutcome::Interrupted`]: staging is removed, the live chain was
+/// never touched, the journal stays resumable and the attempt this run took is
+/// handed back, so a daemon that is restarted (or stopped by `SIGTERM`) any
+/// number of times mid-migration is never quarantined for it. Only a run that
+/// is cut off without a chance to stop (a crash, `kill -9`, power loss) counts
+/// toward [`MAX_ATTEMPTS`].
+///
+/// # Errors
+///
+/// As [`run_chain_migration`].
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::migration::{run_chain_migration_cancellable, MigrationOptions, MigrationOutcome};
+/// use std::sync::atomic::AtomicBool;
+///
+/// let dir = tempfile::tempdir().unwrap();
+/// let cancel = AtomicBool::new(true);
+/// // Nothing to migrate: cancelling is only observed while work is running.
+/// let outcome =
+///     run_chain_migration_cancellable(dir.path(), "demo", &MigrationOptions::default(), &cancel)
+///         .unwrap();
+/// assert_eq!(outcome, MigrationOutcome::NotNeeded);
+/// ```
+pub fn run_chain_migration_cancellable(
+    chain_dir: &Path,
+    chain_key: &str,
+    options: &MigrationOptions,
+    cancel: &AtomicBool,
+) -> Result<MigrationOutcome, MigrationError> {
     let paths = MigrationPaths::new(chain_dir, chain_key);
     let _lock = ChainLock::acquire(&paths)?;
     let existing = MigrationJournal::load(&paths.journal)?;
@@ -866,11 +917,36 @@ pub fn run_chain_migration(
     journal.save(&paths)?;
     options.check(Failpoint::AfterPlan)?;
 
-    match execute(&paths, &mut journal, kind, options, resumed) {
+    match execute(&paths, &mut journal, kind, options, resumed, cancel) {
         Ok(report) => Ok(MigrationOutcome::Migrated(report)),
         Err(error) if error.is_injected() => Err(error),
+        Err(MigrationError::Interrupted) => {
+            interrupt(&paths, &mut journal, attempts)?;
+            Ok(MigrationOutcome::Interrupted)
+        }
         Err(error) => quarantine(&paths, Some(journal), kind, error, attempts + 1),
     }
+}
+
+/// A stop on request: discard staging and give back the attempt this run took.
+///
+/// The journal stays `Planned` or `BackedUp` (the live chain was never
+/// touched), which recovery resolves by restarting, and its attempt count goes
+/// back to what it was before this run so a clean stop is never mistaken for a
+/// crash.
+fn interrupt(
+    paths: &MigrationPaths,
+    journal: &mut MigrationJournal,
+    attempts_before: u32,
+) -> Result<(), MigrationError> {
+    mig_log!(
+        info,
+        "chain '{}': migration stopped on request; it restarts on the next run",
+        paths.chain_key
+    );
+    let _ = fs::remove_file(&paths.staged);
+    journal.attempts = attempts_before;
+    journal.save(paths)
 }
 
 /// Record a failure: journal `Failed`, staging removed, live chain untouched.
@@ -900,7 +976,9 @@ fn execute(
     kind: StorageAdapterKind,
     options: &MigrationOptions,
     resumed: bool,
+    cancel: &AtomicBool,
 ) -> Result<MigrationReport, MigrationError> {
+    ensure_not_cancelled(cancel)?;
     options.report(progress_marker(paths, MigrationStep::BackingUp));
     backup_original(paths, kind)?;
     journal.set_state(paths, JournalState::BackedUp)?;
@@ -912,13 +990,14 @@ fn execute(
         1 << 20,
         crate::private_fs::create(&paths.staged)?,
     ));
-    let summary = stream_upgrade(paths, kind, &mut writer, options)?;
+    let summary = stream_upgrade(paths, kind, &mut writer, options, cancel)?;
     writer.flush()?;
     writer.inner.get_ref().sync_all()?;
     let staged_len = writer.written;
     let staged_digest = hex(&writer.hasher.clone().finalize());
     drop(writer);
     options.check(Failpoint::AfterStage)?;
+    ensure_not_cancelled(cancel)?;
 
     options.report(progress_marker(paths, MigrationStep::Verifying));
     let verified = verify_chain_file(&paths.staged)?;
@@ -968,6 +1047,15 @@ fn execute(
         backup_dir: Some(paths.backup_dir.clone()),
         resumed,
     })
+}
+
+/// [`MigrationError::Interrupted`] once `cancel` is set.
+fn ensure_not_cancelled(cancel: &AtomicBool) -> Result<(), MigrationError> {
+    if cancel.load(Ordering::Acquire) {
+        Err(MigrationError::Interrupted)
+    } else {
+        Ok(())
+    }
 }
 
 fn progress_marker(paths: &MigrationPaths, step: MigrationStep) -> MigrationProgress {
@@ -1506,7 +1594,7 @@ pub fn dry_run_chain(
     };
     let started = Instant::now();
     let mut writer = HashingWriter::new(io::sink());
-    let summary = stream_upgrade(&paths, kind, &mut writer, options)?;
+    let summary = stream_upgrade(&paths, kind, &mut writer, options, &AtomicBool::new(false))?;
     Ok(Some(MigrationReport {
         chain_key: chain_key.to_owned(),
         reason: Some(reason),

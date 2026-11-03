@@ -8,12 +8,14 @@ use mentisdb::migration::fixtures::{
 };
 use mentisdb::migration::{
     detect_migration, dry_run_chain, recover_chain, retry_chain, rollback_chain,
-    run_chain_migration, skip_chain, verify_chain_file, Failpoint, JournalState, MigrationError,
-    MigrationJournal, MigrationOptions, MigrationOutcome, MigrationPaths, MigrationReason,
-    RecoveryOutcome,
+    run_chain_migration, run_chain_migration_cancellable, skip_chain, verify_chain_file, Failpoint,
+    JournalState, MigrationError, MigrationJournal, MigrationOptions, MigrationOutcome,
+    MigrationPaths, MigrationReason, RecoveryOutcome,
 };
 use mentisdb::{chain_storage_filename, MentisDb, StorageAdapterKind};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tempfile::TempDir;
 
 const KEY: &str = "demo";
@@ -315,6 +317,84 @@ fn test_repeatedly_interrupted_chain_is_quarantined() {
     retry_chain(dir.path(), KEY).unwrap();
     migrate(dir.path()).unwrap();
     assert_chain_equals_expected(dir.path(), FixtureFormat::Schema1, 6);
+}
+
+/// A stop on request (a daemon told to shut down) is not a crash: it leaves the
+/// chain untouched, gives the attempt back, and so can happen any number of
+/// times, far more than `MAX_ATTEMPTS`, without the chain being quarantined.
+/// The next run then completes normally.
+#[test]
+fn test_stop_on_request_never_counts_toward_quarantine() {
+    let (dir, path) = fixture(FixtureFormat::Schema1, 6);
+    let original = std::fs::read(&path).unwrap();
+    for round in 0..6 {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        let options = MigrationOptions {
+            // Ask for the stop while record 2 is being staged.
+            failpoint: Some(Arc::new(move |fp| {
+                if matches!(fp, Failpoint::DuringStage { thought: 2 }) {
+                    flag.store(true, Ordering::Release);
+                }
+                false
+            })),
+            progress: None,
+        };
+        let outcome = run_chain_migration_cancellable(dir.path(), KEY, &options, &cancel).unwrap();
+        assert_eq!(outcome, MigrationOutcome::Interrupted, "round {round}");
+        let journal = journal(dir.path());
+        assert_eq!(
+            journal.attempts, 0,
+            "round {round}: the attempt is handed back"
+        );
+        assert!(
+            !journal.state.is_terminal(),
+            "round {round}: still resumable"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original, "chain untouched");
+        assert!(
+            !MigrationPaths::new(dir.path(), KEY).staged.exists(),
+            "staging is discarded"
+        );
+    }
+    assert!(matches!(
+        migrate(dir.path()).unwrap(),
+        MigrationOutcome::Migrated(_)
+    ));
+    assert_chain_equals_expected(dir.path(), FixtureFormat::Schema1, 6);
+}
+
+/// A flag that is already set stops the run before the original is even
+/// backed up, and a crash after a stop still counts: only the crash does.
+#[test]
+fn test_stop_before_work_and_crashes_are_counted_separately() {
+    let (dir, path) = fixture(FixtureFormat::Schema1, 6);
+    let original = std::fs::read(&path).unwrap();
+    let outcome = run_chain_migration_cancellable(
+        dir.path(),
+        KEY,
+        &MigrationOptions::default(),
+        &AtomicBool::new(true),
+    )
+    .unwrap();
+    assert_eq!(outcome, MigrationOutcome::Interrupted);
+    assert_eq!(journal(dir.path()).attempts, 0);
+    assert!(!MigrationPaths::new(dir.path(), KEY).backup_dir.exists());
+    for _ in 0..3 {
+        let crash = MigrationOptions::crash_at(Failpoint::DuringStage { thought: 2 });
+        assert!(run_chain_migration(dir.path(), KEY, &crash).is_err());
+    }
+    assert!(
+        matches!(
+            migrate(dir.path()).unwrap(),
+            MigrationOutcome::Quarantined {
+                state: JournalState::Failed,
+                ..
+            }
+        ),
+        "three crashes still quarantine"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
 }
 
 /// Flipping a byte in a trusted (schema-3) record is corruption, never silently
