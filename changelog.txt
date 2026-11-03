@@ -36,6 +36,22 @@ UNRELEASED
     `embeddings_missing` and `implicit_edges`, all zero when healthy; zero for a
     chain that is not open or whose private segments are hidden from the caller.
     Library: `MentisDb::derived_backlog` and `DerivedBacklog`.
+  - feat(server): large request bodies. The 1 MiB ceiling is gone for clients that
+    opt in. A read proof that also sends `X-Mentis-Content-Sha256` (the SHA-256 it
+    already signs) is verified before the body is read, and the body is hashed as
+    it streams: the signed body goes through, any other body fails at its end with
+    `400` and no handler has run, so memory use no longer depends on its size. A
+    proof without the header behaves exactly as before, limited to 1 MiB, and its
+    `413` now says how to send more. The bearer-token authorization step buffered
+    at most 1 MiB as well and answered `413` beyond it; both now share one overall
+    cap, `MENTISDB_MAX_BODY_BYTES` (default 64 MiB, never below 1 MiB), also
+    `MentisDbServiceConfig::with_max_body_bytes`. Over it, `413`. The bearer path
+    still buffers the body (it reads `chain_key` from it) up to the cap.
+  - feat(auth): the proof format is unchanged (old clients, mentischat and
+    pymentisdb verify as before); `read_auth::{body_digest, parse_content_digest,
+    verify_request_for_digest, CONTENT_DIGEST_HEADER}` and a `content_digest` fuzz
+    target are new.
+
 0.11.0.56 NOV/02/2026
   - security(host): REST on a loopback bind now checks `Host` for every request, not only
     browser-flagged ones, matching what `cloudllm_mcp` 0.4 does for MCP. A `curl`, CLI or
