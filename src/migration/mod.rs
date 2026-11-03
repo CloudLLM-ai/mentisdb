@@ -102,6 +102,7 @@ pub use manager::{
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// A point in a migration at which a test can simulate the process being killed.
 ///
@@ -410,3 +411,15 @@ macro_rules! mig_log {
     }};
 }
 pub(crate) use mig_log;
+
+/// `days` as a [`Duration`], saturating instead of overflowing.
+///
+/// `days` comes from an operator (`--older-than-days`,
+/// `MENTISDB_MIGRATION_BACKUP_RETENTION_DAYS`), so it can be absurdly large. A
+/// plain `days * 86_400` panics in a debug build and silently wraps to a small
+/// number in a release build, which would make a backup retention of "a very
+/// long time" purge every backup. Saturating means such a value is simply
+/// longer than anything can be old.
+pub(crate) fn duration_from_days(days: u64) -> Duration {
+    Duration::from_secs(days.saturating_mul(86_400))
+}

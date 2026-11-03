@@ -351,7 +351,7 @@ impl MigrationConfig {
             max_concurrency: env_u64("MENTISDB_MIGRATION_CONCURRENCY")
                 .map(|n| n.max(1) as usize)
                 .unwrap_or(2),
-            backup_retention: (days > 0).then(|| Duration::from_secs(days * 86_400)),
+            backup_retention: (days > 0).then(|| super::duration_from_days(days)),
             options: MigrationOptions::default(),
         }
     }

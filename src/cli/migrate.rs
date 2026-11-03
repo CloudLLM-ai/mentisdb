@@ -14,7 +14,6 @@ use crate::migration::{
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// Help text for `mentisdb migrate`.
 pub const MIGRATE_HELP: &str = "\
@@ -336,7 +335,7 @@ pub fn run_migrate(
             dir,
             older_than_days,
         } => {
-            let age = older_than_days.map(|days| Duration::from_secs(days * 86_400));
+            let age = older_than_days.map(crate::migration::duration_from_days);
             let dir = default_dir(dir);
             let _lock = claim(&dir)?;
             let removed = purge_backups(&dir, age).map_err(|e| e.to_string())?;
