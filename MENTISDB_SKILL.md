@@ -20,6 +20,7 @@ triggers: [mentisdb, memory, remember, recall, chain, thought]
 
 - **Reads never create chains.** Search, head, agents, get-thought, etc. on an unknown `chain_key` fail with not found (HTTP 404). For a new chain call `mentisdb_bootstrap` first; only bootstrap, append, import and upserts create chains.
 - **Chain-scoped bearer tokens cannot call `mentisdb_list_chains`** (global-only, like webhook list/delete and skill upload/deprecate/revoke/delete). With a scoped token, skip step 1 and use the `chain_key` you were given.
+- **A chain being upgraded answers "migrating" (HTTP 503, `Retry-After`).** Wait and retry; never bootstrap a substitute chain.
 
 ### 🚫 AGENT IDENTITY RULE — DO NOT CREATE NEW AGENTS
 
