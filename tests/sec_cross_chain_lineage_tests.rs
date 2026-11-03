@@ -335,13 +335,13 @@ fn library_federated_search_and_cross_chain_successor_respect_the_audience() {
         ("parent", &parent, Audience::Public),
         ("sibling", &sibling, Audience::Public),
     ];
-    assert!(cross_chain_successor(&public_view, "parent", w.old).is_none());
+    assert!(cross_chain_successor(&public_view, "parent", w.old, "a").is_none());
     let authorized_sibling = [
         ("parent", &parent, Audience::Public),
         ("sibling", &sibling, Audience::Authorized),
     ];
     assert_eq!(
-        cross_chain_successor(&authorized_sibling, "parent", w.old)
+        cross_chain_successor(&authorized_sibling, "parent", w.old, "a")
             .unwrap()
             .thought
             .content,

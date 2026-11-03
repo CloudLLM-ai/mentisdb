@@ -156,6 +156,7 @@
 use crate::audience::Audience;
 use crate::auth::{bearer_token_access_from_env, BearerTokenScope, BearerTokenStore};
 pub use crate::dashboard::ListenerTls;
+use crate::lineage::SuccessorNote;
 use crate::migration::{MigrationBlock, MigrationManager};
 use crate::server_lens::{audience_for, scope_allows_chain};
 use crate::standing::MAX_STANDING_PER_TYPE_CAP;
@@ -3865,45 +3866,44 @@ impl MentisDbService {
     async fn cross_lineage(
         &self,
         searched: &[String],
-        hits: &[(String, Uuid)],
+        hits: &[(String, Uuid, String)],
         include_invalidated: bool,
     ) -> Vec<CrossAction> {
         if searched.len() < 2 || hits.is_empty() {
             return hits.iter().map(|_| CrossAction::Keep).collect();
         }
-        let mut best: Vec<Option<CrossCandidate>> = hits.iter().map(|_| None).collect();
+        let mut best: Vec<CrossCandidate> =
+            hits.iter().map(|_| CrossCandidate::default()).collect();
         for key in searched {
             let Ok(arc) = self.get_chain(Some(key), None).await else {
                 continue;
             };
             let guard = arc.read().await;
             let audience = audience_for(&guard);
-            for ((chain_key, id), slot) in hits.iter().zip(best.iter_mut()) {
-                let Some(found) =
-                    crate::lineage::cross_chain_successor_on(key, &guard, audience, chain_key, *id)
-                else {
+            for ((chain_key, id, agent), slot) in hits.iter().zip(best.iter_mut()) {
+                let found = crate::lineage::cross_chain_lineage_on(
+                    key, &guard, audience, chain_key, *id, agent,
+                );
+                slot.contests.extend(found.contests);
+                let Some(successor) = found.successor else {
                     continue;
                 };
-                if slot
-                    .as_ref()
-                    .is_none_or(|b| (found.thought.timestamp, found.thought.index) > b.rank)
-                {
-                    *slot = Some(CrossCandidate {
-                        rank: (found.thought.timestamp, found.thought.index),
-                        action: cross_action_for(
+                let rank = (successor.thought.timestamp, successor.thought.index);
+                if slot.successor.as_ref().is_none_or(|(best, _)| rank > *best) {
+                    slot.successor = Some((
+                        rank,
+                        cross_action_for(
                             &guard,
                             audience,
-                            &found,
+                            &successor,
                             (chain_key, *id),
                             include_invalidated,
                         ),
-                    });
+                    ));
                 }
             }
         }
-        best.into_iter()
-            .map(|candidate| candidate.map_or(CrossAction::Keep, |c| c.action))
-            .collect()
+        best.into_iter().map(CrossCandidate::into_action).collect()
     }
 
     /// Discover ancestor chain keys by following `BranchesFrom` relations.
@@ -4412,23 +4412,24 @@ impl MentisDbService {
         // Chains read together here (the branch and its ancestors) may hold
         // a replacement for a thought on another of them.
         let include_invalidated = request.include_invalidated.unwrap_or(false);
-        let keys: Vec<(String, Uuid)> = all_hits
+        let keys: Vec<(String, Uuid, String)> = all_hits
             .iter()
             .filter_map(|(key, hit)| {
                 let id = hit.thought["id"].as_str()?.parse().ok()?;
-                Some((key.clone(), id))
+                let agent = hit.thought["agent_id"].as_str()?.to_owned();
+                Some((key.clone(), id, agent))
             })
             .collect();
         let actions = self
             .cross_lineage(&chain_keys_to_search, &keys, include_invalidated)
             .await;
-        let mut present: BTreeSet<Uuid> = keys.iter().map(|(_, id)| *id).collect();
+        let mut present: BTreeSet<Uuid> = keys.iter().map(|(_, id, _)| *id).collect();
         let mut resolved: Vec<(String, RankedSearchHitOwned)> = Vec::with_capacity(all_hits.len());
         for ((key, mut hit), action) in all_hits.into_iter().zip(actions) {
             match action {
                 CrossAction::Keep => resolved.push((key, hit)),
-                CrossAction::Annotate(note) => {
-                    annotate_cross_superseded(&mut hit.thought, note);
+                action @ (CrossAction::Annotate { .. } | CrossAction::Contest(_)) => {
+                    annotate_cross(&mut hit.thought, &action);
                     resolved.push((key, hit));
                 }
                 CrossAction::Redirect {
@@ -4696,7 +4697,13 @@ impl MentisDbService {
         // A replacement written on another searched chain supersedes a hit
         // here, so redirect (or annotate) before the cross-chain merge.
         let searched: Vec<String> = chain_arcs.iter().map(|(key, _, _)| key.clone()).collect();
-        let keys: Vec<(String, Uuid)> = all_hits.iter().map(|h| (h.0.clone(), h.9)).collect();
+        let keys: Vec<(String, Uuid, String)> = all_hits
+            .iter()
+            .map(|h| {
+                let agent = h.1["agent_id"].as_str().unwrap_or_default().to_owned();
+                (h.0.clone(), h.9, agent)
+            })
+            .collect();
         let actions = self
             .cross_lineage(
                 &searched,
@@ -4710,7 +4717,9 @@ impl MentisDbService {
             .map(|(mut hit, action)| {
                 match action {
                     CrossAction::Keep => {}
-                    CrossAction::Annotate(note) => annotate_cross_superseded(&mut hit.1, note),
+                    action @ (CrossAction::Annotate { .. } | CrossAction::Contest(_)) => {
+                        annotate_cross(&mut hit.1, &action)
+                    }
                     CrossAction::Redirect {
                         chain_key,
                         id,
@@ -10171,10 +10180,20 @@ fn build_query(request: &SearchRequest) -> Result<ThoughtQuery, Box<dyn Error + 
 
 /// What [`MentisDbService::cross_lineage`] decided for one hit.
 enum CrossAction {
-    /// No other searched chain supersedes this hit.
+    /// No other searched chain supersedes or contests this hit.
     Keep,
-    /// Another searched chain supersedes it: annotate it (audit view).
-    Annotate(Value),
+    /// Another searched chain supersedes it: annotate it (audit view). The
+    /// notes are the same [`SuccessorNote`]s single-chain lineage reports;
+    /// `successors` lists every link (replacing or contesting), `current` the
+    /// live replacement.
+    Annotate {
+        successors: Vec<SuccessorNote>,
+        current: SuccessorNote,
+    },
+    /// Links on another searched chain name this hit but may not replace it
+    /// (an unauthorized writer on a governed chain): the hit stays current and
+    /// is reported contested, exactly as within one chain.
+    Contest(Vec<SuccessorNote>),
     /// Another searched chain supersedes it: show the live successor instead.
     Redirect {
         chain_key: String,
@@ -10184,11 +10203,38 @@ enum CrossAction {
     },
 }
 
-/// The best cross-chain successor found for one hit so far, with the
-/// `(timestamp, index)` it is ranked by so a newer one on a later chain wins.
+/// What the chains read so far say about one hit: its best replacement (with
+/// the `(timestamp, index)` it is ranked by, so a newer one on a later chain
+/// wins) and every contest.
+#[derive(Default)]
 struct CrossCandidate {
-    rank: (DateTime<Utc>, u64),
-    action: CrossAction,
+    successor: Option<((DateTime<Utc>, u64), CrossAction)>,
+    contests: Vec<SuccessorNote>,
+}
+
+impl CrossCandidate {
+    fn into_action(self) -> CrossAction {
+        let Self {
+            successor,
+            mut contests,
+        } = self;
+        match successor {
+            Some((_, CrossAction::Annotate { current, .. })) => {
+                contests.push(current.clone());
+                contests.sort_by_key(|note| (note.timestamp, note.index));
+                CrossAction::Annotate {
+                    successors: contests,
+                    current,
+                }
+            }
+            Some((_, action)) => action,
+            None if contests.is_empty() => CrossAction::Keep,
+            None => {
+                contests.sort_by_key(|note| (note.timestamp, note.index));
+                CrossAction::Contest(contests)
+            }
+        }
+    }
 }
 
 /// Build the [`CrossAction`] for one hit from the successor found on `chain`,
@@ -10201,18 +10247,18 @@ fn cross_action_for(
     include_invalidated: bool,
 ) -> CrossAction {
     if include_invalidated {
-        return CrossAction::Annotate(json!({
-            "thought_id": found.thought.id,
-            "chain_key": found.chain_key,
-            "kind": found.kind,
-            "thought_type": found.thought.thought_type,
-            "timestamp": found.thought.timestamp,
-        }));
+        return CrossAction::Annotate {
+            successors: Vec::new(),
+            current: found.note.clone(),
+        };
     }
     let mut thought = chain.thought_json_for(found.thought, audience);
     if let Value::Object(map) = &mut thought {
         map.insert("successor_of".into(), json!([hit_id]));
         map.insert("successor_of_chain".into(), json!(hit_chain_key));
+        if found.note.cross_agent {
+            map.insert("cross_agent".into(), json!(true));
+        }
     }
     CrossAction::Redirect {
         chain_key: found.chain_key.clone(),
@@ -10222,12 +10268,29 @@ fn cross_action_for(
     }
 }
 
-/// Mark a hit's thought JSON as superseded by a thought on another chain.
-fn annotate_cross_superseded(thought: &mut Value, note: Value) {
-    if let Value::Object(map) = thought {
-        map.insert("version_status".into(), json!("superseded"));
-        map.insert("successors".into(), json!([note.clone()]));
-        map.insert("current_version".into(), note);
+/// Mark a hit's thought JSON with what other chains say about it: superseded
+/// (with the live replacement) or, for links that may not replace it,
+/// contested. Fields match single-chain lineage (`version_status`,
+/// `successors`, `current_version`, `cross_agent`).
+fn annotate_cross(thought: &mut Value, action: &CrossAction) {
+    let Value::Object(map) = thought else { return };
+    match action {
+        CrossAction::Annotate {
+            successors,
+            current,
+        } => {
+            map.insert("version_status".into(), json!("superseded"));
+            map.insert("successors".into(), json!(successors));
+            map.insert("current_version".into(), json!(current));
+            if current.cross_agent {
+                map.insert("cross_agent".into(), json!(true));
+            }
+        }
+        CrossAction::Contest(successors) => {
+            map.insert("version_status".into(), json!("contested"));
+            map.insert("successors".into(), json!(successors));
+        }
+        CrossAction::Keep | CrossAction::Redirect { .. } => {}
     }
 }
 
@@ -11118,7 +11181,7 @@ mod cross_lineage_lock_order_tests {
 
         // A: resolves lineage over [x, y]; it can read `x` but not `y`.
         let searched = vec!["x".to_string(), "y".to_string()];
-        let hits = vec![("x".to_string(), Uuid::new_v4())];
+        let hits = vec![("x".to_string(), Uuid::new_v4(), "a".to_string())];
         let search_a = tokio::spawn({
             let service = Arc::clone(&service);
             async move { service.cross_lineage(&searched, &hits, false).await.len() }

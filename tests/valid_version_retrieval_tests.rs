@@ -642,7 +642,7 @@ mod cross_chain {
             ("sibling", &sibling, Audience::Authorized),
         ];
         assert_eq!(
-            mentisdb::lineage::cross_chain_successor(&both, "parent", old.id)
+            mentisdb::lineage::cross_chain_successor(&both, "parent", old.id, &old.agent_id)
                 .unwrap()
                 .thought
                 .id,
@@ -650,7 +650,10 @@ mod cross_chain {
         );
         // The replacement chain is not part of this read path.
         let only = [("parent", &parent, Audience::Authorized)];
-        assert!(mentisdb::lineage::cross_chain_successor(&only, "parent", old.id).is_none());
+        assert!(
+            mentisdb::lineage::cross_chain_successor(&only, "parent", old.id, &old.agent_id)
+                .is_none()
+        );
     }
 
     /// Context bundles redirect a superseded seed to its live successor and put

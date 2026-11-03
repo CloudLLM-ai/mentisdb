@@ -309,6 +309,11 @@ pub struct SuccessorNote {
     /// the [module documentation](crate::lineage).
     #[serde(default = "authorized_by_default")]
     pub authorized: bool,
+    /// Key of the chain the newer thought lives on, when that is not the chain
+    /// of the thought the note is attached to (a cross-chain link). Absent for
+    /// a link inside one chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_key: Option<String>,
 }
 
 fn authorized_by_default() -> bool {
@@ -327,6 +332,7 @@ impl Default for SuccessorNote {
             trust: ProvenanceTrust::default(),
             cross_agent: false,
             authorized: true,
+            chain_key: None,
         }
     }
 }
@@ -753,6 +759,21 @@ impl MentisDb {
         older: &Thought,
         authorized: bool,
     ) -> SuccessorNote {
+        self.successor_note_for_agent(newer, kind, &older.agent_id, authorized)
+    }
+
+    /// [`Self::successor_note`] when only the agent that wrote the older
+    /// thought is known: the older thought of a cross-chain link is on another
+    /// chain. The one builder of notes, so single-chain and cross-chain lineage
+    /// report the same fields (`agent_id`, `trust`, `cross_agent`,
+    /// `authorized`) the same way.
+    pub(crate) fn successor_note_for_agent(
+        &self,
+        newer: &Thought,
+        kind: SuccessorKind,
+        older_agent: &str,
+        authorized: bool,
+    ) -> SuccessorNote {
         SuccessorNote {
             thought_id: newer.id,
             index: newer.index,
@@ -761,8 +782,9 @@ impl MentisDb {
             timestamp: newer.timestamp,
             agent_id: newer.agent_id.clone(),
             trust: self.trust_of(newer),
-            cross_agent: newer.agent_id != older.agent_id,
+            cross_agent: newer.agent_id != older_agent,
             authorized,
+            chain_key: None,
         }
     }
 
@@ -1410,6 +1432,9 @@ pub struct CrossSuccessor<'a> {
     pub thought: &'a Thought,
     /// How it relates to the target (always a strong kind).
     pub kind: SuccessorKind,
+    /// The note a reader is shown for it: the same [`SuccessorNote`] (writer,
+    /// trust, `cross_agent`, `authorized`) single-chain lineage reports.
+    pub note: SuccessorNote,
 }
 
 impl CrossSuccessor<'_> {
@@ -1418,6 +1443,41 @@ impl CrossSuccessor<'_> {
     pub fn is_newer_than(&self, other: &CrossSuccessor<'_>) -> bool {
         (self.thought.timestamp, self.thought.index)
             > (other.thought.timestamp, other.thought.index)
+    }
+}
+
+/// What other chains say about one target thought: the live thought that
+/// replaces it, and the links that only contest it.
+///
+/// A cross-chain link obeys the same rule as a link inside one chain (see the
+/// [module documentation](crate::lineage), "Who may replace whose memory"): on
+/// a chain whose link was written under signing governance, a writer who is
+/// neither the target's agent nor an authorized key does not replace the
+/// target. That link lands in [`CrossLineage::contests`] with
+/// `authorized: false`, and the target stays current.
+#[derive(Debug, Clone, Default)]
+pub struct CrossLineage<'a> {
+    /// The newest live, authorized replacement, if any.
+    pub successor: Option<CrossSuccessor<'a>>,
+    /// Links that name the target but are not allowed to replace it, oldest
+    /// first by chain order then append order.
+    pub contests: Vec<SuccessorNote>,
+}
+
+impl<'a> CrossLineage<'a> {
+    /// Fold the answer of another chain into this one: the newer successor
+    /// wins (the first seen on a tie) and contests accumulate.
+    pub fn merge(&mut self, other: CrossLineage<'a>) {
+        if let Some(found) = other.successor {
+            if self
+                .successor
+                .as_ref()
+                .is_none_or(|best| found.is_newer_than(best))
+            {
+                self.successor = Some(found);
+            }
+        }
+        self.contests.extend(other.contests);
     }
 }
 
@@ -1432,6 +1492,12 @@ impl CrossSuccessor<'_> {
 /// learns one exists. When the source was itself superseded on its own chain
 /// the walk continues to that chain's live successor. A target whose own chain
 /// is not in `chains` is never affected: nothing reads both.
+///
+/// `target_agent` is the agent that wrote the target. A link written under
+/// signing governance replaces its target only when its writer is that agent or
+/// an authorized key ([`MentisDb::strong_link_is_authorized_for_agent`]); any
+/// other link is skipped here and reported by [`cross_chain_lineage_on`] as a
+/// contest.
 ///
 /// # Examples
 ///
@@ -1455,8 +1521,9 @@ impl CrossSuccessor<'_> {
 ///     }]))?
 ///     .clone();
 /// let chains = [("parent", &parent, Audience::Authorized), ("sibling", &sibling, Audience::Authorized)];
-/// let found = cross_chain_successor(&chains, "parent", old.id).unwrap();
+/// let found = cross_chain_successor(&chains, "parent", old.id, &old.agent_id).unwrap();
 /// assert_eq!((found.chain_key.as_str(), found.thought.id), ("sibling", new.id));
+/// assert!(!found.note.cross_agent && found.note.authorized);
 /// # Ok(())
 /// # }
 /// ```
@@ -1464,36 +1531,38 @@ pub fn cross_chain_successor<'a>(
     chains: &[(&str, &'a MentisDb, Audience)],
     target_chain: &str,
     target: Uuid,
+    target_agent: &str,
 ) -> Option<CrossSuccessor<'a>> {
-    let mut best: Option<CrossSuccessor<'a>> = None;
+    let mut all = CrossLineage::default();
     for (chain_key, chain, audience) in chains {
-        let Some(found) =
-            cross_chain_successor_on(chain_key, chain, *audience, target_chain, target)
-        else {
-            continue;
-        };
-        if best.as_ref().is_none_or(|b| found.is_newer_than(b)) {
-            best = Some(found);
-        }
+        all.merge(cross_chain_lineage_on(
+            chain_key,
+            chain,
+            *audience,
+            target_chain,
+            target,
+            target_agent,
+        ));
     }
-    best
+    all.successor
 }
 
-/// The newest live successor of `target` (a thought on `target_chain`) that
-/// lives on the single chain `chain_key`, or `None` when that chain holds none.
+/// What the single chain `chain_key` says about `target` (a thought of
+/// `target_agent` on `target_chain`): its newest live authorized replacement
+/// and the links that only contest it.
 ///
 /// This is the per-chain half of [`cross_chain_successor`]: it needs only the
 /// one chain it is given, so a caller that reads several chains can take them
 /// one at a time (holding one lock, never two) and combine the answers with
-/// [`CrossSuccessor::is_newer_than`], which is exactly what
-/// [`cross_chain_successor`] does. A `chain_key` equal to `target_chain` never
-/// matches: a relation on the target's own chain is ordinary lineage.
+/// [`CrossLineage::merge`], which is exactly what [`cross_chain_successor`]
+/// does. A `chain_key` equal to `target_chain` yields nothing: a relation on
+/// the target's own chain is ordinary lineage.
 ///
 /// # Examples
 ///
 /// ```
 /// use mentisdb::audience::Audience;
-/// use mentisdb::lineage::cross_chain_successor_on;
+/// use mentisdb::lineage::cross_chain_lineage_on;
 /// use mentisdb::{MentisDb, StorageAdapterKind, ThoughtInput, ThoughtRelation, ThoughtRelationKind, ThoughtType};
 ///
 /// # fn main() -> std::io::Result<()> {
@@ -1502,7 +1571,7 @@ pub fn cross_chain_successor<'a>(
 /// let old = parent.append_thought("a", ThoughtInput::new(ThoughtType::Decision, "Deploy on Fridays."))?.clone();
 /// let mut sibling = MentisDb::open_with_key_and_storage_kind(dir.path(), "sibling", StorageAdapterKind::Binary)?;
 /// let new = sibling
-///     .append_thought("a", ThoughtInput::new(ThoughtType::Decision, "Never deploy on Fridays.").with_relations(vec![ThoughtRelation {
+///     .append_thought("b", ThoughtInput::new(ThoughtType::Decision, "Never deploy on Fridays.").with_relations(vec![ThoughtRelation {
 ///         kind: ThoughtRelationKind::Supersedes,
 ///         target_id: old.id,
 ///         chain_key: Some("parent".into()),
@@ -1510,24 +1579,29 @@ pub fn cross_chain_successor<'a>(
 ///         invalid_at: None,
 ///     }]))?
 ///     .clone();
-/// let found = cross_chain_successor_on("sibling", &sibling, Audience::Authorized, "parent", old.id).unwrap();
+/// let found = cross_chain_lineage_on("sibling", &sibling, Audience::Authorized, "parent", old.id, "a")
+///     .successor
+///     .unwrap();
 /// assert_eq!(found.thought.id, new.id);
-/// assert!(cross_chain_successor_on("parent", &parent, Audience::Authorized, "parent", old.id).is_none());
+/// assert!(found.note.cross_agent, "written by another agent than the target's");
+/// let own = cross_chain_lineage_on("parent", &parent, Audience::Authorized, "parent", old.id, "a");
+/// assert!(own.successor.is_none() && own.contests.is_empty());
 /// # Ok(())
 /// # }
 /// ```
-pub fn cross_chain_successor_on<'a>(
+pub fn cross_chain_lineage_on<'a>(
     chain_key: &str,
     chain: &'a MentisDb,
     audience: Audience,
     target_chain: &str,
     target: Uuid,
-) -> Option<CrossSuccessor<'a>> {
+    target_agent: &str,
+) -> CrossLineage<'a> {
+    let mut found = CrossLineage::default();
     if chain_key == target_chain {
-        return None;
+        return found;
     }
     let key = (target_chain.to_owned(), target);
-    let mut best: Option<CrossSuccessor<'a>> = None;
     for edge in chain.lineage.cross.get(&key).into_iter().flatten() {
         if !edge.in_force_at(None) || !chain.is_visible_index(edge.source_index, audience) {
             continue;
@@ -1535,22 +1609,34 @@ pub fn cross_chain_successor_on<'a>(
         let Some(source) = chain.get_thought_by_id(edge.source_id) else {
             continue;
         };
+        if !chain.strong_link_is_authorized_for_agent(edge.source_index, Some(target_agent)) {
+            found.contests.push(SuccessorNote {
+                chain_key: Some(chain_key.to_owned()),
+                ..chain.successor_note_for_agent(source, edge.kind, target_agent, false)
+            });
+            continue;
+        }
         let live = if chain.invalidated_at(source.id, None, audience) {
             chain.live_successor(source.id, None, audience)
         } else {
             Some(source)
         };
         let Some(thought) = live else { continue };
-        let candidate = CrossSuccessor {
-            chain_key: chain_key.to_owned(),
-            thought,
-            kind: edge.kind,
-        };
-        if best.as_ref().is_none_or(|b| candidate.is_newer_than(b)) {
-            best = Some(candidate);
-        }
+        found.merge(CrossLineage {
+            successor: Some(CrossSuccessor {
+                chain_key: chain_key.to_owned(),
+                thought,
+                kind: edge.kind,
+                note: SuccessorNote {
+                    chain_key: Some(chain_key.to_owned()),
+                    ..chain.successor_note_for_agent(thought, edge.kind, target_agent, true)
+                },
+            }),
+            contests: Vec::new(),
+        });
     }
-    best
+    found.contests.sort_by_key(|n| (n.timestamp, n.index));
+    found
 }
 
 impl MentisDb {

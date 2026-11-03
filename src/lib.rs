@@ -8282,6 +8282,23 @@ impl MentisDb {
     /// of the allowed set). Otherwise the link is shown as a contest and
     /// replaces nothing.
     pub fn strong_link_is_authorized(&self, source_index: u64, target_id: Uuid) -> bool {
+        let target_agent = self
+            .get_thought_by_id(target_id)
+            .map(|target| target.agent_id.as_str());
+        self.strong_link_is_authorized_for_agent(source_index, target_agent)
+    }
+
+    /// [`MentisDb::strong_link_is_authorized`] for a target that need not live
+    /// on this chain: only the *agent that wrote the target* matters to the
+    /// rule ("the same agent as the target"), so a link that targets a thought
+    /// on another chain (a cross-chain `Supersedes`) is judged by passing that
+    /// thought's `agent_id` here. `None` (target unknown) never counts as the
+    /// same agent.
+    pub fn strong_link_is_authorized_for_agent(
+        &self,
+        source_index: u64,
+        target_agent: Option<&str>,
+    ) -> bool {
         let segments = self.segments();
         if !segments.has_private()
             || segments.kind_at(source_index) == audience::SegmentKind::Public
@@ -8296,9 +8313,7 @@ impl MentisDb {
         {
             return false;
         }
-        let same_agent = self
-            .get_thought_by_id(target_id)
-            .is_some_and(|target| target.agent_id == source.agent_id);
+        let same_agent = target_agent.is_some_and(|agent| agent == source.agent_id);
         same_agent || self.signer_audience(source) == audience::Audience::Authorized
     }
 
@@ -10160,7 +10175,9 @@ impl MentisDb {
                 view.push((key, chain, audience));
             }
             for hit in &mut all_hits {
-                if let Some(found) = lineage::cross_chain_successor(&view, hit.0, hit.1.id) {
+                if let Some(found) =
+                    lineage::cross_chain_successor(&view, hit.0, hit.1.id, &hit.1.agent_id)
+                {
                     hit.0 = view
                         .iter()
                         .find(|(key, _, _)| *key == found.chain_key)

@@ -202,8 +202,19 @@ UNRELEASED
     lock is write-preferring), blocked each other and every later reader and
     writer of those chains until restart. It now reads one chain at a time and
     never holds two. Every other multi-chain path in the crate was audited and
-    already did. New `lineage::cross_chain_successor_on` is the per-chain half of
-    `cross_chain_successor` and `CrossSuccessor::is_newer_than` combines them.
+    already did. New `lineage::cross_chain_lineage_on` is the per-chain half of
+    `cross_chain_successor` and `CrossLineage::merge` combines them.
+  - security(lineage): cross-chain and branch lineage now obey the rules single-chain
+    lineage got in the same release. A replacement written on another searched
+    chain was redirected to whoever wrote it, even on a governed chain, and carried
+    none of the new fields. It now uses the same note builder and the same
+    authorization (`MentisDb::strong_link_is_authorized_for_agent`): on an open
+    chain it still redirects and the hit, `current_version` and `successors` carry
+    `agent_id`, `trust`, `cross_agent`, `authorized` and the `chain_key` it lives
+    on; on a governed chain a writer who is neither the target's agent nor an
+    authorized key only contests (target stays current, `version_status:
+    contested`, the link listed with `authorized: false`, nothing redirected).
+    `cross_chain_successor` gained a `target_agent` argument.
   - fix(server): a failed sidecar/overlay flush after a stored thought no longer
     turns the append into a `500`. The thought was already durable, so clients
     that retried errors wrote it twice. The failure is logged and the queued
