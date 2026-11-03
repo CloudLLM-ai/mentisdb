@@ -1277,7 +1277,7 @@ fn recover_locked(
         let _ = fs::remove_file(&paths.staged);
         journal.error = Some(format!(
             "migration was interrupted {} times; quarantined so it cannot loop. \
-             Fix the cause, then run `mentisdb migrate retry {}`",
+             Fix the cause, then run `mentisdb migrate retry --chain {}`",
             journal.attempts, paths.chain_key
         ));
         journal.set_state(paths, JournalState::Failed)?;

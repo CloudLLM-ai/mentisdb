@@ -221,7 +221,7 @@ async fn test_quarantined_chain_is_503_without_retry_after_and_retry_works() {
     assert!(bad.body["error"]
         .as_str()
         .unwrap()
-        .contains("migrate retry bad"));
+        .contains("migrate retry --chain bad"));
     assert_eq!(head(&rest_url, "fine").await.status, 200);
 
     std::fs::write(&path, &good).unwrap();

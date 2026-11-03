@@ -221,6 +221,12 @@ UNRELEASED
     crash-loops the daemon is still quarantined after three attempts. Verified on
     the real daemon: four `SIGTERM`s in the middle of a 1.5M-thought migration left
     the attempt count at 0 and the fifth start migrated it.
+  - fix(migration): the recovery command in the quarantine, skip and rollback
+    messages did not work. The 503 body clients see, the crash-loop error, `migrate
+    run` and `migrate status` said `mentisdb migrate retry <chain>`, which the CLI
+    rejects (`unknown flag`): it only takes `--chain <key>`. All say
+    `mentisdb migrate retry --chain <key>` now, and a test parses every command
+    those messages suggest with the real CLI parser so they cannot drift apart.
   - fix(migration): a huge day count could delete every migration backup.
     `mentisdb migrate purge-backups --older-than-days N` and
     `MENTISDB_MIGRATION_BACKUP_RETENTION_DAYS` computed `N * 86_400` unchecked: a

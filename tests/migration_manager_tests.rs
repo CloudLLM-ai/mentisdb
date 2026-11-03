@@ -124,7 +124,7 @@ fn test_block_messages_are_actionable() {
         chain_key: "c".into(),
         error: "boom".into(),
     };
-    assert!(quarantined.to_string().contains("migrate retry c"));
+    assert!(quarantined.to_string().contains("migrate retry --chain c"));
     assert_eq!(quarantined.retry_after_secs(), None);
 }
 

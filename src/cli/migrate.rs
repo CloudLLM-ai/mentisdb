@@ -319,7 +319,7 @@ pub fn run_migrate(
             skip_chain(&dir, chain, reason).map_err(|e| e.to_string())?;
             writeln!(
                 out,
-                "{chain}: skipped; it stays untouched until `migrate retry`"
+                "{chain}: skipped; it stays untouched until `mentisdb migrate retry --chain {chain}`"
             )
             .map_err(w)?;
             Ok(true)
@@ -453,7 +453,9 @@ pub fn local_status(dir: &std::path::Path) -> Vec<StatusRow> {
             }
             Some(j) if j.state == JournalState::RolledBack => Some((
                 "rolled-back",
-                "restored from backup; `migrate retry` to migrate again".to_owned(),
+                format!(
+                    "restored from backup; `mentisdb migrate retry --chain {key}` to migrate again"
+                ),
             )),
             Some(j) => Some((
                 "in-progress",

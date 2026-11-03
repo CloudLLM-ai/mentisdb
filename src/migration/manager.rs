@@ -295,17 +295,17 @@ impl std::fmt::Display for MigrationBlock {
             Self::Quarantined { chain_key, error } => write!(
                 f,
                 "chain '{chain_key}' failed to migrate and is quarantined (its data is untouched): \
-                 {error}. Run `mentisdb migrate status` and `mentisdb migrate retry {chain_key}`"
+                 {error}. Run `mentisdb migrate status` and `mentisdb migrate retry --chain {chain_key}`"
             ),
             Self::Skipped { chain_key } => write!(
                 f,
                 "chain '{chain_key}' was skipped by an operator; run `mentisdb migrate retry \
-                 {chain_key}` to migrate it"
+                 --chain {chain_key}` to migrate it"
             ),
             Self::RolledBack { chain_key } => write!(
                 f,
                 "chain '{chain_key}' was rolled back to its pre-migration backup; run \
-                 `mentisdb migrate retry {chain_key}` to migrate it again"
+                 `mentisdb migrate retry --chain {chain_key}` to migrate it again"
             ),
         }
     }
