@@ -43,6 +43,38 @@
 //! relation, naming candidate target ids so the agent can append the typed
 //! link next time.
 //!
+//! # Who may replace whose memory
+//!
+//! Redirection trusts the writer of the *newer* thought, so it has to be clear
+//! whose word that is.
+//!
+//! * **Open chain** (no signing policy, or the newer thought was written while
+//!   the chain accepted unsigned writes). There is no privilege boundary:
+//!   anyone who can append can already write a constraint, and corrections
+//!   often come from a different agent than the original (several sessions
+//!   share one chain), so any writer may replace any thought and the old
+//!   version is redirected to the new one. Nothing is hidden about it: every
+//!   [`SuccessorNote`] names the replacement's `agent_id` and `trust`
+//!   ([`ProvenanceTrust`]), flags
+//!   `cross_agent`, and [`VersionInfo::cross_agent`] is set on a hit that
+//!   replaces another agent's thought. An agent reading a `Constraint` or
+//!   `Decision` that was replaced by someone else should look at those fields
+//!   before acting on the replacement.
+//! * **Governed chain** (the newer thought was written while the chain required
+//!   signatures: a private segment). A strong link replaces its target only
+//!   when the newer thought was verified when the chain opened and is by the
+//!   **same agent** as the target or by a key **authorized on the chain** (a
+//!   governor, the operator, or any key of the allowed set); see
+//!   [`MentisDb::strong_link_is_authorized`]. Any other link is **contested
+//!   without replacing**: the target stays current and visible, is reported
+//!   [`VersionStatus::Contested`], the newer thought is listed under
+//!   `successors` with `authorized: false`, and it is neither redirected to nor
+//!   promoted.
+//!
+//! Writes are bounded as well: a link that would make a chain of more than
+//! [`MAX_LINEAGE_DEPTH`] versions of one thought is refused, because reads
+//! follow supersessions only that far.
+//!
 //! # Example
 //!
 //! ```
@@ -76,6 +108,7 @@
 //! ```
 
 use crate::audience::Audience;
+use crate::provenance::ProvenanceTrust;
 use crate::{
     is_invalidating_relation_kind, MentisDb, RankedSearchHit, RankedSearchQuery,
     RankedSearchResult, Thought, ThoughtRelationKind, ThoughtType,
@@ -85,8 +118,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
-/// Longest chain of supersessions followed when looking for the live successor.
-const MAX_LINEAGE_DEPTH: usize = 64;
+/// Longest chain of supersessions followed when looking for the live successor,
+/// and the longest chain a write may create: an append whose `Supersedes`,
+/// `Corrects` or `Invalidates` link would make a chain of more than this many
+/// versions of one thought is refused (see [`MentisDb::current_version`]).
+pub const MAX_LINEAGE_DEPTH: usize = 64;
 /// How many characters of the new thought are used as the append-time
 /// similarity query.
 const ADVICE_QUERY_CHARS: usize = 400;
@@ -239,8 +275,10 @@ impl std::fmt::Display for VersionStatus {
 ///     kind: SuccessorKind::Supersedes,
 ///     thought_type: ThoughtType::Decision,
 ///     timestamp: chrono::Utc::now(),
+///     ..Default::default()
 /// };
 /// assert_eq!(serde_json::to_value(&note).unwrap()["kind"], "supersedes");
+/// assert!(note.authorized);
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SuccessorNote {
@@ -254,6 +292,43 @@ pub struct SuccessorNote {
     pub thought_type: ThoughtType,
     /// When the newer thought was appended.
     pub timestamp: DateTime<Utc>,
+    /// Agent that wrote the newer thought. On an unsigned thought this is only
+    /// a claim; see [`SuccessorNote::trust`].
+    #[serde(default)]
+    pub agent_id: String,
+    /// How the newer thought's authorship is established.
+    #[serde(default)]
+    pub trust: ProvenanceTrust,
+    /// `true` when the newer thought was written by a different agent than the
+    /// older one it replaces or contests.
+    #[serde(default)]
+    pub cross_agent: bool,
+    /// Whether this link is allowed to replace (or be promoted over) the older
+    /// thought. `false` on a governed chain when the writer is neither the
+    /// same agent nor an authorized key; the link is then only a contest. See
+    /// the [module documentation](crate::lineage).
+    #[serde(default = "authorized_by_default")]
+    pub authorized: bool,
+}
+
+fn authorized_by_default() -> bool {
+    true
+}
+
+impl Default for SuccessorNote {
+    fn default() -> Self {
+        Self {
+            thought_id: Uuid::nil(),
+            index: 0,
+            kind: SuccessorKind::Supersedes,
+            thought_type: ThoughtType::Finding,
+            timestamp: DateTime::<Utc>::UNIX_EPOCH,
+            agent_id: String::new(),
+            trust: ProvenanceTrust::default(),
+            cross_agent: false,
+            authorized: true,
+        }
+    }
 }
 
 /// Version annotation attached to a ranked hit and to every thought JSON.
@@ -274,6 +349,13 @@ pub struct VersionInfo {
     /// Ids of older thoughts this hit stands in for. Non-empty when the hit
     /// was surfaced because it replaces or contests them.
     pub successor_of: Vec<Uuid>,
+    /// `true` when the replacement crosses agents: the hit stands in for a
+    /// thought written by another agent (`successor_of`), or the thought's
+    /// current version was written by another agent. Check it before acting on
+    /// a replaced `Constraint` or `Decision`; the replacement's `agent_id` and
+    /// `trust` say who wrote it and how far that is established.
+    #[serde(default)]
+    pub cross_agent: bool,
 }
 
 impl VersionInfo {
@@ -282,6 +364,7 @@ impl VersionInfo {
         self.status == VersionStatus::Current
             && self.successors.is_empty()
             && self.successor_of.is_empty()
+            && !self.cross_agent
     }
 }
 
@@ -290,7 +373,6 @@ impl VersionInfo {
 pub(crate) struct SuccessorEdge {
     source_id: Uuid,
     source_index: u64,
-    source_type: ThoughtType,
     timestamp: DateTime<Utc>,
     kind: SuccessorKind,
     valid_at: Option<DateTime<Utc>>,
@@ -304,16 +386,6 @@ impl SuccessorEdge {
         self.timestamp <= as_of
             && !self.valid_at.is_some_and(|v| v > as_of)
             && !self.invalid_at.is_some_and(|i| i <= as_of)
-    }
-
-    fn note(&self) -> SuccessorNote {
-        SuccessorNote {
-            thought_id: self.source_id,
-            index: self.source_index,
-            kind: self.kind,
-            thought_type: self.source_type,
-            timestamp: self.timestamp,
-        }
     }
 }
 
@@ -421,7 +493,6 @@ impl LineageIndex {
                         .push(SuccessorEdge {
                             source_id: thought.id,
                             source_index: thought.index,
-                            source_type: thought.thought_type,
                             timestamp: thought.timestamp,
                             kind,
                             valid_at: relation.valid_at,
@@ -489,7 +560,6 @@ impl LineageIndex {
         edges.push(SuccessorEdge {
             source_id: source.id,
             source_index: source.index,
-            source_type: source.thought_type,
             timestamp: source.timestamp,
             kind,
             valid_at,
@@ -592,6 +662,7 @@ impl MentisDb {
             for edge in self
                 .visible_edges(current, as_of, audience)
                 .filter(|e| e.kind.is_strong())
+                .filter(|e| self.strong_link_is_authorized(e.source_index, current))
             {
                 let Some(source) = self.get_thought_by_id(edge.source_id) else {
                     continue;
@@ -617,6 +688,7 @@ impl MentisDb {
     ) -> Option<&Thought> {
         self.visible_edges(id, as_of, audience)
             .filter(|e| !e.kind.is_strong())
+            .filter(|e| self.strong_link_is_authorized(e.source_index, id))
             .filter_map(|e| self.get_thought_by_id(e.source_id))
             .filter(|t| !self.invalidated_at(t.id, as_of, audience))
             .max_by_key(|t| (t.timestamp, t.index))
@@ -641,27 +713,56 @@ impl MentisDb {
         let status = self.version_status_at(thought.id, as_of, audience);
         let mut successors: Vec<SuccessorNote> = self
             .visible_edges(thought.id, as_of, audience)
-            .map(SuccessorEdge::note)
+            .filter_map(|edge| {
+                let source = self.get_thought_by_id(edge.source_id)?;
+                Some(self.successor_note(
+                    source,
+                    edge.kind,
+                    thought,
+                    self.strong_link_is_authorized(edge.source_index, thought.id),
+                ))
+            })
             .collect();
         successors.sort_by_key(|n| (n.timestamp, n.index));
         let current_version = (status == VersionStatus::Superseded)
             .then(|| self.live_successor(thought.id, as_of, audience))
             .flatten()
-            .map(|t| SuccessorNote {
-                thought_id: t.id,
-                index: t.index,
-                kind: successors
+            .map(|t| {
+                let kind = successors
                     .iter()
                     .find(|n| n.thought_id == t.id)
-                    .map_or(SuccessorKind::Supersedes, |n| n.kind),
-                thought_type: t.thought_type,
-                timestamp: t.timestamp,
+                    .map_or(SuccessorKind::Supersedes, |n| n.kind);
+                self.successor_note(t, kind, thought, true)
             });
+        let cross_agent = current_version.as_ref().is_some_and(|n| n.cross_agent);
         VersionInfo {
             status,
             successors,
             current_version,
             successor_of: Vec::new(),
+            cross_agent,
+        }
+    }
+
+    /// The [`SuccessorNote`] for `newer` as a replacement of (or contest to)
+    /// `older`.
+    fn successor_note(
+        &self,
+        newer: &Thought,
+        kind: SuccessorKind,
+        older: &Thought,
+        authorized: bool,
+    ) -> SuccessorNote {
+        SuccessorNote {
+            thought_id: newer.id,
+            index: newer.index,
+            kind,
+            thought_type: newer.thought_type,
+            timestamp: newer.timestamp,
+            agent_id: newer.agent_id.clone(),
+            trust: self.trust_of(newer),
+            cross_agent: newer.agent_id != older.agent_id,
+            authorized,
         }
     }
 
@@ -731,6 +832,10 @@ impl MentisDb {
         for hit in hits {
             let mut info = self.version_info_for(hit.thought, as_of, audience);
             info.successor_of = std::mem::take(&mut hit.version.successor_of);
+            info.cross_agent |= info.successor_of.iter().any(|id| {
+                self.get_thought_by_id(*id)
+                    .is_some_and(|older| older.agent_id != hit.thought.agent_id)
+            });
             hit.version = info;
         }
     }
@@ -1026,6 +1131,9 @@ impl MentisDb {
             if let Some(current) = info.current_version {
                 map.insert("current_version".into(), serde_json::json!(current));
             }
+            if info.cross_agent {
+                map.insert("cross_agent".into(), serde_json::json!(true));
+            }
         }
     }
 }
@@ -1049,6 +1157,9 @@ impl MentisDb {
                     serde_json::json!(hit.version.successor_of),
                 );
             }
+            if hit.version.cross_agent {
+                map.insert("cross_agent".into(), serde_json::json!(true));
+            }
             if !hit.collapsed.is_empty() {
                 map.insert(
                     "collapsed_duplicates".into(),
@@ -1061,12 +1172,17 @@ impl MentisDb {
 }
 
 impl MentisDb {
-    /// Prompt suffix naming the thought that contests `thought`, or empty.
+    /// Prompt suffix naming the thought that contests `thought`, or empty. The
+    /// contester's agent and trust are shown so the reader can weigh who is
+    /// disputing the entry.
     pub(crate) fn contested_suffix(&self, thought: &Thought, audience: Audience) -> String {
         match self.live_contester(thought.id, None, audience) {
             Some(c) if !self.is_invalidated_for(thought.id, audience) => format!(
-                "  [CONTESTED: newer {:?} #{} may replace this; read it]",
-                c.thought_type, c.index
+                "  [CONTESTED: newer {:?} #{} by {} ({}) may replace this; read it]",
+                c.thought_type,
+                c.index,
+                self.agent_label_for(c),
+                self.trust_of(c)
             ),
             _ => String::new(),
         }

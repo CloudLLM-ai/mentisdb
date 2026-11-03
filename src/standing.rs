@@ -342,6 +342,16 @@ pub struct StandingEntry {
     /// does not check out (`unverified`).
     #[serde(default)]
     pub trust: ProvenanceTrust,
+    /// Index of the superseded thought this entry stands in for (its newer
+    /// version was substituted for it), if any.
+    #[serde(default)]
+    pub replaces: Option<u64>,
+    /// `true` when this entry replaced a thought written by a **different
+    /// agent**. Check `agent_id` and `trust` before acting on it: on an open
+    /// chain anyone can replace anyone's constraint (see
+    /// [`crate::lineage`]).
+    #[serde(default)]
+    pub cross_agent: bool,
     /// When it was appended.
     pub timestamp: DateTime<Utc>,
     /// Importance the writer supplied, in `0.0..=1.0`. Ranking uses this
@@ -374,10 +384,13 @@ struct Candidate<'a> {
     /// Writer-supplied importance, made finite and clamped to `0.0..=1.0`, and
     /// capped for an unverified writer on a chain that requires signatures.
     rank_importance: f32,
+    /// The superseded thought this candidate stands in for, if it was reached
+    /// through a replacement.
+    replaces: Option<&'a Thought>,
 }
 
 impl<'a> Candidate<'a> {
-    fn new(thought: &'a Thought, rank_importance: f32) -> Self {
+    fn new(thought: &'a Thought, rank_importance: f32, replaces: Option<&'a Thought>) -> Self {
         let tokens = normalize_lexical_tokens(&thought.content, false)
             .into_iter()
             .collect();
@@ -385,6 +398,7 @@ impl<'a> Candidate<'a> {
             thought,
             tokens,
             rank_importance,
+            replaces,
         }
     }
 
@@ -507,14 +521,21 @@ impl MentisDb {
             };
             let superseded = !query.include_invalidated
                 && self.invalidated_at(thought.id, query.as_of, query.audience);
-            let mut subjects: Vec<&Thought> = Vec::new();
+            // (subject, the superseded thought it stands in for)
+            let mut subjects: Vec<(&Thought, Option<&Thought>)> = Vec::new();
             if superseded {
-                subjects.extend(self.live_successor(thought.id, query.as_of, query.audience));
+                subjects.extend(
+                    self.live_successor(thought.id, query.as_of, query.audience)
+                        .map(|successor| (successor, Some(thought))),
+                );
             } else {
-                subjects.push(thought);
-                subjects.extend(self.live_contester(thought.id, query.as_of, query.audience));
+                subjects.push((thought, None));
+                subjects.extend(
+                    self.live_contester(thought.id, query.as_of, query.audience)
+                        .map(|contester| (contester, None)),
+                );
             }
-            for subject in subjects {
+            for (subject, replaces) in subjects {
                 if !seen.insert(subject.id) {
                     continue;
                 }
@@ -522,6 +543,7 @@ impl MentisDb {
                     pool.push(Candidate::new(
                         subject,
                         self.standing_rank_importance(subject),
+                        replaces,
                     ));
                 }
             }
@@ -551,6 +573,10 @@ impl MentisDb {
                 role: c.thought.role,
                 agent_id: c.thought.agent_id.clone(),
                 trust: self.trust_of(c.thought),
+                replaces: c.replaces.map(|older| older.index),
+                cross_agent: c
+                    .replaces
+                    .is_some_and(|older| older.agent_id != c.thought.agent_id),
                 timestamp: c.thought.timestamp,
                 importance: c.thought.importance,
                 content: c.thought.content.clone(),
@@ -608,7 +634,7 @@ impl MentisDb {
             for (_, c) in lines {
                 let t = c.thought;
                 prompt.push_str(&format!(
-                    "[#{}] {:?}/{:?} ({}, {}, trust={}) {}{}\n",
+                    "[#{}] {:?}/{:?} ({}, {}, trust={}) {}{}{}\n",
                     t.index,
                     t.thought_type,
                     t.role,
@@ -616,12 +642,30 @@ impl MentisDb {
                     t.timestamp.format("%Y-%m-%d"),
                     self.trust_of(t),
                     inline_text(&t.content),
+                    replaces_suffix(self, t, c.replaces),
                     self.contested_suffix(t, audience)
                 ));
             }
         }
         prompt.push_str("\n=== END STANDING CONTEXT ===\n");
         prompt
+    }
+}
+
+/// Prompt suffix for an entry that replaced an older thought. A replacement by
+/// a different agent is called out with the older writer, so the reader weighs
+/// who changed whose rule.
+fn replaces_suffix(chain: &MentisDb, entry: &Thought, replaces: Option<&Thought>) -> String {
+    match replaces {
+        None => String::new(),
+        Some(older) if older.agent_id == entry.agent_id => {
+            format!("  [REPLACES #{}]", older.index)
+        }
+        Some(older) => format!(
+            "  [REPLACES #{} by {}: replaced by another agent, check it]",
+            older.index,
+            chain.agent_label_for(older)
+        ),
     }
 }
 

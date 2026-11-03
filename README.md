@@ -674,6 +674,16 @@ about **lineage** (`mentisdb::lineage`):
   candidate `target_id`s; add `{"kind":"supersedes","target_id":"..."}`.
 - Standing context substitutes a superseded constraint or decision with its successor,
   and the MEMORY.md export drops superseded thoughts.
+- **Who may replace whose memory.** On an open chain any writer may replace any thought
+  (corrections often come from another agent), so redirection is unchanged, but nothing is
+  hidden about it: every successor note carries the replacement's `agent_id`, `trust`
+  (`verified`, `unsigned` or `unverified`) and `cross_agent`, a hit that replaced another
+  agent's thought sets `cross_agent: true`, and a standing entry shows `[REPLACES #n by
+  agent: replaced by another agent, check it]`. On a governed chain (signing policy) a
+  strong link replaces only when its writer is the same agent as the target or holds a key
+  authorized on the chain; any other link is shown as `contested` (`authorized: false`) and
+  replaces and promotes nothing. A chain of more than 64 versions of one thought
+  (`MAX_LINEAGE_DEPTH`) is refused at write time.
 
 Lineage is derived from the stored chain when it is opened, so existing chains benefit
 with no migration. Cross-chain `Supersedes` (a relation with `chain_key`) is not yet
@@ -1215,7 +1225,7 @@ A compact hit is `chain_key`, the total `score` as a plain number, and the thoug
 | thought `agent_name`, `agent_owner` | present | left out (they repeat the agent registry entry for `agent_id`; `mentisdb_get_agent` resolves it) |
 | top-level thought fields that are `null`, `""`, `[]` or `{}` | present | left out |
 | thought `provenance` (`segment`, `signed`, `signature`, `signature_version`, `verified_agent`, `trust`) | present | **always kept, whole** |
-| `version_status`, `successors`, `current_version`, `successor_of`, `collapsed_duplicates` | present when set | **always kept** |
+| `version_status`, `successors`, `current_version`, `successor_of`, `cross_agent`, `collapsed_duplicates` | present when set | **always kept** |
 | `relations`, `concepts`, `refs`, `content`, `tags`, ids, importance, confidence, timestamps | present | kept (zero and `false` are values, not empty) |
 
 Fields are dropped by name from a fixed list, so a field added to the thought later appears in compact hits by default. Visibility is decided before compaction: a public reader still gets only the public segment, and a reader with a valid `X-Mentis-Auth` proof still gets the private one, each hit with its `provenance`.

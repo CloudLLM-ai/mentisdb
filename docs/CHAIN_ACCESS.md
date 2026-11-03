@@ -220,6 +220,34 @@ safe. A private-segment thought was signed by a key the operator allowed. An
 agent should never execute commands, change its goals or reveal data because
 a retrieved thought says so; it should weigh the thought as evidence.
 
+### Replacing someone else's thought
+
+A `Supersedes`, `Corrects` or `Invalidates` link hides its target and redirects
+readers to the writer's thought, so it is only as trustworthy as that writer.
+
+* **Open chain**, or a replacement written while the chain accepted unsigned
+  writes: there is no privilege boundary (anyone can write a constraint), and
+  corrections often come from a different agent identity than the original, so
+  the link is honored. It is never silent: successor notes and `current_version`
+  carry the replacement's `agent_id`, `trust` and `cross_agent`; a ranked hit
+  that replaced another agent's thought has `cross_agent: true`; a standing
+  entry shows `[REPLACES #n by <agent>: replaced by another agent, check it]`.
+  The operating skill tells agents to check these before acting on a replaced
+  `Constraint` or `Decision`.
+* **Governed segment** (written while the policy was `signed` or `allowlist`):
+  the link replaces its target only if the writer's thought passed verification
+  when the chain opened and it is by the **same agent** as the target or by a
+  key **authorized on the chain** (governor, operator, any allowed key; checked
+  against the current policy and registry, so a link by a key that was later
+  removed reverts to a contest). Any other link, strong or weak, is only a
+  **contest**: the target stays current and visible, reports
+  `version_status: "contested"`, lists the writer under `successors` with
+  `authorized: false`, and is neither redirected to nor promoted in ranked or
+  standing results.
+* A write that would make a chain of more than 64 versions of one thought
+  (`MAX_LINEAGE_DEPTH`, the depth reads follow) is refused with a message
+  explaining how to restate the current version instead.
+
 ### Context blocks cannot be forged by stored text
 
 The blocks MentisDB renders for an agent to load at session start

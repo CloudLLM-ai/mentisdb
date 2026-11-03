@@ -338,7 +338,7 @@ pub mod tui;
 pub mod webhooks;
 pub use lineage::{
     contest_kind, AdviceCode, AppendAdvice, ParseSuccessorKindError, SuccessorKind, SuccessorNote,
-    SuggestedTarget, VersionInfo, VersionStatus,
+    SuggestedTarget, VersionInfo, VersionStatus, MAX_LINEAGE_DEPTH,
 };
 #[cfg(feature = "server")]
 pub use webhooks::{WebhookManager, WebhookPayload, WebhookRegistration, WebhookThought};
@@ -6450,6 +6450,7 @@ impl MentisDb {
                 .map_err(access::AccessError::into_io)?;
         }
         validate_refs(&self.thoughts, &input.refs)?;
+        self.check_lineage_depth(&input)?;
         if !governance {
             self.check_private_targets(agent_id, &input)
                 .map_err(access::AccessError::into_io)?;
@@ -7648,6 +7649,41 @@ impl MentisDb {
         self.signer_audience_of(&thought.agent_id, thought.signing_key_id.as_deref())
     }
 
+    /// Whether the thought at `source_index` may *replace* `target_id` through
+    /// a `Supersedes`, `Corrects` or `Invalidates` link, or promote itself as
+    /// its successor through a weaker one.
+    ///
+    /// On an open chain, and for any thought written while the chain accepted
+    /// unsigned writes (a public segment), there is no privilege boundary:
+    /// anyone could already have written a constraint, so any writer may
+    /// replace any thought and the answer is `true`. A thought written while the
+    /// chain required signatures (a private segment) replaces another only when
+    /// it passed verification when the chain opened (it is not quarantined) and
+    /// either it was written by the **same agent** as the target, or its signing
+    /// key is **authorized on this chain** (a governor, the operator, or any key
+    /// of the allowed set). Otherwise the link is shown as a contest and
+    /// replaces nothing.
+    pub fn strong_link_is_authorized(&self, source_index: u64, target_id: Uuid) -> bool {
+        let segments = self.segments();
+        if !segments.has_private()
+            || segments.kind_at(source_index) == audience::SegmentKind::Public
+        {
+            return true;
+        }
+        let Some(source) = self.thoughts.get(source_index as usize) else {
+            return false;
+        };
+        if segments.quarantined().binary_search(&source_index).is_ok()
+            || source.signature_bytes().is_none()
+        {
+            return false;
+        }
+        let same_agent = self
+            .get_thought_by_id(target_id)
+            .is_some_and(|target| target.agent_id == source.agent_id);
+        same_agent || self.signer_audience(source) == audience::Audience::Authorized
+    }
+
     fn signer_audience_of(&self, agent_id: &str, key_id: Option<&str>) -> audience::Audience {
         let Some(key_id) = key_id.map(str::trim) else {
             return audience::Audience::Public;
@@ -7664,6 +7700,66 @@ impl MentisDb {
             }
             _ => audience::Audience::Public,
         }
+    }
+
+    /// Refuse a thought whose `Supersedes`/`Corrects`/`Invalidates` links would
+    /// make a version chain longer than [`lineage::MAX_LINEAGE_DEPTH`].
+    ///
+    /// Reads follow supersessions only that far
+    /// (see [`MentisDb::current_version`]), so a longer chain could leave the
+    /// live end unreachable. Chains that already exceed the limit (written
+    /// before this check) still open and read as before.
+    fn check_lineage_depth(&self, input: &ThoughtInput) -> io::Result<()> {
+        let mut memo: HashMap<Uuid, usize> = HashMap::new();
+        let longest = input
+            .relations
+            .iter()
+            .filter(|relation| {
+                relation.chain_key.is_none() && is_invalidating_relation_kind(relation.kind)
+            })
+            .map(|relation| self.version_chain_len(relation.target_id, &mut memo, 0))
+            .max()
+            .unwrap_or(0);
+        if longest + 1 > lineage::MAX_LINEAGE_DEPTH {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "this replacement would make a chain of {} versions of one thought, over the limit of {}; \
+                     restate the current version as a new thought and link it with plain refs (a Decision or \
+                     Correction that references the old version contests it and is shown above it)",
+                    longest + 1,
+                    lineage::MAX_LINEAGE_DEPTH
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Versions in the longest supersession chain that ends at `id` (at least
+    /// 1), counted up to one past [`lineage::MAX_LINEAGE_DEPTH`].
+    fn version_chain_len(&self, id: Uuid, memo: &mut HashMap<Uuid, usize>, level: usize) -> usize {
+        let cap = lineage::MAX_LINEAGE_DEPTH + 1;
+        if let Some(len) = memo.get(&id) {
+            return *len;
+        }
+        if level > cap {
+            return cap;
+        }
+        let Some(thought) = self.get_thought_by_id(id) else {
+            return 1;
+        };
+        let below = thought
+            .relations
+            .iter()
+            .filter(|relation| {
+                relation.chain_key.is_none() && is_invalidating_relation_kind(relation.kind)
+            })
+            .map(|relation| self.version_chain_len(relation.target_id, memo, level + 1))
+            .max()
+            .unwrap_or(0);
+        let len = (below + 1).min(cap);
+        memo.insert(id, len);
+        len
     }
 
     /// Refuse a thought from a writer who may not read the private segments if it
@@ -12150,8 +12246,11 @@ impl MentisDb {
     /// Return `true` when `thought_id` is currently superseded, corrected, or
     /// invalidated by at least one later thought in the live chain.
     ///
-    /// This is an O(1) set lookup. For point-in-time semantics see
-    /// [`MentisDb::is_invalidated_as_of`].
+    /// This is an O(1) set lookup, plus the authorization check of
+    /// [`MentisDb::strong_link_is_authorized`] on a chain with governed
+    /// segments: a link written by someone who may not replace this thought
+    /// does not invalidate it (it only contests it, see [`crate::lineage`]).
+    /// For point-in-time semantics see [`MentisDb::is_invalidated_as_of`].
     #[inline]
     pub fn is_invalidated(&self, thought_id: Uuid) -> bool {
         // The set is a fast negative filter; an edge whose `invalid_at` has
@@ -12163,7 +12262,10 @@ impl MentisDb {
                 .get(&thought_id)
                 .is_some_and(|edges| {
                     let now = Utc::now();
-                    edges.iter().any(|edge| edge.in_force_at(now))
+                    edges.iter().any(|edge| {
+                        edge.in_force_at(now)
+                            && self.strong_link_is_authorized(edge.source_index, thought_id)
+                    })
                 })
     }
 
@@ -12204,7 +12306,9 @@ impl MentisDb {
             .is_some_and(|edges| {
                 let now = Utc::now();
                 edges.iter().any(|edge| {
-                    edge.in_force_at(now) && self.is_visible_index(edge.source_index, audience)
+                    edge.in_force_at(now)
+                        && self.is_visible_index(edge.source_index, audience)
+                        && self.strong_link_is_authorized(edge.source_index, thought_id)
                 })
             })
     }
@@ -12223,7 +12327,9 @@ impl MentisDb {
             .get(&thought_id)
             .is_some_and(|edges| {
                 edges.iter().any(|edge| {
-                    edge.in_force_at(as_of) && self.is_visible_index(edge.source_index, audience)
+                    edge.in_force_at(as_of)
+                        && self.is_visible_index(edge.source_index, audience)
+                        && self.strong_link_is_authorized(edge.source_index, thought_id)
                 })
             })
     }

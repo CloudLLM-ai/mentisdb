@@ -132,7 +132,7 @@
 //! `agent_name`, `agent_owner` and its top-level `null` or empty values; hit-level
 //! score components, `matched_terms` and `match_sources` are left out too. The
 //! thought's `provenance` object, its version fields (`version_status`,
-//! `successors`, `current_version`, `successor_of`, `collapsed_duplicates`),
+//! `successors`, `current_version`, `successor_of`, `cross_agent`, `collapsed_duplicates`),
 //! `relations`, `concepts`, `refs`, `content` and the graph provenance of
 //! graph-expanded hits are always kept. Who may see a thought is decided before
 //! compaction, so a public reader still gets only the public segment. The
@@ -6737,7 +6737,7 @@ impl RankedSearchResults {
 
 /// Description of the `compact` parameter on the ranked and federated search
 /// MCP tools. Shared so the two tool schemas cannot drift apart.
-const COMPACT_PARAMETER_DESCRIPTION: &str = "When true, return compact hits to save tokens on routine recall: chain key, total score and the thought minus its hash, prev_hash, thought_signature, signing_key_id, schema_version, agent_name and agent_owner, with empty fields left out. The thought's provenance (segment, signed, signature, verified_agent, trust), version fields (version_status, successors, current_version, successor_of, collapsed_duplicates), relations, concepts, refs and content are always kept, and graph-expanded hits keep their graph provenance. Score components and match lists (matched_terms, match_sources) are left out. About a quarter smaller. Leave it off when you need hashes or signatures to verify a thought yourself or per-component score debugging; mentisdb_get_thought returns the full record. Default false.";
+const COMPACT_PARAMETER_DESCRIPTION: &str = "When true, return compact hits to save tokens on routine recall: chain key, total score and the thought minus its hash, prev_hash, thought_signature, signing_key_id, schema_version, agent_name and agent_owner, with empty fields left out. The thought's provenance (segment, signed, signature, verified_agent, trust), version fields (version_status, successors, current_version, successor_of, cross_agent, collapsed_duplicates), relations, concepts, refs and content are always kept, and graph-expanded hits keep their graph provenance. Score components and match lists (matched_terms, match_sources) are left out. About a quarter smaller. Leave it off when you need hashes or signatures to verify a thought yourself or per-component score debugging; mentisdb_get_thought returns the full record. Default false.";
 
 /// Removes [`COMPACT_DROPPED_THOUGHT_FIELDS`] and every top-level null or empty
 /// field (empty string, array or object) from a serialized thought, in place.

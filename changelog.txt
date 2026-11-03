@@ -100,6 +100,21 @@ UNRELEASED
     signatures, an entry that is not verified ranks with importance capped at
     `UNVERIFIED_IMPORTANCE_CAP` (0.5); on an open chain importance is used as
     written (documented). Entry lines changed shape: `(agent, date, trust=...)`.
+  - security(lineage): any writer could Supersede, Correct or Invalidate anyone's
+    thought and the replacement took its slot in ranked search and standing context,
+    and a plain reference from a Decision or Correction promoted the writer's thought
+    as "contested". On a chain with a signing policy a strong link now replaces its
+    target only when its writer's thought was verified when the chain opened and is by
+    the same agent or by a key authorized on the chain; any other link only contests
+    (`version_status: contested`, listed under `successors` with `authorized: false`,
+    not redirected to or promoted). On an open chain redirection is unchanged on
+    purpose (corrections from another agent are the point of the valid-version fix),
+    but it is now visible: `SuccessorNote` gained `agent_id`, `trust`, `cross_agent`
+    and `authorized`, `VersionInfo` and hit JSON gained `cross_agent`, standing
+    entries gained `replaces` and `cross_agent` and print `[REPLACES #n ... replaced
+    by another agent, check it]`, and the operating skill tells agents to check them.
+    A write that would make a chain of more than `MAX_LINEAGE_DEPTH` (64) versions of
+    one thought is refused (reads follow supersessions only that far).
   - build: Cargo.toml now declares `rust-version = "1.90"`, the real floor of the
     locked dependency set (roaring needs 1.90, uuid 1.89); a new `msrv` CI job
     checks all features and no default features on 1.90.
