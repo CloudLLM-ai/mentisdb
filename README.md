@@ -1600,15 +1600,30 @@ outside localhost.
 ### Host allowlist
 
 One list of `Host` names serves the dashboard, REST and MCP: `localhost`, `127.0.0.1`,
-`[::1]`, `my.mentisdb.com`, the configured `MENTISDB_BIND_HOST`, every entry of
+`[::1]`, the configured `MENTISDB_BIND_HOST`, every entry of
 `MENTISDB_DASHBOARD_ALLOWED_HOSTS` and, when `MENTISDB_BIND_HOST` is `0.0.0.0` or `::`, the
 machine's own interface IPs. A VPS reached by its public IP or DNS name through a loopback
 bind and a reverse proxy lists that name in `MENTISDB_DASHBOARD_ALLOWED_HOSTS`.
 
+**The `my.mentisdb.com` alias is accepted on TLS listeners only** (HTTPS MCP, HTTPS REST and
+the dashboard, whose certificate carries the name). It is a public DNS record that points at
+`127.0.0.1`, but MentisDB does not control it: whoever controls that name (a lapsed domain, a
+compromised registrar account) could serve a page and rebind the name to your loopback
+daemon, and a plain-HTTP listener would take the page for "same-origin". So the plain HTTP
+MCP and REST ports (`9471`, `9472`) answer `403` to `Host: my.mentisdb.com` unless you opt in
+with `MENTISDB_DASHBOARD_ALLOWED_HOSTS=my.mentisdb.com`. Use `https://my.mentisdb.com:9473`
+(MCP), `:9474` (REST) and `:9475` (dashboard), or `http://localhost:9471`.
+
+The domain owner can still hold the name safely: enable the registrar's transfer/registry
+lock and two-factor sign-in, and turn on DNSSEC for the zone. Keep bearer tokens
+(`MENTISDB_BEARER_TOKEN_ACCESS=true`) and the dashboard PIN on whenever the daemon holds
+data you care about: a rebinding page cannot present a token or the PIN.
+
 - **MCP on a loopback bind (the default)** refuses any other `Host` with `403`, for every
   client, on `POST /`, the `GET /` event stream and the legacy `/tools/*` and
   `/resources/*` routes. This is the DNS-rebinding defence of `cloudllm_mcp` 0.4, fed with
-  the list above so `my.mentisdb.com` and your configured names keep working. A proxy that
+  the list above so your configured names keep working (and `my.mentisdb.com` on the HTTPS
+  listener). A proxy that
   forwards an unlisted `Host` gets `403 Forbidden host`: add the name to
   `MENTISDB_DASHBOARD_ALLOWED_HOSTS`.
 - **MCP on a wildcard bind** (Docker, LAN) performs no `Host` check for non-browser
@@ -1622,8 +1637,8 @@ Dashboard API rules (0.10.9):
 
 - **Host allowlist (DNS-rebinding defence).** Every dashboard route, including `GET` pages
   and `/dashboard/login`, rejects a request with `403` unless its `Host` header names this
-  daemon: `localhost`, `127.0.0.1`, `[::1]`, `my.mentisdb.com`, the configured
-  `MENTISDB_BIND_HOST`, the machine's own interface IPs when bound to `0.0.0.0` or `::`,
+  daemon: `localhost`, `127.0.0.1`, `[::1]`, `my.mentisdb.com` (the dashboard is HTTPS-only),
+  the configured `MENTISDB_BIND_HOST`, the machine's own interface IPs when bound to `0.0.0.0` or `::`,
   or an entry of `MENTISDB_DASHBOARD_ALLOWED_HOSTS` (comma-separated; set via environment
   or `.env`, not from the dashboard). Reverse proxies must preserve the original `Host`
   header, or forward a name listed in `MENTISDB_DASHBOARD_ALLOWED_HOSTS`.

@@ -69,22 +69,31 @@
 //! A web page whose host name is re-resolved to `127.0.0.1` (DNS rebinding)
 //! reaches a loopback listener as "same-origin", so every listener checks the
 //! `Host` header against one allowlist, the same one the dashboard uses:
-//! `localhost`, `127.0.0.1`, `[::1]`, the `my.mentisdb.com` alias, the
-//! `MENTISDB_BIND_HOST` value, every comma-separated entry of
-//! `MENTISDB_DASHBOARD_ALLOWED_HOSTS`, and, when `MENTISDB_BIND_HOST` is a
-//! wildcard address, the machine's own interface IPs.
+//! `localhost`, `127.0.0.1`, `[::1]`, the `MENTISDB_BIND_HOST` value, every
+//! comma-separated entry of `MENTISDB_DASHBOARD_ALLOWED_HOSTS`, when
+//! `MENTISDB_BIND_HOST` is a wildcard address the machine's own interface IPs,
+//! and, **on TLS listeners only**, the `my.mentisdb.com` alias.
+//!
+//! The alias is a public DNS name MentisDB does not control, so on the plain
+//! HTTP listeners it is a DNS-rebinding anchor: whoever controls the name could
+//! rebind it to `127.0.0.1` and pass every `Host` and `Origin` guard. The HTTPS
+//! listeners (MCP, REST, dashboard) accept it, because it is the name their
+//! certificate carries; a plain listener accepts it only when the operator
+//! lists it in `MENTISDB_DASHBOARD_ALLOWED_HOSTS`. Each listener tells the
+//! policy which kind it is through the [`ListenerTls`] request extension; a
+//! request without one is judged as plain HTTP.
 //!
 //! How each transport applies it:
 //!
 //! | Listener | Check |
 //! |---|---|
-//! | MCP on a loopback bind (default) | `cloudllm_mcp` rejects any other `Host` with `403`, for every client, on `POST /`, `GET /` and the legacy routes. MentisDB passes it the allowlist, so the alias and configured names keep working. |
+//! | MCP on a loopback bind (default) | `cloudllm_mcp` rejects any other `Host` with `403`, for every client, on `POST /`, `GET /` and the legacy routes. MentisDB passes it the allowlist, so configured names (and the alias on the HTTPS listener) keep working. |
 //! | MCP on a wildcard bind (Docker, LAN) | No `Host` check for programmatic clients, who legitimately use service names and DHCP addresses. |
 //! | REST, and MCP with bearer tokens off | A request from a browser (it carries `Origin` or `Sec-Fetch-Site`) must name an allowed `Host` and, if present, an allowed `Origin` host, else `403`. |
 //! | Dashboard | Every route checks `Host`; state-changing calls also check `Origin`. |
 //!
 //! The library's own `Origin` check admits loopback origins only, which would
-//! refuse `https://my.mentisdb.com` although its `Host` is allowed, so it is
+//! refuse an allowlisted `https://` origin although its `Host` is allowed, so it is
 //! switched off and the `Origin` host is compared against the same allowlist
 //! by MentisDB's browser guard. The allowlist handed to the library is read
 //! when a router is built: set `MENTISDB_DASHBOARD_ALLOWED_HOSTS` before the
@@ -130,6 +139,7 @@
 
 use crate::audience::Audience;
 use crate::auth::{bearer_token_access_from_env, BearerTokenScope, BearerTokenStore};
+pub use crate::dashboard::ListenerTls;
 use crate::migration::{MigrationBlock, MigrationManager};
 use crate::server_lens::{audience_for, scope_allows_chain};
 use crate::webhooks::{WebhookManager, WebhookRegistration};
@@ -1272,6 +1282,7 @@ pub async fn start_mcp_server(
     let router = standard_and_legacy_mcp_router(
         service,
         addr,
+        false,
         Some(broadcaster.clone()),
         Some(Arc::new(event_handler)),
     );
@@ -1385,6 +1396,7 @@ pub async fn start_https_mcp_server(
     let router = standard_and_legacy_mcp_router(
         service,
         addr,
+        true,
         Some(broadcaster.clone()),
         Some(Arc::new(event_handler)),
     );
@@ -1622,7 +1634,7 @@ async fn start_mcp_server_with_service(
 ) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
     start_router(
         addr,
-        standard_and_legacy_mcp_router(service, addr, sse_broadcaster, event_handler),
+        standard_and_legacy_mcp_router(service, addr, false, sse_broadcaster, event_handler),
     )
     .await
 }
@@ -1638,7 +1650,7 @@ async fn start_https_mcp_server_with_service(
 ) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
     start_tls_router(
         addr,
-        standard_and_legacy_mcp_router(service, addr, sse_broadcaster, event_handler),
+        standard_and_legacy_mcp_router(service, addr, true, sse_broadcaster, event_handler),
         cert_path,
         key_path,
     )
@@ -1937,6 +1949,7 @@ pub fn standard_mcp_router(
     let router = standard_mcp_only_router(
         service,
         SocketAddr::new(bind_host, 0),
+        false,
         Some(broadcaster.clone()),
         Some(Arc::new(event_handler)),
         bearer_authorizer,
@@ -1953,7 +1966,7 @@ pub fn standard_mcp_router(
 /// `params.name` + `params.arguments` for JSON-RPC `tools/call`.
 pub fn combined_mcp_router(config: MentisDbServiceConfig, bind_host: IpAddr) -> Router {
     let service = Arc::new(MentisDbService::new(config));
-    standard_and_legacy_mcp_router(service, SocketAddr::new(bind_host, 0), None, None)
+    standard_and_legacy_mcp_router(service, SocketAddr::new(bind_host, 0), false, None, None)
 }
 
 /// Build the REST router without binding a socket.
@@ -2957,6 +2970,7 @@ fn default_chain_mcp_tool(tool_name: &str) -> bool {
 fn standard_and_legacy_mcp_router(
     service: Arc<MentisDbService>,
     addr: SocketAddr,
+    tls: bool,
     sse_broadcaster: Option<SseBroadcaster>,
     event_handler: Option<Arc<dyn mcp::McpEventHandler>>,
 ) -> Router {
@@ -2972,7 +2986,7 @@ fn standard_and_legacy_mcp_router(
             event_handler: event_handler.clone(),
         },
         Arc::new(MentisDbMcpProtocol::new(service.clone())),
-        &mcp_request_guard(&mcp_allowed_hosts(addr)),
+        &mcp_request_guard(&mcp_allowed_hosts(addr, tls)),
     )
     .layer(middleware::from_fn_with_state(
         service.clone(),
@@ -2989,6 +3003,7 @@ fn standard_and_legacy_mcp_router(
     standard_mcp_only_router(
         service,
         addr,
+        tls,
         sse_broadcaster,
         event_handler,
         bearer_authorizer,
@@ -2999,11 +3014,12 @@ fn standard_and_legacy_mcp_router(
 fn standard_mcp_only_router(
     service: Arc<MentisDbService>,
     addr: SocketAddr,
+    tls: bool,
     sse_broadcaster: Option<SseBroadcaster>,
     event_handler: Option<Arc<dyn mcp::McpEventHandler>>,
     bearer_authorizer: Arc<dyn BearerTokenAuthorizer>,
 ) -> Router {
-    let hosts = mcp_allowed_hosts(addr);
+    let hosts = mcp_allowed_hosts(addr, tls);
     Router::new()
         .route("/health", get(health_handler))
         .merge(streamable_http_router_with_sse(
@@ -3042,16 +3058,16 @@ fn standard_mcp_only_router(
 ///
 /// `cloudllm_mcp` 0.4 turns away any `Host` that is not `localhost`,
 /// `127.0.0.1` or `[::1]` on a loopback bind (DNS rebinding). MentisDB also
-/// answers to `my.mentisdb.com`, `MENTISDB_BIND_HOST` and
-/// `MENTISDB_DASHBOARD_ALLOWED_HOSTS`, so on a loopback bind the library is
-/// given [`crate::dashboard::HostPolicy::library_hosts`], the very policy the
-/// dashboard and [`browser_guard_middleware`] decide by. On any other bind
+/// answers to `MENTISDB_BIND_HOST`, `MENTISDB_DASHBOARD_ALLOWED_HOSTS` and,
+/// on a TLS listener (`tls`), `my.mentisdb.com`, so on a loopback bind the
+/// library is given [`crate::dashboard::HostPolicy::library_hosts`], the very
+/// policy the dashboard and [`browser_guard_middleware`] decide by. On any other bind
 /// the library performs no `Host` check, as before: a Docker or LAN client
 /// legitimately reaches the daemon by service name or DHCP address, and the
 /// browser guard still refuses foreign names from browsers.
-fn mcp_allowed_hosts(addr: SocketAddr) -> Vec<String> {
+fn mcp_allowed_hosts(addr: SocketAddr, tls: bool) -> Vec<String> {
     if addr.ip().is_loopback() {
-        crate::dashboard::HostPolicy::from_env().library_hosts()
+        crate::dashboard::HostPolicy::from_env(tls).library_hosts()
     } else {
         Vec::new()
     }
@@ -3060,7 +3076,7 @@ fn mcp_allowed_hosts(addr: SocketAddr) -> Vec<String> {
 /// The request guard for the legacy `/tools/*` and `/resources/*` routes.
 ///
 /// The library's `Origin` check accepts loopback origins only, which would
-/// refuse `https://my.mentisdb.com` and every allowlisted name even though
+/// refuse an allowlisted name (the alias on HTTPS) even though
 /// the `Host` policy admits them. [`browser_guard_middleware`] already
 /// compares the `Origin` host exactly against that same policy, so the
 /// library's own check is switched off rather than left to disagree.
@@ -7261,6 +7277,8 @@ async fn start_router(
     let listener = TcpListener::bind(addr).await?;
     let local_addr = listener.local_addr()?;
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    // Plain HTTP: the Host policy does not accept the `my.mentisdb.com` alias here.
+    let router = router.layer(axum::Extension(ListenerTls(false)));
 
     tokio::spawn(async move {
         let _ = axum::serve(
@@ -7665,6 +7683,8 @@ async fn start_tls_router(
     key_path: PathBuf,
 ) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
     let tls_config = RustlsConfig::from_pem_file(&cert_path, &key_path).await?;
+    // TLS: the Host policy accepts the `my.mentisdb.com` alias the certificate covers.
+    let router = router.layer(axum::Extension(ListenerTls(true)));
     let axum_handle = axum_server::Handle::new();
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
@@ -7881,14 +7901,16 @@ async fn mcp_unauthorized_guidance_middleware(
 
 /// Whether an `Origin` header value names one of this daemon's own hosts.
 ///
+/// `tls` says whether the listener the request arrived on is TLS (see
+/// [`ListenerTls`]); the `my.mentisdb.com` alias is an own host only there.
 /// `null` (sandboxed frames, `data:` pages), values with userinfo and anything
 /// that is not `scheme://authority` are refused.
-fn origin_names_own_host(origin: &str) -> bool {
+fn origin_names_own_host(origin: &str, tls: bool) -> bool {
     let Some((_, rest)) = origin.split_once("://") else {
         return false;
     };
     let authority = rest.split('/').next().unwrap_or_default();
-    !authority.contains('@') && crate::dashboard::dashboard_host_allowed(authority)
+    !authority.contains('@') && crate::dashboard::dashboard_host_allowed(authority, tls)
 }
 
 /// Blocks DNS-rebinding and cross-site browser requests to the REST and MCP
@@ -7918,13 +7940,14 @@ async fn browser_guard_middleware(
         .and_then(|v| v.to_str().ok());
     let from_browser = origin.is_some() || headers.contains_key("sec-fetch-site");
     if from_browser {
+        let tls = crate::dashboard::request_is_tls(&request);
         let host_ok = headers
             .get(axum::http::header::HOST)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
             .or_else(|| request.uri().authority().map(|a| a.as_str().to_string()))
-            .is_some_and(|host| crate::dashboard::dashboard_host_allowed(&host));
-        let origin_ok = origin.is_none_or(origin_names_own_host);
+            .is_some_and(|host| crate::dashboard::dashboard_host_allowed(&host, tls));
+        let origin_ok = origin.is_none_or(|origin| origin_names_own_host(origin, tls));
         if !host_ok || !origin_ok {
             return (
                 StatusCode::FORBIDDEN,

@@ -1636,9 +1636,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Vec::new()
         };
 
-        let mcp_port = handles.mcp.local_addr().port();
-        let rest_port = handles.rest.local_addr().port();
-        s.endpoint_lines = build_endpoint_lines(&handles, mcp_port, rest_port);
+        s.endpoint_lines = build_endpoint_lines(&handles);
 
         let registry = load_registered_chains(&config.service.chain_dir).unwrap_or_default();
         s.chain_count = registry.chains.len();
@@ -2102,9 +2100,7 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
             Vec::new()
         };
 
-        let mcp_port: u16 = handles.mcp.local_addr().port();
-        let rest_port: u16 = handles.rest.local_addr().port();
-        s.endpoint_lines = build_endpoint_lines(&handles, mcp_port, rest_port);
+        s.endpoint_lines = build_endpoint_lines(&handles);
 
         let registry = load_registered_chains(&config.service.chain_dir).unwrap_or_default();
         s.chain_count = registry.chains.len();
@@ -2383,9 +2379,11 @@ Important environment variables:
   MENTISDB_DASHBOARD_ALLOWED_HOSTS
     Comma-separated extra host names or IPs accepted in the Host header (a public
     DNS name or IP, or the name a reverse proxy forwards). The dashboard, REST and
-    MCP share one list: localhost, 127.0.0.1, [::1], my.mentisdb.com,
-    MENTISDB_BIND_HOST and these entries. On a loopback bind, MCP answers any
-    other Host with 403 (DNS-rebinding defence). Set it before the daemon starts
+    MCP share one list: localhost, 127.0.0.1, [::1], MENTISDB_BIND_HOST and these
+    entries, plus my.mentisdb.com on HTTPS listeners only (list it here to accept
+    it on plain HTTP too: it is a public DNS name, a rebinding anchor).
+    On a loopback bind, MCP answers any other Host with 403 (DNS-rebinding
+    defence). Set it before the daemon starts
 
   MENTISDB_BEARER_TOKEN_ACCESS
     Require bearer tokens for MCP HTTP/HTTPS access. Default: false
@@ -3152,7 +3150,10 @@ fn build_tls_info_lines(
     ));
     lines.push(String::new());
     lines.push("  my.mentisdb.com is a public DNS A-record → 127.0.0.1".to_string());
-    lines.push("  You can use it as a friendly hostname for this local daemon.".to_string());
+    lines.push(
+        "  You can use it as a friendly hostname for this local daemon, over HTTPS only."
+            .to_string(),
+    );
     if let Some(port) = mcp_port {
         lines.push(format!("  MCP:  https://my.mentisdb.com:{port}"));
     }
@@ -3183,20 +3184,16 @@ fn build_tls_info_lines(
 }
 
 /// Build endpoint display lines for the TUI top-right pane.
-fn build_endpoint_lines(
-    handles: &MentisDbServerHandles,
-    mcp_port: u16,
-    rest_port: u16,
-) -> Vec<String> {
+fn build_endpoint_lines(handles: &MentisDbServerHandles) -> Vec<String> {
     let mut lines = Vec::new();
 
     let mcp_local = format!("http://{}", handles.mcp.local_addr());
     let rest_local = format!("http://{}", handles.rest.local_addr());
-    let mcp_friendly = format!("http://my.mentisdb.com:{mcp_port}");
-    let rest_friendly = format!("http://my.mentisdb.com:{rest_port}");
 
-    lines.push(format!("  MCP  (HTTP)  {mcp_local:<32}  {mcp_friendly}"));
-    lines.push(format!("  REST (HTTP)  {rest_local:<32}  {rest_friendly}"));
+    // The plain-HTTP listeners do not accept the `my.mentisdb.com` alias (a
+    // public DNS name; see `HostPolicy`), so no friendly URL is printed for them.
+    lines.push(format!("  MCP  (HTTP)  {mcp_local}"));
+    lines.push(format!("  REST (HTTP)  {rest_local}"));
 
     if let Some(ref h) = handles.https_mcp {
         let local = format!("https://{}", h.local_addr());

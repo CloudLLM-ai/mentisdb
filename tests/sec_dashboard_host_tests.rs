@@ -55,6 +55,9 @@ fn router(pin: Option<&str>) -> (axum::Router, PathBuf) {
 async fn send(app: &axum::Router, mut req: Request<Body>, ip: [u8; 4]) -> StatusCode {
     req.extensions_mut()
         .insert(ConnectInfo(std::net::SocketAddr::from((ip, 40000))));
+    // The dashboard is only ever served over TLS; the listener marks it so.
+    req.extensions_mut()
+        .insert(dashboard_impl::ListenerTls(true));
     app.clone().oneshot(req).await.unwrap().status()
 }
 
@@ -127,13 +130,25 @@ async fn host_allowlist_blocks_rebinding_on_every_route() {
 
     // Non-wildcard bind host names that host only.
     std::env::set_var("MENTISDB_BIND_HOST", "192.168.7.7");
-    assert!(dashboard_impl::dashboard_host_allowed("192.168.7.7:9475"));
-    assert!(!dashboard_impl::dashboard_host_allowed("192.168.7.8:9475"));
+    assert!(dashboard_impl::dashboard_host_allowed(
+        "192.168.7.7:9475",
+        true
+    ));
+    assert!(!dashboard_impl::dashboard_host_allowed(
+        "192.168.7.8:9475",
+        true
+    ));
     // Wildcard bind allows own interface IPs but not arbitrary ones.
     std::env::set_var("MENTISDB_BIND_HOST", "0.0.0.0");
-    assert!(dashboard_impl::dashboard_host_allowed("127.0.0.1"));
-    assert!(!dashboard_impl::dashboard_host_allowed("203.0.113.77"));
-    assert!(!dashboard_impl::dashboard_host_allowed("evil.example.com"));
+    assert!(dashboard_impl::dashboard_host_allowed("127.0.0.1", true));
+    assert!(!dashboard_impl::dashboard_host_allowed(
+        "203.0.113.77",
+        true
+    ));
+    assert!(!dashboard_impl::dashboard_host_allowed(
+        "evil.example.com",
+        true
+    ));
     std::env::remove_var("MENTISDB_BIND_HOST");
 
     let _ = std::fs::remove_dir_all(dir);
@@ -186,20 +201,12 @@ async fn login_rate_limit_is_per_client_ip() {
 
 /// The static list handed to `cloudllm_mcp` and the per-request decision the
 /// dashboard and the browser guard take are one policy: for every sample
-/// `Host`, the list contains the host exactly when `allows` accepts it. Built
-/// from explicit values, so it does not touch the process environment.
+/// `Host`, the list contains the host exactly when `allows` accepts it, on
+/// plain and on TLS listeners. Built from explicit values, so it does not
+/// touch the process environment.
 #[test]
 fn library_host_list_and_dashboard_decision_agree() {
     use dashboard_impl::HostPolicy;
-    let policies = [
-        HostPolicy::new(vec![], None),
-        HostPolicy::new(vec!["203.0.113.7".into(), " Vps.Example.org ".into()], None),
-        HostPolicy::new(vec!["2001:db8::7".into(), "".into()], None),
-        HostPolicy::new(vec![], Some("mem.example.net".into())),
-        HostPolicy::new(vec![], Some("192.168.7.7".into())),
-        HostPolicy::new(vec!["10.0.0.9".into()], Some("2001:db8::1".into())),
-        HostPolicy::new(vec![], Some("  ".into())),
-    ];
     let hosts = [
         "localhost",
         "127.0.0.1",
@@ -219,27 +226,108 @@ fn library_host_list_and_dashboard_decision_agree() {
         "10.0.0.9",
         "0.0.0.0",
     ];
-    for policy in &policies {
-        let listed = policy.library_hosts();
-        for host in hosts {
-            for authority in [host.to_string(), format!("{host}:9471")] {
-                let in_list = listed.iter().any(|entry| entry == host);
-                assert_eq!(
-                    policy.allows(&authority),
-                    in_list,
-                    "{authority} under {policy:?}; list {listed:?}"
-                );
+    for tls in [false, true] {
+        let policies = [
+            HostPolicy::new(vec![], None, tls),
+            HostPolicy::new(
+                vec!["203.0.113.7".into(), " Vps.Example.org ".into()],
+                None,
+                tls,
+            ),
+            HostPolicy::new(vec!["2001:db8::7".into(), "".into()], None, tls),
+            HostPolicy::new(vec![], Some("mem.example.net".into()), tls),
+            HostPolicy::new(vec![], Some("192.168.7.7".into()), tls),
+            HostPolicy::new(vec!["10.0.0.9".into()], Some("2001:db8::1".into()), tls),
+            HostPolicy::new(vec![], Some("  ".into()), tls),
+            HostPolicy::new(vec!["My.MentisDB.com".into()], None, tls),
+        ];
+        for policy in &policies {
+            let listed = policy.library_hosts();
+            for host in hosts {
+                for authority in [host.to_string(), format!("{host}:9471")] {
+                    let in_list = listed.iter().any(|entry| entry == host);
+                    assert_eq!(
+                        policy.allows(&authority),
+                        in_list,
+                        "{authority} under {policy:?}; list {listed:?}"
+                    );
+                }
             }
+            assert!(!policy.allows(""), "an empty Host names nothing");
         }
-        assert!(!policy.allows(""), "an empty Host names nothing");
     }
+}
+
+/// Regression: `my.mentisdb.com` was accepted on every listener, so whoever
+/// controls that public DNS name could rebind it to `127.0.0.1` and pass the
+/// Host and Origin guards of a plain-HTTP listener. It is now an own host on
+/// TLS listeners (the certificate name) and on plain ones only when the
+/// operator lists it in `MENTISDB_DASHBOARD_ALLOWED_HOSTS`.
+#[test]
+fn the_alias_is_a_trust_anchor_on_tls_listeners_only() {
+    use dashboard_impl::HostPolicy;
+    let alias = [
+        "my.mentisdb.com",
+        "MY.MentisDB.com:9473",
+        "my.mentisdb.com.",
+    ];
+    let plain = HostPolicy::new(vec![], None, false);
+    let tls = HostPolicy::new(vec![], None, true);
+    let listed = HostPolicy::new(vec!["my.mentisdb.com".into()], None, false);
+    for host in alias {
+        assert!(!plain.allows(host), "plain listener accepted {host}");
+        assert!(tls.allows(host), "TLS listener refused {host}");
+        assert!(listed.allows(host), "listed alias refused on plain {host}");
+    }
+    assert!(!plain.library_hosts().iter().any(|h| h == "my.mentisdb.com"));
+    assert!(tls.library_hosts().iter().any(|h| h == "my.mentisdb.com"));
+    assert!(listed
+        .library_hosts()
+        .iter()
+        .any(|h| h == "my.mentisdb.com"));
+    // Look-alikes never pass, with or without TLS.
+    for host in [
+        "my.mentisdb.com.evil.com",
+        "xmy.mentisdb.com",
+        "mentisdb.com",
+    ] {
+        assert!(!tls.allows(host), "{host}");
+    }
+}
+
+/// A dashboard request that did not come through a TLS listener (no
+/// `ListenerTls` marker) is judged as plain HTTP: the alias is refused, the
+/// loopback names still work.
+#[tokio::test]
+async fn an_unmarked_dashboard_request_is_treated_as_plain_http() {
+    // Leaves the process environment alone: the host-allowlist test in this
+    // binary owns it, and neither of its values names the alias.
+    let (app, dir) = router(None);
+    let mut req = get("/dashboard/api/version", "my.mentisdb.com:9475");
+    req.extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            40000,
+        ))));
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    let mut req = get("/dashboard/api/version", "localhost:9475");
+    req.extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            40000,
+        ))));
+    assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::OK);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A wildcard `MENTISDB_BIND_HOST` lists the machine's interface IPs for the
 /// library, and `allows` accepts exactly those, never an unrelated address.
 #[test]
 fn wildcard_bind_lists_interface_ips() {
-    let policy = dashboard_impl::HostPolicy::new(vec![], Some("0.0.0.0".into()));
+    let policy = dashboard_impl::HostPolicy::new(vec![], Some("0.0.0.0".into()), false);
     let listed = policy.library_hosts();
     for iface in if_addrs::get_if_addrs().unwrap() {
         let ip = iface.addr.ip();

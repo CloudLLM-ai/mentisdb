@@ -1,4 +1,18 @@
 UNRELEASED
+  - security(host): `my.mentisdb.com` is no longer a permanent DNS-rebinding trust anchor.
+    It is a public DNS name MentisDB does not control; whoever controls it (a lapsed
+    domain, a compromised registrar account) could serve a page and rebind the name to
+    `127.0.0.1`, passing every `Host`, `Origin` and CSRF guard of a plain-HTTP listener.
+    The alias is now accepted as `Host` and `Origin` on TLS listeners only (HTTPS MCP,
+    HTTPS REST, dashboard: it is the name their certificate carries). The plain HTTP
+    MCP and REST ports answer `403` to it unless the operator lists it in
+    `MENTISDB_DASHBOARD_ALLOWED_HOSTS`. Upgrade note: switch any
+    `http://my.mentisdb.com:9471` / `:9472` client to the `https://` URL (9473/9474/9475)
+    or to `http://localhost:9471`, or list the alias to keep the old behaviour. The
+    startup endpoint list no longer prints an `http://my.mentisdb.com` URL. Docs say to
+    enable the registrar lock and DNSSEC for the name and to keep bearer tokens and the
+    dashboard PIN on. Listeners mark requests with the new public `ListenerTls`
+    extension; a request without it is judged as plain HTTP.
   - build: Cargo.toml now declares `rust-version = "1.90"`, the real floor of the
     locked dependency set (roaring needs 1.90, uuid 1.89); a new `msrv` CI job
     checks all features and no default features on 1.90.

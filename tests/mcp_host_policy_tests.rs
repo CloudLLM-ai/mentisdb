@@ -4,8 +4,8 @@
 //!
 //! On a loopback bind the library turns away every `Host` but `localhost`,
 //! `127.0.0.1` and `[::1]` unless it is told otherwise. MentisDB tells it
-//! the dashboard's list: `my.mentisdb.com`, `MENTISDB_BIND_HOST` and
-//! `MENTISDB_DASHBOARD_ALLOWED_HOSTS`. These tests pin that the MCP routers
+//! the dashboard's list: `MENTISDB_BIND_HOST`, `MENTISDB_DASHBOARD_ALLOWED_HOSTS`
+//! and, on TLS listeners only, `my.mentisdb.com`. These tests pin that the MCP routers
 //! (streamable HTTP, legacy `/tools/*` and `/resources/*`, the `GET /` event
 //! stream) and the REST router agree with it, that a foreign `Host` is still
 //! refused, and that the library's 401 text carries MentisDB's guidance.
@@ -159,11 +159,14 @@ fn assert_all(statuses: [StatusCode; 4], expected: StatusCode, what: &str) {
     );
 }
 
-/// Regression: with `cloudllm_mcp` 0.4 alone, a loopback daemon refused
-/// `Host: my.mentisdb.com`, the alias the docs and the TLS certificate cover.
+/// The `my.mentisdb.com` alias is a public DNS name: whoever controls it can
+/// rebind it to `127.0.0.1`. A plain-HTTP listener therefore refuses it on
+/// every MCP transport, and accepts it only when the operator lists it in
+/// `MENTISDB_DASHBOARD_ALLOWED_HOSTS` (TLS listeners accept it by default; see
+/// `alias_tls_scope_tests`).
 #[tokio::test]
-async fn the_mentisdb_alias_is_accepted_on_every_mcp_transport_over_loopback() {
-    let _env = EnvGuard::new().await;
+async fn the_mentisdb_alias_is_refused_on_plain_mcp_unless_listed() {
+    let env = EnvGuard::new().await;
     for host in [
         "my.mentisdb.com",
         "my.mentisdb.com:9473",
@@ -171,6 +174,18 @@ async fn the_mentisdb_alias_is_accepted_on_every_mcp_transport_over_loopback() {
     ] {
         assert_all(
             mcp_statuses(host, LOOPBACK, "alias").await,
+            StatusCode::FORBIDDEN,
+            host,
+        );
+    }
+    env.set(ALLOWED_HOSTS_ENV, "my.mentisdb.com");
+    for host in [
+        "my.mentisdb.com",
+        "my.mentisdb.com:9473",
+        "MY.MentisDB.com:9471",
+    ] {
+        assert_all(
+            mcp_statuses(host, LOOPBACK, "alias_listed").await,
             StatusCode::OK,
             host,
         );
@@ -306,10 +321,11 @@ async fn a_wildcard_bind_does_not_check_host_for_programmatic_clients() {
 
 /// On a wildcard bind a browser (`Sec-Fetch-Site` or `Origin` present) must
 /// still name an allowed host while bearer enforcement is off: MentisDB's
-/// browser guard, not the library, closes DNS rebinding there.
+/// browser guard, not the library, closes DNS rebinding there. The alias is
+/// not one of them on a plain listener unless it is listed.
 #[tokio::test]
 async fn browser_requests_to_a_wildcard_bind_need_an_allowed_host() {
-    let _env = EnvGuard::new().await;
+    let env = EnvGuard::new().await;
     let (router, _b) = standard_mcp_router(config("browser_wild"), WILDCARD);
     let browser = |host: &'static str| {
         rpc(
@@ -319,24 +335,41 @@ async fn browser_requests_to_a_wildcard_bind_need_an_allowed_host() {
         )
     };
     assert_eq!(
+        send(&router, browser("mem.example.org:9473")).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
         send(&router, browser("my.mentisdb.com:9473")).await.0,
-        StatusCode::OK
+        StatusCode::FORBIDDEN,
+        "the alias is not an own host on a plain listener"
     );
     assert_eq!(
         send(&router, browser("evil.example.com")).await.0,
         StatusCode::FORBIDDEN
     );
+    env.set(ALLOWED_HOSTS_ENV, "mem.example.org, my.mentisdb.com");
+    let (router, _b) = standard_mcp_router(config("browser_wild_listed"), WILDCARD);
+    assert_eq!(
+        send(&router, browser("mem.example.org:9473")).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&router, browser("my.mentisdb.com:9473")).await.0,
+        StatusCode::OK,
+        "listed in the allowlist"
+    );
 }
 
 /// Regression: the library's own `Origin` check admits loopback origins only,
-/// which refused a page served from `my.mentisdb.com` although its `Host` is
-/// allowed. MentisDB's guard decides `Origin` against the same policy, so the
-/// alias and an allowlisted name pass, and look-alikes and foreign pages fail
-/// (bearer enforcement off).
+/// which refused a page served from an allowlisted name although its `Host` is
+/// allowed. MentisDB's guard decides `Origin` against the same policy, so a
+/// listed name (here the alias too, which a plain listener accepts only when
+/// listed) passes, and look-alikes and foreign pages fail (bearer enforcement
+/// off).
 #[tokio::test]
 async fn origin_follows_the_host_policy_on_every_mcp_transport() {
     let env = EnvGuard::new().await;
-    env.set(ALLOWED_HOSTS_ENV, "vps.example.org");
+    env.set(ALLOWED_HOSTS_ENV, "vps.example.org, my.mentisdb.com");
     let (router, _b) = standard_mcp_router(config("origin"), LOOPBACK);
     let combined = combined_mcp_router(config("origin_c"), LOOPBACK);
     for (origin, allowed) in [
@@ -388,7 +421,7 @@ async fn rest_follows_the_same_host_policy_for_browsers() {
     env.set(ALLOWED_HOSTS_ENV, "203.0.113.7");
     let router = rest_router(config("rest"));
     for (host, allowed) in [
-        ("my.mentisdb.com:9474", true),
+        ("my.mentisdb.com:9474", false),
         ("203.0.113.7:9472", true),
         ("localhost:9472", true),
         ("evil.example.com", false),
@@ -409,15 +442,15 @@ async fn rest_follows_the_same_host_policy_for_browsers() {
     let (status, _) = send(
         &router,
         rest_get(&[
-            ("host", "my.mentisdb.com"),
-            ("origin", "https://my.mentisdb.com"),
+            ("host", "203.0.113.7"),
+            ("origin", "http://203.0.113.7:9472"),
         ]),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "alias origin");
+    assert_eq!(status, StatusCode::OK, "listed origin");
     let (status, _) = send(
         &router,
-        rest_get(&[("host", "my.mentisdb.com"), ("origin", "https://evil.test")]),
+        rest_get(&[("host", "203.0.113.7"), ("origin", "https://evil.test")]),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "foreign origin");
@@ -430,7 +463,8 @@ async fn rest_follows_the_same_host_policy_for_browsers() {
 /// subscribes, and the allowed `Host` rules still apply first.
 #[tokio::test]
 async fn the_event_stream_needs_a_token_and_an_allowed_host() {
-    let _env = EnvGuard::new().await;
+    let env = EnvGuard::new().await;
+    env.set(ALLOWED_HOSTS_ENV, "vps.example.org");
     let config = config("sse_auth").with_bearer_token_access(true);
     let global = config
         .bearer_token_store
@@ -461,10 +495,14 @@ async fn the_event_stream_needs_a_token_and_an_allowed_host() {
     }
     let response = status(vec![
         ("authorization", format!("Bearer {global}")),
-        ("host", "my.mentisdb.com:9473".to_string()),
+        ("host", "vps.example.org:9473".to_string()),
     ])
     .await;
-    assert_eq!(response.status(), StatusCode::OK, "alias host with token");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "allowlisted host with token"
+    );
     let response = status(vec![
         ("authorization", format!("Bearer {global}")),
         ("host", "evil.example.com".to_string()),

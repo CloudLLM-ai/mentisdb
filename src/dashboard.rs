@@ -293,7 +293,47 @@ const BIND_HOST_ENV: &str = "MENTISDB_BIND_HOST";
 
 /// Well-known alias that resolves to `127.0.0.1` and that the generated TLS
 /// certificate always covers.
+///
+/// The name is a public DNS record MentisDB does not control, so it is a
+/// trust anchor only where it has a purpose: on TLS listeners (its job is to
+/// be the name the HTTPS certificate carries). Plain-HTTP listeners accept it
+/// only when the operator lists it in `MENTISDB_DASHBOARD_ALLOWED_HOSTS`.
 const ALIAS_HOST: &str = "my.mentisdb.com";
+
+/// Marker request extension saying whether the connection a request arrived
+/// on is TLS.
+///
+/// MentisDB's own listeners set it on every request: `true` on the HTTPS MCP,
+/// HTTPS REST and dashboard listeners, `false` on the plain-HTTP ones. The
+/// `Host` policy reads it to decide whether the `my.mentisdb.com` alias is
+/// accepted (TLS listeners only, unless it is listed in
+/// `MENTISDB_DASHBOARD_ALLOWED_HOSTS`).
+///
+/// A request without the extension is treated as plain HTTP, the stricter
+/// answer. An embedder that serves a MentisDB router behind its own TLS
+/// acceptor can add `axum::Extension(ListenerTls(true))` as a layer to get the
+/// TLS behaviour.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::server::ListenerTls;
+///
+/// assert_ne!(ListenerTls(true), ListenerTls(false));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListenerTls(
+    /// `true` when the connection is TLS (HTTPS), `false` for plain HTTP.
+    pub bool,
+);
+
+/// Whether a request arrived on a TLS listener; plain HTTP when unmarked.
+pub(crate) fn request_is_tls<B>(request: &axum::http::Request<B>) -> bool {
+    request
+        .extensions()
+        .get::<ListenerTls>()
+        .is_some_and(|marker| marker.0)
+}
 
 /// Strip the port and IPv6 brackets from a `Host` authority and lowercase it.
 fn normalize_host(authority: &str) -> String {
@@ -322,21 +362,28 @@ fn normalize_host(authority: &str) -> String {
 /// MentisDB, and on a loopback bind it would otherwise accept only
 /// `localhost`, `127.0.0.1` and `[::1]`).
 ///
-/// Allowed: `localhost`, `127.0.0.1`, `[::1]`, the documented `my.mentisdb.com`
-/// alias, the configured `MENTISDB_BIND_HOST`, every
-/// `MENTISDB_DASHBOARD_ALLOWED_HOSTS` entry, and, when `MENTISDB_BIND_HOST` is
-/// a wildcard address, the machine's own interface IPs.
+/// Allowed: `localhost`, `127.0.0.1`, `[::1]`, the configured
+/// `MENTISDB_BIND_HOST`, every `MENTISDB_DASHBOARD_ALLOWED_HOSTS` entry, when
+/// `MENTISDB_BIND_HOST` is a wildcard address the machine's own interface IPs,
+/// and, **on TLS listeners only**, the documented `my.mentisdb.com` alias. A
+/// plain-HTTP listener accepts the alias only when it is listed in
+/// `MENTISDB_DASHBOARD_ALLOWED_HOSTS`: the alias is a public DNS name, and
+/// whoever controls it could otherwise rebind it to `127.0.0.1` and reach a
+/// plain listener as "same-origin".
 #[derive(Debug, Clone, Default)]
 pub(crate) struct HostPolicy {
     /// Entries of `MENTISDB_DASHBOARD_ALLOWED_HOSTS`, trimmed and non-empty.
     extra: Vec<String>,
     /// `MENTISDB_BIND_HOST`, trimmed, when set and non-empty.
     bind: Option<String>,
+    /// Whether the policy is for a TLS listener (the alias is accepted).
+    tls: bool,
 }
 
 impl HostPolicy {
-    /// Read the policy from the environment as it is right now.
-    pub(crate) fn from_env() -> Self {
+    /// Read the policy for a TLS (`tls == true`) or plain-HTTP listener from
+    /// the environment as it is right now.
+    pub(crate) fn from_env(tls: bool) -> Self {
         let extra = std::env::var(DASHBOARD_ALLOWED_HOSTS_ENV)
             .map(|list| {
                 list.split(',')
@@ -350,15 +397,17 @@ impl HostPolicy {
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        Self::new(extra, bind)
+        Self::new(extra, bind, tls)
     }
 
     /// A policy from explicit values, as [`from_env`](Self::from_env) would
     /// read them: the entries of `MENTISDB_DASHBOARD_ALLOWED_HOSTS` and the
     /// value of `MENTISDB_BIND_HOST`. Empty entries and an empty bind host
-    /// are dropped, so tests need not touch the process environment.
-    pub(crate) fn new(extra: Vec<String>, bind: Option<String>) -> Self {
+    /// are dropped, so tests need not touch the process environment. `tls`
+    /// says whether the policy is for a TLS listener.
+    pub(crate) fn new(extra: Vec<String>, bind: Option<String>, tls: bool) -> Self {
         Self {
+            tls,
             extra: extra
                 .into_iter()
                 .map(|entry| entry.trim().to_string())
@@ -376,7 +425,9 @@ impl HostPolicy {
         if host.is_empty() {
             return false;
         }
-        if matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1") || host == ALIAS_HOST {
+        if matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1")
+            || (self.tls && host == ALIAS_HOST)
+        {
             return true;
         }
         let host_ip = host.parse::<IpAddr>().ok();
@@ -420,9 +471,12 @@ impl HostPolicy {
     // own (`#[path]`) and never reach it.
     #[allow(dead_code)]
     pub(crate) fn library_hosts(&self) -> Vec<String> {
-        let mut hosts: Vec<String> = ["localhost", "127.0.0.1", "[::1]", ALIAS_HOST]
+        let mut hosts: Vec<String> = ["localhost", "127.0.0.1", "[::1]"]
             .map(str::to_string)
             .into();
+        if self.tls {
+            hosts.push(ALIAS_HOST.to_string());
+        }
         hosts.extend(self.extra.iter().map(|entry| listed(entry)));
         if let Some(bind) = &self.bind {
             match bind.parse::<IpAddr>() {
@@ -464,11 +518,11 @@ fn bracketed(ip: IpAddr) -> String {
 
 /// Decide whether `authority` (a `Host` header value) names this daemon.
 ///
-/// See [`HostPolicy`] for the rules; this reads the policy from the
-/// environment on every call so a change to `.env`-sourced variables in tests
-/// takes effect at once.
-pub(crate) fn dashboard_host_allowed(authority: &str) -> bool {
-    HostPolicy::from_env().allows(authority)
+/// See [`HostPolicy`] for the rules; `tls` says whether the listener is TLS
+/// (see [`ListenerTls`]). This reads the policy from the environment on every
+/// call so a change to `.env`-sourced variables in tests takes effect at once.
+pub(crate) fn dashboard_host_allowed(authority: &str, tls: bool) -> bool {
+    HostPolicy::from_env(tls).allows(authority)
 }
 
 /// Reject requests whose `Host` is not one of this daemon's own names.
@@ -486,7 +540,7 @@ async fn host_allowlist_middleware(request: axum::extract::Request, next: Next) 
         .map(str::to_string)
         .or_else(|| request.uri().authority().map(|a| a.as_str().to_string()));
     if let Some(host) = host {
-        if !dashboard_host_allowed(&host) {
+        if !dashboard_host_allowed(&host, request_is_tls(&request)) {
             return (
                 StatusCode::FORBIDDEN,
                 Json(json!({
