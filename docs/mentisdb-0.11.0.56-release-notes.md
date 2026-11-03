@@ -617,6 +617,21 @@ LoCoMo single-hop / multi-hop R@10 (default): 80.4 / 62.9. For comparison, 0.10.
 last published run): LoCoMo-10P default R@5/R@10 63.9/73.5, rerank 66.0/74.1; LongMemEval
 default R@5/R@10/R@20 68.0/72.8/78.8, rerank R@5 68.6.
 
+**The release-review fixes did not move recall.** We ran the same protocol again on
+4e6cd3f, after the security and correctness fixes landed (raw outputs in
+`results/benchmarks/2026-11-03-0.11.0.56/`). Every figure matches the table above to within
+0.2 points, and LoCoMo default answered the same 1,516 of 1,977 questions at R@10, query for
+query. A control run on 1d4be8f, which moved the implicit-edge scan off the write lock,
+agreed to within one query.
+
+Throughput on that day could not be compared with the table above, because the machine was
+busy with other builds. To check for a slowdown, we ran the 0.11 baseline binary, 4e6cd3f,
+1d4be8f and the baseline binary again, back to back, under the same macOS background policy
+(efficiency cores only). Ingest time and LoCoMo q/s for both release builds fell inside or
+above the range of the two baseline runs, so the fixes cost no measurable throughput. The
+efficiency-core numbers are in the results README; they are not comparable with the q/s
+column above.
+
 ## Credits
 
 - Austin Faulkner-Pearce ([@faulknerpearce](https://github.com/faulknerpearce)) for compact
