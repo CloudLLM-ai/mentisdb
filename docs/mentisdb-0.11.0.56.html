@@ -177,10 +177,13 @@ mentisdb search "launch plan" --chain vault \
     <h3>6. One host policy, and a dashboard login that works</h3>
     <p>
       MentisDB now moves to <code>cloudllm_mcp</code> 0.4.0, which checks the
-      <code>Host</code> header on loopback binds to stop DNS rebinding. To keep
-      <code>my.mentisdb.com</code> and your own names working, the dashboard, REST and MCP
-      now share one allowlist. If you reach the daemon by a public IP or domain, put it in
-      <code>MENTISDB_DASHBOARD_ALLOWED_HOSTS</code> before starting it. We also fixed a bug
+      <code>Host</code> header on loopback binds to stop DNS rebinding. MentisDB now applies
+      one allowlist to the dashboard, REST and MCP, and REST on a loopback bind checks
+      <code>Host</code> on every request too. If you reach the daemon by a public IP or
+      domain, or through a reverse proxy, put that name in
+      <code>MENTISDB_DASHBOARD_ALLOWED_HOSTS</code> before starting it.
+      <code>my.mentisdb.com</code> is now accepted only on the HTTPS listeners, because it is
+      a public DNS name. We also fixed a bug
       where real browsers could not log in to a PIN-protected dashboard: the dashboard's
       own referrer policy made the browser send <code>Origin: null</code>, which the CSRF
       guard rejected.
@@ -188,17 +191,37 @@ mentisdb search "launch plan" --chain vault \
 
     <h3>7. Security and reliability fixes from the release review</h3>
     <p>
-      <strong>PLACEHOLDER &mdash; fill in before tagging:</strong> fixes from the
-      pre-release review, with the behaviour changes they bring.
+      Before tagging, independent security and correctness reviews went over the whole
+      release. Everything they found is fixed. These are the fixes you are most likely to
+      notice:
+    </p>
+    <ul>
+      <li><strong>Who may replace a memory.</strong> On a chain that requires signatures, only the original agent or an authorized key can supersede a thought; anyone else's link only marks it <code>contested</code>. On open chains, a replacement by another agent is flagged (<code>cross_agent</code>) so the agent reading it can check it. Cross-chain lineage follows the same rules, can no longer deadlock federated search, and lineage depth is capped at 64.</li>
+      <li><strong>Standing context cannot be forged.</strong> Each entry is one escaped line with a <code>trust=</code> marker, so a stored thought can no longer inject fake <code>SYSTEM:</code> lines. On signed chains, an unverified writer's importance is capped at 0.5.</li>
+      <li><strong>Private chains leak less.</strong> The read-proof replay cache is bounded (25,000 nonces per key, 100,000 in total) and cannot be flooded. Listings no longer show counts or paths for a private chain that isn't open. Without a PIN, destructive dashboard routes are refused while private chains exist. Probing for private thoughts gets the same error as probing for missing ones.</li>
+      <li><strong>Tighter network edges.</strong> The PIN limiter counts per IPv6 <code>/64</code> and has a global budget with backoff. The daemon warns loudly when it is reachable without authentication. The event stream needs a global token. Files are created owner-only. The CLI never follows redirects with credentials attached.</li>
+      <li><strong>Keys and certificates.</strong> <code>mentisdb key generate</code> writes the seed to an owner-only file instead of printing it, and uses the operating system's random number generator. TLS certificates are checked at startup, and expired MentisDB certificates are regenerated.</li>
+      <li><strong>Limits.</strong> A search window (<code>offset + limit</code>) above 10,000 and a standing-context <code>per_type_limit</code> above 100 now get <code>400</code> instead of a very slow answer.</li>
+      <li><strong>Migrations.</strong> Restarting the daemon during a migration no longer pushes the chain toward quarantine. <code>migrate retry</code> is atomic. Error messages show the command that actually works (<code>mentisdb migrate retry --chain &lt;key&gt;</code>). A huge retention value can no longer purge every backup.</li>
+      <li><strong>No stalls on big chains.</strong> At 100,000 thoughts, write-lock hold per append fell from 24 ms to 0.03 ms (median), because sidecar compaction and the implicit-edge scan moved off the write lock. One slow embedding no longer re-embeds the whole corpus. Removing near-duplicates from 1,000 hits takes 5 ms instead of 322 ms. A failed index flush no longer fails an append that was already saved.</li>
+    </ul>
+    <p>
+      One known limitation: requests signed with <code>X-Mentis-Auth</code> are capped at
+      1 MiB, so import a very large <code>MEMORY.md</code> with a read key in batches. The
+      <a href="mentisdb-0.11.0.56-release-notes.md#security-and-reliability-fixes-from-the-release-review">release notes</a>
+      have the full list and the trade-offs.
     </p>
 
     <h3>Upgrade notes</h3>
     <ul>
       <li>The first start may migrate chains in the background; requests for those chains get <code>503</code> until they are done. Originals are kept for 14 days.</li>
-      <li>Exposing the dashboard or MCP on a public IP or domain? Set <code>MENTISDB_DASHBOARD_ALLOWED_HOSTS</code>.</li>
+      <li>Exposing the daemon on a public IP or domain, or behind a reverse proxy? Set <code>MENTISDB_DASHBOARD_ALLOWED_HOSTS</code>. Use <code>my.mentisdb.com</code> over HTTPS only.</li>
+      <li>New limits: <code>offset + limit</code> up to 10,000, <code>per_type_limit</code> up to 100; above that you get <code>400</code>.</li>
+      <li>The event stream needs a global token; <code>key generate</code> needs <code>--out</code> in scripts; a dashboard holding private chains needs a PIN for admin routes.</li>
       <li>Key registration, key revocation, agent disabling and access policies are operator-only (dashboard or CLI).</li>
       <li>Search results change: superseded hits become their successors, duplicates collapse. Each change has a per-request and a process-wide opt-out.</li>
       <li>The <code>GET /</code> event stream no longer carries tool arguments or results.</li>
+      <li>Existing data directories keep their mode: run <code>chmod 700</code> on yours, and back up <code>operator/operator.key</code> separately.</li>
       <li><code>llm_rerank</code> and <code>ppr</code> are deprecated no-ops; the minimum Rust version is 1.90.</li>
     </ul>
     <pre><code>cargo install mentisdb --locked --force

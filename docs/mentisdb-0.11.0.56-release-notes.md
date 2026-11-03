@@ -36,14 +36,17 @@ earlier. Upgrade if any of the following describes your deployment:
   recognize with `mentisdb agent key revoke`.
 - **Your dashboard is reachable from other machines.** The PIN could be guessed without
   limit through the `Authorization: Bearer` path (only the login form was rate limited).
-  Both now share one per-IP limiter (5 failures per 5 minutes). If your dashboard was
+  Both now share one limiter: 5 failures per 5 minutes per client (an IPv6 `/64` counts
+  as one client), plus a global budget with backoff. If your dashboard was
   exposed, change `MENTISDB_DASHBOARD_PIN`. Dashboard responses now also carry a
   Content-Security-Policy, `X-Frame-Options: DENY` and `nosniff`, which closes
   clickjacking of the state-changing UI.
-- **Other local users share the host.** The bearer-token registry
-  (`<MENTISDB_DIR>/bearer-tokens.json`, which holds token aliases, scopes and hashes)
-  was written world-readable. New writes create it `0600`; run
-  `chmod 600 <MENTISDB_DIR>/bearer-tokens.json` to fix an existing file now.
+- **Other local users share the host.** The data directory, chain files and registries,
+  including the bearer-token registry (`bearer-tokens.json`: token aliases, scopes and
+  hashes) and the webhook registry (signing secrets), were created readable by other
+  users under a default umask. New files are created `0600` and new directories `0700`,
+  but existing ones keep their mode. Run `chmod 700 <MENTISDB_DIR>` and `chmod 600` on
+  the files there now.
 - **You restore or import chain files you did not write.** A forged length prefix inside
   a chain record or a persisted HNSW graph made the daemon attempt a huge allocation and
   abort, so one crafted file could take the daemon down. Every decode of on-disk bytes now
@@ -56,11 +59,10 @@ itself (unauthenticated event stream, prefix-matched `Origin`, empty bearer toke
 in event fields). MentisDB had already worked around each of them, with regression tests
 that now exercise the library.
 
-## Security and reliability fixes from the release review
-
-> **PLACEHOLDER — fill in before tagging.** Fixes from the pre-release review land on
-> master after this draft; this section lists each one with its user-visible behaviour
-> change once the final list is in.
+The pre-release review found and fixed more issues, among them forged standing-context
+entries, replacements by unauthorized writers on governed chains, a flood of the read-proof
+replay cache, and private-chain counts in listings. See
+[Security and reliability fixes from the release review](#security-and-reliability-fixes-from-the-release-review).
 
 ## Highlights
 
@@ -116,6 +118,10 @@ chain opens; no migration):
   constraint or decision for its successor, and the MEMORY.md export drops superseded
   thoughts and marks contested ones `contested by #N`.
 - An expired supersession (past its `invalid_at`) no longer hides its target.
+- On a chain with a signing policy, only the target's own agent or an authorized key can
+  replace a thought. Anyone else's link only contests it. On open chains, a replacement by
+  another agent is flagged with `cross_agent`. See
+  [Who may replace a memory](#who-may-replace-a-memory).
 
 `RankedSearchQuery::with_resolve_successors(false)` (or `resolve_successors: false` per
 request) restores plain hiding. The skill served to agents now says that a policy change
@@ -301,20 +307,25 @@ auditing provenance, debugging scores; `mentisdb_get_thought` returns the full r
 ## One host policy for dashboard, REST and MCP
 
 MentisDB now derives one `Host` allowlist and applies it to the dashboard, REST, MCP and the
-`cloudllm_mcp` 0.4 library: `localhost`, `127.0.0.1`, `[::1]`, `my.mentisdb.com`,
-`MENTISDB_BIND_HOST`, `MENTISDB_DASHBOARD_ALLOWED_HOSTS` and, for a wildcard
-`MENTISDB_BIND_HOST`, the machine's interface IPs.
+`cloudllm_mcp` 0.4 library. The allowlist contains:
 
-- On a loopback bind (the default), MCP refuses any other `Host` with `403` on `POST /`, the
-  `GET /` event stream and the legacy `/tools/*` and `/resources/*` routes, for every client.
-- On a wildcard bind (Docker, LAN), MCP does no `Host` check for programmatic clients;
-  browsers are still checked.
-- REST, and MCP with bearer tokens off, refuse a browser request (one carrying `Origin` or
-  `Sec-Fetch-Site`) unless its `Host` and `Origin` host are allowed.
+- `localhost`, `127.0.0.1` and `[::1]`;
+- `MENTISDB_BIND_HOST` and `MENTISDB_DASHBOARD_ALLOWED_HOSTS`;
+- for a wildcard `MENTISDB_BIND_HOST`, the machine's interface IPs;
+- on the TLS listeners only, `my.mentisdb.com`.
 
-The `GET /` event stream is now the library's: same `Host`, bearer and `Origin` checks as
-`POST /`, metadata-only events per JSON-RPC method next to MentisDB's `tool_called` events,
-and never tool arguments, results or error text.
+How each bind applies it:
+
+- **Loopback bind (the default):** MCP and REST refuse any other `Host` with `403` for every
+  client. On MCP that covers `POST /`, the `GET /` event stream and the legacy `/tools/*` and
+  `/resources/*` routes.
+- **Wildcard bind (Docker, LAN):** there is no `Host` check for programmatic clients.
+- **Browser requests** (ones carrying `Origin` or `Sec-Fetch-Site`) are refused on any bind
+  unless their `Host` and `Origin` host are allowed.
+
+The `GET /` event stream is now the library's: `Host` and `Origin` checks as on `POST /`, a
+global bearer token when tokens are on, metadata-only events per JSON-RPC method next to
+MentisDB's `tool_called` events, and never tool arguments, results or error text.
 
 The dashboard PIN login, and every other dashboard POST from a real browser, was rejected as
 cross-origin because the dashboard's own `no-referrer` policy made browsers send
@@ -346,6 +357,188 @@ same-origin`; cross-site pages are still refused.
 - The [whitepaper](https://github.com/CloudLLM-ai/mentisdb/blob/master/WHITEPAPER.md) was
   rewritten around agent-memory requirements and checked against the code.
 
+## Security and reliability fixes from the release review
+
+Before tagging, the release went through an independent security review and a
+correctness and performance review. Everything they found is fixed in 0.11.0.56. Several
+of these fixes change behaviour; those changes are repeated under [Upgrading](#upgrading).
+
+### Who may replace a memory
+
+Valid-version retrieval lets a newer thought take an older one's place in search and
+standing context. The review tightened who may do that:
+
+- **Governed chains.** On a chain with a signing policy, a `Supersedes`, `Corrects` or
+  `Invalidates` link replaces its target only if the replacing thought was verified when
+  the chain opened and was written by the same agent or by a key authorized on the chain.
+  Any other link only *contests* the target: it stays current with
+  `version_status: "contested"`, and the link is listed under `successors` with
+  `authorized: false`. Single-chain replacements are judged against the chain's current
+  policy.
+- **Open chains.** Corrections from another agent still redirect, because that is the
+  point of the feature, but now you can see them. A successor note carries `agent_id`,
+  `trust`, `cross_agent` and `authorized`. Standing context prints
+  `[REPLACES #n ... replaced by another agent, check it]`, and the skill tells agents to
+  check those entries.
+- **Cross-chain and branch lineage** use the same successor notes and the same
+  authorization as single-chain lineage, plus the `chain_key` the successor lives on
+  (`SuccessorNote.chain_key`).
+- **Federated and branch search no longer deadlock.** Resolving cross-chain lineage held
+  a read lock on every searched chain at once. Two searches over the same chains in
+  opposite order, with writers queued behind them, could block those chains until a
+  restart. Lineage now reads one chain at a time.
+- **Depth cap.** A write that would make a chain of more than 64 versions of one thought
+  is refused, and reads follow supersessions only that far.
+
+### Standing context and prompts
+
+Stored text could forge the standing-context block an agent loads at session start. For
+example, a thought containing line breaks could close the block early and add a fake
+`SYSTEM:` line or a fake top-ranked constraint.
+
+- Every entry is now rendered as a single line. Line breaks, control characters and
+  invisible characters (bidi overrides, zero-width and tag characters) are shown as
+  visible marks, and `===` and `[#` are broken up. The same escaping covers the catch-up
+  and bootstrap prompts and the `MEMORY.md` export.
+- Each entry shows `trust=verified|unsigned|unverified`, and the block opens by saying
+  its entries are data, not instructions.
+- On a chain that requires signatures, an entry from an unverified writer ranks with
+  importance capped at 0.5. On an open chain, importance is used as written.
+
+### Private chains
+
+- **Read-proof replay cache.** The cache of spent `X-Mentis-Auth` nonces could be flooded
+  with self-signed proofs from throwaway keys, locking honest readers out. A nonce is now
+  spent only when a proof is about to grant access to a private segment. The cache is
+  capped at 25,000 entries per key and 100,000 in total. A proof refused because the
+  cache is full now reads the public view instead of getting `503`. Malformed, stale,
+  badly signed and already-spent proofs still get `401`.
+- **Chain listings.** `GET /v1/chains` and the MCP list tool showed full thought and agent
+  counts and the storage path for a private chain that could not be opened. They now
+  show only the public count, no agents and an empty path. A chain the registry has never
+  seen is treated as private until it is first opened.
+- **Dashboard routes without a PIN.** On a daemon that holds any private chain and has no
+  dashboard PIN, deleting a chain, writing settings, creating, revoking or deleting
+  bearer tokens, and restarting the daemon now answer `403`.
+- **Probing private targets.** A writer who may not read private segments got a different
+  error when linking to a private thought than when linking to a missing one, which
+  revealed which thoughts were private. Both now fail with the same generic refusal.
+
+### Dashboard, network and keys
+
+- **PIN limiter.** Failed attempts are now counted per IPv6 `/64` (or per IPv4 address),
+  the table is capped at 4,096 clients, and a global budget applies: more than 50
+  failures from all clients together in 5 minutes lock every PIN attempt for 60 seconds,
+  doubling on each repeat up to one hour. The lock is forgiven after two quiet hours, and
+  `429` responses carry `Retry-After`. A signed-in session is unaffected. Behind NAT or a
+  reverse proxy, all clients share one bucket. Use a long random PIN (12 or more
+  characters) for any dashboard reachable beyond localhost.
+- **Dashboard login.** Real browsers could not log in to a PIN-protected dashboard (fixed
+  in b55185d). The dashboard's own `Referrer-Policy: no-referrer` made browsers send
+  `Origin: null`, which the CSRF guard rejected. The policy is now `same-origin`, and the
+  guard accepts `Sec-Fetch-Site: same-origin`.
+- **REST `Host` checks.** On a loopback bind, REST now checks the `Host` header on every
+  request, not only on browser requests, as MCP already does. Requests with no `Host` and
+  wildcard or LAN binds are unchanged. A reverse proxy in front of a loopback daemon must
+  forward an allowed name, as described under [Upgrading](#upgrading).
+- **`my.mentisdb.com` on TLS only.** It is a public DNS name, so it is now accepted as
+  `Host` and `Origin` only on the TLS listeners (HTTPS MCP 9473, HTTPS REST 9474, dashboard
+  9475). The plain HTTP ports refuse it unless you list it in
+  `MENTISDB_DASHBOARD_ALLOWED_HOSTS`.
+- **Event stream.** `GET /` reports every tool call on every chain, so it now needs a
+  global token. MCP methods the authorization table does not name also need a global
+  token. Event fields are validated.
+- **Exposure warning.** A listener reachable from other machines without bearer tokens,
+  or a dashboard on a non-loopback address without a PIN, now produces a `SECURITY:`
+  warning in the log, on stderr (so it shows in `docker logs`), in the TUI and as a red
+  dashboard banner.
+- **`mentisdb key generate`** no longer prints the private seed, where it could end up in
+  scrollback, shell logs or an agent's context. It always writes the seed to an
+  owner-only file and prints only the public key and the path:
+  ```bash
+  mentisdb key generate --out builder.key   # or $MENTISDB_KEY_DIR, default ~/.mentisdb/keys/
+  ```
+  Seeds now come from the operating system's random number generator. Loading a seed
+  file that other users can read still works but prints a `chmod 600` warning.
+- **File permissions.** Directories MentisDB creates are `0700`. Chain files, registries
+  (including the webhook registry, which holds signing secrets), sidecars, journals and
+  backup archives are `0600`. Existing files keep their mode, and the daemon warns about
+  a data directory that others can read. Backups still leave out
+  `operator/operator.key`, and `backup` and `restore` now remind you to back it up
+  separately.
+- **The CLI and stdio proxy no longer follow redirects,** which would have re-sent read
+  proofs and bearer tokens to the redirect target. A `3xx` is now an error that asks you
+  to point `--url` at the final address.
+- **TLS certificates are checked at startup.** An expired certificate that MentisDB
+  generated is regenerated with the same names and a new key, with a warning that
+  clients must trust the new one. A certificate that expires within 30 days produces a
+  warning naming `mentisdb cert --force`. An expired certificate you supplied yourself
+  is only warned about.
+- **CI** workflows are read-only except a tag-only release job, and third-party actions
+  are pinned to commit hashes.
+
+### Limits on caller-sized requests
+
+Very large windows could make a single search take minutes. Requests above these limits
+now get `400` with a message naming the maximum, on REST, MCP and the CLI:
+
+| Request | Limit |
+|---|---|
+| `offset + limit` on ranked, lexical and federated search and context bundles | 10,000 |
+| `per_type_limit` on standing context | 100 |
+
+The window is refused, not clamped, because a clamped page would be the wrong page. To
+read deeper, narrow the query with filters or `since`/`until`.
+
+### Migrations
+
+- **A clean shutdown no longer counts toward quarantine.** Before, three ordinary
+  restarts (`SIGTERM`, `systemctl restart`, quitting the TUI) during a long migration
+  quarantined the chain. A clean shutdown now hands its attempt back, and the daemon
+  waits up to 15 seconds for the migration to stop. Only a crash counts.
+- `migrate retry` through a running daemon changes the chain's status in one step, so no
+  request can read a chain that is about to be rewritten.
+- The recovery commands in error messages (the `503` body, `migrate status` and others)
+  now name the flag the CLI requires: `mentisdb migrate retry --chain <key>`.
+- A huge retention value (`--older-than-days`, `MENTISDB_MIGRATION_BACKUP_RETENTION_DAYS`)
+  used to overflow to zero and treat every backup as expired. It now saturates, so a very
+  long retention keeps everything.
+
+### Write path and storage
+
+- A failed index flush after a thought was already saved no longer turns the append into
+  a `500`. Clients that retried those errors wrote the thought twice.
+- One slow embedding no longer triggers re-embedding the whole corpus. Later vectors wait
+  behind it (up to 512), and only the failed thought is embedded again. At 20,000
+  thoughts, a 600-append straggler used to re-embed 20,667 thoughts with a 5.1 s stall;
+  now it embeds 601, and the worst stall is 0.29 s.
+- Vector sidecar compaction runs on a background thread instead of under the write lock,
+  and loading a sidecar while a compaction swaps its files no longer loses the WAL.
+  Malformed WAL rows are rejected instead of loaded.
+- Above 4,096 entries, the implicit-edge neighbour scan runs off the write lock. At
+  100,000 thoughts × 384 dimensions, write-lock hold per append (p50 / p99 / max) went
+  from 24.1 / 26.3 / 38.6 ms to 0.03 / 0.72 / 16.3 ms, and the worst stall when adopting a
+  rebuilt index went from 1,464 ms to 0.7 ms. The trade-offs:
+  - About 150 MB of duplicate vectors in memory at 100,000 × 384.
+  - Implicit edges can trail the chain by a few appends
+    (`MentisDb::implicit_edge_backlog`).
+  - The scan queue has no cap.
+
+### Search
+
+- Near-duplicate collapse is faster with identical results. A 1,000-hit window went from
+  322 ms to 5 ms.
+- A ranked search's `total` no longer counts superseded thoughts, unless
+  `include_invalidated` is set.
+- Standing context compares only each type's best candidates, so it stays fast on large
+  chains.
+
+### Known limitation
+
+Signed requests (`X-Mentis-Auth`) and REST requests with a bearer token are buffered up
+to 1 MiB, so a larger body gets `413`. In practice this hits a large `mentisdb memory
+import` run with a read key. Import in batches of under 1 MiB.
+
 ## Upgrading
 
 ```bash
@@ -360,10 +553,29 @@ Python clients: `pip install -U 'pymentisdb[signing]'` (0.10.0).
   `Retry-After`; watch `mentisdb migrate status` or the dashboard banner. Originals are kept
   under `<MENTISDB_DIR>/migrations/backup/` for 14 days. HNSW graph files are rebuilt once in
   the background. Current-format chains are not touched.
-- **Public IP or domain? Set `MENTISDB_DASHBOARD_ALLOWED_HOSTS`.** If you reach the daemon by a
-  name or address other than the built-in ones (for example a VPS behind a reverse proxy on a
-  loopback bind), list it there, in the environment or `.env`, before the daemon starts.
-  Otherwise MCP answers `403 Forbidden host` and browsers are refused by REST.
+- **Public IP, domain or reverse proxy? Set `MENTISDB_DASHBOARD_ALLOWED_HOSTS`.** If you
+  reach the daemon by a name or address other than the built-in ones (for example a VPS
+  behind nginx or Caddy on a loopback bind), list the name the proxy forwards as `Host`,
+  in the environment or `.env`, before the daemon starts. Alternatively, have the proxy
+  send `Host: 127.0.0.1:9472` upstream. Otherwise MCP and REST answer `403`.
+- **`my.mentisdb.com` over plain HTTP.** Switch `http://my.mentisdb.com:9471` / `:9472`
+  clients to `https://my.mentisdb.com:9473` / `:9474`, or to `http://localhost:9471` /
+  `:9472`, or list the alias in `MENTISDB_DASHBOARD_ALLOWED_HOSTS` to keep the old
+  behaviour.
+- **New request limits.** `offset + limit` above 10,000 on ranked, lexical and federated
+  search and context bundles, and a standing-context `per_type_limit` above 100, now get
+  `400` on REST, MCP and the CLI instead of a very slow answer.
+- **Private chains and a dashboard without a PIN.** If the daemon holds private chains,
+  set `MENTISDB_DASHBOARD_PIN` to delete chains, change settings, manage bearer tokens or
+  restart from the dashboard. Without a PIN those routes answer `403`.
+- **`mentisdb key generate`** no longer prints the seed. Scripts that parsed
+  `private_key_seed_hex:` must pass `--out FILE` and read the seed from that file.
+- **File permissions.** Existing data directories keep their mode. Run
+  `chmod 700 <MENTISDB_DIR>`, and back up `operator/operator.key` separately, because
+  backups leave it out.
+- **Large signed requests.** Requests signed with `X-Mentis-Auth`, and REST requests with a
+  bearer token, are limited to 1 MiB (`413` above that). Import big `MEMORY.md` files in
+  batches.
 - **One daemon per data directory.** A second daemon (or a second container on the same
   volume) on a directory in use now refuses to start.
 - **Key and agent administration moved to the operator.** Clients that registered keys,
@@ -373,14 +585,15 @@ Python clients: `pip install -U 'pymentisdb[signing]'` (0.10.0).
   `KeyRegistrationProof`.
 - **Signed appends are verified.** A thought that carries a signature that does not verify
   against an active key of its agent is refused with `403`.
-- **Search results change.** Superseded hits are replaced by their successors, near-duplicates
-  collapse, and vector fusion is relative; result lists and `total_candidates` differ from
-  0.10. Opt out per request (`resolve_successors: false`, `collapse_duplicates: 0`,
+- **Search results change.** Superseded hits are replaced by their successors (on governed
+  chains only when the replacement is authorized), near-duplicates collapse, and vector
+  fusion is relative. Result lists, `total` and `total_candidates` differ from 0.10. Opt out per request (`resolve_successors: false`, `collapse_duplicates: 0`,
   `vector_fusion: "absolute"`, `synonym_weight: 0`) or process-wide
   (`MENTISDB_VECTOR_FUSION=absolute`, `MENTISDB_COLLAPSE_DUPLICATES=off`). Library users get
   the same defaults from `RankedSearchQuery::new()`.
-- **Event stream.** `GET /` no longer carries tool arguments, results or error text, and needs
-  a bearer token when bearer enforcement is on.
+- **Event stream.** `GET /` no longer carries tool arguments, results or error text, and with
+  bearer enforcement on it needs a global token. A monitor that subscribes with a
+  chain-scoped token must switch to a global one.
 - **Deprecated APIs.** `llm_rerank` and friends and `search::ppr` are no-ops and will be
   removed in the next breaking release.
 - **Restores into governed chains.** A backup that extends a signed or allowlist chain is
