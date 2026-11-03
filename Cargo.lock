@@ -2777,6 +2777,7 @@ dependencies = [
  "fastembed",
  "getrandom 0.4.3",
  "hnsw",
+ "http-body",
  "if-addrs",
  "libc",
  "log",

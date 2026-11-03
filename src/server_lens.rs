@@ -33,7 +33,8 @@
 use crate::audience::Audience;
 use crate::auth::BearerTokenScope;
 use crate::read_auth::{
-    verify_request, NonceCache, ReadAuthError, MAX_READ_AUTH_HEADER_LEN, READ_AUTH_HEADER,
+    parse_content_digest, verify_request_for_digest, NonceCache, ReadAuthError,
+    CONTENT_DIGEST_HEADER, LEGACY_SIGNED_BODY_BYTES, MAX_READ_AUTH_HEADER_LEN, READ_AUTH_HEADER,
 };
 use crate::MentisDb;
 use axum::body::Body;
@@ -45,9 +46,102 @@ use axum::Json;
 use serde_json::json;
 use std::sync::{Arc, OnceLock};
 
-/// Largest body the middleware buffers to hash a signed request (matches the
-/// bearer-token middleware limit).
-pub(crate) const MAX_SIGNED_BODY_BYTES: usize = 1024 * 1024;
+/// Why a streamed request body was refused after the proof had verified.
+#[derive(Debug)]
+pub(crate) enum BodyDigestError {
+    /// The body's SHA-256 is not the digest the proof signed.
+    Mismatch,
+}
+
+impl std::fmt::Display for BodyDigestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mismatch => f.write_str(
+                "request body does not match the digest its read proof signed (X-Mentis-Content-Sha256)",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BodyDigestError {}
+
+/// A request body that is checked against a SHA-256 digest as it streams.
+///
+/// Every frame is hashed as it passes through, unchanged and without copying.
+/// When the inner body ends, the digest of everything seen is compared with
+/// the one the verified proof signed; on a mismatch the *end of the body* is
+/// replaced by an error. The consumer therefore sees the complete (wrong) body
+/// followed by a failure, never a clean end: a handler that collects the body
+/// (every MentisDB handler does, through `Json`, `Bytes` or `to_bytes`) gets an
+/// error and does not run, and one that streams must not act on the data until
+/// it has seen the end. Once failed, it keeps failing.
+pub(crate) struct DigestCheckedBody {
+    inner: Body,
+    hasher: Option<sha2::Sha256>,
+    expected: [u8; 32],
+    failed: bool,
+}
+
+impl DigestCheckedBody {
+    /// Wrap `inner`, to be checked against `expected` at its end.
+    pub(crate) fn new(inner: Body, expected: [u8; 32]) -> Self {
+        use sha2::Digest;
+        Self {
+            inner,
+            hasher: Some(sha2::Sha256::new()),
+            expected,
+            failed: false,
+        }
+    }
+}
+
+impl http_body::Body for DigestCheckedBody {
+    type Data = axum::body::Bytes;
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        use sha2::Digest;
+        use std::task::Poll;
+        let this = &mut *self;
+        if this.failed {
+            return Poll::Ready(Some(Err(Box::new(BodyDigestError::Mismatch))));
+        }
+        match std::pin::Pin::new(&mut this.inner).poll_frame(cx) {
+            Poll::Ready(Some(Ok(frame))) => {
+                if let (Some(data), Some(hasher)) = (frame.data_ref(), this.hasher.as_mut()) {
+                    hasher.update(data);
+                }
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(Box::new(error)))),
+            Poll::Ready(None) => {
+                let matches = this
+                    .hasher
+                    .take()
+                    .is_none_or(|hasher| <[u8; 32]>::from(hasher.finalize()) == this.expected);
+                if matches {
+                    Poll::Ready(None)
+                } else {
+                    this.failed = true;
+                    Poll::Ready(Some(Err(Box::new(BodyDigestError::Mismatch))))
+                }
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        // Never claim the end early: the check happens when the stream ends.
+        false
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        http_body::Body::size_hint(&self.inner)
+    }
+}
 
 /// A key whose possession the request proved.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,6 +321,28 @@ fn reject(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
+/// The digest the client declared in [`CONTENT_DIGEST_HEADER`], if any.
+///
+/// # Errors
+///
+/// [`ReadAuthError::Malformed`] when the header is repeated or is not exactly
+/// 64 lowercase hex characters.
+fn declared_digest(headers: &axum::http::HeaderMap) -> Result<Option<[u8; 32]>, ReadAuthError> {
+    let mut values = headers.get_all(CONTENT_DIGEST_HEADER).iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(ReadAuthError::Malformed(
+            "content digest given more than once",
+        ));
+    }
+    let text = value
+        .to_str()
+        .map_err(|_| ReadAuthError::Malformed("content digest is not ASCII"))?;
+    parse_content_digest(text).map(Some)
+}
+
 /// Verify the optional read proof and run the request with the resulting
 /// authority.
 ///
@@ -241,7 +357,11 @@ fn reject(status: StatusCode, message: &str) -> Response {
 /// grants access to a private segment (see the module docs); losing a race
 /// against a concurrent use of the same proof, or a full cache, then yields the
 /// public view.
-pub(crate) async fn read_auth_middleware(request: Request, next: Next) -> Response {
+pub(crate) async fn read_auth_middleware(
+    axum::extract::State(service): axum::extract::State<Arc<crate::server::MentisDbService>>,
+    request: Request,
+    next: Next,
+) -> Response {
     let Some(value) = request.headers().get(READ_AUTH_HEADER) else {
         return with_read_authority(ReadAuthority::default(), next.run(request)).await;
     };
@@ -268,13 +388,40 @@ pub(crate) async fn read_auth_middleware(request: Request, next: Next) -> Respon
         return fail(StatusCode::UNAUTHORIZED, "malformed read proof");
     }
     let (parts, body) = request.into_parts();
-    let body = match axum::body::to_bytes(body, MAX_SIGNED_BODY_BYTES).await {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return reject(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "request body too large to authenticate",
-            )
+    let declared = match declared_digest(&parts.headers) {
+        Ok(declared) => declared,
+        Err(error) => return fail(StatusCode::BAD_REQUEST, &error.to_string()),
+    };
+    let cap = service.max_body_bytes();
+    let content_length = parts
+        .headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok());
+    if content_length.is_some_and(|length| length > cap) {
+        return reject(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request body exceeds the maximum accepted size (MENTISDB_MAX_BODY_BYTES)",
+        );
+    }
+    // Without a declared digest the whole body must be read to check the proof,
+    // which is only done for small ones. With one, the proof is checked first
+    // and the body is verified as it streams (see `DigestCheckedBody`).
+    let (body, digest) = match declared {
+        Some(digest) => (Body::new(DigestCheckedBody::new(body, digest)), digest),
+        None => {
+            let bytes = match axum::body::to_bytes(body, LEGACY_SIGNED_BODY_BYTES).await {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    return reject(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "request body too large to authenticate without a content digest; send \
+                         X-Mentis-Content-Sha256 (the SHA-256 the proof signs) to send a larger body",
+                    )
+                }
+            };
+            let digest = crate::read_auth::body_digest(&bytes);
+            (Body::from(bytes), digest)
         }
     };
     let method = parts.method.as_str().to_owned();
@@ -284,7 +431,7 @@ pub(crate) async fn read_auth_middleware(request: Request, next: Next) -> Respon
         .map(|pq| pq.as_str().to_owned())
         .unwrap_or_else(|| parts.uri.path().to_owned());
     let now = chrono::Utc::now().timestamp();
-    let proof = match verify_request(&header, &method, &target, &body, now) {
+    let proof = match verify_request_for_digest(&header, &method, &target, &digest, now) {
         Ok(proof) => proof,
         Err(error) => return fail(StatusCode::UNAUTHORIZED, &error.to_string()),
     };
@@ -311,7 +458,7 @@ pub(crate) async fn read_auth_middleware(request: Request, next: Next) -> Respon
         }),
         operator: false,
     };
-    let request = Request::from_parts(parts, Body::from(body));
+    let request = Request::from_parts(parts, body);
     PROOF_CLAIM
         .scope(
             Some(claim),
