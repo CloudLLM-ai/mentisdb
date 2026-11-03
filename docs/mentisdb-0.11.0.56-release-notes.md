@@ -53,6 +53,12 @@ itself (unauthenticated event stream, prefix-matched `Origin`, empty bearer toke
 in event fields). MentisDB had already worked around each of them, with regression tests
 that now exercise the library.
 
+## Security and reliability fixes from the release review
+
+> **PLACEHOLDER — fill in before tagging.** Fixes from the pre-release review land on
+> master after this draft; this section lists each one with its user-visible behaviour
+> change once the final list is in.
+
 ## Highlights
 
 - **Agents get the current version of a memory.** When a policy or decision is corrected,
