@@ -2728,9 +2728,14 @@ You can also configure it manually in `~/.copilot/mcp-config.json` (or
 ### Install
 
 ```bash
-pip install pymentisdb
-pip install pymentisdb[langchain]  # with LangChain integration
+pip install pymentisdb                 # 0.10.0 or later; needs only requests
+pip install 'pymentisdb[signing]'      # ReadSigner, for reading private chains
+pip install 'pymentisdb[langchain]'    # MentisDbMemory (LangChain BaseMemory)
 ```
+
+`import pymentisdb` works without LangChain; `MentisDbMemory` needs the
+`langchain` extra and says so when it is missing. Use 0.10.0 or later: the 0.9.0
+wheel on PyPI contained no code.
 
 ### Reading private chains
 
@@ -2771,10 +2776,12 @@ bundles = client.context_bundles(text="cache invalidation", limit=5)
 from pymentisdb import MentisDbMemory
 
 memory = MentisDbMemory(chain_key="my-project", agent_id="assistant")
-
-llm = ChatOpenAI(model="gpt-4")
-chain = llm.with_memory(memory)  # LangChain 0.3+
+memory.save_context({"input": "Use tabs, not spaces."}, {"output": "Noted."})
+print(memory.load_memory_variables({})["chat_history"])
 ```
+
+`MentisDbMemory` is a LangChain `BaseMemory`: it works with langchain-core before 1.0
+and, from 1.0 on, with `langchain-classic` (installed by the `langchain` extra).
 
 See the [full pymentisdb guide](docs/pymentisdb-python-client.html) for complete API reference.
 
