@@ -1,6 +1,6 @@
 [package]
 name = "mentisdb"
-version = "0.10.10"
+version = "0.11.0"
 authors = ["Angel Leon <gubatron@gmail.com>"]
 edition = "2021"
 rust-version = "1.90"

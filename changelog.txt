@@ -1,4 +1,4 @@
-UNRELEASED
+0.11.0.56 NOV/02/2026
   - security(host): REST on a loopback bind now checks `Host` for every request, not only
     browser-flagged ones, matching what `cloudllm_mcp` 0.4 does for MCP. A `curl`, CLI or
     agent request that names a foreign `Host` (and, on the plain HTTP listener, the
