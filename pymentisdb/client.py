@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional
 from urllib.parse import urlsplit
 
-from .read_auth import READ_AUTH_HEADER, ReadSigner
+from .read_auth import CONTENT_DIGEST_HEADER, READ_AUTH_HEADER, ReadSigner
 from .types import (
     ThoughtInput,
     Thought,
@@ -82,7 +82,12 @@ class MentisDbClient:
             return {}
         parts = urlsplit(url)
         target = parts.path + (f"?{parts.query}" if parts.query else "")
-        return {READ_AUTH_HEADER: self._read_signer.header(method, target, body)}
+        return {
+            READ_AUTH_HEADER: self._read_signer.header(method, target, body),
+            # Declares the digest the proof signs, so a current server accepts a
+            # body over 1 MiB without buffering it; an older one ignores it.
+            CONTENT_DIGEST_HEADER: self._read_signer.content_digest(body),
+        }
 
     def _post(self, endpoint: str, data: Optional[dict] = None) -> dict:
         """Make a POST request to the REST API."""

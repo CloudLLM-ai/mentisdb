@@ -22,6 +22,11 @@ import time
 from typing import Optional
 
 READ_AUTH_HEADER = "X-Mentis-Auth"
+# Optional companion header: the SHA-256 (64 lowercase hex characters) of the body
+# the proof signs. It lets the server verify the proof before it reads the body, so
+# a body over 1 MiB is accepted; a server that does not know it ignores it. The
+# signature itself is unchanged.
+CONTENT_DIGEST_HEADER = "X-Mentis-Content-Sha256"
 READ_AUTH_DOMAIN = b"mentisdb/read-auth/v1\x00"
 ENV_READ_KEY_FILE = "MENTISDB_READ_KEY_FILE"
 ENV_READ_AGENT_ID = "MENTISDB_READ_AGENT_ID"
@@ -121,6 +126,11 @@ class ReadSigner:
                 f"{ENV_READ_KEY_FILE} also needs {ENV_READ_AGENT_ID} and {ENV_READ_KEY_ID}"
             )
         return cls.from_file(path, agent, key)
+
+    @staticmethod
+    def content_digest(body: bytes) -> str:
+        """The ``X-Mentis-Content-Sha256`` value for ``body``."""
+        return hashlib.sha256(body).hexdigest()
 
     def header(
         self,

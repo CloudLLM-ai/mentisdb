@@ -123,6 +123,26 @@ class ReadAuthTests(unittest.TestCase):
             bytes.fromhex(fields["sig"]), payload
         )
 
+    def test_client_declares_the_digest_of_the_body_it_signed(self):
+        import hashlib
+
+        client = client_module.MentisDbClient("http://127.0.0.1:9472/", read_signer=self.signer())
+        response = MagicMock()
+        response.json.return_value = {}
+        client._session = MagicMock()
+        client._session.post.return_value = response
+        client._post("/v1/import-markdown", {"chain_key": "vault", "markdown": "x" * 3_000_000})
+        _, kwargs = client._session.post.call_args
+        declared = kwargs["headers"][read_auth.CONTENT_DIGEST_HEADER]
+        self.assertEqual(declared, hashlib.sha256(kwargs["data"]).hexdigest())
+        self.assertRegex(declared, r"^[0-9a-f]{64}$")
+        # The pinned proof is unchanged by the extra header.
+        self.assertEqual(
+            self.signer().header("post", "/v1/ranked-search?x=1", BODY, timestamp=1767225600,
+                                 nonce="00112233445566778899aabbccddeeff"),
+            PINNED_VECTOR,
+        )
+
     def test_without_a_signer_no_header_is_sent(self):
         client = client_module.MentisDbClient()
         client._read_signer = None
@@ -131,7 +151,9 @@ class ReadAuthTests(unittest.TestCase):
         client._session = MagicMock()
         client._session.get.return_value = response
         client._get("/v1/chains")
-        self.assertNotIn(read_auth.READ_AUTH_HEADER, client._session.get.call_args.kwargs["headers"])
+        headers = client._session.get.call_args.kwargs["headers"]
+        self.assertNotIn(read_auth.READ_AUTH_HEADER, headers)
+        self.assertNotIn(read_auth.CONTENT_DIGEST_HEADER, headers)
 
 
 if __name__ == "__main__":
