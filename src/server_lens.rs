@@ -16,6 +16,19 @@
 //! The authority proves *who* is asking. Whether that key may read a chain is
 //! decided per chain by [`MentisDb::is_read_authorized`], against the chain's
 //! current policy and registry.
+//!
+//! # Replay protection happens after authorization
+//!
+//! A proof is verified against the public key *embedded in its own header*, so
+//! any fresh keypair produces a valid one. The one-time-use nonce is therefore
+//! recorded only when a proof is about to grant something: the first time
+//! [`audience_for`] finds the key authorized on a chain with a private segment,
+//! once per request. A proof from a key no chain knows, or a proof that is
+//! only used on chains without private segments, never touches the replay
+//! cache, so self-signed floods cannot fill it. A proof whose nonce is already
+//! spent is refused with `401` by a read-only lookup (which records nothing).
+//! One that loses a race for its nonce, or whose key has used up its share of a
+//! full cache, reads as [`Audience::Public`] instead of failing the request.
 
 use crate::audience::Audience;
 use crate::auth::BearerTokenScope;
@@ -30,7 +43,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 /// Largest body the middleware buffers to hash a signed request (matches the
 /// bearer-token middleware limit).
@@ -93,11 +106,46 @@ pub fn audience_for(chain: &MentisDb) -> Audience {
         return Audience::Authorized;
     }
     match &authority.key {
-        Some(key) if chain.is_read_authorized(&key.agent_id, &key.key_id, &key.public_key) => {
+        Some(key)
+            if chain.is_read_authorized(&key.agent_id, &key.key_id, &key.public_key)
+                && proof_is_fresh() =>
+        {
             Audience::Authorized
         }
         _ => Audience::Public,
     }
+}
+
+/// The one-time-use claim of the current request's read proof.
+struct ProofClaim {
+    cache: &'static NonceCache,
+    public_key: [u8; 32],
+    nonce: String,
+    now: i64,
+    /// Whether the nonce was accepted; decided once, on first use.
+    accepted: OnceLock<bool>,
+}
+
+tokio::task_local! {
+    static PROOF_CLAIM: Option<Arc<ProofClaim>>;
+}
+
+/// Spend the current request's nonce (once) and report whether it was fresh.
+///
+/// `true` outside the HTTP middleware, where there is no nonce to spend.
+fn proof_is_fresh() -> bool {
+    PROOF_CLAIM
+        .try_with(|claim| {
+            claim.as_ref().is_none_or(|claim| {
+                *claim.accepted.get_or_init(|| {
+                    claim
+                        .cache
+                        .check_and_insert(&claim.public_key, &claim.nonce, claim.now)
+                        .is_ok()
+                })
+            })
+        })
+        .unwrap_or(true)
 }
 
 tokio::task_local! {
@@ -164,9 +212,15 @@ fn record_invalid_proof(peer: std::net::IpAddr) {
     entry.0 += 1;
 }
 
+/// Live nonces remembered in total.
+const NONCE_CACHE_CAPACITY: usize = 100_000;
+/// Live nonces one key may hold (about 200 proofs per second sustained), so
+/// one authorized key cannot crowd the others out of the cache.
+const NONCE_CACHE_PER_KEY: usize = NONCE_CACHE_CAPACITY / 4;
+
 fn nonces() -> &'static NonceCache {
     static NONCES: OnceLock<NonceCache> = OnceLock::new();
-    NONCES.get_or_init(|| NonceCache::new(100_000))
+    NONCES.get_or_init(|| NonceCache::with_per_key_limit(NONCE_CACHE_CAPACITY, NONCE_CACHE_PER_KEY))
 }
 
 fn reject(status: StatusCode, message: &str) -> Response {
@@ -177,9 +231,16 @@ fn reject(status: StatusCode, message: &str) -> Response {
 /// authority.
 ///
 /// Requests without the header pass through untouched with an empty authority.
-/// A request that carries the header but fails verification is rejected with
-/// `401` rather than silently downgraded, so a client with a stale clock learns
-/// why it sees less than it expects. Error text never includes key material.
+/// A request that carries the header but fails verification (grammar, clock
+/// window, signature) is rejected with `401` rather than silently downgraded,
+/// so a client with a stale clock learns why it sees less than it expects.
+/// Error text never includes key material.
+///
+/// A proof whose nonce was already spent is also refused with `401`, by a
+/// read-only lookup. The nonce itself is *spent* later, when the proof first
+/// grants access to a private segment (see the module docs); losing a race
+/// against a concurrent use of the same proof, or a full cache, then yields the
+/// public view.
 pub(crate) async fn read_auth_middleware(request: Request, next: Next) -> Response {
     let Some(value) = request.headers().get(READ_AUTH_HEADER) else {
         return with_read_authority(ReadAuthority::default(), next.run(request)).await;
@@ -223,19 +284,25 @@ pub(crate) async fn read_auth_middleware(request: Request, next: Next) -> Respon
         .map(|pq| pq.as_str().to_owned())
         .unwrap_or_else(|| parts.uri.path().to_owned());
     let now = chrono::Utc::now().timestamp();
-    let verified = verify_request(&header, &method, &target, &body, now)
-        .and_then(|proof| {
-            nonces().check_and_insert(&proof.public_key, &proof.nonce, now)?;
-            Ok(proof)
-        })
-        .map_err(|error| match error {
-            ReadAuthError::CacheFull => (StatusCode::SERVICE_UNAVAILABLE, error.to_string()),
-            other => (StatusCode::UNAUTHORIZED, other.to_string()),
-        });
-    let proof = match verified {
+    let proof = match verify_request(&header, &method, &target, &body, now) {
         Ok(proof) => proof,
-        Err((status, message)) => return fail(status, &message),
+        Err(error) => return fail(StatusCode::UNAUTHORIZED, &error.to_string()),
     };
+    // Read-only: a proof already spent for a granted read is refused outright
+    // (so a client that reuses one learns why). Nothing is recorded here.
+    if nonces().is_replayed(&proof.public_key, &proof.nonce, now) {
+        return fail(
+            StatusCode::UNAUTHORIZED,
+            &ReadAuthError::Replayed.to_string(),
+        );
+    }
+    let claim = Arc::new(ProofClaim {
+        cache: nonces(),
+        public_key: proof.public_key,
+        nonce: proof.nonce.clone(),
+        now,
+        accepted: OnceLock::new(),
+    });
     let authority = ReadAuthority {
         key: Some(VerifiedReadKey {
             agent_id: proof.agent_id,
@@ -245,5 +312,67 @@ pub(crate) async fn read_auth_middleware(request: Request, next: Next) -> Respon
         operator: false,
     };
     let request = Request::from_parts(parts, Body::from(body));
-    with_read_authority(authority, next.run(request)).await
+    PROOF_CLAIM
+        .scope(
+            Some(claim),
+            with_read_authority(authority, next.run(request)),
+        )
+        .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn claim(cache: &'static NonceCache, key: u8, nonce: &str) -> Option<Arc<ProofClaim>> {
+        Some(Arc::new(ProofClaim {
+            cache,
+            public_key: [key; 32],
+            nonce: nonce.to_owned(),
+            now: 1_000,
+            accepted: OnceLock::new(),
+        }))
+    }
+
+    /// A full replay cache never fails a request: the proof just stops
+    /// granting access (the caller reads the public view), and the outcome is
+    /// decided once per request.
+    #[tokio::test]
+    async fn a_full_cache_degrades_the_proof_instead_of_failing() {
+        let cache: &'static NonceCache = Box::leak(Box::new(NonceCache::new(1)));
+        cache
+            .check_and_insert(&[9; 32], "ffffffffffffffff", 1_000)
+            .unwrap();
+        let outcome = PROOF_CLAIM
+            .scope(claim(cache, 1, "aaaaaaaaaaaaaaaa"), async {
+                (proof_is_fresh(), proof_is_fresh())
+            })
+            .await;
+        assert_eq!(outcome, (false, false));
+        assert_eq!(cache.len(), 1, "a refused proof is not stored");
+    }
+
+    #[tokio::test]
+    async fn a_fresh_proof_is_spent_once_per_request() {
+        let cache: &'static NonceCache = Box::leak(Box::new(NonceCache::new(8)));
+        let first = PROOF_CLAIM
+            .scope(claim(cache, 1, "aaaaaaaaaaaaaaaa"), async {
+                (proof_is_fresh(), proof_is_fresh())
+            })
+            .await;
+        assert_eq!(first, (true, true), "later chains of one request reuse it");
+        assert_eq!(cache.len(), 1);
+        let replay = PROOF_CLAIM
+            .scope(claim(cache, 1, "aaaaaaaaaaaaaaaa"), async {
+                proof_is_fresh()
+            })
+            .await;
+        assert!(!replay, "the same proof on a second request is a replay");
+    }
+
+    #[tokio::test]
+    async fn without_a_claim_there_is_nothing_to_spend() {
+        assert!(proof_is_fresh());
+        assert!(PROOF_CLAIM.scope(None, async { proof_is_fresh() }).await);
+    }
 }

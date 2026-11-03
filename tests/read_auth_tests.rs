@@ -289,3 +289,69 @@ fn the_pinned_cross_language_vector_matches() {
 
 /// Same string as `PINNED_VECTOR` in the Python tests.
 pub const PINNED_VECTOR: &str = "v1 agent=alice%20smith;key=alice-1;pk=ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c;ts=1767225600;nonce=00112233445566778899aabbccddeeff;sig=34598ee03953d6edb1eb52cc9853b9af891745d392e94123b1708a64dcb4ff8ab9d86bed01b1773ef79542e7ac3eff0e6410d846a94b29db517c33f504706b0e";
+
+#[test]
+fn a_key_cannot_take_more_than_its_share_of_the_nonce_cache() {
+    let cache = NonceCache::with_per_key_limit(6, 2);
+    cache
+        .check_and_insert(&[1; 32], "0000000000000001", NOW)
+        .unwrap();
+    cache
+        .check_and_insert(&[1; 32], "0000000000000002", NOW)
+        .unwrap();
+    assert_eq!(
+        cache.check_and_insert(&[1; 32], "0000000000000003", NOW),
+        Err(ReadAuthError::CacheFull)
+    );
+    // Other keys are unaffected by the greedy one.
+    for key in 2..=3u8 {
+        cache
+            .check_and_insert(&[key; 32], "0000000000000001", NOW)
+            .unwrap();
+    }
+    // The quota is released as entries expire.
+    let later = NOW + 2 * READ_AUTH_WINDOW_SECS + 1;
+    cache
+        .check_and_insert(&[1; 32], "0000000000000004", later)
+        .unwrap();
+}
+
+/// Regression: a full cache used to be re-scanned in full on every refused
+/// proof. Pruning now drops only the expired prefix, and a refused proof is
+/// not stored.
+#[test]
+fn refused_proofs_are_not_stored_and_expiry_frees_room() {
+    let cache = NonceCache::new(4);
+    for i in 0..4u8 {
+        cache
+            .check_and_insert(&[i; 32], NONCE, NOW + i64::from(i))
+            .unwrap();
+    }
+    for i in 10..200u8 {
+        assert_eq!(
+            cache.check_and_insert(&[i; 32], NONCE, NOW + 3),
+            Err(ReadAuthError::CacheFull)
+        );
+    }
+    assert_eq!(cache.len(), 4);
+    // The two oldest entries expire first; exactly two slots open up.
+    let t = NOW + 2 * READ_AUTH_WINDOW_SECS + 1;
+    assert!(cache.check_and_insert(&[50; 32], NONCE, t).is_ok());
+    assert!(cache.check_and_insert(&[51; 32], NONCE, t).is_ok());
+    assert_eq!(
+        cache.check_and_insert(&[52; 32], NONCE, t),
+        Err(ReadAuthError::CacheFull)
+    );
+}
+
+#[test]
+fn a_clock_that_steps_back_never_shortens_a_remembered_nonce() {
+    let cache = NonceCache::new(8);
+    cache.check_and_insert(&[1; 32], NONCE, NOW + 100).unwrap();
+    cache.check_and_insert(&[2; 32], NONCE, NOW).unwrap();
+    // The second entry is kept at least as long as the first.
+    assert_eq!(
+        cache.check_and_insert(&[2; 32], NONCE, NOW + 200),
+        Err(ReadAuthError::Replayed)
+    );
+}

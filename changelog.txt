@@ -13,6 +13,20 @@ UNRELEASED
     enable the registrar lock and DNSSEC for the name and to keep bearer tokens and the
     dashboard PIN on. Listeners mark requests with the new public `ListenerTls`
     extension; a request without it is judged as plain HTTP.
+  - security(read-auth): a flood of self-signed read proofs could lock every honest
+    reader out of private chains. A proof verifies against the key written in its
+    own header, so any fresh keypair made a valid one, and each was written into the
+    100 000-entry replay cache before any authorization; once full, every genuine
+    proof was refused with `503`, and behind one NAT those refusals also exhausted
+    the shared invalid-proof budget (`429`). The nonce is now spent only when a proof
+    is about to grant access to a private segment (once per request), so a key no
+    chain authorizes, or a request that touches no private chain, never reaches the
+    cache. The cache is also capped per key (25 000 of 100 000) and drops expired
+    entries from an ordered queue instead of rescanning on every refusal. Behavior
+    change: a proof refused by a full cache, or one that loses a race for its nonce,
+    now reads the public view (as documented) instead of `503`; malformed, stale,
+    badly signed and already-spent proofs still get `401`. Spent nonces are looked
+    up without being recorded, so the check costs unauthorized keys nothing.
   - build: Cargo.toml now declares `rust-version = "1.90"`, the real floor of the
     locked dependency set (roaring needs 1.90, uuid 1.89); a new `msrv` CI job
     checks all features and no default features on 1.90.

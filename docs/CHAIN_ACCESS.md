@@ -57,7 +57,7 @@ with read access to a backup; someone with write access to the data directory.
 | Tampering | Chain, policy, key set | Hash chain; governance records are signed, linked (`prev_policy`) and committed (`keys_root`); an invalid record is ignored and reported |
 | Repudiation | Who changed access | Every change is a signed record in the chain; the operator signs with a key kept on the host |
 | Information disclosure | Private segments | Audience filter at the library (queries, ranking statistics, graph, lineage, advice, export) and at every server route; see *What a public reader can still learn* |
-| Denial of service | Read proofs, nonce cache, bodies | 1 MiB body cap, bounded replay cache that fails closed to the public view, constant-work header grammar |
+| Denial of service | Read proofs, nonce cache, bodies | 1 MiB body cap, replay cache written only for authorized keys, bounded per key and in total, failing closed to the public view; constant-work header grammar |
 | Elevation of privilege | Key administration | Operator-only; REST/MCP routes answer 403; the operator key is always a governor so a policy can never lock itself out |
 
 Out of scope, documented limits:
@@ -107,17 +107,27 @@ The server accepts a proof when
 
 1. the header parses and the signature verifies;
 2. `ts` is within 60 seconds of its clock;
-3. the `(public key, nonce)` pair has not been seen in the last 120 seconds
-   (bounded cache of 100 000 entries; when it is full of live entries the
-   request is refused with 503 rather than weakened);
+3. its `(public key, nonce)` pair has not been spent in the last 120 seconds
+   (a read-only lookup);
 
 and then asks **per chain** whether `(agent_id, key_id, public key)` is in that
 chain's current key set *and* is an active key (agent not disabled, key not
 revoked) of the chain's registry. Only then is the request an *authorized
 reader* of that chain. A valid proof by a key that is not allowed gains
 nothing, and a request without the header is a public reader. A header that
-is present but invalid is refused with 401 so a client with a stale clock
-learns why.
+is present but fails steps 1 to 3 is refused with 401 so a client with a
+stale clock learns why.
+
+A proof is verified against the public key written in its own header, so
+*anyone* can make a valid proof with a fresh keypair. For that reason the
+nonce is not recorded by step 3. It is *spent* later, only when the proof is
+about to grant access to a private segment: the first time, per request, that a
+chain with a private segment finds the key authorized. A key that no chain authorizes, and a request that touches
+no private chain, never write to the cache. The cache is bounded (100 000 live
+entries, at most 25 000 per key); when it is full, or a concurrent request used
+the same proof first, the request is not failed: it reads the **public view**,
+as if it carried no proof. Expired entries are dropped as time advances, so
+refusals cost constant work.
 
 Clients:
 

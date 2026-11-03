@@ -56,7 +56,7 @@
 use crate::signing::{from_hex, to_hex, verify_ed25519_signature, Payload};
 use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::Mutex;
 
@@ -379,10 +379,24 @@ pub fn verify_request(
 /// Remembers recently used `(key, nonce)` pairs so a proof works once.
 ///
 /// Entries live for twice [`READ_AUTH_WINDOW_SECS`] (a proof is valid for a
-/// window on each side of the clock), and the cache is bounded so a flood of
-/// valid proofs cannot exhaust memory: when full of live entries it refuses
-/// new ones ([`ReadAuthError::CacheFull`]) and the requests fall back to the
-/// public view.
+/// window on each side of the clock). The cache is bounded twice over so a
+/// flood cannot exhaust memory or crowd out honest readers:
+///
+/// * `capacity` live entries in total, and
+/// * `per_key_limit` live entries for any one public key
+///   ([`NonceCache::with_per_key_limit`]; [`NonceCache::new`] sets it equal to
+///   `capacity`, i.e. no separate quota).
+///
+/// When either bound is reached the new proof is refused
+/// ([`ReadAuthError::CacheFull`]) and the request falls back to the public
+/// view; entries already stored, and other keys under their own quota, are
+/// unaffected. Expired entries are dropped from the front of an ordered queue
+/// as time advances, so every call does amortized constant work however many
+/// requests are refused.
+///
+/// The server only inserts a proof here once the key has been shown to be
+/// authorized on a chain with a private segment (see `server_lens`), so a
+/// self-signed proof from a fresh keypair never reaches the cache.
 ///
 /// # Examples
 ///
@@ -394,21 +408,98 @@ pub fn verify_request(
 /// assert_eq!(cache.check_and_insert(&[1; 32], "aaaaaaaaaaaaaaaa", 101), Err(ReadAuthError::Replayed));
 /// // Same nonce under another key is a different entry.
 /// assert!(cache.check_and_insert(&[2; 32], "aaaaaaaaaaaaaaaa", 101).is_ok());
+///
+/// // One key cannot take more than its share of the cache.
+/// let cache = NonceCache::with_per_key_limit(8, 2);
+/// assert!(cache.check_and_insert(&[1; 32], "aaaaaaaaaaaaaaa1", 100).is_ok());
+/// assert!(cache.check_and_insert(&[1; 32], "aaaaaaaaaaaaaaa2", 100).is_ok());
+/// assert_eq!(cache.check_and_insert(&[1; 32], "aaaaaaaaaaaaaaa3", 100), Err(ReadAuthError::CacheFull));
+/// assert!(cache.check_and_insert(&[2; 32], "aaaaaaaaaaaaaaa1", 100).is_ok());
 /// ```
 #[derive(Debug)]
 pub struct NonceCache {
     capacity: usize,
-    seen: Mutex<HashMap<[u8; 32], i64>>,
+    per_key_limit: usize,
+    state: Mutex<NonceState>,
+}
+
+#[derive(Debug, Default)]
+struct NonceState {
+    /// `(public key, nonce)` digest -> expiry (unix seconds).
+    seen: HashMap<[u8; 32], i64>,
+    /// Insertion order with non-decreasing expiry, so expired entries are a prefix.
+    order: VecDeque<(i64, [u8; 32], [u8; 32])>,
+    /// Live entries per public key.
+    per_key: HashMap<[u8; 32], usize>,
+}
+
+impl NonceState {
+    fn prune(&mut self, now_unix_secs: i64) {
+        while let Some((expires, id, key)) = self.order.front().copied() {
+            if expires > now_unix_secs {
+                break;
+            }
+            self.order.pop_front();
+            // A re-inserted id (clock stepped back) keeps its newer expiry.
+            if self.seen.get(&id) == Some(&expires) {
+                self.seen.remove(&id);
+            }
+            if let Some(count) = self.per_key.get_mut(&key) {
+                *count -= 1;
+                if *count == 0 {
+                    self.per_key.remove(&key);
+                }
+            }
+        }
+    }
 }
 
 impl NonceCache {
-    /// Create a cache holding at most `capacity` live entries.
+    /// Create a cache holding at most `capacity` live entries, with no
+    /// per-key quota beyond that.
     #[must_use]
     pub fn new(capacity: usize) -> Self {
+        Self::with_per_key_limit(capacity, capacity)
+    }
+
+    /// Create a cache holding at most `capacity` live entries, of which at most
+    /// `per_key_limit` may belong to one public key. Both are raised to at
+    /// least 1.
+    #[must_use]
+    pub fn with_per_key_limit(capacity: usize, per_key_limit: usize) -> Self {
         Self {
             capacity: capacity.max(1),
-            seen: Mutex::new(HashMap::new()),
+            per_key_limit: per_key_limit.max(1),
+            state: Mutex::new(NonceState::default()),
         }
+    }
+
+    /// Whether `(public_key, nonce)` is already recorded and still live at
+    /// `now_unix_secs`. Read-only: it never inserts, so it is safe to call for
+    /// proofs from keys nobody has authorized.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::read_auth::NonceCache;
+    ///
+    /// let cache = NonceCache::new(4);
+    /// assert!(!cache.is_replayed(&[1; 32], "aaaaaaaaaaaaaaaa", 100));
+    /// cache.check_and_insert(&[1; 32], "aaaaaaaaaaaaaaaa", 100).unwrap();
+    /// assert!(cache.is_replayed(&[1; 32], "aaaaaaaaaaaaaaaa", 101));
+    /// assert!(!cache.is_replayed(&[1; 32], "aaaaaaaaaaaaaaaa", 100 + 121));
+    /// ```
+    #[must_use]
+    pub fn is_replayed(&self, public_key: &[u8; 32], nonce: &str, now_unix_secs: i64) -> bool {
+        let mut hasher = Sha256::new();
+        hasher.update(public_key);
+        hasher.update(nonce.as_bytes());
+        let id: [u8; 32] = hasher.finalize().into();
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .seen
+            .get(&id)
+            .is_some_and(|expires| *expires > now_unix_secs)
     }
 
     /// Record `(public_key, nonce)` as used at `now_unix_secs`.
@@ -416,7 +507,8 @@ impl NonceCache {
     /// # Errors
     ///
     /// [`ReadAuthError::Replayed`] when the pair is already live;
-    /// [`ReadAuthError::CacheFull`] when the cache holds `capacity` live entries.
+    /// [`ReadAuthError::CacheFull`] when the cache holds `capacity` live
+    /// entries, or `public_key` already holds `per_key_limit` of them.
     pub fn check_and_insert(
         &self,
         public_key: &[u8; 32],
@@ -427,26 +519,40 @@ impl NonceCache {
         hasher.update(public_key);
         hasher.update(nonce.as_bytes());
         let id: [u8; 32] = hasher.finalize().into();
-        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(expires) = seen.get(&id) {
-            if *expires > now_unix_secs {
-                return Err(ReadAuthError::Replayed);
-            }
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.prune(now_unix_secs);
+        if state
+            .seen
+            .get(&id)
+            .is_some_and(|expires| *expires > now_unix_secs)
+        {
+            return Err(ReadAuthError::Replayed);
         }
-        if seen.len() >= self.capacity {
-            seen.retain(|_, expires| *expires > now_unix_secs);
-            if seen.len() >= self.capacity {
-                return Err(ReadAuthError::CacheFull);
-            }
+        if state.seen.len() >= self.capacity
+            || state.per_key.get(public_key).copied().unwrap_or(0) >= self.per_key_limit
+        {
+            return Err(ReadAuthError::CacheFull);
         }
-        seen.insert(id, now_unix_secs.saturating_add(2 * READ_AUTH_WINDOW_SECS));
+        // Keep the queue ordered even if the caller's clock steps backwards:
+        // an entry is then remembered a little longer, never shorter.
+        let floor = state.order.back().map_or(i64::MIN, |entry| entry.0);
+        let expires = now_unix_secs
+            .saturating_add(2 * READ_AUTH_WINDOW_SECS)
+            .max(floor);
+        state.seen.insert(id, expires);
+        state.order.push_back((expires, id, *public_key));
+        *state.per_key.entry(*public_key).or_insert(0) += 1;
         Ok(())
     }
 
-    /// Number of entries currently stored (live or expired but not yet pruned).
+    /// Number of entries currently stored (live, or expired but not yet pruned).
     #[must_use]
     pub fn len(&self) -> usize {
-        self.seen.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .seen
+            .len()
     }
 
     /// `true` when nothing is stored.
