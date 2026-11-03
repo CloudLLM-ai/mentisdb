@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "pymentisdb"
 version = "0.10.0"
 description = "Python client for MentisDB - semantic hash-chained memory for agents"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "Angel Leon", email = "gubatron@gmail.com"}
 ]
@@ -15,7 +15,6 @@ keywords = ["agents", "memory", "llm", "langchain", "semantic-memory", "mentisdb
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -45,9 +44,14 @@ Documentation = "https://docs.rs/mentisdb/latest/mentisdb/"
 Repository = "https://github.com/CloudLLM-ai/mentisdb"
 Issues = "https://github.com/CloudLLM-ai/mentisdb/issues"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["pymentisdb*"]
+# This directory is the package itself (pymentisdb/__init__.py), so map the
+# package name onto it. `packages.find` here found nothing: the 0.9.0 wheel on
+# PyPI holds only metadata. Build from the repository root
+# (`python -m build pymentisdb`): running Python inside this directory lets
+# pymentisdb/types.py shadow the standard library's `types`.
+[tool.setuptools]
+package-dir = {"pymentisdb" = "."}
+packages = ["pymentisdb"]
 
 [tool.setuptools.package-data]
 pymentisdb = ["py.typed"]

@@ -20,11 +20,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Build from the repository root: Python started inside pymentisdb/
+      # imports pymentisdb/types.py in place of the standard library `types`.
       - name: Build pymentisdb distribution
         run: |
-          cd pymentisdb
           python3 -m pip install build --quiet
-          python3 -m build .
+          python3 -m build pymentisdb
+
+      - name: Check the wheel contains the package
+        run: |
+          python3 -m zipfile -l pymentisdb/dist/*.whl | grep -q 'pymentisdb/client.py'
 
       - name: Publish to PyPI with trusted publishing
         uses: pypa/gh-action-pypi-publish@release/v1
