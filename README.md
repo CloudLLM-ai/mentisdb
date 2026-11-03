@@ -1673,6 +1673,11 @@ Dashboard API rules (0.10.9):
   `X-MentisDB-Dashboard: 1`; anything else gets `403`. Dashboard responses carry
   `Referrer-Policy: same-origin`, so browsers keep the real `Origin` on the dashboard's own
   requests and send no referrer to other sites.
+- **Private chains need the PIN, consistently.** With no `MENTISDB_DASHBOARD_PIN` the
+  dashboard cannot tell the operator from anyone else, so it refuses (`403`) to show, change
+  or **delete** a chain with private segments, and, while the daemon holds any private chain,
+  to change settings, create, revoke or delete bearer tokens, or restart the daemon. Set a
+  PIN and sign in to do any of it. A daemon with no private chain behaves as before.
 - **Login rate limiting** is keyed per client IP, so one client's failed PIN attempts do not
   lock out others. `X-Forwarded-For` is ignored, so behind a reverse proxy all clients share
   the proxy's address and one rate-limit bucket.

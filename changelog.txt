@@ -1,4 +1,14 @@
 UNRELEASED
+  - security(dashboard): destructive and administrative routes now follow the private-chain
+    PIN rule. `DELETE /dashboard/api/chains/{key}` never opened the chain, so a dashboard
+    with no PIN would delete a private chain that every other route refuses to show; it now
+    answers `403`. With no PIN, and while the daemon holds any private chain (an open chain
+    or a registry entry flagged `has_private`), settings writes, bearer-token creation,
+    revocation and deletion, and daemon restart answer `403` too, so a visitor who can reach
+    the port cannot weaken the daemon that guards private data. A daemon without private
+    chains, or with a PIN, behaves as before. Upgrade note: an operator who keeps private
+    chains and runs the dashboard without a PIN must set `MENTISDB_DASHBOARD_PIN` to use
+    those routes.
   - security(ci): release workflow least privilege and pinned third-party actions.
     `build.yml` gave `contents: write` to the build jobs, which also run on pull
     requests; every job is now read-only and a new `release` job (tag pushes only, after

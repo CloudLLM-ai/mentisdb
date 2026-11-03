@@ -1143,6 +1143,46 @@ fn operator_may_view(state: &DashboardState, chain: &MentisDb) -> bool {
     state.dashboard_pin.is_some() || !chain.segments().has_private()
 }
 
+/// Whether this daemon holds any chain with private segments: an open chain
+/// whose segments say so, or a registry entry flagged `has_private`.
+///
+/// A chain that is being written right now (its lock is busy) counts as
+/// private rather than being guessed at, and an unreadable registry counts as
+/// "yes": this answers "may a visitor with no PIN change the daemon?", so
+/// every doubt resolves to no.
+fn daemon_holds_private_chain(state: &DashboardState) -> bool {
+    let open_private = state.chains.iter().any(|entry| {
+        entry
+            .value()
+            .try_read()
+            .map_or(true, |chain| chain.segments().has_private())
+    });
+    open_private
+        || load_registered_chains(&state.mentisdb_dir).map_or(true, |registry| {
+            registry.chains.values().any(|entry| entry.has_private)
+        })
+}
+
+/// Gate for the dashboard's administrative routes (daemon settings, bearer
+/// tokens, restart): with a PIN the visitor already signed in as the operator;
+/// with none, a visitor is anyone who can reach the port, which is not enough
+/// to change the security settings of a daemon that holds private chains.
+///
+/// Mirrors the rule chain routes follow ([`get_or_open_chain`]): a no-PIN
+/// dashboard refuses private data and the controls that guard it, and works
+/// as before when no chain is private.
+fn require_pin_for_admin(state: &DashboardState) -> Result<(), (StatusCode, Json<Value>)> {
+    if state.dashboard_pin.is_some() || !daemon_holds_private_chain(state) {
+        return Ok(());
+    }
+    Err((
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "this daemon holds private chains; set MENTISDB_DASHBOARD_PIN and sign in to change settings, manage bearer tokens or restart the daemon"
+        })),
+    ))
+}
+
 fn private_chain_locked() -> (StatusCode, Json<Value>) {
     (
         StatusCode::FORBIDDEN,
@@ -2071,10 +2111,37 @@ async fn api_bootstrap_chain(
 ///
 /// Permanently deletes a chain: removes its storage file, deregisters it from
 /// the registry, and evicts it from the in-memory cache.
+///
+/// A chain with private segments is deleted only by an operator who signed in
+/// with the PIN, like every other chain route: without a PIN the dashboard
+/// answers `403` (see [`private_chain_locked`]) and deletes nothing.
 async fn api_delete_chain(
     State(state): State<DashboardState>,
     Path(chain_key): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if state.dashboard_pin.is_none() {
+        // The registry flag is the cheap check; opening the chain is the
+        // authoritative one (the flag is absent in registries from before
+        // private segments existed). A chain that is unknown or cannot be
+        // opened has nothing to protect and is deleted as before.
+        let flagged = load_registered_chains(&state.mentisdb_dir)
+            .map_err(internal_error)?
+            .chains
+            .get(&chain_key)
+            .is_some_and(|entry| entry.has_private);
+        if flagged {
+            return Err(private_chain_locked());
+        }
+        match open_chain_unchecked(&state, &chain_key).await {
+            Ok(arc) => {
+                if !operator_may_view(&state, &*arc.read().await) {
+                    return Err(private_chain_locked());
+                }
+            }
+            Err((StatusCode::NOT_FOUND, _)) => {}
+            Err(other) => return Err(other),
+        }
+    }
     // Evict from in-memory cache first so no new writes can sneak in.
     if let Some((_, arc)) = state.chains.remove(&chain_key) {
         // Detach registry persistence before deleting files so any surviving
@@ -3591,6 +3658,7 @@ async fn api_create_bearer_token(
     State(state): State<DashboardState>,
     Json(body): Json<CreateBearerTokenRequest>,
 ) -> Result<Json<CreateBearerTokenResponse>, (StatusCode, Json<Value>)> {
+    require_pin_for_admin(&state)?;
     let store = BearerTokenStore::new(&state.mentisdb_dir);
     let scope = dashboard_bearer_token_scope(&body)?;
     let created = store
@@ -3612,6 +3680,7 @@ async fn api_revoke_bearer_token(
     State(state): State<DashboardState>,
     Path(alias): Path<String>,
 ) -> Result<Json<DashboardBearerToken>, (StatusCode, Json<Value>)> {
+    require_pin_for_admin(&state)?;
     let store = BearerTokenStore::new(&state.mentisdb_dir);
     let record = store.revoke(&alias).map_err(map_bearer_token_error)?;
     Ok(Json(DashboardBearerToken::from(record)))
@@ -3625,6 +3694,7 @@ async fn api_delete_bearer_token(
     State(state): State<DashboardState>,
     Path(alias): Path<String>,
 ) -> Result<Json<DashboardBearerToken>, (StatusCode, Json<Value>)> {
+    require_pin_for_admin(&state)?;
     let store = BearerTokenStore::new(&state.mentisdb_dir);
     let record = store.delete(&alias).map_err(map_bearer_token_error)?;
     Ok(Json(DashboardBearerToken::from(record)))
@@ -3994,6 +4064,7 @@ async fn api_update_settings(
     State(state): State<DashboardState>,
     Json(body): Json<SettingsUpdateRequest>,
 ) -> Result<Json<SettingsUpdateResponse>, (StatusCode, Json<Value>)> {
+    require_pin_for_admin(&state)?;
     let mut restart_required = false;
     let mut updated = Vec::new();
 
@@ -4148,7 +4219,10 @@ async fn api_update_settings(
 /// restarted process uses the same executable and command-line arguments; any
 /// `.env` changes saved by the settings API are picked up during the next
 /// startup path just like a manual daemon restart.
-async fn api_restart_daemon() -> Result<Json<RestartDaemonResponse>, (StatusCode, Json<Value>)> {
+async fn api_restart_daemon(
+    State(state): State<DashboardState>,
+) -> Result<Json<RestartDaemonResponse>, (StatusCode, Json<Value>)> {
+    require_pin_for_admin(&state)?;
     schedule_daemon_restart();
     Ok(Json(RestartDaemonResponse {
         success: true,
