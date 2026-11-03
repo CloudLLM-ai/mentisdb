@@ -1,6 +1,8 @@
 UNRELEASED
-  - perf(storage): the implicit-edge scanner no longer keeps its own copy of every
-    vector. `VectorSidecarEntry::vector` is now an `Arc<[f32]>` (it serializes
+  - BREAKING (public API; the next crate version must be 0.12.0, not 0.11.x):
+    `VectorSidecarEntry::vector` changes from `Vec<f32>` to `Arc<[f32]>`.
+    perf(storage): the implicit-edge scanner no longer keeps its own copy of every
+    vector. The field (it serializes
     exactly as the `Vec<f32>` did, so the sidecar file and its digest are
     unchanged; `VectorSidecarEntry::new` still takes a `Vec<f32>`), and the scan
     store clones those pointers (about 40 bytes per vector instead of 1536 at 384
