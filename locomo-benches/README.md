@@ -43,6 +43,32 @@ python3 locomo-benches/locomo_bench.py \
 python3 locomo-benches/locomo_bench.py --top-k 10 --force-reingest
 ```
 
+## Slow or throttled machines
+
+The vector rebuild (`POST /v1/vectors/rebuild`) is synchronous: the harness
+holds one request open until the daemon has embedded the whole chain, which
+takes about a minute on a quiet machine and well over ten minutes on efficiency cores
+(`taskpolicy -b`) or under heavy load. Two flags control the client timeouts:
+
+| Flag | Default | Applies to |
+|------|---------|------------|
+| `--rebuild-timeout SECONDS` | 3600 | each vector sidecar rebuild request |
+| `--request-timeout SECONDS` | 60 | each append (ingest) and `ranked-search` (evaluation) request |
+
+If ingest, the rebuild or evaluation cannot finish, the harness stops with a
+`PHASE FAILED: <phase>: ...` line on stderr and exit code 2, instead of going on
+to score a half-built chain. Exit codes: 0 = finished at or above the pass
+threshold, 1 = finished below it, 2 = a phase failed and the run has no result.
+A rebuild that times out is still running inside the daemon; wait for it (or
+restart the daemon) before the next run. A rebuild that the daemon rejects with
+an HTTP error (for example a build without the `local-embeddings` feature) only
+warns, and the run continues on lexical and graph scoring.
+
+```bash
+taskpolicy -b nice -n 15 python3 locomo-benches/locomo_bench.py \
+    --top-k 10 --rebuild-timeout 7200 --request-timeout 120
+```
+
 ## How it works
 
 All persona conversations are ingested into a single chain with:
