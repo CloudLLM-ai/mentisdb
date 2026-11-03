@@ -2468,7 +2468,11 @@ enum BearerAuthTarget {
 /// cannot reach a chain-scoped token until it is listed and reviewed.
 ///
 /// - `tools/list`, `resources/list`, `resources/read`, `initialize` and `ping`
-///   reveal no chain data: any active token.
+///   reveal no chain data: any active token. So do the standard discovery
+///   probes clients send whether or not a capability is advertised
+///   (`prompts/list`, `resources/templates/list`); the library answers them
+///   "method not found", and refusing them would make a client read the answer
+///   as a bad token.
 /// - `notifications/*` and an empty method (a JSON-RPC response) are
 ///   acknowledged with `202` and run nothing: any active token.
 /// - `tools/call` and `tools/execute` are authorized per tool and chain.
@@ -2478,9 +2482,13 @@ enum BearerAuthTarget {
 ///   when they are used.
 fn bearer_auth_target(context: &BearerAuthContext, default_chain_key: &str) -> BearerAuthTarget {
     match context.action.as_str() {
-        "tools/list" | "resources/list" | "resources/read" | "initialize" | "ping" => {
-            BearerAuthTarget::AnyActiveToken
-        }
+        "tools/list"
+        | "resources/list"
+        | "resources/read"
+        | "initialize"
+        | "ping"
+        | "prompts/list"
+        | "resources/templates/list" => BearerAuthTarget::AnyActiveToken,
         action if action.is_empty() || action.starts_with("notifications/") => {
             BearerAuthTarget::AnyActiveToken
         }

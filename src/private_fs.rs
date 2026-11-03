@@ -50,6 +50,8 @@ pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
     {
         std::fs::create_dir_all(parent)?;
     }
+    // `builder` is only mutated on Unix, where the mode is set.
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, DIR_MODE);
@@ -64,6 +66,8 @@ pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
 /// Chain the usual flags (`.create(true).append(true)`) and call `.open`. The
 /// mode is applied only when the file does not exist yet.
 pub(crate) fn options() -> OpenOptions {
+    // `options` is only mutated on Unix, where the mode is set.
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut options = OpenOptions::new();
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, FILE_MODE);

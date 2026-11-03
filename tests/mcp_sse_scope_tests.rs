@@ -124,6 +124,13 @@ async fn unknown_methods_need_a_global_token_and_known_ones_do_not() {
         .token;
     let (router, _broadcaster) = standard_mcp_router(config, LOOPBACK);
 
+    // Standard discovery probes the library does not implement: a scoped
+    // token must get "method not found", not an authorization failure.
+    for method in ["prompts/list", "resources/templates/list"] {
+        let (status, body) = send(&router, request(&scoped, method, Some(1))).await;
+        assert_ne!(status, StatusCode::UNAUTHORIZED, "{method}: {body}");
+        assert!(body.contains("Method not found"), "{method}: {body}");
+    }
     for method in ["initialize", "ping", "tools/list", "resources/list"] {
         let (status, body) = send(&router, request(&scoped, method, Some(1))).await;
         assert_eq!(
@@ -136,12 +143,7 @@ async fn unknown_methods_need_a_global_token_and_known_ones_do_not() {
         let (status, body) = send(&router, request(&scoped, method, None)).await;
         assert_eq!(status, StatusCode::ACCEPTED, "{method}: {body}");
     }
-    for method in [
-        "admin/everything",
-        "logging/setLevel",
-        "prompts/list",
-        "events/subscribe",
-    ] {
+    for method in ["admin/everything", "logging/setLevel", "events/subscribe"] {
         let (status, _) = send(&router, request(&scoped, method, Some(2))).await;
         assert_eq!(
             status,

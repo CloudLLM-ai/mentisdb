@@ -525,6 +525,9 @@ and `cert` work on the data directory directly and do not need the daemon.
   MCP server port. Default: `9471`
 - `MENTISDB_REST_PORT`
   REST server port. Default: `9472`
+- `MENTISDB_KEY_DIR`
+  Directory `mentisdb key generate` saves private keys in when `--out` is not given.
+  Default: `~/.mentisdb/keys` (created `0700`, files `0600`). The seed is never printed.
 - `MENTISDB_DASHBOARD_PORT`
   HTTPS dashboard port. Default: `9475`. Set to `0` to disable the web dashboard.
 - `MENTISDB_DASHBOARD_PIN`
@@ -1690,7 +1693,7 @@ Dashboard API rules (0.10.9):
   up to one hour (forgiven after two quiet hours). That caps an attacker who rotates through
   many addresses, at the cost that an attacker can make the owner wait; a signed-in session
   (cookie) is unaffected. Refusals are `429` with `Retry-After`. These limits bound guessing
-  to roughly a thousand tries an hour, which is not enough against a 4-digit PIN: **use a
+  to at most about 600 tries an hour, which is not enough against a 4-digit PIN: **use a
   long random PIN** (12+ characters) for any dashboard reachable beyond localhost.
 - **Chain keys** created from the dashboard (bootstrap, branch target, copy-to target) must
   match `[A-Za-z0-9_-]` and be at most 128 characters, otherwise `400`.

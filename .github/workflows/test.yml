@@ -60,9 +60,9 @@ jobs:
 
       # Keep in sync with `rust-version` in Cargo.toml.
       - name: Install Rust 1.90
+        # The `1.90` ref of this action installs 1.90 by itself and has no
+        # `toolchain` input, so none is passed.
         uses: dtolnay/rust-toolchain@7dcc700092a1a8b9c17ba0e140b4e34e93000946 # 1.90
-        with:
-          toolchain: "1.90"
 
       - name: Install Linux audio build deps
         run: |
