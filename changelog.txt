@@ -996,6 +996,13 @@ UNRELEASED
     `--include-invalidated`, `--as-of`, reranking). `docs/CLI_PARITY.md` maps
     each tool, route and dashboard action to its command and a test keeps it
     in sync.
+  - test: removed the wall-clock assumptions from the migration, embedding and
+    event-stream tests. The migration manager and slow-embedding tests park the
+    worker on a latch and assert while the work is provably in flight (they used
+    300 ms and 150 ms bounds and a 100 ms sleep that a loaded CI machine
+    breaks); the SSE tests end at a sentinel call instead of 300 ms of silence.
+    The daemon migration test defaults to 100,000 thoughts (13 s instead of 80 s;
+    the 600,000-thought run is `--ignored`) and kills its daemon on any failure.
 
 0.10.10.55 OCT/22/2026
   - feat(webhooks): `MENTISDB_WEBHOOK_ALLOWED_CIDRS` lets self-hosted

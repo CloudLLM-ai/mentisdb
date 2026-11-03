@@ -7,8 +7,25 @@ use mentisdb::migration::fixtures::{write_large_fixture, FixtureFormat};
 use mentisdb::{chain_storage_filename, StorageAdapterKind};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+
+/// Kills and reaps the daemon and removes its data directory however the test
+/// ends, so a failed assertion never leaves a daemon running (holding the data
+/// directory lock and its ports) behind a red test.
+struct Daemon {
+    child: Child,
+    dir: PathBuf,
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
 
 fn post(url: &str, body: Value) -> (u16, Value) {
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -38,12 +55,15 @@ fn get(url: &str) -> (u16, Value) {
     )
 }
 
-/// Chain size; override with `MENTISDB_MIGRATION_TEST_THOUGHTS`.
+/// Chain size of the default test. Large enough that the migration of a debug
+/// build is still running when the first requests arrive (about 13 s here);
+/// override with `MENTISDB_MIGRATION_TEST_THOUGHTS`. The 600,000-thought stress
+/// run (about 80 s) is the ignored `test_daemon_serves_while_a_huge_chain_migrates`.
 fn thoughts() -> usize {
     std::env::var("MENTISDB_MIGRATION_TEST_THOUGHTS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(600_000)
+        .unwrap_or(100_000)
 }
 
 /// With a large schema-1 chain in the data directory the daemon announces
@@ -51,8 +71,22 @@ fn thoughts() -> usize {
 /// then serves it with every thought once the background migration finishes.
 #[test]
 fn test_daemon_serves_while_a_large_chain_migrates() {
-    let count = thoughts();
-    let dir = std::env::temp_dir().join(format!("mentisdb-daemon-migrate-{}", std::process::id()));
+    serve_while_migrating(thoughts());
+}
+
+/// The same with 600,000 thoughts: a stress run, too slow for every `cargo
+/// test`. Run it with `cargo test --test migration_daemon_tests -- --ignored`.
+#[test]
+#[ignore = "600,000-thought stress run (about 80 s in a debug build)"]
+fn test_daemon_serves_while_a_huge_chain_migrates() {
+    serve_while_migrating(600_000);
+}
+
+fn serve_while_migrating(count: usize) {
+    let dir = std::env::temp_dir().join(format!(
+        "mentisdb-daemon-migrate-{}-{count}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     write_large_fixture(
@@ -63,7 +97,7 @@ fn test_daemon_serves_while_a_large_chain_migrates() {
     .unwrap();
 
     let spawned = Instant::now();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mentisdb"))
+    let child = Command::new(env!("CARGO_BIN_EXE_mentisdb"))
         .arg("--headless")
         .env("MENTISDB_DIR", &dir)
         .env("MENTISDB_BIND_HOST", "127.0.0.1")
@@ -80,7 +114,11 @@ fn test_daemon_serves_while_a_large_chain_migrates() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn mentisdb");
-    let stderr = child.stderr.take().expect("stderr piped");
+    let mut daemon = Daemon {
+        child,
+        dir: dir.clone(),
+    };
+    let stderr = daemon.child.stderr.take().expect("stderr piped");
     let mut lines = BufReader::new(stderr).lines();
     let deadline = Instant::now() + Duration::from_secs(60);
     let rest = loop {
@@ -133,7 +171,6 @@ fn test_daemon_serves_while_a_large_chain_migrates() {
     );
 
     // SAFETY: plain kill(2) on a child pid we own.
-    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
-    let _ = child.wait();
-    let _ = std::fs::remove_dir_all(&dir);
+    unsafe { libc::kill(daemon.child.id() as libc::pid_t, libc::SIGTERM) };
+    let _ = daemon.child.wait();
 }
