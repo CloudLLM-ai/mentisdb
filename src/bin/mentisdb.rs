@@ -3170,6 +3170,9 @@ fn build_tls_info_lines(
         "TLS Certificate: {}",
         config.tls_cert_path.display()
     ));
+    if let Some(warning) = mentisdb::server::tls_cert_expiry_warning(&config.tls_cert_path) {
+        lines.push(format!("  !! {warning}"));
+    }
     lines.push(String::new());
     lines.push("  my.mentisdb.com is a public DNS A-record → 127.0.0.1".to_string());
     lines.push(

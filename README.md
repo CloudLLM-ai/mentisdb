@@ -1792,9 +1792,15 @@ subcommand is the right tool when:
 - You migrated the daemon to a new machine and the old cert (still on the old
   box) needs to be regenerated locally.
 
-For all other situations the auto-generated cert is fine — there is no
-periodic renewal, no expiry alerts, and the daemon reuses the existing
-material across restarts unless you delete it or pass `--force`.
+For all other situations the auto-generated cert is fine. It is valid from one day
+before it was generated until two years (730 days) after, never until a fixed calendar
+date, and the daemon reuses it across restarts unless you delete it or pass `--force`.
+At startup the daemon checks it: a certificate that expires within 30 days is reported
+with a warning (log, terminal UI) naming `mentisdb cert --force`; one that has already
+**expired** is regenerated automatically when MentisDB made it (Common Name
+`MentisDB Local`), keeping its names (SANs) and a new key pair, with a warning that
+clients must trust the new certificate; an expired certificate you supplied yourself
+through `MENTISDB_TLS_CERT` / `MENTISDB_TLS_KEY` is only warned about.
 
 ---
 

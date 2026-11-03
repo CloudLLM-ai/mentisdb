@@ -1417,8 +1417,11 @@ pub async fn start_rest_server(
 /// params.subject_alt_names = vec![
 ///     SanType::DnsName("localhost".try_into().unwrap()),
 /// ];
-/// params.not_before = date_time_ymd(2025, 1, 1);
-/// params.not_after  = date_time_ymd(2027, 1, 1);
+/// // Valid from yesterday (clock skew) for two years; never a fixed calendar date.
+/// let now = time::OffsetDateTime::now_utc();
+/// let (from, to) = (now - time::Duration::days(1), now + time::Duration::days(730));
+/// params.not_before = date_time_ymd(from.year(), from.month().into(), from.day());
+/// params.not_after  = date_time_ymd(to.year(), to.month().into(), to.day());
 /// let cert = params.self_signed(&key_pair).unwrap();
 ///
 /// let cert_path = PathBuf::from("/tmp/mentisdb/tls/cert.pem");
@@ -1616,6 +1619,9 @@ pub async fn start_servers_with_migrations(
         || config.dashboard_addr.is_some()
     {
         ensure_tls_cert(&config.tls_cert_path, &config.tls_key_path)?;
+        if let Some(warning) = tls_cert_expiry_warning(&config.tls_cert_path) {
+            log::warn!("{warning}");
+        }
     }
 
     // One shared MentisDbService backs every HTTP surface (MCP, REST, HTTPS
@@ -7573,7 +7579,8 @@ pub struct TlsCertArtifacts {
 ///
 /// This is the daemon-startup path. It uses the [`rcgen`] crate to produce
 /// an ECDSA self-signed certificate in PEM format and only acts when the
-/// files are absent. Pass an explicit `overwrite=true` (or call
+/// files are absent, or when a certificate MentisDB generated has expired
+/// (see *Expiry* below). Pass an explicit `overwrite=true` (or call
 /// [`ensure_tls_cert_with_sans`] directly) when you need to mint a fresh
 /// cert unconditionally — for example from the `mentisdb cert` subcommand.
 ///
@@ -7588,7 +7595,18 @@ pub struct TlsCertArtifacts {
 /// to a VPS) delete `~/.cloudllm/mentisdb/tls/cert.pem` and restart; the
 /// daemon will regenerate the cert with the new SAN set.
 ///
-/// | Validity | 2025-01-01 → 2027-01-01 |
+/// | Validity | one day before generation (clock-skew margin) → two years (730 days) after it |
+///
+/// ## Expiry
+///
+/// The validity is relative to the moment of generation, never a fixed date.
+/// At startup an existing certificate is checked: an **expired** one that
+/// MentisDB generated (Common Name `MentisDB Local`) is regenerated with the
+/// same SANs, a new key pair, and a warning in the log (clients that trusted
+/// the old certificate must trust the new one); an expired certificate you
+/// supplied yourself is left alone and warned about. A certificate that
+/// expires within [`TLS_CERT_WARN_DAYS`] days is warned about, never replaced
+/// silently. See [`tls_cert_expiry_warning`].
 ///
 /// Both `cert_path` and `key_path` are written as PEM files. The parent
 /// directory of `cert_path` is created with `fs::create_dir_all` if it does
@@ -7605,7 +7623,133 @@ pub fn ensure_tls_cert(
     cert_path: &Path,
     key_path: &Path,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    if cert_path.exists() && key_path.exists() {
+        if let Some(validity) = fs::read_to_string(cert_path)
+            .ok()
+            .and_then(|pem| tls_cert_validity(&pem))
+        {
+            if validity.not_after < Utc::now() && validity.generated_by_mentisdb {
+                let existing = fs::read_to_string(cert_path)
+                    .map(|pem| sans_from_strings(&extract_sans_from_pem(&pem)))
+                    .unwrap_or_default();
+                ensure_tls_cert_with_sans(cert_path, key_path, existing, true)?;
+                log::warn!(
+                    "the TLS certificate {} expired on {}; MentisDB generated a new one with the \
+                     same names. Clients and browsers that trusted the old certificate must \
+                     trust the new one (`mentisdb cert` prints the commands)",
+                    cert_path.display(),
+                    validity.not_after.format("%Y-%m-%d")
+                );
+                return Ok(());
+            }
+        }
+    }
     ensure_tls_cert_with_sans(cert_path, key_path, Vec::new(), false).map(|_| ())
+}
+
+/// Days before expiry at which [`tls_cert_expiry_warning`] starts to warn.
+pub const TLS_CERT_WARN_DAYS: i64 = 30;
+
+/// The validity window of a certificate, read from its PEM.
+///
+/// Returned by [`tls_cert_validity`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsCertValidity {
+    /// First instant the certificate is valid.
+    pub not_before: DateTime<Utc>,
+    /// Last instant the certificate is valid.
+    pub not_after: DateTime<Utc>,
+    /// Whether MentisDB generated it: a self-signed certificate whose Common
+    /// Name is `MentisDB Local`. Only such a certificate is regenerated
+    /// automatically when it expires.
+    pub generated_by_mentisdb: bool,
+}
+
+/// Read the validity window of the first certificate in `pem`.
+///
+/// Returns `None` when `pem` holds no parseable certificate.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::server::tls_cert_validity;
+///
+/// assert!(tls_cert_validity("not a certificate").is_none());
+/// ```
+pub fn tls_cert_validity(pem: &str) -> Option<TlsCertValidity> {
+    use x509_parser::prelude::FromDer;
+    let der = rustls_pemfile::certs(&mut pem.as_bytes())
+        .flatten()
+        .next()?;
+    let (_, cert) = x509_parser::certificate::X509Certificate::from_der(&der).ok()?;
+    let validity = cert.validity();
+    let at = |seconds: i64| DateTime::<Utc>::from_timestamp(seconds, 0);
+    let generated_by_mentisdb = cert.subject() == cert.issuer()
+        && cert
+            .subject()
+            .iter_common_name()
+            .any(|name| name.as_str().is_ok_and(|name| name == "MentisDB Local"));
+    Some(TlsCertValidity {
+        not_before: at(validity.not_before.timestamp())?,
+        not_after: at(validity.not_after.timestamp())?,
+        generated_by_mentisdb,
+    })
+}
+
+/// A warning when the certificate at `cert_path` has expired or expires within
+/// [`TLS_CERT_WARN_DAYS`] days; `None` when it is comfortably valid, missing or
+/// unreadable.
+///
+/// The daemon logs it at startup, the terminal UI shows it next to the
+/// certificate path and `mentisdb cert --force` is the fix it names. The text
+/// states the expiry date and what to do.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::server::tls_cert_expiry_warning;
+///
+/// assert!(tls_cert_expiry_warning(std::path::Path::new("/nonexistent/cert.pem")).is_none());
+/// ```
+pub fn tls_cert_expiry_warning(cert_path: &Path) -> Option<String> {
+    let validity = tls_cert_validity(&fs::read_to_string(cert_path).ok()?)?;
+    let now = Utc::now();
+    let date = validity.not_after.format("%Y-%m-%d");
+    if validity.not_after < now {
+        return Some(format!(
+            "the TLS certificate {} expired on {date}; HTTPS clients will refuse it. Run \
+             `mentisdb cert --force` (and trust the new certificate) or supply your own \
+             certificate with MENTISDB_TLS_CERT / MENTISDB_TLS_KEY",
+            cert_path.display()
+        ));
+    }
+    let days_left = (validity.not_after - now).num_days();
+    (days_left < TLS_CERT_WARN_DAYS).then(|| {
+        format!(
+            "the TLS certificate {} expires on {date} ({days_left} days). Run `mentisdb cert \
+             --force` before then (and trust the new certificate), or supply your own \
+             certificate with MENTISDB_TLS_CERT / MENTISDB_TLS_KEY",
+            cert_path.display()
+        )
+    })
+}
+
+/// Rebuild SAN entries from the `dns:<name>` / `ip:<addr>` strings
+/// [`extract_sans_from_pem`] produces; anything else is dropped.
+fn sans_from_strings(strings: &[String]) -> Vec<SanType> {
+    strings
+        .iter()
+        .filter_map(|entry| {
+            if let Some(name) = entry.strip_prefix("dns:") {
+                name.to_string().try_into().ok().map(SanType::DnsName)
+            } else {
+                entry
+                    .strip_prefix("ip:")
+                    .and_then(|ip| ip.parse::<IpAddr>().ok())
+                    .map(SanType::IpAddress)
+            }
+        })
+        .collect()
 }
 
 /// Generate a self-signed TLS certificate and private key, optionally
