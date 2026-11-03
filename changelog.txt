@@ -234,6 +234,11 @@ UNRELEASED
     per superseded thought, and more than the page could ever show. The total now
     excludes thoughts a default query would hide; audit mode
     (`include_invalidated`) still counts them.
+  - fix(migration): `migrate retry` through a running daemon no longer opens a
+    window in which the chain is served. The manager removed the old status and
+    only then recorded the new one, so a request landing in between got `None`
+    from the migration gate and read a chain that was about to be rewritten. The
+    swap is now one step.
   - fix(server): caller-sized numbers can no longer make a search or a standing
     context cost minutes. `offset + limit` above 10,000 on `ranked-search`,
     `lexical-search`, `federated-search` and `context-bundles` (REST, MCP and the

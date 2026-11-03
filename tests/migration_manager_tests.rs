@@ -516,3 +516,55 @@ fn test_wait_stopped_returns_after_shutdown() {
     manager.shutdown();
     assert!(manager.wait_stopped(Duration::from_secs(30)));
 }
+
+/// While `retry` swaps a quarantined chain's status for the new one, `gate`
+/// never answers "go ahead". `retry` used to remove the status and only then
+/// record the new one, so a request landing in between was served from a chain
+/// that was about to be rewritten. A poller hammers `gate` for each chain
+/// across its `retry`; the migrations stay parked, so the only acceptable
+/// answers are the old block and the new "migrating".
+#[test]
+fn test_retry_never_opens_the_gate_between_statuses() {
+    let dir = TempDir::new().unwrap();
+    let keys: Vec<String> = (0..30).map(|n| format!("retry-{n}")).collect();
+    for key in &keys {
+        put(dir.path(), key, FixtureFormat::Schema1, 5);
+        mentisdb::migration::skip_chain(dir.path(), key, "test").unwrap();
+    }
+    let (entered_tx, _entered_rx) = channel();
+    let (release_tx, release_rx) = channel();
+    let mut cfg = config(dir.path());
+    cfg.options = parked(entered_tx, release_rx);
+    let manager = MigrationManager::start(cfg).unwrap();
+    for key in &keys {
+        assert!(matches!(
+            manager.gate(key),
+            Some(MigrationBlock::Skipped { .. })
+        ));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let poller = {
+            let (manager, key, stop) = (manager.clone(), key.clone(), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                let mut gate_opened = false;
+                while !stop.load(Ordering::SeqCst) {
+                    gate_opened |= manager.gate(&key).is_none();
+                }
+                gate_opened
+            })
+        };
+        manager.retry(key).unwrap();
+        stop.store(true, Ordering::SeqCst);
+        assert!(
+            !poller.join().unwrap(),
+            "{key}: the gate opened while retry was swapping statuses"
+        );
+        assert!(matches!(
+            manager.gate(key),
+            Some(MigrationBlock::Migrating { .. })
+        ));
+    }
+    // Closing the channel lets every parked (and later) migration run on.
+    drop(release_tx);
+    assert!(manager.wait_idle(Duration::from_secs(120)));
+    assert!(keys.iter().all(|key| manager.gate(key).is_none()));
+}

@@ -357,6 +357,16 @@ impl MigrationConfig {
     }
 }
 
+/// What [`MigrationManager::assess`] decided for one chain.
+enum Assessment {
+    /// Nothing to do and nothing to report.
+    Current,
+    /// A terminal state to report (quarantined, skipped, rolled back).
+    Settled(ChainMigrationStatus),
+    /// Work is due: record the status as pending and queue the chain.
+    Queue(ChainMigrationStatus),
+}
+
 struct Inner {
     config: MigrationConfig,
     statuses: Mutex<BTreeMap<String, ChainMigrationStatus>>,
@@ -511,8 +521,25 @@ impl MigrationManager {
     /// Whatever [`engine::retry_chain`] refuses.
     pub fn retry(&self, chain_key: &str) -> Result<(), MigrationError> {
         engine::retry_chain(&self.inner.config.chain_dir, chain_key)?;
-        self.lock_statuses().remove(chain_key);
-        self.consider(chain_key);
+        // Decide first, then replace the old status in one step: removing it
+        // before the new one is recorded would leave a window in which `gate`
+        // answers `None` and a request is served from a chain that is about to
+        // be rewritten.
+        let assessment = self.assess(chain_key);
+        {
+            let mut statuses = self.lock_statuses();
+            match &assessment {
+                Assessment::Current => {
+                    statuses.remove(chain_key);
+                }
+                Assessment::Settled(status) | Assessment::Queue(status) => {
+                    statuses.insert(chain_key.to_owned(), status.clone());
+                }
+            }
+        }
+        if matches!(assessment, Assessment::Queue(_)) {
+            self.enqueue(chain_key);
+        }
         Ok(())
     }
 
@@ -600,6 +627,25 @@ impl MigrationManager {
 
     /// Decide what `key` needs and record it (queueing it when work is due).
     fn consider(&self, key: &str) {
+        match self.assess(key) {
+            Assessment::Current => {}
+            Assessment::Settled(status) => {
+                self.lock_statuses().insert(key.to_owned(), status);
+            }
+            Assessment::Queue(status) => {
+                self.lock_statuses().insert(key.to_owned(), status);
+                self.enqueue(key);
+            }
+        }
+    }
+
+    /// What `key` needs right now, without recording it.
+    ///
+    /// Reads the journal and the chain file; the only side effect is persisting
+    /// a quarantine for a chain that cannot be migrated at all. Keeping the
+    /// decision apart from its recording lets [`Self::retry`] swap the old
+    /// status for the new one in a single step.
+    fn assess(&self, key: &str) -> Assessment {
         let dir = &self.inner.config.chain_dir;
         let paths = engine::MigrationPaths::new(dir, key);
         let journal = MigrationJournal::load(&paths.journal).ok().flatten();
@@ -620,13 +666,12 @@ impl MigrationManager {
                     .backup_dir
                     .exists()
                     .then(|| paths.backup_dir.display().to_string());
-                self.lock_statuses().insert(key.to_owned(), status);
-                return;
+                return Assessment::Settled(status);
             }
             if journal.state == JournalState::Finalized {
                 // A finished run is history; still check the chain is current.
                 if matches!(engine::detect_migration(dir, key), Ok(None)) {
-                    return;
+                    return Assessment::Current;
                 }
             }
         }
@@ -637,25 +682,24 @@ impl MigrationManager {
             engine::detect_migration(dir, key)
         };
         match needs {
-            Ok(None) => {}
+            Ok(None) => Assessment::Current,
             Ok(reason) => {
                 let mut status = ChainMigrationStatus::new(key, MigrationPhase::Pending);
                 status.reason = reason.map(|r| r.to_string());
                 status.attempts = journal.as_ref().map(|j| j.attempts).unwrap_or(0);
-                self.lock_statuses().insert(key.to_owned(), status);
-                self.enqueue(key);
+                Assessment::Queue(status)
             }
             Err(error) => {
                 mig_log!(error, "chain '{key}': cannot be migrated: {error}");
                 let mut status = ChainMigrationStatus::new(key, MigrationPhase::Failed);
                 status.error = Some(error.to_string());
                 status.finished_at = Some(Utc::now());
-                self.lock_statuses().insert(key.to_owned(), status);
                 // Persist the quarantine so it survives a restart and shows in
                 // `migrate status`. A newer-schema chain is never written to.
                 if !matches!(error, MigrationError::FutureSchema { .. }) {
                     let _ = engine::quarantine_chain(dir, key, &error.to_string());
                 }
+                Assessment::Settled(status)
             }
         }
     }
