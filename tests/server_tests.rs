@@ -833,6 +833,16 @@ async fn rest_router_bootstraps_and_reports_head() {
     assert_eq!(summary["storage_adapter"], "binary");
     assert_eq!(summary["thought_count"], 1);
     assert_eq!(summary["agent_count"], 1);
+    // Operators see how far derived state trails the chain; healthy is all zeros.
+    assert_eq!(
+        summary["derived_backlog"],
+        serde_json::json!({
+            "embeddings_in_flight": 0,
+            "embeddings_parked": 0,
+            "embeddings_missing": 0,
+            "implicit_edges": 0
+        })
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

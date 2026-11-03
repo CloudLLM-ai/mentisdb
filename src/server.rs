@@ -5032,6 +5032,7 @@ impl MentisDbService {
                         } else {
                             entry.storage_location.clone()
                         },
+                        derived_backlog: crate::DerivedBacklog::default(),
                     },
                 )
             })
@@ -5071,6 +5072,11 @@ impl MentisDbService {
             };
             let thought_count = chain.visible_thought_count(audience) as u64;
             let agent_count = chain.visible_agent_records(audience).len();
+            let derived_backlog = if hidden {
+                crate::DerivedBacklog::default()
+            } else {
+                chain.derived_backlog()
+            };
             chains_by_key
                 .entry(chain_key.clone())
                 .and_modify(|summary| {
@@ -5078,6 +5084,7 @@ impl MentisDbService {
                     summary.thought_count = thought_count;
                     summary.agent_count = agent_count;
                     summary.storage_location = storage_location.clone();
+                    summary.derived_backlog = derived_backlog;
                 })
                 .or_insert_with(|| ChainSummary {
                     chain_key: chain_key.clone(),
@@ -5086,6 +5093,7 @@ impl MentisDbService {
                     thought_count,
                     agent_count,
                     storage_location: storage_location.clone(),
+                    derived_backlog,
                 });
         }
 
@@ -7428,6 +7436,10 @@ struct ChainSummary {
     thought_count: u64,
     agent_count: usize,
     storage_location: String,
+    /// Derived-state work the chain has not finished (see
+    /// [`crate::DerivedBacklog`]); all zeros for a chain that is not open or
+    /// whose private segments are hidden from the caller.
+    derived_backlog: crate::DerivedBacklog,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]

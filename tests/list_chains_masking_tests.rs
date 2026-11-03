@@ -101,6 +101,7 @@ async fn an_unopenable_private_chain_is_listed_masked() {
     assert_eq!(vault["storage_location"], "", "{vault}");
     assert_eq!(vault["thought_count"], registered.public_thought_count);
     assert_eq!(vault["agent_count"], 0, "{vault}");
+    assert_eq!(vault["derived_backlog"]["implicit_edges"], 0, "{vault}");
     let text = listing.to_string();
     assert!(
         !text.contains(&dir.display().to_string()),
