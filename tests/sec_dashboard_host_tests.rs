@@ -183,3 +183,73 @@ async fn login_rate_limit_is_per_client_ip() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The static list handed to `cloudllm_mcp` and the per-request decision the
+/// dashboard and the browser guard take are one policy: for every sample
+/// `Host`, the list contains the host exactly when `allows` accepts it. Built
+/// from explicit values, so it does not touch the process environment.
+#[test]
+fn library_host_list_and_dashboard_decision_agree() {
+    use dashboard_impl::HostPolicy;
+    let policies = [
+        HostPolicy::new(vec![], None),
+        HostPolicy::new(vec!["203.0.113.7".into(), " Vps.Example.org ".into()], None),
+        HostPolicy::new(vec!["2001:db8::7".into(), "".into()], None),
+        HostPolicy::new(vec![], Some("mem.example.net".into())),
+        HostPolicy::new(vec![], Some("192.168.7.7".into())),
+        HostPolicy::new(vec!["10.0.0.9".into()], Some("2001:db8::1".into())),
+        HostPolicy::new(vec![], Some("  ".into())),
+    ];
+    let hosts = [
+        "localhost",
+        "127.0.0.1",
+        "[::1]",
+        "my.mentisdb.com",
+        "my.mentisdb.com.evil.com",
+        "evil.example.com",
+        "203.0.113.7",
+        "203.0.113.8",
+        "vps.example.org",
+        "[2001:db8::7]",
+        "[2001:db8::8]",
+        "[2001:db8::1]",
+        "mem.example.net",
+        "192.168.7.7",
+        "192.168.7.8",
+        "10.0.0.9",
+        "0.0.0.0",
+    ];
+    for policy in &policies {
+        let listed = policy.library_hosts();
+        for host in hosts {
+            for authority in [host.to_string(), format!("{host}:9471")] {
+                let in_list = listed.iter().any(|entry| entry == host);
+                assert_eq!(
+                    policy.allows(&authority),
+                    in_list,
+                    "{authority} under {policy:?}; list {listed:?}"
+                );
+            }
+        }
+        assert!(!policy.allows(""), "an empty Host names nothing");
+    }
+}
+
+/// A wildcard `MENTISDB_BIND_HOST` lists the machine's interface IPs for the
+/// library, and `allows` accepts exactly those, never an unrelated address.
+#[test]
+fn wildcard_bind_lists_interface_ips() {
+    let policy = dashboard_impl::HostPolicy::new(vec![], Some("0.0.0.0".into()));
+    let listed = policy.library_hosts();
+    for iface in if_addrs::get_if_addrs().unwrap() {
+        let ip = iface.addr.ip();
+        let host = match ip {
+            std::net::IpAddr::V4(v4) => v4.to_string(),
+            std::net::IpAddr::V6(v6) => format!("[{v6}]"),
+        };
+        assert!(listed.contains(&host), "{host} missing from {listed:?}");
+        assert!(policy.allows(&host), "{host}");
+    }
+    assert!(!policy.allows("203.0.113.77"));
+    assert!(!listed.iter().any(|h| h == "0.0.0.0"));
+}

@@ -1,7 +1,10 @@
 #![cfg(feature = "server")]
-//! Holes found in the published `cloudllm_mcp` 0.3.6 and how MentisDB is (not)
-//! exposed to them: unauthenticated SSE, prefix-match Origin check, empty
-//! bearer token, CR/LF in SSE fields.
+//! Holes found in `cloudllm_mcp` 0.3.6 (unauthenticated SSE, prefix-match
+//! Origin check, empty bearer token, CR/LF in SSE fields) and the proof that
+//! MentisDB stays closed to each of them on `cloudllm_mcp` 0.4, which fixes
+//! them in the library. MentisDB used to work around the first, second and
+//! fourth with its own event-stream route and its own check; those
+//! workarounds are gone, and these tests now exercise the library's code.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -50,8 +53,9 @@ fn rpc_list(extra: &[(&str, &str)]) -> Request<Body> {
         .unwrap()
 }
 
-/// (a) With no broadcaster the library's `GET /` is not an event stream at all;
-/// with MentisDB's own stream and bearer enforcement on, subscribing needs a token.
+/// (a) With no broadcaster `GET /` is not an event stream at all; with one and
+/// bearer enforcement on, subscribing needs a token (the library authorizes the
+/// stream as action `events/subscribe`).
 #[tokio::test]
 async fn the_event_stream_is_not_open_to_anonymous_subscribers() {
     let get = || {
@@ -88,9 +92,9 @@ async fn the_event_stream_is_not_open_to_anonymous_subscribers() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-/// (b) A browser page on `localhost.evil.com` must not reach the server even
-/// though the library's own Origin check is a prefix match: MentisDB's guard
-/// compares the host exactly.
+/// (b) A browser page on `localhost.evil.com` must not reach the server.
+/// MentisDB's guard compares the `Origin` host exactly against its host policy
+/// (the library's own Origin check is switched off so the two cannot disagree).
 #[tokio::test]
 async fn lookalike_origins_are_refused() {
     let (router, _b) = standard_mcp_router(config("origin"), IpAddr::V4(Ipv4Addr::LOCALHOST));
@@ -143,7 +147,8 @@ async fn an_empty_bearer_token_is_rejected() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-/// (d) A CR or LF in an event name or id cannot forge extra SSE fields or events.
+/// (d) A CR or LF in an event name or id cannot forge extra SSE fields or
+/// events; the library strips them before it writes the frame.
 #[tokio::test]
 async fn crlf_in_event_fields_cannot_forge_events() {
     let (router, broadcaster) =

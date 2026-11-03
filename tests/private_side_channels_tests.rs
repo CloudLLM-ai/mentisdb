@@ -156,7 +156,8 @@ async fn sse_events_do_not_carry_tool_arguments() {
         std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
     );
     let mut receiver = broadcaster.subscribe();
-    // `GET /` is served by MentisDB itself and carries the same sanitized events.
+    // `GET /` is the library's stream (metadata only) plus MentisDB's own
+    // `tool_called` events: none of them carries arguments.
     let mut stream_request = Request::get("/")
         .header("accept", "text/event-stream")
         .body(Body::empty())
@@ -207,4 +208,71 @@ async fn sse_events_do_not_carry_tool_arguments() {
         !events.contains("SSESECRET") && !events.contains("TAGSECRET"),
         "{events}"
     );
+
+    // What a subscriber of `GET /` actually receives, frame by frame, carries
+    // no argument or result either, and still names the tool.
+    let mut stream = streamed.into_body();
+    let mut wire = String::new();
+    while let Ok(Some(Ok(frame))) = tokio::time::timeout(
+        Duration::from_millis(300),
+        std::future::poll_fn(|cx| {
+            use axum::body::HttpBody;
+            std::pin::Pin::new(&mut stream).poll_frame(cx)
+        }),
+    )
+    .await
+    .map(|frame| frame.map(|frame| frame.map(|f| f.into_data().unwrap_or_default())))
+    {
+        wire.push_str(&String::from_utf8_lossy(&frame));
+    }
+    assert!(
+        wire.contains("event: tool_called") && wire.contains("mentisdb_append"),
+        "no frame on the wire: {wire}"
+    );
+    assert!(
+        !wire.contains("SSESECRET") && !wire.contains("TAGSECRET"),
+        "{wire}"
+    );
+}
+
+/// The legacy `POST /tools/execute` route reports every call, with its raw
+/// parameters, to the MCP event handler. The broadcaster that handler feeds
+/// (the stream `GET /` serves) must hold the tool name and outcome but not
+/// the thought text or the tags: `cloudllm_mcp` broadcasts metadata only
+/// unless asked for more (`SsePayloadMode::Full`), and MentisDB never asks.
+#[tokio::test]
+async fn legacy_tool_calls_do_not_leak_arguments_into_the_event_stream() {
+    let (mut server, broadcaster) = mentisdb::server::start_mcp_server(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+        MentisDbServiceConfig::new(dir("legacy_sse"), "default", StorageAdapterKind::Binary),
+    )
+    .await
+    .unwrap();
+    assert_eq!(broadcaster.payload_mode(), mcp::SsePayloadMode::Minimal);
+    let mut receiver = broadcaster.subscribe();
+    let response = reqwest::Client::new()
+        .post(format!("http://{}/tools/execute", server.local_addr()))
+        .json(&json!({"tool": "mentisdb_append", "parameters": {
+            "chain_key": "c", "agent_id": "a", "thought_type": "Insight",
+            "content": "LEGACYSECRET private text", "tags": ["LEGACYTAG"]
+        }}))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success(), "{:?}", response.status());
+    let mut events = String::new();
+    while let Ok(Ok(message)) =
+        tokio::time::timeout(Duration::from_millis(300), receiver.recv()).await
+    {
+        events.push_str(&message.format());
+    }
+    assert!(
+        events.contains("mentisdb_append"),
+        "the call is reported by name: {events}"
+    );
+    assert!(
+        !events.contains("LEGACYSECRET") && !events.contains("LEGACYTAG"),
+        "{events}"
+    );
+    server.shutdown().unwrap();
 }
