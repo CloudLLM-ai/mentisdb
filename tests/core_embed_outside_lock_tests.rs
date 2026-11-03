@@ -17,7 +17,8 @@ use mentisdb::{
     MAX_PIPELINED_EMBEDDINGS,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
@@ -39,8 +40,10 @@ struct Probe {
     calls: AtomicUsize,
     /// How many upcoming model calls fail (failed calls are not counted).
     fail_remaining: AtomicUsize,
-    /// Milliseconds every call sleeps, to model a slow embedding backend.
-    delay_ms: AtomicUsize,
+    /// One-shot latch: when armed, the next call announces it has started on
+    /// `entered` and then parks until `release` fires, so a test can act while
+    /// the model call is provably in flight instead of guessing with a sleep.
+    park: Mutex<Option<(Sender<()>, Receiver<()>)>>,
 }
 
 struct ProbeProvider {
@@ -64,9 +67,10 @@ impl EmbeddingProvider for ProbeProvider {
             return Err(ProbeError);
         }
         self.probe.calls.fetch_add(inputs.len(), Ordering::SeqCst);
-        let delay = self.probe.delay_ms.load(Ordering::SeqCst);
-        if delay > 0 {
-            std::thread::sleep(Duration::from_millis(delay as u64));
+        let parked = self.probe.park.lock().unwrap().take();
+        if let Some((entered, release)) = parked {
+            let _ = entered.send(());
+            let _ = release.recv();
         }
         self.inner.embed_batch(inputs).map_err(|_| ProbeError)
     }
@@ -498,14 +502,19 @@ fn test_default_append_still_embeds_synchronously() {
 }
 
 /// While a slow embedding runs, other users of the chain are not blocked: the
-/// chain lock is free for the whole model call. (With the old in-lock embed
-/// the reader below waited for the full delay.)
+/// chain lock is free for the whole model call. The model call is parked on a
+/// latch, so the reader runs while the call is provably in flight; with the old
+/// in-lock embed the reader would wait behind it and never finish until the
+/// latch is released. There is no wall-clock bound: the only timeout is the
+/// generous failure detector on the reader's result.
 #[test]
 fn test_readers_are_not_blocked_while_a_slow_embedding_runs() {
     use std::sync::RwLock;
     let dir = tempdir().unwrap();
     let (chain, probe, metadata) = open_chain(dir.path(), "slow");
-    probe.delay_ms.store(400, Ordering::SeqCst);
+    let (entered_tx, entered_rx) = channel();
+    let (release_tx, release_rx) = channel();
+    *probe.park.lock().unwrap() = Some((entered_tx, release_rx));
     let chain = Arc::new(RwLock::new(chain));
 
     let writer = {
@@ -525,16 +534,24 @@ fn test_readers_are_not_blocked_while_a_slow_embedding_runs() {
         })
     };
 
-    // Let the writer reach the model call, then time a read.
-    std::thread::sleep(Duration::from_millis(100));
-    let started = Instant::now();
-    let len = chain.read().unwrap().thoughts().len();
-    let waited = started.elapsed();
-    assert_eq!(len, 1, "the append is visible while the vector is pending");
-    assert!(
-        waited < Duration::from_millis(150),
-        "a reader waited {waited:?} behind the embedding"
+    // The model call has started and is parked: read while it is in flight.
+    entered_rx.recv().expect("the embedding never started");
+    let (done_tx, done_rx) = channel();
+    let reader = {
+        let chain = Arc::clone(&chain);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(chain.read().unwrap().thoughts().len());
+        })
+    };
+    let read = done_rx.recv_timeout(Duration::from_secs(30));
+    // Whatever happened, let the model call finish so no thread is left parked.
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        read.expect("a reader was blocked behind the embedding"),
+        1,
+        "the append is visible while the vector is pending"
     );
+    reader.join().unwrap();
     writer.join().unwrap();
     chain.write().unwrap().flush().unwrap();
     drop(chain);

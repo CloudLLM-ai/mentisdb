@@ -23,6 +23,30 @@ fn dir(name: &str) -> std::path::PathBuf {
     dir
 }
 
+/// Everything `receiver` yields until `marker` shows up in it, rendered with
+/// `render`. Events are broadcast in the order the calls ran, so a call made
+/// after the one under test and recognisable by `marker` closes the window:
+/// by the time its event arrives, every event of the earlier call has been
+/// read. This replaces "wait until it has been quiet for 300 ms", which could
+/// not tell "nothing more will come" from "not yet".
+///
+/// The only timeout is a generous failure detector for a marker that never
+/// arrives.
+async fn events_until<T: Clone + std::fmt::Debug>(
+    receiver: &mut tokio::sync::broadcast::Receiver<T>,
+    marker: &str,
+    render: impl Fn(&T) -> String,
+) -> String {
+    let mut events = String::new();
+    while !events.contains(marker) {
+        match tokio::time::timeout(Duration::from_secs(30), receiver.recv()).await {
+            Ok(Ok(message)) => events.push_str(&render(&message)),
+            other => panic!("no event carrying {marker:?} arrived ({other:?}); saw: {events}"),
+        }
+    }
+    events
+}
+
 async fn webhook_sink() -> (
     std::net::SocketAddr,
     Arc<AtomicUsize>,
@@ -192,14 +216,30 @@ async fn sse_events_do_not_carry_tool_arguments() {
             [127, 0, 0, 1],
             41000,
         ))));
-    let response = router.oneshot(request).await.unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
     assert!(response.status().is_success());
-    let mut events = String::new();
-    while let Ok(Ok(message)) =
-        tokio::time::timeout(Duration::from_millis(300), receiver.recv()).await
-    {
-        events.push_str(&format!("{message:?}"));
-    }
+    // A later, recognisable call closes the window on the one above.
+    let sentinel = Request::post("/")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .body(Body::from(
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).to_string(),
+        ))
+        .unwrap();
+    let mut sentinel = sentinel;
+    sentinel
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            41002,
+        ))));
+    assert!(router
+        .oneshot(sentinel)
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+    let events = events_until(&mut receiver, "tools/list", |m| format!("{m:?}")).await;
     assert!(
         events.contains("tool_called") && events.contains("mentisdb_append"),
         "no event seen: {events}"
@@ -213,17 +253,22 @@ async fn sse_events_do_not_carry_tool_arguments() {
     // no argument or result either, and still names the tool.
     let mut stream = streamed.into_body();
     let mut wire = String::new();
-    while let Ok(Some(Ok(frame))) = tokio::time::timeout(
-        Duration::from_millis(300),
-        std::future::poll_fn(|cx| {
-            use axum::body::HttpBody;
-            std::pin::Pin::new(&mut stream).poll_frame(cx)
-        }),
-    )
-    .await
-    .map(|frame| frame.map(|frame| frame.map(|f| f.into_data().unwrap_or_default())))
-    {
-        wire.push_str(&String::from_utf8_lossy(&frame));
+    while !wire.contains("tools/list") {
+        let frame = tokio::time::timeout(
+            Duration::from_secs(30),
+            std::future::poll_fn(|cx| {
+                use axum::body::HttpBody;
+                std::pin::Pin::new(&mut stream).poll_frame(cx)
+            }),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("the sentinel frame never arrived; saw: {wire}"));
+        let Some(Ok(frame)) = frame else {
+            panic!("the event stream ended before the sentinel; saw: {wire}")
+        };
+        wire.push_str(&String::from_utf8_lossy(
+            &frame.into_data().unwrap_or_default(),
+        ));
     }
     assert!(
         wire.contains("event: tool_called") && wire.contains("mentisdb_append"),
@@ -260,12 +305,15 @@ async fn legacy_tool_calls_do_not_leak_arguments_into_the_event_stream() {
         .await
         .unwrap();
     assert!(response.status().is_success(), "{:?}", response.status());
-    let mut events = String::new();
-    while let Ok(Ok(message)) =
-        tokio::time::timeout(Duration::from_millis(300), receiver.recv()).await
-    {
-        events.push_str(&message.format());
-    }
+    // A later, recognisable call closes the window on the one above.
+    let sentinel = reqwest::Client::new()
+        .post(format!("http://{}/tools/execute", server.local_addr()))
+        .json(&json!({"tool": "mentisdb_list_chains", "parameters": {}}))
+        .send()
+        .await
+        .unwrap();
+    assert!(sentinel.status().is_success(), "{:?}", sentinel.status());
+    let events = events_until(&mut receiver, "mentisdb_list_chains", |m| m.format()).await;
     assert!(
         events.contains("mentisdb_append"),
         "the call is reported by name: {events}"

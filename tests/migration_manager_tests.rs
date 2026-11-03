@@ -38,12 +38,17 @@ fn config(dir: &Path) -> MigrationConfig {
     config
 }
 
-/// A hook that sleeps at the first record of a chain, to hold migrations open.
-fn slow(ms: u64) -> MigrationOptions {
+/// Options whose hook parks the worker at the first record of a chain: it tells
+/// `entered` the migration is under way, then waits for `release`. A migration
+/// held this way is provably in flight, so tests assert on it without sleeps.
+fn parked(entered: Sender<()>, release: Receiver<()>) -> MigrationOptions {
+    let entered = Mutex::new(entered);
+    let release = Mutex::new(release);
     MigrationOptions {
         failpoint: Some(Arc::new(move |fp| {
             if matches!(fp, Failpoint::DuringStage { thought: 0 }) {
-                std::thread::sleep(Duration::from_millis(ms));
+                let _ = entered.lock().unwrap().send(());
+                let _ = release.lock().unwrap().recv();
             }
             false
         })),
@@ -53,18 +58,30 @@ fn slow(ms: u64) -> MigrationOptions {
 
 /// `start` returns before any chain is rewritten; the chain is gated with a
 /// percent and a retry hint until its migration finishes, then served.
+///
+/// Deterministic: the migration is parked mid-flight, so `start` returning at
+/// all proves it did not wait for it (had it run the migration inline it would
+/// hang here, which the timeout turns into a failure).
 #[test]
 fn test_start_is_non_blocking_and_gates_migrating_chains() {
     let dir = TempDir::new().unwrap();
     put(dir.path(), "old", FixtureFormat::Schema1, 50);
+    let (entered_tx, entered_rx) = channel();
+    let (release_tx, release_rx) = channel();
     let mut cfg = config(dir.path());
-    cfg.options = slow(400);
-    let started = Instant::now();
-    let manager = MigrationManager::start(cfg).unwrap();
-    assert!(
-        started.elapsed() < Duration::from_millis(300),
-        "start must not wait for the migration"
-    );
+    cfg.options = parked(entered_tx, release_rx);
+    let (started_tx, started_rx) = channel();
+    std::thread::spawn(move || {
+        let _ = started_tx.send(MigrationManager::start(cfg).unwrap());
+    });
+    let manager = started_rx
+        .recv_timeout(Duration::from_secs(60))
+        .unwrap_or_else(|_| {
+            // Unpark a worker so the thread does not outlive a failed test.
+            let _ = release_tx.send(());
+            panic!("start blocked on the migration");
+        });
+    entered_rx.recv().unwrap();
 
     match manager.gate("old") {
         Some(MigrationBlock::Migrating {
@@ -72,11 +89,16 @@ fn test_start_is_non_blocking_and_gates_migrating_chains() {
         }) => assert!(retry_after_secs >= 1),
         other => panic!("expected a migrating block, got {other:?}"),
     }
+    assert_eq!(
+        manager.status("old").unwrap().phase,
+        MigrationPhase::Running
+    );
     assert!(
         manager.gate("unrelated-chain").is_none(),
         "other chains are never blocked"
     );
-    assert!(manager.wait_idle(Duration::from_secs(30)));
+    release_tx.send(()).unwrap();
+    assert!(manager.wait_idle(Duration::from_secs(60)));
     assert!(manager.gate("old").is_none());
     let status = manager.status("old").unwrap();
     assert_eq!(status.phase, MigrationPhase::Completed);
@@ -291,9 +313,12 @@ fn test_start_resumes_interrupted_migrations() {
 fn test_concurrent_requests_during_migration_never_see_a_partial_chain() {
     let dir = TempDir::new().unwrap();
     put(dir.path(), "busy", FixtureFormat::Schema1, 300);
+    let (entered_tx, entered_rx) = channel();
+    let (release_tx, release_rx) = channel();
     let mut cfg = config(dir.path());
-    cfg.options = slow(300);
+    cfg.options = parked(entered_tx, release_rx);
     let manager = MigrationManager::start(cfg).unwrap();
+    entered_rx.recv().unwrap();
     let blocked = Arc::new(AtomicUsize::new(0));
     let served = Arc::new(AtomicUsize::new(0));
     let readers: Vec<_> = (0..4)
@@ -326,13 +351,20 @@ fn test_concurrent_requests_during_migration_never_see_a_partial_chain() {
             })
         })
         .collect();
+    // The migration is parked, so every reader is told to retry; only then let
+    // it finish (no sleep decides whether a reader saw the migrating state).
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while blocked.load(Ordering::SeqCst) < 4 {
+        assert!(
+            Instant::now() < deadline,
+            "readers were never told to retry"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    release_tx.send(()).unwrap();
     for reader in readers {
         reader.join().unwrap();
     }
-    assert!(
-        blocked.load(Ordering::SeqCst) > 0,
-        "readers were told to retry while it ran"
-    );
     assert_eq!(served.load(Ordering::SeqCst), 4);
 }
 
@@ -422,23 +454,6 @@ fn test_large_chain_migrates_and_is_timed() {
         start_latency < Duration::from_secs(2),
         "startup must stay non-blocking"
     );
-}
-
-/// Options whose hook parks the worker at the first record of a chain: it tells
-/// `entered` the migration is under way, then waits for `release`.
-fn parked(entered: Sender<()>, release: Receiver<()>) -> MigrationOptions {
-    let entered = Mutex::new(entered);
-    let release = Mutex::new(release);
-    MigrationOptions {
-        failpoint: Some(Arc::new(move |fp| {
-            if matches!(fp, Failpoint::DuringStage { thought: 0 }) {
-                let _ = entered.lock().unwrap().send(());
-                let _ = release.lock().unwrap().recv();
-            }
-            false
-        })),
-        progress: None,
-    }
 }
 
 /// Stopping the daemon while a chain migrates (`SIGTERM`, a restart) is a clean
