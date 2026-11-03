@@ -1,4 +1,19 @@
 UNRELEASED
+  - security(files): MentisDB data is no longer created world-readable under a default
+    umask. Directories MentisDB creates (the data directory, migration backups, restore
+    staging) are `0700`; chain files (binary and JSONL), registries, agent and entity-type
+    registries, vector sidecars and WAL, graph and implicit-edge files, the skill
+    registry, the webhook registry (it holds signing secrets), migration stamps, journals
+    and staged files are created `0600`; backup archives are `0600` with every zip entry
+    `0600`, and restored files are `0600` (Unix; no-ops elsewhere). Existing files and
+    directories are never chmod'ed silently, except files MentisDB itself rewrites
+    (temp file plus rename, so they become `0600`) and a backup archive it overwrites.
+    A daemon whose existing data directory is group- or world-accessible logs a warning
+    with the `chmod 700` fix (`mentisdb::paths::data_dir_mode_warning`). Backups still
+    exclude `operator/operator.key` (owner decision): `backup` and `restore` now print a
+    reminder to back it up separately, and the CLI help, README and
+    docs/CHAIN_ACCESS.md say so. Upgrade note: existing directories keep their mode; run
+    `chmod 700 <data dir>` and `chmod 600` on the files you want private.
   - security(docker): the daemon now says so when it is reachable from other machines
     without full authentication. The Docker image binds `0.0.0.0` (needed for published
     ports) with bearer tokens and the dashboard PIN off, and nothing warned about it.

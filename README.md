@@ -1802,6 +1802,15 @@ MENTISDB_BEARER_TOKEN=mentisdb_global_token mentisdb backup
 Without it the flush is rejected, so `backup` prints a "could not flush daemon" warning and
 captures the files as they are on disk.
 
+**Permissions and the operator key.** A backup archive holds plaintext thoughts (including
+the private segments of private chains) and, with `--include-tls`, the TLS private key, so
+`mentisdb backup` creates the `.mentis` file owner-only (`0600`) with every entry recorded as
+`0600` (Unix; elsewhere the parent directory's ACL applies). Backups intentionally **do not
+contain `operator/operator.key`**, the key that governs private chains, so one stolen archive
+cannot also change who may read or write them. Back that file up separately, owner-only and
+apart from the archive; without it a restored instance cannot change the access policy of its
+private chains. `backup` and `restore` print this reminder.
+
 ### Restore a backup
 
 The daemon must be stopped before restoring. If `mentisdb` is detected running, the restore aborts with a message to stop the daemon first. Any HTTP answer from the flush probe, including `401` from a token-protected daemon, counts as running.

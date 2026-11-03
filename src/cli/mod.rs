@@ -463,6 +463,8 @@ fn run_backup(
     .map_err(|e| e.to_string())?;
     writeln!(out, "  mentisdb version: {}", manifest.mentisdb_version)
         .map_err(|e| e.to_string())?;
+    writeln!(out, "  {}", crate::backup::OPERATOR_KEY_BACKUP_REMINDER)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -582,6 +584,7 @@ fn run_restore(
     .map_err(|e| format!("restore_backup: {e}"))?;
 
     writeln!(out, "Restore complete.").map_err(|e| e.to_string())?;
+    writeln!(out, "{}", crate::backup::OPERATOR_KEY_BACKUP_REMINDER).map_err(|e| e.to_string())?;
     Ok(())
 }
 

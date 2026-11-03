@@ -2177,7 +2177,7 @@ impl SkillRegistry {
             return Ok(());
         };
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            crate::private_fs::create_dir_all(parent)?;
         }
         let payload = bincode::serde::encode_to_vec(
             PersistedSkillRegistryRef {
@@ -2190,7 +2190,7 @@ impl SkillRegistry {
             io::Error::other(format!("Failed to serialize skill registry: {error}"))
         })?;
         let temp_path = path.with_extension("bin.tmp");
-        fs::write(&temp_path, payload)?;
+        crate::private_fs::write(&temp_path, payload)?;
         fs::rename(&temp_path, path)?;
         self.last_modified = fs::metadata(path).and_then(|m| m.modified()).ok();
         Ok(())
@@ -2271,7 +2271,7 @@ pub fn migrate_skill_registry<P: AsRef<Path>>(
             )
             .map_err(|e| io::Error::other(format!("encode error: {e}")))?;
             let temp_path = path.with_extension("tmp");
-            fs::write(&temp_path, encoded)?;
+            crate::private_fs::write(&temp_path, encoded)?;
             fs::rename(&temp_path, &path)?;
             return Ok(Some(SkillRegistryMigrationReport {
                 path,
@@ -2346,7 +2346,7 @@ pub fn migrate_skill_registry<P: AsRef<Path>>(
     // registry file and brick the chain on next open.
     let temp_path = path.with_extension("tmp");
     {
-        let file = fs::File::create(&temp_path)?;
+        let file = crate::private_fs::create(&temp_path)?;
         let mut writer = std::io::BufWriter::new(file);
         use std::io::Write;
         writer.write_all(&encoded)?;

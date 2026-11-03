@@ -68,7 +68,11 @@ Out of scope, documented limits:
   a rewriting proxy.
 * **Filesystem access.** Whoever can read the data directory can read every
   thought, the operator key included. Confidentiality is against API callers,
-  not against the host. Back up `operator/operator.key` with the chains.
+  not against the host. The data directory is created `0700` and the chain,
+  registry, sidecar and backup files `0600`, so other local users cannot read
+  them; an existing directory is never changed (the daemon warns when one is
+  group- or world-accessible). `mentisdb backup` excludes
+  `operator/operator.key` on purpose: back it up separately.
 * **Private-key custody** is the agent's.
 * **Clock.** Proofs are accepted within 60 seconds of the server clock.
 * An attacker with write access to the chain *files* can append well-formed
@@ -241,8 +245,10 @@ first use, never overwritten). That key is a governor of every policy the
 operator writes. It is the **recovery path**: if every agent governor key is
 lost, the operator can still change the policy. A record that would leave no
 governor is refused, so a policy cannot lock itself out. Back the key file up
-with the chains; without it, and without a governor key, the key list of a
-private chain can no longer be changed.
+**separately from `mentisdb backup`** (archives intentionally exclude it, so a
+stolen archive cannot also change who may read or write; `backup` and
+`restore` print a reminder); without it, and without a governor key, the key
+list of a private chain can no longer be changed.
 
 What REST and MCP do instead: `POST /v1/agents/keys`, `/v1/agents/keys/revoke`,
 `/v1/agents/disable`, `/v1/access/policy/set` and status changes through

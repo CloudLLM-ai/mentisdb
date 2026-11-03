@@ -292,12 +292,12 @@ fn sync_dir(dir: &Path) {
 
 fn write_json_durable<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)?;
+    crate::private_fs::create_dir_all(parent)?;
     let mut temp = path.as_os_str().to_owned();
     temp.push(format!(".tmp-{}", std::process::id()));
     let temp = PathBuf::from(temp);
     let result = (|| {
-        let mut file = File::create(&temp)?;
+        let mut file = crate::private_fs::create(&temp)?;
         serde_json::to_writer_pretty(&mut file, value).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
         file.sync_all()?;
@@ -384,9 +384,9 @@ struct ChainLock {
 impl ChainLock {
     fn acquire(paths: &MigrationPaths) -> Result<Self, MigrationError> {
         if let Some(parent) = paths.lock.parent() {
-            fs::create_dir_all(parent)?;
+            crate::private_fs::create_dir_all(parent)?;
         }
-        let file = fs::OpenOptions::new()
+        let file = crate::private_fs::options()
             .create(true)
             .truncate(false)
             .write(true)
@@ -906,11 +906,11 @@ fn execute(
     journal.set_state(paths, JournalState::BackedUp)?;
     options.check(Failpoint::AfterBackup)?;
 
-    fs::create_dir_all(paths.staged.parent().unwrap_or(&paths.chain_dir))?;
+    crate::private_fs::create_dir_all(paths.staged.parent().unwrap_or(&paths.chain_dir))?;
     let started = Instant::now();
     let mut writer = HashingWriter::new(BufWriter::with_capacity(
         1 << 20,
-        File::create(&paths.staged)?,
+        crate::private_fs::create(&paths.staged)?,
     ));
     let summary = stream_upgrade(paths, kind, &mut writer, options)?;
     writer.flush()?;
@@ -987,7 +987,7 @@ fn backup_original(paths: &MigrationPaths, kind: StorageAdapterKind) -> Result<(
     if paths.backup_dir.exists() {
         fs::remove_dir_all(&paths.backup_dir)?;
     }
-    fs::create_dir_all(&paths.backup_dir)?;
+    crate::private_fs::create_dir_all(&paths.backup_dir)?;
     let target = paths
         .backup_dir
         .join(source.file_name().unwrap_or_default());
@@ -1455,7 +1455,7 @@ pub(crate) fn preserve_before_rewrite(path: &Path) {
     if target.exists() || !path.exists() {
         return;
     }
-    let result = fs::create_dir_all(&backup_dir).and_then(|()| {
+    let result = crate::private_fs::create_dir_all(&backup_dir).and_then(|()| {
         fs::hard_link(path, &target).or_else(|_| fs::copy(path, &target).map(|_| ()))
     });
     match result {

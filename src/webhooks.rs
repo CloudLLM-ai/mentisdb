@@ -6,7 +6,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -434,14 +434,14 @@ impl WebhookManager {
         let path = Self::webhooks_path(&self.chain_dir);
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
+                crate::private_fs::create_dir_all(parent)?;
             }
         }
         let temp_path = path.with_extension("json.tmp");
         if temp_path.exists() {
             fs::remove_file(&temp_path)?;
         }
-        let file = OpenOptions::new()
+        let file = crate::private_fs::options()
             .create(true)
             .write(true)
             .truncate(true)

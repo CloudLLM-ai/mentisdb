@@ -535,14 +535,14 @@ impl HnswBackend {
         let body = bincode::serde::encode_to_vec(self, bincode::config::standard())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error}")))?;
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            crate::private_fs::create_dir_all(parent)?;
         }
         let sequence = TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut temp_name = path.as_os_str().to_owned();
         temp_name.push(format!(".tmp-{}-{sequence}", std::process::id()));
         let temp_path = std::path::PathBuf::from(temp_name);
         let result = (|| {
-            let mut writer = BufWriter::new(File::create(&temp_path)?);
+            let mut writer = BufWriter::new(crate::private_fs::create(&temp_path)?);
             writer.write_all(GRAPH_MAGIC)?;
             writer.write_all(&self.content_digest())?;
             writer.write_all(&body)?;

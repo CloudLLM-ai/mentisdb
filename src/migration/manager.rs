@@ -50,7 +50,7 @@ pub fn write_format_stamp(chain_dir: &Path) -> io::Result<()> {
     if read_stamp(chain_dir).is_some_and(|stamp| stamp.format > MENTISDB_CURRENT_VERSION) {
         return Ok(());
     }
-    fs::create_dir_all(chain_dir)?;
+    crate::private_fs::create_dir_all(chain_dir)?;
     let stamp = FormatStamp {
         format: MENTISDB_CURRENT_VERSION,
         written_by: env!("CARGO_PKG_VERSION").to_owned(),
@@ -61,7 +61,7 @@ pub fn write_format_stamp(chain_dir: &Path) -> io::Result<()> {
         "{FORMAT_STAMP_FILENAME}.tmp-{}",
         std::process::id()
     ));
-    fs::write(
+    crate::private_fs::write(
         &temp,
         serde_json::to_vec_pretty(&stamp).map_err(io::Error::other)?,
     )?;
@@ -398,7 +398,7 @@ impl MigrationManager {
     /// newer release; I/O errors listing the directory.
     pub fn start(config: MigrationConfig) -> Result<Self, MigrationError> {
         check_format_stamp(&config.chain_dir)?;
-        fs::create_dir_all(&config.chain_dir)?;
+        crate::private_fs::create_dir_all(&config.chain_dir)?;
         let workers = config.max_concurrency.max(1);
         let manager = Self {
             inner: Arc::new(Inner {

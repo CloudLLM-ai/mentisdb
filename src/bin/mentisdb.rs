@@ -1439,6 +1439,9 @@ async fn run_headless() -> Result<(), Box<dyn std::error::Error + Send + Sync>> 
     for warning in config.exposure_warnings() {
         eprintln!("[mentisdb headless] WARNING: {warning}");
     }
+    if let Some(warning) = mentisdb::paths::data_dir_mode_warning(&config.service.chain_dir) {
+        eprintln!("[mentisdb headless] WARNING: {warning}");
+    }
 
     // Run migrations silently
     if std::env::var_os("MENTISDB_DIR").is_none() {

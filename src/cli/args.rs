@@ -397,6 +397,13 @@ Commands:
     for a consistent backup. If the daemon is not running, files are captured
     as-is.
 
+    The archive is created owner-only (0600) and its entries record mode 0600:
+    it holds plaintext private segments and, with --include-tls, the TLS
+    private key. It does NOT include operator/operator.key, the key that
+    governs private chains: back that file up separately (owner-only, apart
+    from the archive), or a restored instance cannot change who may read or
+    write its private chains.
+
     Examples:
       mentisdb backup
       mentisdb backup -o /backups/mentisdb-2026-04-14.mentis
@@ -424,6 +431,10 @@ Commands:
     --overwrite is chain-scoped: it can replace same-path chain files when a
     safe suffix merge is not possible. It does not blindly replace the local
     registry, skills, webhooks, TLS, or unrelated chains.
+
+    Restored files are created owner-only (0600). Backups do not carry
+    operator/operator.key: restore it separately to keep governing private
+    chains.
 
     Examples:
       mentisdb restore mentisdb-2026-04-14.mentis
@@ -602,6 +613,13 @@ If the daemon is running, all chains are flushed before reading files
 for a consistent backup. If the daemon is not running, files are captured
 as-is.
 
+The archive is created owner-only (0600) and its entries record mode 0600:
+it holds plaintext private segments and, with --include-tls, the TLS
+private key. It does NOT include operator/operator.key, the key that
+governs private chains: back that file up separately (owner-only, apart
+from the archive), or a restored instance cannot change who may read or
+write its private chains.
+
 Options:
   -o, --output <path> Path for the .mentis archive (default: ./mentisdb-YYYY-MM-DD-HH-MM-SS.mentis)
   --dir <path>       Path to MENTISDB_DIR (default: platform default)
@@ -636,6 +654,10 @@ the daemon's in-memory state from overwriting restored files.
 --overwrite is chain-scoped: it can replace same-path chain files when a
 safe suffix merge is not possible. It does not blindly replace the local
 registry, skills, webhooks, TLS, or unrelated chains.
+
+Restored files are created owner-only (0600). Backups do not carry
+operator/operator.key: restore it separately to keep governing private
+chains.
 
 Options:
   <archive.mentis>   Path to the .mentis backup archive (required)

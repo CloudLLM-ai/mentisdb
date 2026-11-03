@@ -234,8 +234,8 @@ impl DataDirLock {
     ///
     /// I/O errors creating or locking the file.
     pub fn try_acquire(data_dir: &Path) -> io::Result<Option<Self>> {
-        std::fs::create_dir_all(data_dir)?;
-        let mut file = std::fs::OpenOptions::new()
+        crate::private_fs::create_dir_all(data_dir)?;
+        let mut file = crate::private_fs::options()
             .create(true)
             .truncate(false)
             .write(true)

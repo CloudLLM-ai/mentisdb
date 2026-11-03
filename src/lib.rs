@@ -319,6 +319,7 @@ pub mod llm;
 pub mod migration;
 pub mod operator;
 pub mod paths;
+pub(crate) mod private_fs;
 pub mod read_auth;
 pub mod search;
 #[cfg(feature = "server")]
@@ -825,10 +826,13 @@ impl WriterState {
 fn open_append_writer(file_path: &Path) -> io::Result<File> {
     if let Some(parent) = file_path.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
+            private_fs::create_dir_all(parent)?;
         }
     }
-    OpenOptions::new().create(true).append(true).open(file_path)
+    private_fs::options()
+        .create(true)
+        .append(true)
+        .open(file_path)
 }
 
 /// What a group commit needs from the chain file: append bytes, learn the
@@ -6055,7 +6059,7 @@ impl MentisDb {
                 ),
             ));
         }
-        fs::create_dir_all(chain_dir.as_ref())?;
+        private_fs::create_dir_all(chain_dir.as_ref())?;
         let storage_kind =
             resolve_storage_kind_for_chain(chain_dir.as_ref(), chain_key, default_storage_kind)?;
         let chain = Self::open_with_storage(storage_kind.for_chain_key(&chain_dir, chain_key))?;
@@ -8073,7 +8077,7 @@ impl MentisDb {
             return;
         };
         let tmp = path.with_extension("json.tmp");
-        if fs::write(&tmp, text).is_ok() && fs::rename(&tmp, &path).is_err() {
+        if private_fs::write(&tmp, text).is_ok() && fs::rename(&tmp, &path).is_err() {
             let _ = fs::remove_file(&tmp);
         }
     }
@@ -13033,9 +13037,9 @@ fn save_managed_vector_sidecar_config(
 ) -> io::Result<()> {
     let path = chain_vector_sidecar_config_path(chain_dir, chain_key, storage_kind);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        private_fs::create_dir_all(parent)?;
     }
-    let file = File::create(path)?;
+    let file = private_fs::create(&path)?;
     let writer = BufWriter::new(file);
     serde_json::to_writer(writer, config).map_err(|error| {
         io::Error::other(format!(
@@ -13083,7 +13087,7 @@ fn write_json_atomic<T: Serialize>(
     temp_name.push(format!(".tmp-{}-{sequence}", std::process::id()));
     let temp_path = PathBuf::from(temp_name);
     let result = (|| {
-        let mut writer = BufWriter::new(File::create(&temp_path)?);
+        let mut writer = BufWriter::new(private_fs::create(&temp_path)?);
         let serialized = if pretty {
             serde_json::to_writer_pretty(&mut writer, value)
         } else {
@@ -13116,7 +13120,7 @@ fn save_agent_registry(
 ) -> io::Result<()> {
     let path = chain_agent_registry_path(chain_dir, chain_key, storage_kind);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        private_fs::create_dir_all(parent)?;
     }
     write_json_atomic(&path, registry, false, "agent registry")
 }
@@ -13160,7 +13164,7 @@ fn save_entity_type_registry(
 ) -> io::Result<()> {
     let path = chain_entity_type_registry_path(chain_dir, chain_key, storage_kind);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        private_fs::create_dir_all(parent)?;
     }
     write_json_atomic(&path, registry, false, "entity type registry")
 }
@@ -13191,7 +13195,7 @@ fn load_mentisdb_registry(chain_dir: &Path) -> io::Result<MentisDbRegistry> {
 fn save_mentisdb_registry(chain_dir: &Path, registry: &MentisDbRegistry) -> io::Result<()> {
     let path = mentisdb_registry_path(chain_dir);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        private_fs::create_dir_all(parent)?;
     }
     write_json_atomic(&path, registry, true, "MentisDB registry")?;
 
@@ -13472,7 +13476,7 @@ where
     F: FnMut(MentisDbMigrationEvent),
 {
     let chain_dir = chain_dir.as_ref();
-    fs::create_dir_all(chain_dir)?;
+    private_fs::create_dir_all(chain_dir)?;
     let mut registry = load_mentisdb_registry(chain_dir)?;
     let mut discovered = discover_chain_files(chain_dir)?;
     discovered.sort_by(|left, right| left.chain_key.cmp(&right.chain_key));
@@ -13661,7 +13665,7 @@ fn persist_thoughts_to_path(
 ) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
+            private_fs::create_dir_all(parent)?;
         }
     }
     // Write the whole chain to a sibling temp file and rename it over the
@@ -13671,7 +13675,7 @@ fn persist_thoughts_to_path(
     temp_name.push(".rewrite.tmp");
     let temp_path = PathBuf::from(temp_name);
     let write_result = (|| {
-        let mut writer = BufWriter::new(File::create(&temp_path)?);
+        let mut writer = BufWriter::new(private_fs::create(&temp_path)?);
         for thought in thoughts {
             match storage_kind {
                 StorageAdapterKind::Jsonl => {
@@ -13711,7 +13715,7 @@ fn archive_chain_file(
     let archive_dir = chain_dir
         .join("migrations")
         .join(format!("v{}_to_v{}", from_version, to_version));
-    fs::create_dir_all(&archive_dir)?;
+    private_fs::create_dir_all(&archive_dir)?;
     let archived_path = archive_dir.join(
         source_path
             .file_name()
@@ -14398,9 +14402,9 @@ fn dedupe_relations(relations: &mut Vec<ThoughtRelation>) {
 
 fn persist_jsonl_thought(file_path: &Path, thought: &Thought) -> io::Result<()> {
     if let Some(parent) = file_path.parent() {
-        fs::create_dir_all(parent)?;
+        private_fs::create_dir_all(parent)?;
     }
-    let mut file = OpenOptions::new()
+    let mut file = private_fs::options()
         .create(true)
         .append(true)
         .open(file_path)?;
@@ -15044,9 +15048,9 @@ fn persist_binary_thought(file_path: &Path, thought: &Thought) -> io::Result<()>
     let payload = bincode::serde::encode_to_vec(thought, bincode::config::standard())
         .map_err(|error| io::Error::other(format!("Failed to serialize thought: {error}")))?;
     if let Some(parent) = file_path.parent() {
-        fs::create_dir_all(parent)?;
+        private_fs::create_dir_all(parent)?;
     }
-    let mut file = OpenOptions::new()
+    let mut file = private_fs::options()
         .create(true)
         .append(true)
         .open(file_path)?;

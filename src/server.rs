@@ -174,7 +174,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 // TLS
@@ -1232,7 +1232,7 @@ pub fn adopt_legacy_default_mentisdb_dir() -> io::Result<Option<LegacyDefaultSto
         return Ok(None);
     }
 
-    fs::create_dir_all(cloudllm_dir)?;
+    crate::private_fs::create_dir_all(cloudllm_dir)?;
 
     if !mentisdb_dir.exists() {
         fs::rename(&legacy_dir, &mentisdb_dir)?;
@@ -1262,7 +1262,7 @@ pub fn adopt_legacy_default_mentisdb_dir() -> io::Result<Option<LegacyDefaultSto
 }
 
 fn move_legacy_storage_entries(source_dir: &Path, target_dir: &Path) -> io::Result<usize> {
-    fs::create_dir_all(target_dir)?;
+    crate::private_fs::create_dir_all(target_dir)?;
     let mut moved_entries = 0;
 
     for entry in fs::read_dir(source_dir)? {
@@ -1602,6 +1602,9 @@ pub async fn start_servers_with_migrations(
     crate::dashboard::API_EXPOSED.store(config.api_exposed(), Ordering::Relaxed);
     crate::dashboard::DASHBOARD_EXPOSED.store(config.dashboard_exposed(), Ordering::Relaxed);
     for warning in config.exposure_warnings() {
+        log::warn!("{warning}");
+    }
+    if let Some(warning) = crate::paths::data_dir_mode_warning(&config.service.chain_dir) {
         log::warn!("{warning}");
     }
 
@@ -2164,7 +2167,10 @@ impl InteractionLogSink {
                     fs::create_dir_all(parent)?;
                 }
                 Some(Mutex::new(
-                    OpenOptions::new().create(true).append(true).open(path)?,
+                    crate::private_fs::options()
+                        .create(true)
+                        .append(true)
+                        .open(path)?,
                 ))
             }
             None => None,

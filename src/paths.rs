@@ -159,6 +159,31 @@ pub fn default_mentisdb_dir() -> PathBuf {
     PathEnvironment::capture().default_mentisdb_dir()
 }
 
+/// A warning when the data directory `dir` exists and group or other users can
+/// open it (Unix only).
+///
+/// MentisDB creates a data directory it makes itself with mode `0700` (and its
+/// chain, registry, sidecar and backup files `0600`), but never changes the
+/// mode of one it finds: a directory created earlier, by an older release or
+/// by hand may be `0755`, and it holds plaintext thoughts, private chains and
+/// backups. The text names the directory, its mode and the `chmod 700`
+/// command that fixes it. The daemon logs it at startup.
+///
+/// Returns `None` when the directory is private or missing, and always on
+/// platforms without Unix permission bits.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::paths::data_dir_mode_warning;
+///
+/// let missing = std::path::Path::new("/nonexistent/mentisdb-doc-example");
+/// assert!(data_dir_mode_warning(missing).is_none());
+/// ```
+pub fn data_dir_mode_warning(dir: &std::path::Path) -> Option<String> {
+    crate::private_fs::mode_warning(dir)
+}
+
 /// Path of the settings file the dashboard writes: `<MENTISDB_DIR>/.env`.
 ///
 /// The daemon loads it at startup after any `.env` in the working

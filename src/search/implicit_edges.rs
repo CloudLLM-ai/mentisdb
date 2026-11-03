@@ -257,7 +257,7 @@ impl ImplicitEdgeOverlay {
                     format!("Failed to encode implicit edge overlay: {e}"),
                 )
             })?;
-        std::fs::write(&tmp_path, encoded)?;
+        crate::private_fs::write(&tmp_path, encoded)?;
         if let Err(error) = std::fs::rename(&tmp_path, path) {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(error);

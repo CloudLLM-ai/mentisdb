@@ -28,7 +28,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -317,10 +317,10 @@ impl VectorSidecar {
     /// append-time writes from paying O(n) hashing twice.
     pub fn save_to_path(&self, path: &Path) -> io::Result<()> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            crate::private_fs::create_dir_all(parent)?;
         }
         let temp_path = sidecar_temp_path(path);
-        let file = File::create(&temp_path)?;
+        let file = crate::private_fs::create(&temp_path)?;
         let mut writer = BufWriter::new(file);
         serde_json::to_writer(&mut writer, self).map_err(|error| {
             io::Error::other(format!("Failed to serialize vector sidecar: {error}"))
@@ -594,9 +594,9 @@ pub fn append_sidecar_wal_record(
     record: &VectorSidecarWalRecord,
 ) -> io::Result<()> {
     if let Some(parent) = wal_path.parent() {
-        fs::create_dir_all(parent)?;
+        crate::private_fs::create_dir_all(parent)?;
     }
-    let mut file = OpenOptions::new()
+    let mut file = crate::private_fs::options()
         .create(true)
         .append(true)
         .open(wal_path)?;

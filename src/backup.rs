@@ -299,6 +299,23 @@ fn validate_restore_relative_path(relative_path: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Reminder that backups do not carry the operator key.
+///
+/// `mentisdb backup` and `mentisdb restore` print it, and the docs repeat it.
+/// Without `<data dir>/operator/operator.key` a restored instance cannot
+/// change the access policy of its private chains (it can still read and
+/// append to public ones).
+///
+/// # Examples
+///
+/// ```
+/// assert!(mentisdb::backup::OPERATOR_KEY_BACKUP_REMINDER.contains("operator.key"));
+/// ```
+pub const OPERATOR_KEY_BACKUP_REMINDER: &str =
+    "Note: backups do not include operator/operator.key, the key that governs private chains. \
+Back it up separately (owner-only, never in the same place as the archive); \
+without it a restored instance cannot change who may read or write its private chains.";
+
 fn sha256_file(path: &Path) -> io::Result<(String, u64)> {
     let file = File::open(path)?;
     let mut reader = BufReader::with_capacity(131072, file);
@@ -343,6 +360,20 @@ fn sha256_file(path: &Path) -> io::Result<(String, u64)> {
 ///
 /// The function returns the manifest so callers can display summary information
 /// or log it for audit purposes.
+///
+/// # Permissions and the operator key
+///
+/// An archive holds plaintext thoughts (including the private segments of
+/// private chains) and, with `include_tls`, the TLS private key, so the archive
+/// file is created owner-only (`0600`, also when it replaces an older archive)
+/// and every entry inside it records mode `0600` (Unix; no-ops elsewhere).
+///
+/// A backup deliberately **excludes** `operator/operator.key`, the key that
+/// governs private chains: keeping it out of an archive that travels keeps one
+/// stolen archive from also carrying the means to change who may read or
+/// write. Back the key up separately and keep it somewhere only the owner can
+/// read, or the restored chains cannot be governed; see
+/// [`OPERATOR_KEY_BACKUP_REMINDER`].
 ///
 /// # Errors
 ///
@@ -494,11 +525,15 @@ pub fn create_backup(options: &BackupOptions) -> io::Result<BackupManifest> {
     };
 
     // ── Write zip archive ────────────────────────────────────────────────────────
-    let file = File::create(&output_path)?;
+    // The archive holds plaintext private segments and, with `include_tls`, the
+    // TLS private key: owner-only, whether the path is new or replaces an
+    // older archive.
+    let file = crate::private_fs::create(&output_path)?;
+    crate::private_fs::restrict(&output_path)?;
     let mut zip = ZipWriter::new(BufWriter::with_capacity(1024 * 1024, file));
     let zip_opts: SimpleFileOptions = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
-        .unix_permissions(0o644);
+        .unix_permissions(0o600);
 
     // Write manifest first
     zip.start_file(MANIFEST_FILENAME, zip_opts)?;
@@ -635,7 +670,7 @@ pub fn restore_backup(
     let restore_result = (|| {
         ensure_free_space(&staging, manifest.total_uncompressed_bytes)?;
         extract_archive_to_staging(&mut archive, &manifest, &staging)?;
-        fs::create_dir_all(&target_dir)?;
+        crate::private_fs::create_dir_all(&target_dir)?;
 
         if target_is_effectively_empty(&target_dir)? {
             restore_full_instance(&staging, &target_dir, &manifest, options.overwrite)?;
@@ -773,12 +808,12 @@ fn create_restore_staging_dir(target_dir: &Path) -> io::Result<PathBuf> {
         .filter(|parent| !parent.as_os_str().is_empty())
     {
         let candidate = parent.join(&name);
-        if fs::create_dir_all(&candidate).is_ok() {
+        if crate::private_fs::create_dir_all(&candidate).is_ok() {
             return Ok(candidate);
         }
     }
     let path = std::env::temp_dir().join(name);
-    fs::create_dir_all(&path)?;
+    crate::private_fs::create_dir_all(&path)?;
     Ok(path)
 }
 
@@ -790,10 +825,10 @@ fn extract_archive_to_staging<R: Read + io::Seek>(
     for entry in &manifest.files {
         let dest = staging_dir.join(&entry.relative_path);
         if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
+            crate::private_fs::create_dir_all(parent)?;
         }
         let src = archive.by_name(&entry.relative_path)?;
-        let mut dest_file = File::create(&dest)?;
+        let mut dest_file = crate::private_fs::create(&dest)?;
         let mut limited = src.take(entry.uncompressed_bytes.saturating_add(1));
         let written = io::copy(&mut limited, &mut dest_file)?;
         if written > entry.uncompressed_bytes {
@@ -1182,7 +1217,7 @@ fn copy_staged_file_as(
         return Ok(false);
     }
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
+        crate::private_fs::create_dir_all(parent)?;
         reject_symlinks_in_destination(target_dir, &dest)?;
     }
     // Copy beside the destination, then rename into place so a crash or I/O
