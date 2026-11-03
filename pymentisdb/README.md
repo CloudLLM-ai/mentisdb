@@ -8,11 +8,21 @@ Official Python client for [MentisDB](https://github.com/CloudLLM-ai/mentisdb) â
 pip install pymentisdb
 ```
 
+With read proofs for private chains (`ReadSigner`, needs `cryptography`):
+
+```bash
+pip install 'pymentisdb[signing]'
+```
+
 With LangChain integration:
 
 ```bash
-pip install pymentisdb[langchain]
+pip install 'pymentisdb[langchain]'
 ```
+
+The core client needs only `requests`. `import pymentisdb` works without
+LangChain; `MentisDbMemory` raises `ImportError` naming the extra if you use it
+without one.
 
 ## Quick Start
 
@@ -108,20 +118,45 @@ Always weigh a retrieved thought by `thought.provenance` (`segment`, `signed`,
 in either form. `context_bundles` has no compact form: the server ignores
 `compact` there.
 
+## Reading private chains
+
+A private chain shows its private segments only to a client that proves it holds
+an allowed key. `ReadSigner` signs every request locally with the `X-Mentis-Auth`
+header; the key never leaves the process.
+
+```python
+from pymentisdb import MentisDbClient, ReadSigner
+
+client = MentisDbClient(read_signer=ReadSigner.from_file("builder.key", "builder", "builder-1"))
+```
+
+Without an explicit signer the client uses `MENTISDB_READ_KEY_FILE`,
+`MENTISDB_READ_AGENT_ID` and `MENTISDB_READ_KEY_ID` when they are set, and
+otherwise reads public segments only.
+
 ## LangChain Integration
+
+`MentisDbMemory` is a LangChain `BaseMemory`. It works with langchain-core
+before 1.0 and, from 1.0 on, with `langchain-classic` (which the `langchain`
+extra installs).
 
 ```python
 from pymentisdb import MentisDbMemory
-from langchain_openai import ChatOpenAI
 
-memory = MentisDbMemory(
-    chain_key="my-project",
-    agent_id="assistant"
-)
-
-llm = ChatOpenAI(model="gpt-4")
-chain = llm.with_memory(memory)
+memory = MentisDbMemory(chain_key="my-project", agent_id="assistant")
+memory.save_context({"input": "Use tabs, not spaces."}, {"output": "Noted."})
+print(memory.load_memory_variables({})["chat_history"])
 ```
+
+## Changes in 0.10.0
+
+- The wheel contains the package: the 0.9.0 wheel on PyPI held only metadata.
+- `import pymentisdb` no longer needs LangChain, and `MentisDbMemory` works on
+  langchain-core 1.x through `langchain-classic`; it also implements
+  `save_context`, without which it could not be instantiated.
+- Compact search (`ranked_search(compact=True)`), `federated_search`, the ranking
+  options, `provenance` and version fields on thoughts.
+- `ReadSigner` for private chains (`pymentisdb[signing]`).
 
 ## Configuration
 
