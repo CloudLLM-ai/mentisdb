@@ -459,8 +459,8 @@ async fn rest_follows_the_same_host_policy_for_browsers() {
 }
 
 /// With bearer enforcement on, the event stream needs a token: none, a wrong
-/// one and an empty one get 401, any active token (global or chain-scoped)
-/// subscribes, and the allowed `Host` rules still apply first.
+/// one and an empty one get 401, a global token subscribes, a chain-scoped one
+/// does not, and the allowed `Host` rules still apply first.
 #[tokio::test]
 async fn the_event_stream_needs_a_token_and_an_allowed_host() {
     let env = EnvGuard::new().await;
@@ -485,14 +485,16 @@ async fn the_event_stream_needs_a_token_and_an_allowed_host() {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{bad:?}");
     }
     assert_eq!(status(vec![]).await.status(), StatusCode::UNAUTHORIZED);
-    for token in [&global, &scoped] {
-        let response = status(vec![("authorization", format!("Bearer {token}"))]).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers().get("content-type").unwrap(),
-            "text/event-stream"
-        );
-    }
+    let response = status(vec![("authorization", format!("Bearer {global}"))]).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "text/event-stream"
+    );
+    // The stream reports every tool call on every chain: a chain-scoped token
+    // may not listen (see `mcp_sse_scope_tests`).
+    let response = status(vec![("authorization", format!("Bearer {scoped}"))]).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "scoped token");
     let response = status(vec![
         ("authorization", format!("Bearer {global}")),
         ("host", "vps.example.org:9473".to_string()),

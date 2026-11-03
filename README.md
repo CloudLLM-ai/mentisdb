@@ -2180,7 +2180,8 @@ qwen mcp add --transport http mentisdb http://127.0.0.1:9471
   metadata-only events for each JSON-RPC method (method, client address, outcome). Tool
   arguments, results and error text are never broadcast: they can be private text. The
   stream runs the same `Host`, bearer-token and `Origin` checks as `POST /`; with bearer
-  enforcement on, any valid token (global or chain-scoped) can subscribe
+  enforcement on, only a **global** token can subscribe (the stream names every chain's
+  activity, so a chain-scoped token is refused with `401`)
 - the legacy CloudLLM-compatible MCP endpoints at `POST /tools/list` and
   `POST /tools/execute`
 

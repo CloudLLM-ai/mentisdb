@@ -106,8 +106,10 @@
 //! (`text/event-stream`), available when the router was built with an
 //! [`SseBroadcaster`] ([`standard_mcp_router`], [`start_mcp_server`]). It goes
 //! through the same `Host`, bearer and `Origin` checks as `POST /`; with bearer
-//! enforcement on, any active token (global or chain-scoped) may subscribe,
-//! because the stream carries metadata only. Events never carry tool
+//! enforcement on, only a **global** token may subscribe: the stream reports
+//! every tool call on every chain (tool name, chain key, outcome), so a
+//! chain-scoped token would learn which other chains exist and when they are
+//! used. Events never carry tool
 //! arguments, tool results or error text (`SsePayloadMode::Minimal`, which
 //! MentisDB never overrides): the library reports each JSON-RPC method and
 //! each legacy tool call with its client address and outcome, and MentisDB adds
@@ -2452,13 +2454,31 @@ enum BearerAuthTarget {
     GlobalOnly,
 }
 
+/// Which tokens may perform the MCP method or legacy action named by
+/// `context`.
+///
+/// An explicit allow-list: everything not named here is
+/// [`BearerAuthTarget::GlobalOnly`], so a method added to the library later
+/// cannot reach a chain-scoped token until it is listed and reviewed.
+///
+/// - `tools/list`, `resources/list`, `resources/read`, `initialize` and `ping`
+///   reveal no chain data: any active token.
+/// - `notifications/*` and an empty method (a JSON-RPC response) are
+///   acknowledged with `202` and run nothing: any active token.
+/// - `tools/call` and `tools/execute` are authorized per tool and chain.
+/// - [`SSE_SUBSCRIBE_ACTION`] (the `GET /` event stream) is global-only: it
+///   reports every tool call with its tool name and chain key, across all
+///   chains, so a chain-scoped token would learn which other chains exist and
+///   when they are used.
 fn bearer_auth_target(context: &BearerAuthContext, default_chain_key: &str) -> BearerAuthTarget {
     match context.action.as_str() {
-        // `SSE_SUBSCRIBE_ACTION` is the `GET /` event stream: metadata only,
-        // so any active token may listen. Named here so a new `_` arm cannot
-        // silently change who can subscribe.
-        "tools/list" | "resources/list" | "resources/read" | "initialize"
-        | SSE_SUBSCRIBE_ACTION => BearerAuthTarget::AnyActiveToken,
+        "tools/list" | "resources/list" | "resources/read" | "initialize" | "ping" => {
+            BearerAuthTarget::AnyActiveToken
+        }
+        action if action.is_empty() || action.starts_with("notifications/") => {
+            BearerAuthTarget::AnyActiveToken
+        }
+        SSE_SUBSCRIBE_ACTION => BearerAuthTarget::GlobalOnly,
         "tools/call" | "tools/execute" => context
             .payload
             .as_ref()
@@ -2466,7 +2486,8 @@ fn bearer_auth_target(context: &BearerAuthContext, default_chain_key: &str) -> B
                 tool_call_auth_target(context.action.as_str(), payload, default_chain_key)
             })
             .unwrap_or(BearerAuthTarget::GlobalOnly),
-        _ => BearerAuthTarget::AnyActiveToken,
+        // Fail closed: an action this table does not know needs a global token.
+        _ => BearerAuthTarget::GlobalOnly,
     }
 }
 
@@ -3182,6 +3203,35 @@ fn mcp_streamable_config(hosts: Vec<String>) -> StreamableHttpConfig {
         .with_skip_origin_validation(true)
 }
 
+/// The chain key a `tool_called` event reports: the request's `chain_key` when
+/// it is a string that is a valid chain key (trimmed, as handlers do), else
+/// `None`.
+///
+/// The value comes straight from client JSON, so it is never forwarded as is:
+/// a number, object, megabyte string or one with control characters would go
+/// into the event of every subscriber.
+fn event_chain_key(parameters: &Value) -> Option<String> {
+    let key = parameters.get("chain_key")?.as_str()?.trim();
+    crate::validate_chain_key(key).ok()?;
+    Some(key.to_owned())
+}
+
+/// The tool name a `tool_called` event reports: the name when it has the shape
+/// of a MentisDB tool (`[a-z0-9_]`, at most 64 bytes), else `"unknown"`, so a
+/// client cannot put arbitrary text into every subscriber's stream.
+fn event_tool_name(name: &str) -> &str {
+    let tool_shaped = !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    if tool_shaped {
+        name
+    } else {
+        "unknown"
+    }
+}
+
 #[async_trait]
 impl ToolProtocol for MentisDbMcpProtocol {
     async fn execute(
@@ -3190,7 +3240,7 @@ impl ToolProtocol for MentisDbMcpProtocol {
         parameters: Value,
     ) -> Result<ToolResult, Box<dyn Error + Send + Sync>> {
         let started = std::time::Instant::now();
-        let chain_key = parameters.get("chain_key").cloned();
+        let chain_key = event_chain_key(&parameters);
         let result = self.execute_tool(tool_name, parameters).await;
         if let Some(events) = &self.events {
             // The live event stream says that a tool ran, never with which
@@ -3198,7 +3248,7 @@ impl ToolProtocol for MentisDbMcpProtocol {
             events.send(SseMessage::with_event(
                 "tool_called",
                 json!({
-                    "tool": canonical_tool_name(tool_name),
+                    "tool": event_tool_name(canonical_tool_name(tool_name)),
                     "chain_key": chain_key,
                     "ok": result.is_ok(),
                     "duration_ms": started.elapsed().as_millis() as u64,

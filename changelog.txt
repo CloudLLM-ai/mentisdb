@@ -1,4 +1,15 @@
 UNRELEASED
+  - security(mcp): the event stream (`GET /`, action `events/subscribe`) is global-token only.
+    It reports every tool call on every chain (tool name, chain key, outcome), but was
+    authorized for any active token, so a token scoped to one chain could learn which other
+    chains exist and when they are used. The authorization table for MCP methods now fails
+    closed: a method it does not name needs a global token (`initialize`, `ping`,
+    `tools/list`, `resources/list`, `resources/read`, `notifications/*` and `tools/call`
+    keep working for scoped tokens as before); a comment that called the `_` arm safe is
+    replaced by the rule. The `tool_called` event no longer forwards the client's raw
+    `chain_key` JSON (any type, any size): it carries the validated, trimmed chain key
+    string or `null`, and only a tool-shaped tool name (else `unknown`). Upgrade note:
+    a dashboard or monitor that subscribes with a chain-scoped token must use a global one.
   - security(cli): the CLI and the stdio MCP proxy no longer follow HTTP redirects. ureq
     re-sends custom headers to a redirect target, so a daemon address that answered `3xx`
     (misconfigured proxy, hostile `--url`) received the read proof (`X-Mentis-Auth`) and,
