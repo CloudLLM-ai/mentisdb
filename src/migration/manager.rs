@@ -535,7 +535,7 @@ impl MigrationManager {
     /// stops at its next record
     /// ([`run_chain_migration_cancellable`](super::run_chain_migration_cancellable)),
     /// leaving its chain untouched and resumable. A stop on request is not a crash: it does not count toward
-    /// [`MAX_ATTEMPTS`](super::engine::MAX_ATTEMPTS), so stopping and restarting
+    /// [`MAX_ATTEMPTS`](super::MAX_ATTEMPTS), so stopping and restarting
     /// a daemon during a long migration never quarantines the chain. Call
     /// [`Self::wait_stopped`] afterwards to let the workers finish that stop
     /// before the process exits.

@@ -59,7 +59,7 @@
 //! chain is untouched and the attempt is handed back, so restarting a daemon
 //! during a long migration any number of times never quarantines the chain. A
 //! **crash** (`kill -9`, out of memory, power loss) cannot hand anything back
-//! and counts as an attempt; a chain cut off [`MAX_ATTEMPTS`](engine::MAX_ATTEMPTS)
+//! and counts as an attempt; a chain cut off [`MAX_ATTEMPTS`]
 //! (3) times is quarantined so it cannot crash-loop the daemon, and
 //! `mentisdb migrate retry` clears it.
 //!
@@ -91,7 +91,7 @@ pub use engine::{
     detect_migration, dry_run_chain, purge_backups, quarantine_chain, recover_chain, retry_chain,
     rollback_chain, run_chain_migration, run_chain_migration_cancellable, skip_chain,
     verify_chain_file, DryRunReport, JournalState, MigrationJournal, MigrationOutcome,
-    MigrationPaths, MigrationReason, MigrationReport, RecoveryOutcome, VerifyReport,
+    MigrationPaths, MigrationReason, MigrationReport, RecoveryOutcome, VerifyReport, MAX_ATTEMPTS,
 };
 pub use manager::{
     check_format_stamp, discover_chain_keys, manager_for_dir, write_format_stamp,
