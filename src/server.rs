@@ -743,6 +743,77 @@ pub struct MentisDbServerConfig {
 }
 
 impl MentisDbServerConfig {
+    /// Whether any listener (plain, HTTPS or dashboard) is bound to an address
+    /// other than loopback, that is, reachable from other machines.
+    ///
+    /// `MENTISDB_BIND_HOST=0.0.0.0` (the Docker image's default) or a LAN or
+    /// VPS address makes this `true`; the default `127.0.0.1` does not.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::server::MentisDbServerConfig;
+    ///
+    /// let mut config = MentisDbServerConfig::from_env();
+    /// config.mcp_addr = "127.0.0.1:9471".parse().unwrap();
+    /// config.rest_addr = "127.0.0.1:9472".parse().unwrap();
+    /// config.https_mcp_addr = None;
+    /// config.https_rest_addr = None;
+    /// config.dashboard_addr = None;
+    /// assert!(!config.network_exposed());
+    /// config.rest_addr = "0.0.0.0:9472".parse().unwrap();
+    /// assert!(config.network_exposed());
+    /// ```
+    pub fn network_exposed(&self) -> bool {
+        self.api_exposed() || self.dashboard_exposed()
+    }
+
+    /// Whether an MCP or REST listener (plain or HTTPS) is bound to a
+    /// non-loopback address.
+    fn api_exposed(&self) -> bool {
+        [self.mcp_addr, self.rest_addr]
+            .into_iter()
+            .chain(self.https_mcp_addr)
+            .chain(self.https_rest_addr)
+            .any(|addr| !addr.ip().is_loopback())
+    }
+
+    /// Whether the dashboard listener is bound to a non-loopback address.
+    fn dashboard_exposed(&self) -> bool {
+        self.dashboard_addr
+            .is_some_and(|addr| !addr.ip().is_loopback())
+    }
+
+    /// Startup warnings for a daemon that other machines can reach without
+    /// full authentication.
+    ///
+    /// Non-empty when an MCP or REST listener is network-exposed while
+    /// bearer-token enforcement is off (anyone reaching the port can read and
+    /// write every chain), or when the dashboard listener is network-exposed
+    /// without a PIN. [`start_servers`] logs every line at `warn` level, the `mentisdb`
+    /// binary also prints them to stderr (headless) or in the endpoint pane
+    /// (terminal UI), and the dashboard shows them as a banner. Nothing here
+    /// refuses to start: an existing Docker deployment keeps running.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::server::MentisDbServerConfig;
+    ///
+    /// let mut config = MentisDbServerConfig::from_env();
+    /// config.mcp_addr = "0.0.0.0:9471".parse().unwrap();
+    /// config.service.bearer_token_access.store(false, std::sync::atomic::Ordering::SeqCst);
+    /// assert!(config.exposure_warnings().iter().any(|w| w.contains("bearer")));
+    /// ```
+    pub fn exposure_warnings(&self) -> Vec<String> {
+        crate::dashboard::exposure_warnings(
+            self.api_exposed(),
+            self.dashboard_exposed(),
+            self.service.bearer_token_access.load(Ordering::SeqCst),
+            self.dashboard_pin.is_some(),
+        )
+    }
+
     /// Build a [`MentisDbServerConfig`] by reading `MENTISDB_*` environment
     /// variables and applying safe defaults for any that are absent.
     ///
@@ -1524,6 +1595,15 @@ pub async fn start_servers_with_migrations(
     migrations: Option<MigrationManager>,
 ) -> Result<MentisDbServerHandles, Box<dyn Error + Send + Sync>> {
     use crate::dashboard::DashboardState;
+
+    // Say loudly when the daemon is reachable from other machines without full
+    // authentication (the Docker image binds 0.0.0.0 with no auth by default).
+    // Never refuse to start: existing deployments must keep running.
+    crate::dashboard::API_EXPOSED.store(config.api_exposed(), Ordering::Relaxed);
+    crate::dashboard::DASHBOARD_EXPOSED.store(config.dashboard_exposed(), Ordering::Relaxed);
+    for warning in config.exposure_warnings() {
+        log::warn!("{warning}");
+    }
 
     // Ensure TLS cert exists before starting HTTPS servers and the dashboard
     if config.https_mcp_addr.is_some()

@@ -330,7 +330,7 @@
       justify-content: center; padding: 32px 16px; overflow-y: auto;
     }
     .modal-overlay.hidden { display: none; }
-    #migration-banner.hidden { display: none; }
+    #migration-banner.hidden, #security-banner.hidden { display: none; }
     .modal {
       background: #161b22; border: 1px solid #30363d; border-radius: 8px;
       width: 100%; max-width: 700px; position: relative; margin: auto;
@@ -476,6 +476,8 @@
       <a href="#settings" id="nav-settings" style="color:#f0883e" title="Configure daemon environment variables and hot-reload settings">Settings</a>
     </div>
   </nav>
+  <div id="security-banner" class="hidden" role="alert"
+       style="padding:8px 16px;background:#b62324;color:#fff;font-size:0.85rem"></div>
   <div id="migration-banner" class="hidden" role="status" aria-live="polite"
        style="padding:8px 16px;background:#9e6a03;color:#fff;font-size:0.85rem"></div>
   <main id="app"></main>
@@ -2039,6 +2041,11 @@
       .then(d => {
         const el = document.getElementById('nav-version');
         if (el && d && d.version) el.textContent = `v${d.version}`;
+        // Exposure warnings: the daemon is reachable from other machines without full authentication.
+        const banner = document.getElementById('security-banner');
+        const warnings = (d && Array.isArray(d.warnings)) ? d.warnings : [];
+        banner.textContent = warnings.join('  ');
+        banner.classList.toggle('hidden', warnings.length === 0);
       })
       .catch(() => {});
     route();

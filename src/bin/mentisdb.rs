@@ -1435,6 +1435,10 @@ async fn run_headless() -> Result<(), Box<dyn std::error::Error + Send + Sync>> 
 
     let config = MentisDbServerConfig::from_env();
     claim_data_dir(&config)?;
+    // `start_servers` logs these too; stderr is what `docker logs` shows first.
+    for warning in config.exposure_warnings() {
+        eprintln!("[mentisdb headless] WARNING: {warning}");
+    }
 
     // Run migrations silently
     if std::env::var_os("MENTISDB_DIR").is_none() {
@@ -1637,6 +1641,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         };
 
         s.endpoint_lines = build_endpoint_lines(&handles);
+        append_exposure_warning_lines(&mut s.endpoint_lines, &config);
 
         let registry = load_registered_chains(&config.service.chain_dir).unwrap_or_default();
         s.chain_count = registry.chains.len();
@@ -2101,6 +2106,7 @@ async fn run_with_force_update() -> Result<(), Box<dyn std::error::Error + Send 
         };
 
         s.endpoint_lines = build_endpoint_lines(&handles);
+        append_exposure_warning_lines(&mut s.endpoint_lines, &config);
 
         let registry = load_registered_chains(&config.service.chain_dir).unwrap_or_default();
         s.chain_count = registry.chains.len();
@@ -3181,6 +3187,19 @@ fn build_tls_info_lines(
     }
 
     lines
+}
+
+/// Append the exposure warnings (see `MentisDbServerConfig::exposure_warnings`)
+/// to the endpoint pane, one wrapped line each, after a blank separator.
+fn append_exposure_warning_lines(lines: &mut Vec<String>, config: &MentisDbServerConfig) {
+    let warnings = config.exposure_warnings();
+    if warnings.is_empty() {
+        return;
+    }
+    lines.push(String::new());
+    for warning in warnings {
+        lines.push(format!("  !! {warning}"));
+    }
 }
 
 /// Build endpoint display lines for the TUI top-right pane.

@@ -125,6 +125,16 @@ docker run -d --name mentisdb \
   ghcr.io/cloudllm-ai/mentisdb:latest
 ```
 
+**Always publish the ports on loopback** (`-p 127.0.0.1:9471:9471`, as above). Inside the
+container the daemon binds `0.0.0.0` (needed for published ports to work) with bearer tokens
+and the dashboard PIN off, so a bare `-p 9471:9471` exposes an unauthenticated memory store to
+every machine that can reach the host. The daemon does not refuse to start in that state, but
+it says so: a `SECURITY:` warning in `docker logs` (stderr and the log), in the terminal UI
+and as a red banner at the top of the dashboard, whenever a listener is bound to a
+non-loopback address while `MENTISDB_BEARER_TOKEN_ACCESS` is off (MCP/REST) or no
+`MENTISDB_DASHBOARD_PIN` is set (dashboard). Before exposing the container beyond the host,
+set both (see the Compose example and the security notes below).
+
 The entrypoint is `mentisdb --headless` under `tini`, so no TTY (`-t`) is needed
 and `docker stop` (SIGTERM) drains the servers and exits cleanly. Check it with
 `curl http://127.0.0.1:9472/health`; the image also has a Docker `HEALTHCHECK`.

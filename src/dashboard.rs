@@ -92,6 +92,57 @@ pub(crate) struct DashboardState {
     pub tui_state: Option<Arc<std::sync::Mutex<crate::tui::TuiState>>>,
 }
 
+// ── Exposure warnings ─────────────────────────────────────────────────────────
+
+/// Set by `start_servers` when an MCP or REST listener (plain or HTTPS) is
+/// bound to a non-loopback address (`MENTISDB_BIND_HOST=0.0.0.0`, the Docker
+/// image's default, or a LAN/VPS address).
+pub(crate) static API_EXPOSED: AtomicBool = AtomicBool::new(false);
+
+/// Set by `start_servers` when the dashboard listener is bound to a
+/// non-loopback address.
+pub(crate) static DASHBOARD_EXPOSED: AtomicBool = AtomicBool::new(false);
+
+/// Operator-facing warnings for a daemon that other machines can reach but
+/// that is not (fully) authenticated.
+///
+/// - `api_exposed`: an MCP or REST listener is bound to a non-loopback address.
+/// - `dashboard_exposed`: the dashboard listener is bound to one.
+/// - `bearer_on`: bearer-token enforcement (`MENTISDB_BEARER_TOKEN_ACCESS`).
+/// - `pin_set`: the dashboard has a PIN.
+///
+/// A loopback-only daemon is the safe default and returns no warnings. The
+/// texts name the fix; they never refuse to start, so existing Docker users
+/// keep running. The same list feeds the startup log, the terminal UI and the
+/// dashboard banner.
+pub(crate) fn exposure_warnings(
+    api_exposed: bool,
+    dashboard_exposed: bool,
+    bearer_on: bool,
+    pin_set: bool,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if api_exposed && !bearer_on {
+        warnings.push(
+            "SECURITY: MCP and REST are reachable from other machines and bearer-token \
+             enforcement is OFF, so anyone who can reach them can read and write every \
+             chain. Set MENTISDB_BEARER_TOKEN_ACCESS=true and create tokens \
+             (`mentisdb bearertoken create`), or bind to loopback. In Docker, publish \
+             the ports on loopback only: -p 127.0.0.1:9471:9471 -p 127.0.0.1:9472:9472."
+                .to_string(),
+        );
+    }
+    if dashboard_exposed && !pin_set {
+        warnings.push(
+            "SECURITY: the dashboard is reachable from other machines and has no PIN. \
+             Set MENTISDB_DASHBOARD_PIN (a long one: it is the only barrier) or bind \
+             to loopback."
+                .to_string(),
+        );
+    }
+    warnings
+}
+
 // ── Router builder ────────────────────────────────────────────────────────────
 
 /// Build and return the complete dashboard [`Router`].
@@ -2893,8 +2944,22 @@ async fn api_migrations(State(state): State<DashboardState>) -> Json<Value> {
     Json(json!({ "active": active, "chains": chains }))
 }
 
-async fn api_version() -> Json<Value> {
-    Json(json!({ "version": env!("CARGO_PKG_VERSION") }))
+/// `GET /dashboard/api/version`: the daemon version.
+///
+/// Besides the version it carries `warnings`: the [`exposure_warnings`] that
+/// apply to this daemon right now (empty on a loopback-only daemon), which the
+/// dashboard shows as a banner.
+async fn api_version(State(state): State<DashboardState>) -> Json<Value> {
+    // The dashboard is being served, so a request reaching this handler means
+    // its own listener is up; whether that listener is exposed is the
+    // daemon-wide `DASHBOARD_EXPOSED` flag.
+    let warnings = exposure_warnings(
+        API_EXPOSED.load(Ordering::Relaxed),
+        DASHBOARD_EXPOSED.load(Ordering::Relaxed),
+        state.bearer_token_access.load(Ordering::Relaxed),
+        state.dashboard_pin.is_some(),
+    );
+    Json(json!({ "version": env!("CARGO_PKG_VERSION"), "warnings": warnings }))
 }
 
 /// `GET /dashboard/api/agents/{chain_key}/{agent_id}/memory-markdown`

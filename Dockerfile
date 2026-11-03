@@ -70,6 +70,8 @@ RUN ldd /usr/local/bin/mentisdb && ! ldd /usr/local/bin/mentisdb | grep -q "not 
 # 0.0.0.0 is required for `docker run -p` to reach the daemon, so keep the
 # container private by publishing ports on 127.0.0.1 only (see README) and turn
 # on MENTISDB_BEARER_TOKEN_ACCESS / MENTISDB_DASHBOARD_PIN before exposing it.
+# The daemon prints a SECURITY warning at startup (docker logs) while it is
+# reachable like this with bearer tokens or the dashboard PIN off.
 # The fastembed model cache defaults to $MENTISDB_DIR/.fastembed_cache, so it
 # lives in the volume and is downloaded once.
 ENV MENTISDB_DIR=/var/lib/mentisdb \

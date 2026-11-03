@@ -1,4 +1,16 @@
 UNRELEASED
+  - security(docker): the daemon now says so when it is reachable from other machines
+    without full authentication. The Docker image binds `0.0.0.0` (needed for published
+    ports) with bearer tokens and the dashboard PIN off, and nothing warned about it.
+    Whenever an MCP/REST listener is bound to a non-loopback address while
+    `MENTISDB_BEARER_TOKEN_ACCESS` is off, or the dashboard is on a non-loopback address
+    with no `MENTISDB_DASHBOARD_PIN`, startup logs a `SECURITY:` warning (log and stderr,
+    so `docker logs` shows it), the terminal UI lists it under Endpoints, and the dashboard
+    shows a red banner (`GET /dashboard/api/version` carries `warnings`). New library API:
+    `MentisDbServerConfig::network_exposed` and `exposure_warnings`. The daemon still
+    starts, so existing Docker deployments keep running. README documents publishing the
+    ports on loopback (`-p 127.0.0.1:9471:9471`) and the Dockerfile comment points at the
+    warning.
   - security(host): `my.mentisdb.com` is no longer a permanent DNS-rebinding trust anchor.
     It is a public DNS name MentisDB does not control; whoever controls it (a lapsed
     domain, a compromised registrar account) could serve a page and rebind the name to
