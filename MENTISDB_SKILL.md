@@ -20,7 +20,7 @@ triggers: [mentisdb, memory, remember, recall, chain, thought]
 
 - **Reads never create chains.** Search, head, agents, get-thought, etc. on an unknown `chain_key` fail with not found (HTTP 404). For a new chain call `mentisdb_bootstrap` first; only bootstrap, append, import and upserts create chains.
 - **Chain-scoped bearer tokens cannot call `mentisdb_list_chains`** (global-only, like webhook list/delete and skill upload/deprecate/revoke/delete). With a scoped token, skip step 1 and use the `chain_key` you were given.
-- **A chain being upgraded answers "migrating" (HTTP 503, `Retry-After`).** Wait and retry; never bootstrap a substitute chain.
+- **HTTP 503 "migrating" (`Retry-After`):** wait and retry; never bootstrap a substitute chain.
 
 ### 🚫 AGENT IDENTITY RULE — DO NOT CREATE NEW AGENTS
 
@@ -140,7 +140,7 @@ Default to `References` only if no stronger fit. `DerivedFrom` for "I concluded 
 
 ## 🌿 MEMORY CHAIN BRANCHES
 
-Fork with `mentisdb_branch_from(source_chain_key, branch_thought_id, branch_chain_key)`; `branch_chain_key` must name a new chain (an existing one is rejected; 409 over REST). The new chain is born with a genesis thought carrying a `BranchesFrom` relation. Searches on the branch **transparently include ancestor chain results** annotated with `chain_key`. Use to isolate risky experiments, let sub-agents work in their own space, or fork per tenant/feature. Merge back explicitly with `mentisdb_merge_chains`.
+Fork with `mentisdb_branch_from(source_chain_key, branch_thought_id, branch_chain_key)`; `branch_chain_key` must name a new chain. Searches on the branch **transparently include ancestor chain results** annotated with `chain_key`. Use to isolate risky experiments, let sub-agents work in their own space, or fork per tenant/feature. Merge back explicitly with `mentisdb_merge_chains`.
 
 ## 🤖 SUB-AGENT ORCHESTRATION
 
