@@ -3,7 +3,9 @@ pymentisdb - Python client library for MentisDB.
 
 MentisDB is an append-only semantic memory server for long-running agents.
 This library provides Python bindings for the MentisDB REST API, including
-a LangChain-compatible memory interface.
+a LangChain-compatible memory interface (``MentisDbMemory``, which needs the
+``langchain`` extra and is imported lazily, so the client never depends on
+LangChain).
 
 Example:
     >>> from pymentisdb import MentisDbClient, ThoughtType
@@ -45,7 +47,6 @@ from .types import (
     ChainSummary,
     ListChainsResponse,
 )
-from .langchain import MentisDbMemory
 
 __all__ = [
     "ReadSigner",
@@ -77,3 +78,13 @@ __all__ = [
     "ChainSummary",
     "ListChainsResponse",
 ]
+
+
+def __getattr__(name):
+    # MentisDbMemory imports LangChain, which is optional and slow to import,
+    # so it is loaded on first access instead of with the package.
+    if name == "MentisDbMemory":
+        from .langchain import MentisDbMemory
+
+        return MentisDbMemory
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
