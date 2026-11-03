@@ -6449,12 +6449,15 @@ impl MentisDb {
             self.check_append_access(agent_id, &input)
                 .map_err(access::AccessError::into_io)?;
         }
-        validate_refs(&self.thoughts, &input.refs)?;
-        self.check_lineage_depth(&input)?;
+        // Before the range check: for a writer who may not read the private
+        // segments, a target that is private and a target that does not exist
+        // must fail identically (see `check_private_targets`).
         if !governance {
             self.check_private_targets(agent_id, &input)
                 .map_err(access::AccessError::into_io)?;
         }
+        validate_refs(&self.thoughts, &input.refs)?;
+        self.check_lineage_depth(&input)?;
         let signed = input.thought_signature.is_some();
 
         let mut relations = input.relations.clone();
@@ -7764,6 +7767,12 @@ impl MentisDb {
 
     /// Refuse a thought from a writer who may not read the private segments if it
     /// points into them.
+    ///
+    /// For such a writer a target that does not exist (an index past the end, an
+    /// id the chain does not hold) fails the same way as a private one, so the
+    /// refusal cannot be used to learn which indices and ids are private. A
+    /// writer who may read the private segments, and a chain without any, are
+    /// not affected: their bad targets are reported by the ordinary validation.
     fn check_private_targets(
         &self,
         agent_id: &str,
@@ -7776,16 +7785,15 @@ impl MentisDb {
         if !audience.is_public() {
             return Ok(());
         }
-        let hidden_ref = input
-            .refs
-            .iter()
-            .any(|index| !self.is_visible_index(*index, audience));
+        let hidden_ref = input.refs.iter().any(|index| {
+            *index >= self.thoughts.len() as u64 || !self.is_visible_index(*index, audience)
+        });
         let hidden_relation = input.relations.iter().any(|relation| {
             relation.chain_key.is_none()
                 && self
                     .id_to_index
                     .get(&relation.target_id)
-                    .is_some_and(|position| !self.is_visible_index(*position as u64, audience))
+                    .is_none_or(|position| !self.is_visible_index(*position as u64, audience))
         });
         if hidden_ref || hidden_relation {
             return Err(access::AccessError::PrivateTarget);

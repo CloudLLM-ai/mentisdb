@@ -1,4 +1,14 @@
 UNRELEASED
+  - security(access): a write that points into a private segment is no longer an oracle
+    for which indices and ids are private. An unsigned (or not read-authorized) writer who
+    linked a thought to a private index or id got a specific "links to a private segment"
+    refusal, while a missing target got a different one. Over REST and MCP the refusal is
+    now the same generic "did not accept the write" as every other probe-sensitive
+    refusal (`AccessError::PrivateTarget` joins `is_probe_sensitive`), and for such a
+    writer on a chain with private segments a target that does not exist fails exactly
+    like a private one (the check now runs before the range check). Writers who may read
+    the private segments, chains without private segments, and in-process library callers
+    are unaffected.
   - security(list): `GET /v1/chains` (and the MCP list tool) no longer leaks private-chain
     totals or paths. A chain the registry flags as private that could not be opened (the
     error was swallowed with `let _ =`) was listed with the registry's stored thought and

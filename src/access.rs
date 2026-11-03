@@ -105,8 +105,13 @@ pub enum AccessError {
 }
 
 impl AccessError {
-    /// Whether this error names registry or policy details that only a
-    /// caller who may read the chain should learn.
+    /// Whether this error names registry, policy or segment details that only
+    /// a caller who may read the chain should learn.
+    ///
+    /// [`PrivateTarget`](Self::PrivateTarget) is one of them: told apart from
+    /// success, it says which indices and ids belong to a private segment, so
+    /// a request-facing handler answers an unauthorized writer with
+    /// [`NotAccepted`](Self::NotAccepted) instead.
     #[must_use]
     pub fn is_probe_sensitive(&self) -> bool {
         matches!(
@@ -119,6 +124,7 @@ impl AccessError {
                 | Self::StaleHead
                 | Self::AgentDisabled { .. }
                 | Self::SignatureVersionNotAllowed(_)
+                | Self::PrivateTarget
         )
     }
 
