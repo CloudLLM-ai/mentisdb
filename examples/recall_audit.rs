@@ -253,7 +253,7 @@ fn sidecar_vectors(chain: &MentisDb) -> HashMap<usize, Vec<f32>> {
             sidecar
                 .entries
                 .into_iter()
-                .map(|e| (e.thought_index as usize, e.vector))
+                .map(|e| (e.thought_index as usize, e.vector.to_vec()))
                 .collect()
         })
         .unwrap_or_default()

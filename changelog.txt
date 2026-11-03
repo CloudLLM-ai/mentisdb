@@ -1,3 +1,33 @@
+UNRELEASED
+  - perf(storage): the implicit-edge scanner no longer keeps its own copy of every
+    vector. `VectorSidecarEntry::vector` is now an `Arc<[f32]>` (it serializes
+    exactly as the `Vec<f32>` did, so the sidecar file and its digest are
+    unchanged; `VectorSidecarEntry::new` still takes a `Vec<f32>`), and the scan
+    store clones those pointers (about 40 bytes per vector instead of 1536 at 384
+    dimensions) while a snapshot still clones only `entries / 128` chunk
+    pointers. Cloning a sidecar or an entry now copies pointers, not floats.
+    Live heap growth over a 2 700-append run at 20 000 thoughts: 46.4 MiB before,
+    11.9 MiB after; over a 12 700-append run at 100 000 thoughts: 239.2 MiB before
+    (the 150 MB copy plus queued vector copies), 56.3 MiB after
+    (counting allocator in `embed_commit_latency`; run at background priority).
+    Lock hold is unchanged: write hold p50 / p99 / max at 100 000 x 384 is
+    0.028 / 0.60 / 4.3 ms (1d4be8f: 0.030 / 0.72 / 16.3 ms), and under identical
+    background throttling 2.8 / 15.8 / 34.6 ms against 2.4 / 15.0 / 128.6 ms.
+    API note for embedders that build or read `VectorSidecarEntry.vector`
+    directly: use `.to_vec()` where a `Vec<f32>` is needed.
+  - perf(storage): the implicit-edge queue holds positions, not vectors, so it
+    cannot grow without bound in memory. A backlog costs a few bytes per run of
+    consecutive appends; it never blocks an append and never drops an edge (the
+    overlay just trails the chain). The sustainable append rate is the scan
+    throughput: about 155 appends per second at 100 000 thoughts and 720 per second
+    at 20 000 (4 threads, 384 dimensions, a shared machine); while appends
+    outrun it the backlog grows and edges for recent thoughts appear late, and
+    it drains when they slow down (12 475 queued at 100 000 drained in 80 s).
+  - feat(server): `GET /v1/chains` (and the MCP chain listing) reports
+    `derived_backlog` per open chain: `embeddings_in_flight`, `embeddings_parked`,
+    `embeddings_missing` and `implicit_edges`, all zero when healthy; zero for a
+    chain that is not open or whose private segments are hidden from the caller.
+    Library: `MentisDb::derived_backlog` and `DerivedBacklog`.
 0.11.0.56 NOV/02/2026
   - security(host): REST on a loopback bind now checks `Host` for every request, not only
     browser-flagged ones, matching what `cloudllm_mcp` 0.4 does for MCP. A `curl`, CLI or

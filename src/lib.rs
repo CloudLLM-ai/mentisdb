@@ -4888,7 +4888,8 @@ struct ManagedSidecarEntry {
     ledger: Arc<TicketLedger>,
     /// Snapshot source of this sidecar's vectors for off-lock implicit-edge
     /// scans; built the first time one is needed and kept in step with the
-    /// sidecar (see [`crate::search::vector_scan`]).
+    /// sidecar. It shares the sidecar's vector allocations instead of copying
+    /// them (see [`crate::search::vector_scan`]).
     scan_store: Option<crate::search::vector_scan::VectorScanStore>,
 }
 
@@ -4974,6 +4975,30 @@ impl Drop for TicketGuard {
                 .insert(index);
         }
     }
+}
+
+/// Derived-state work a chain has not finished, summed over its managed
+/// sidecars: the operator's view of how far vectors and implicit edges trail
+/// the thoughts.
+///
+/// Returned by [`MentisDb::derived_backlog`] and reported per chain by the
+/// daemon's chain listing (`GET /v1/chains`, `derived_backlog`). All zeros is
+/// healthy. A `parked` or `missing` count that keeps growing means the embedding
+/// provider is stalling (see [`MAX_PIPELINED_EMBEDDINGS`]); an `implicit_edges`
+/// count that keeps growing means appends outrun the background neighbour scan
+/// (see [`MentisDb::implicit_edge_backlog`]). Thoughts are never affected: both
+/// are derived and only delay the vector and graph signals of recent thoughts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[non_exhaustive]
+pub struct DerivedBacklog {
+    /// Embedding tickets issued whose vectors have not been committed.
+    pub embeddings_in_flight: usize,
+    /// Vectors embedded and waiting for an earlier thought's vector.
+    pub embeddings_parked: usize,
+    /// Thoughts waiting to be embedded again.
+    pub embeddings_missing: usize,
+    /// Applied vectors whose implicit edges have not reached the overlay.
+    pub implicit_edges: usize,
 }
 
 /// How many embeddings one managed sidecar has in flight, parked or waiting to
@@ -5281,7 +5306,21 @@ const EDGE_SCAN_BATCH: usize = 32;
 /// Threads a background implicit-edge scan may use.
 const EDGE_SCAN_THREADS: usize = 4;
 
-/// One applied vector whose implicit edges have not been computed yet.
+/// A run of consecutive applied vectors of one sidecar whose implicit edges
+/// have not been computed yet.
+///
+/// The queue holds positions, not vectors: the vectors are already in the
+/// sidecar (and in its scan store, which shares them), so a backlog costs a few
+/// bytes per run however long it grows. Appends then never wait on, or drop,
+/// edge work: the overlay just trails the chain by [`MentisDb::implicit_edge_backlog`]
+/// vectors until the scan catches up.
+struct EdgeRun {
+    metadata: crate::search::EmbeddingMetadata,
+    first_index: u64,
+    len: usize,
+}
+
+/// One applied vector whose implicit edges are being computed.
 struct EdgeWork {
     metadata: crate::search::EmbeddingMetadata,
     id: Uuid,
@@ -6121,7 +6160,7 @@ pub struct MentisDb {
     /// Applied vectors waiting for their implicit edges, oldest first. Edges
     /// are applied strictly in this order so the overlay matches the one an
     /// inline scan per append would build.
-    edge_queue: std::collections::VecDeque<EdgeWork>,
+    edge_queue: std::collections::VecDeque<EdgeRun>,
     /// The background scan computing the front of `edge_queue`, if any.
     edge_job: Option<PendingEdgeJob>,
     /// Bumped whenever the overlay is replaced, so a scan started against the
@@ -7230,6 +7269,34 @@ impl MentisDb {
         std::mem::take(&mut self.embed_tickets)
     }
 
+    /// Derived-state work this chain has not finished, summed over its managed
+    /// sidecars. See [`DerivedBacklog`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use mentisdb::{DerivedBacklog, MentisDb};
+    ///
+    /// # fn main() -> std::io::Result<()> {
+    /// let dir = tempfile::tempdir()?;
+    /// let chain = MentisDb::open_with_key(dir.path(), "demo")?;
+    /// assert_eq!(chain.derived_backlog(), DerivedBacklog::default());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn derived_backlog(&self) -> DerivedBacklog {
+        let mut backlog = DerivedBacklog {
+            implicit_edges: self.implicit_edge_backlog(),
+            ..DerivedBacklog::default()
+        };
+        for entry in self.managed_vector_sidecars.values() {
+            backlog.embeddings_in_flight += entry.in_flight.len();
+            backlog.embeddings_parked += entry.parked.len();
+            backlog.embeddings_missing += entry.missing.len();
+        }
+        backlog
+    }
+
     /// How many embeddings the managed sidecar for `metadata` has in flight,
     /// parked behind a slower one, or waiting to be embedded again.
     ///
@@ -7660,7 +7727,7 @@ impl MentisDb {
                 if let Some(last) = sidecar.entries.last() {
                     let document = crate::search::VectorDocument::new(
                         last.thought_id.to_string(),
-                        last.vector.clone(),
+                        last.vector.to_vec(),
                     );
                     if let Err(error) = cached.upsert_document(document) {
                         eprintln!(
@@ -10890,7 +10957,7 @@ impl MentisDb {
                         backend
                             .upsert_document(crate::search::VectorDocument::new(
                                 entry.thought_id.to_string(),
-                                entry.vector.clone(),
+                                entry.vector.to_vec(),
                             ))
                             .is_ok()
                     });
@@ -11383,7 +11450,7 @@ impl MentisDb {
             .map(|entry| {
                 crate::search::VectorDocument::new(
                     entry.thought_id.to_string(),
-                    entry.vector.clone(),
+                    entry.vector.to_vec(),
                 )
             })
             .collect();
@@ -11475,8 +11542,22 @@ impl MentisDb {
 
     /// Implicit-edge work not yet applied to the overlay: vectors queued or
     /// being scanned in the background.
+    ///
+    /// # Backlog policy
+    ///
+    /// The queue never blocks an append and never drops an edge. It holds
+    /// positions, not vectors (the vectors are already in the sidecar, which the
+    /// scan store shares), so it costs a few bytes per run of consecutive
+    /// appends however long it grows, and the overlay is simply behind by this
+    /// many vectors. The scan applies batches of 32 vectors on up to four
+    /// threads; the sustainable append rate is therefore the scan throughput,
+    /// which falls with the corpus (see the changelog for measured rates at 20 000
+    /// and 100 000 thoughts). While appends arrive faster than that the backlog
+    /// grows and edges for recent thoughts appear late; when they slow down it
+    /// drains. [`MentisDb::derived_backlog`] and `GET /v1/chains` report it.
     pub fn implicit_edge_backlog(&self) -> usize {
-        self.edge_queue.len() + self.edge_job.as_ref().map_or(0, |job| job.items.len())
+        self.edge_queue.iter().map(|run| run.len).sum::<usize>()
+            + self.edge_job.as_ref().map_or(0, |job| job.items.len())
     }
 
     /// The overlay of vector-inferred edges, if this chain has one.
@@ -11513,25 +11594,63 @@ impl MentisDb {
             if small && self.edge_queue.is_empty() && self.edge_job.is_none() {
                 self.apply_implicit_edges_for(metadata, id, index, &hash, &vector);
             } else {
-                self.edge_queue.push_back(EdgeWork {
-                    metadata: metadata.clone(),
-                    id,
-                    index,
-                    hash,
-                    vector: Arc::from(vector),
-                });
+                self.edge_queue_push_back(metadata, index);
             }
         }
         self.start_edge_job();
+    }
+
+    /// Queue the vector of thought `index` behind everything already queued,
+    /// extending the last run when it continues it.
+    fn edge_queue_push_back(&mut self, metadata: &crate::search::EmbeddingMetadata, index: u64) {
+        if let Some(run) = self.edge_queue.back_mut() {
+            if &run.metadata == metadata && run.first_index + run.len as u64 == index {
+                run.len += 1;
+                return;
+            }
+        }
+        self.edge_queue.push_back(EdgeRun {
+            metadata: metadata.clone(),
+            first_index: index,
+            len: 1,
+        });
+    }
+
+    /// Put the vector of thought `index` back at the front of the queue.
+    fn edge_queue_push_front(&mut self, metadata: &crate::search::EmbeddingMetadata, index: u64) {
+        if let Some(run) = self.edge_queue.front_mut() {
+            if &run.metadata == metadata && index + 1 == run.first_index {
+                run.first_index = index;
+                run.len += 1;
+                return;
+            }
+        }
+        self.edge_queue.push_front(EdgeRun {
+            metadata: metadata.clone(),
+            first_index: index,
+            len: 1,
+        });
+    }
+
+    /// Take the vector at the front of the queue.
+    fn edge_queue_pop_front(&mut self) -> Option<(crate::search::EmbeddingMetadata, u64)> {
+        let run = self.edge_queue.front_mut()?;
+        let taken = (run.metadata.clone(), run.first_index);
+        run.first_index += 1;
+        run.len -= 1;
+        if run.len == 0 {
+            self.edge_queue.pop_front();
+        }
+        Some(taken)
     }
 
     /// Start the background scan for the front of the queue, if none is
     /// running.
     ///
     /// Under the caller's lock this only syncs the scan store with the sidecar
-    /// (copying the vectors appended since the last sync) and clones the sealed
-    /// chunk pointers; the `O(entries x dimension)` scan happens on the new
-    /// thread.
+    /// (sharing the vectors appended since the last sync, copying none) and
+    /// clones the sealed chunk pointers; the `O(entries x dimension)` scan
+    /// happens on the new thread.
     fn start_edge_job(&mut self) {
         use crate::search::vector_scan::{scan_snapshot, ScanItem, ScanQuery, ScanSnapshot};
         if self.edge_job.is_some() || self.edge_queue.is_empty() {
@@ -11549,10 +11668,10 @@ impl MentisDb {
         let mut plans: Vec<EdgePlan> = Vec::new();
         let mut snapshots: HashMap<crate::search::EmbeddingMetadata, ScanSnapshot> = HashMap::new();
         while items.len() < EDGE_SCAN_BATCH {
-            let Some(work) = self.edge_queue.pop_front() else {
+            let Some((metadata, index)) = self.edge_queue_pop_front() else {
                 break;
             };
-            let Some(entry) = self.managed_vector_sidecars.get_mut(&work.metadata) else {
+            let Some(entry) = self.managed_vector_sidecars.get_mut(&metadata) else {
                 continue;
             };
             let ManagedSidecarEntry {
@@ -11567,12 +11686,29 @@ impl MentisDb {
                 crate::search::vector_scan::VectorScanStore::new(sidecar.metadata.dimension)
             });
             store.sync_with(sidecar);
-            let prefix_len = store.position_before(work.index);
-            if store.index_at(prefix_len) != Some(work.index) {
+            let prefix_len = store.position_before(index);
+            if store.index_at(prefix_len) != Some(index) {
                 continue; // the sidecar no longer holds this thought
             }
+            let Some((id, vector)) = store.entry_at(prefix_len) else {
+                continue;
+            };
+            let Some(thought) = self
+                .thoughts
+                .get(index as usize)
+                .filter(|thought| thought.id == id)
+            else {
+                continue; // the chain no longer holds it either
+            };
+            let work = EdgeWork {
+                metadata: metadata.clone(),
+                id,
+                index,
+                hash: thought.hash.clone(),
+                vector,
+            };
             let snapshot = snapshots
-                .entry(work.metadata.clone())
+                .entry(metadata)
                 .or_insert_with(|| store.snapshot());
             plans.push(EdgePlan {
                 prefix_len,
@@ -11703,7 +11839,7 @@ impl MentisDb {
             // A sidecar was rebuilt under the scan: its snapshot is of vectors
             // that are gone. Scan these again against the current ones.
             for item in job.items.into_iter().rev() {
-                self.edge_queue.push_front(item);
+                self.edge_queue_push_front(&item.metadata, item.index);
             }
             self.start_edge_job();
             return;
@@ -12166,7 +12302,7 @@ impl MentisDb {
                             if let Some(last_entry) = sidecar.entries.last() {
                                 let document = crate::search::VectorDocument::new(
                                     last_entry.thought_id.to_string(),
-                                    last_entry.vector.clone(),
+                                    last_entry.vector.to_vec(),
                                 );
                                 if let Err(e) = cached.upsert_document(document) {
                                     eprintln!(
@@ -14127,7 +14263,7 @@ fn sidecar_entries_to_documents(
     entries
         .iter()
         .map(|entry| {
-            crate::search::VectorDocument::new(entry.thought_id.to_string(), entry.vector.clone())
+            crate::search::VectorDocument::new(entry.thought_id.to_string(), entry.vector.to_vec())
         })
         .collect()
 }

@@ -345,7 +345,7 @@ fn bench_sidecar_compaction(c: &mut Criterion) {
         let metadata = EmbeddingMetadata::new("bench", 384, "v1");
         let entries: Vec<VectorSidecarEntry> = (0..count)
             .map(|i| {
-                let vector = (0..384)
+                let vector: Vec<f32> = (0..384)
                     .map(|d| ((i * 31 + d * 17) % 1000) as f32 / 997.0 - 0.5)
                     .collect();
                 VectorSidecarEntry::new(

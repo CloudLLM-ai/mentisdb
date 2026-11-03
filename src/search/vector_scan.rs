@@ -4,19 +4,28 @@
 //! similarity to every earlier vector: `O(entries x dimension)` (about 25 ms at
 //! 100 000 x 384). Done under a chain's write lock that stalls every other
 //! writer, so a service computes it on another thread from a *snapshot* of the
-//! vectors. [`VectorScanStore`] is that snapshot source. It holds a second copy
-//! of the vectors in sealed chunks behind `Arc`, so taking a snapshot clones a
-//! short list of pointers (`entries / 128` of them) and never copies a vector.
-//! The few vectors not yet in a sealed chunk (fewer than
-//! [`SCAN_CHUNK_ENTRIES`]) are not in the snapshot; the caller scans those under
-//! the lock with [`VectorScanStore::scan_range`], which is the small "delta".
+//! vectors. [`VectorScanStore`] is that snapshot source.
+//!
+//! # One copy of the vectors
+//!
+//! The store holds no floats. Each position is a clone of the
+//! `Arc<[f32]>` of the sidecar entry it mirrors
+//! ([`crate::search::VectorSidecarEntry::vector`]), so the sidecar and the
+//! scanner read the same allocation: the store costs about 40 bytes per vector
+//! (a fat pointer, the thought id and the thought index), against 1 536 bytes
+//! per vector at 384 dimensions for a copy. The entries sit in sealed chunks
+//! behind `Arc`, so taking a snapshot clones a short list of pointers
+//! (`entries / 128` of them) and never copies a vector. The few vectors not yet
+//! in a sealed chunk (fewer than [`SCAN_CHUNK_ENTRIES`]) are not in the
+//! snapshot; the caller scans those under the lock with
+//! [`VectorScanStore::scan_range`], which is the small "delta".
 //!
 //! Scores come from [`cosine_similarity`] on identical slices, so a scan split
 //! between a snapshot and the live delta returns exactly the candidates (same
 //! order, bit-identical scores) a single scan over the sidecar would.
 
 use crate::search::implicit_edges::ImplicitNeighbor;
-use crate::search::sidecar::VectorSidecar;
+use crate::search::sidecar::{VectorSidecar, VectorSidecarEntry};
 use crate::search::vector::cosine_similarity;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -30,11 +39,11 @@ pub(crate) const SCAN_CHUNK_ENTRIES: usize = 128;
 /// rebuilt in the meantime can be recognised and discarded.
 static NEXT_EPOCH: AtomicU64 = AtomicU64::new(1);
 
-/// A run of up to [`SCAN_CHUNK_ENTRIES`] vectors, stored flat.
+/// A run of up to [`SCAN_CHUNK_ENTRIES`] vectors, shared with the sidecar.
 #[derive(Default)]
 pub(crate) struct ScanChunk {
     ids: Vec<Uuid>,
-    flat: Vec<f32>,
+    vectors: Vec<Arc<[f32]>>,
 }
 
 /// An immutable view of the sealed part of a [`VectorScanStore`].
@@ -42,8 +51,6 @@ pub(crate) struct ScanChunk {
 pub(crate) struct ScanSnapshot {
     /// Identity of the store the snapshot was taken from.
     pub(crate) epoch: u64,
-    /// Vectors per entry.
-    dimension: usize,
     chunks: Vec<Arc<ScanChunk>>,
 }
 
@@ -131,23 +138,31 @@ impl VectorScanStore {
             *self = Self::new(sidecar.metadata.dimension);
         }
         for entry in &sidecar.entries[self.len()..] {
-            self.push(
-                entry.thought_id,
-                entry.thought_index,
-                &entry.thought_hash,
-                &entry.vector,
-            );
+            self.push(entry);
         }
     }
 
-    fn push(&mut self, id: Uuid, index: u64, hash: &str, vector: &[f32]) {
+    fn push(&mut self, entry: &VectorSidecarEntry) {
         if self.tail.ids.len() == SCAN_CHUNK_ENTRIES {
             self.sealed.push(Arc::new(std::mem::take(&mut self.tail)));
         }
-        self.tail.ids.push(id);
-        self.tail.flat.extend_from_slice(vector);
-        self.indices.push(index);
-        self.last_hash = Some(hash.to_owned());
+        self.tail.ids.push(entry.thought_id);
+        self.tail.vectors.push(Arc::clone(&entry.vector));
+        self.indices.push(entry.thought_index);
+        self.last_hash = Some(entry.thought_hash.clone());
+    }
+
+    /// Thought id and (shared) vector at `position`.
+    pub(crate) fn entry_at(&self, position: usize) -> Option<(Uuid, Arc<[f32]>)> {
+        let chunk = self
+            .sealed
+            .get(position / SCAN_CHUNK_ENTRIES)
+            .map_or(&self.tail, |sealed| sealed.as_ref());
+        let offset = position % SCAN_CHUNK_ENTRIES;
+        Some((
+            *chunk.ids.get(offset)?,
+            Arc::clone(chunk.vectors.get(offset)?),
+        ))
     }
 
     /// Snapshot of the sealed chunks: `O(entries / SCAN_CHUNK_ENTRIES)`
@@ -155,7 +170,6 @@ impl VectorScanStore {
     pub(crate) fn snapshot(&self) -> ScanSnapshot {
         ScanSnapshot {
             epoch: self.epoch,
-            dimension: self.dimension,
             chunks: self.sealed.clone(),
         }
     }
@@ -180,7 +194,7 @@ impl VectorScanStore {
                 .map_or(&self.tail, |sealed| sealed.as_ref());
             let start = position % SCAN_CHUNK_ENTRIES;
             let end = (to - chunk_number * SCAN_CHUNK_ENTRIES).min(SCAN_CHUNK_ENTRIES);
-            scan_chunk(chunk, self.dimension, start..end, query, out);
+            scan_chunk(chunk, start..end, query, out);
             position = (chunk_number + 1) * SCAN_CHUNK_ENTRIES;
         }
     }
@@ -189,7 +203,6 @@ impl VectorScanStore {
 /// Compare `vector` with positions `start..end` of one chunk.
 fn scan_chunk(
     chunk: &ScanChunk,
-    dimension: usize,
     positions: std::ops::Range<usize>,
     query: &ScanQuery<'_>,
     out: &mut Vec<ImplicitNeighbor>,
@@ -198,8 +211,7 @@ fn scan_chunk(
         if chunk.ids[position] == query.id {
             continue;
         }
-        let stored = &chunk.flat[position * dimension..(position + 1) * dimension];
-        let Some(score) = cosine_similarity(query.vector, stored) else {
+        let Some(score) = cosine_similarity(query.vector, &chunk.vectors[position]) else {
             continue;
         };
         if score < query.threshold {
@@ -235,13 +247,7 @@ pub(crate) fn scan_snapshot(
             for (item, out) in items.iter().zip(&mut found) {
                 if item.prefix_len > base {
                     let end = (item.prefix_len - base).min(SCAN_CHUNK_ENTRIES);
-                    scan_chunk(
-                        &snapshot.chunks[chunk_number],
-                        snapshot.dimension,
-                        0..end,
-                        &item.query,
-                        out,
-                    );
+                    scan_chunk(&snapshot.chunks[chunk_number], 0..end, &item.query, out);
                 }
             }
         }
@@ -280,14 +286,13 @@ pub(crate) fn scan_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::sidecar::VectorSidecarEntry;
     use crate::search::EmbeddingMetadata;
 
     fn sidecar(count: usize) -> VectorSidecar {
         let entries = (0..count)
             .map(|i| {
                 // Few distinct directions, so many pairs clear the threshold.
-                let vector = (0..4)
+                let vector: Vec<f32> = (0..4)
                     .map(|d| (((i % 5) * 7 + d * 3) % 11) as f32 + 1.0)
                     .collect();
                 VectorSidecarEntry::new(
@@ -393,5 +398,41 @@ mod tests {
         store.sync_with(&shorter);
         assert_ne!(store.epoch(), epoch);
         assert_eq!(store.len(), 7);
+    }
+
+    /// The store shares the sidecar's vector allocations: each is held by
+    /// exactly the sidecar and the store (reference count 2), and a snapshot
+    /// and a scan add none. A copy would show as a different pointer.
+    #[test]
+    fn test_store_shares_the_sidecar_vectors_instead_of_copying_them() {
+        let sidecar = sidecar(2 * SCAN_CHUNK_ENTRIES + 9);
+        let mut store = VectorScanStore::new(4);
+        store.sync_with(&sidecar);
+        let snapshot = store.snapshot();
+        let items = [ScanItem {
+            query: ScanQuery {
+                id: sidecar.entries[0].thought_id,
+                vector: &sidecar.entries[0].vector,
+                threshold: 0.5,
+            },
+            prefix_len: store.len(),
+        }];
+        let _ = scan_snapshot(&snapshot, &items, 2);
+        for (position, entry) in sidecar.entries.iter().enumerate() {
+            let (_, shared) = store.entry_at(position).expect("stored");
+            assert!(
+                Arc::ptr_eq(&shared, &entry.vector),
+                "position {position} was copied"
+            );
+            // sidecar + store + the clone just taken
+            assert_eq!(Arc::strong_count(&entry.vector), 3);
+        }
+        // Dropping the store releases its share.
+        drop(snapshot);
+        drop(store);
+        assert!(sidecar
+            .entries
+            .iter()
+            .all(|e| Arc::strong_count(&e.vector) == 1));
     }
 }

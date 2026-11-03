@@ -96,22 +96,51 @@ pub struct VectorSidecarEntry {
     /// Stable hash of the source thought.
     pub thought_hash: String,
     /// Dense vector in the sidecar's embedding space.
-    pub vector: Vec<f32>,
+    ///
+    /// Reference-counted so the implicit-edge scanner can read the same
+    /// allocation from another thread without a second copy of every vector
+    /// (about 150 MB at 100 000 x 384), and so cloning an entry or a whole
+    /// sidecar copies pointers, not floats. It serializes exactly as a
+    /// `Vec<f32>` does (a JSON array), so the on-disk format and the integrity
+    /// digest are unchanged.
+    #[serde(with = "arc_slice")]
+    pub vector: Arc<[f32]>,
+}
+
+/// `serde` adapter that stores an `Arc<[f32]>` as a plain sequence, byte for
+/// byte what `Vec<f32>` produced before the field became reference-counted.
+mod arc_slice {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::sync::Arc;
+
+    pub(super) fn serialize<S: Serializer>(
+        vector: &Arc<[f32]>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(vector.iter())
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Arc<[f32]>, D::Error> {
+        Vec::<f32>::deserialize(deserializer).map(Arc::from)
+    }
 }
 
 impl VectorSidecarEntry {
-    /// Create one persisted vector row.
+    /// Create one persisted vector row. `vector` may be a `Vec<f32>` (moved
+    /// into a shared allocation) or an `Arc<[f32]>` (shared as is).
     pub fn new(
         thought_id: Uuid,
         thought_index: u64,
         thought_hash: impl Into<String>,
-        vector: Vec<f32>,
+        vector: impl Into<Arc<[f32]>>,
     ) -> Self {
         Self {
             thought_id,
             thought_index,
             thought_hash: thought_hash.into(),
-            vector,
+            vector: vector.into(),
         }
     }
 }
@@ -337,7 +366,7 @@ impl VectorSidecar {
             thought_id: entry.thought_id,
             thought_index: entry.thought_index,
             thought_hash: entry.thought_hash.clone(),
-            vector: entry.vector.clone(),
+            vector: entry.vector.to_vec(),
             thought_count,
             head_hash: head_hash.clone(),
             prev_digest_hex,
@@ -705,7 +734,7 @@ fn incremental_sidecar_digest(
     if let Some(head) = head_hash {
         hasher.update(head.as_bytes());
     }
-    for value in &entry.vector {
+    for value in entry.vector.iter() {
         hasher.update(value.to_le_bytes());
     }
     hasher

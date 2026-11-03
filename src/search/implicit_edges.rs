@@ -146,7 +146,7 @@ impl ImplicitEdgeOverlay {
         let documents: Vec<VectorDocument> = sidecar
             .entries
             .iter()
-            .map(|entry| VectorDocument::new(entry.thought_id.to_string(), entry.vector.clone()))
+            .map(|entry| VectorDocument::new(entry.thought_id.to_string(), entry.vector.to_vec()))
             .collect();
         let backend = HnswBackend::from_documents(sidecar.metadata.clone(), documents)?;
         Ok(Self::build_from_backend(sidecar, &backend, k, threshold))
@@ -213,7 +213,7 @@ impl ImplicitEdgeOverlay {
             self.threshold,
             new_id,
             new_vector,
-            entries.map(|entry| (entry.thought_id, entry.vector.as_slice())),
+            entries.map(|entry| (entry.thought_id, &*entry.vector)),
         );
         self.apply_candidates(new_id, candidates);
     }

@@ -280,10 +280,16 @@ fn test_vectors_applied_while_a_scan_runs_queue_behind_it() {
         "nothing was applied while the scan was held ({})",
         chain.implicit_edge_backlog()
     );
+    // Operators see the same number the library reports.
+    assert_eq!(
+        chain.derived_backlog().implicit_edges,
+        chain.implicit_edge_backlog()
+    );
     latch.open();
     chain.set_edge_scan_hook(None);
     drain(&mut chain);
     assert_eq!(normalized(&chain), normalized(&oracle));
+    assert_eq!(chain.derived_backlog().implicit_edges, 0);
 }
 
 /// A scan started for an overlay that is replaced meanwhile is dropped, not

@@ -52,6 +52,40 @@ use tempfile::TempDir;
 
 const DIMENSION: usize = 384;
 
+/// Counts live heap bytes so memory can be compared exactly between commits
+/// (RSS is noisy: it includes allocator slack and freed-but-retained pages).
+struct CountingAllocator;
+
+static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+// SAFETY: forwards every call to the system allocator unchanged and only adds
+// atomic bookkeeping of the sizes it was asked for.
+unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        LIVE_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        LIVE_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        LIVE_BYTES.fetch_add(new_size, Ordering::Relaxed);
+        LIVE_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
+        unsafe { std::alloc::System.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+/// Live heap in MiB.
+fn heap_mib() -> f64 {
+    LIVE_BYTES.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0)
+}
+
 /// Deterministic, cheap embeddings of a fixed dimension that count the
 /// thoughts they embed.
 struct CountingProvider {
@@ -98,6 +132,17 @@ impl EmbeddingProvider for CountingProvider {
             })
             .collect())
     }
+}
+
+/// Resident set size of this process in MiB, from `ps` (0 if unavailable).
+fn rss_mib() -> f64 {
+    std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|text| text.trim().parse::<f64>().ok())
+        .map_or(0.0, |kib| kib / 1024.0)
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
@@ -201,12 +246,37 @@ fn deferred_cycle(fixture: &mut Fixture) -> Cycle {
 
 fn scenario_compaction(corpus: usize, appends: usize) {
     let mut fixture = build_fixture(corpus);
+    let rss_after_fixture = rss_mib();
+    let heap_after_fixture = heap_mib();
     let (mut holds, mut exposures) = (Vec::new(), Vec::new());
     for _ in 0..appends {
         let cycle = deferred_cycle(&mut fixture);
         holds.push(cycle.write_hold);
         exposures.push(cycle.exposure);
     }
+    let rss_after_appends = rss_mib();
+    let heap_after_appends = heap_mib();
+    // Appends outrun the background implicit-edge scan; drain what it left and
+    // report the scan's throughput at this corpus size.
+    let backlog = fixture.chain.implicit_edge_backlog();
+    let drain_started = Instant::now();
+    while fixture.chain.implicit_edge_backlog() > 0 || fixture.chain.has_pending_sidecar_rebuilds()
+    {
+        std::thread::sleep(Duration::from_millis(5));
+        fixture.chain.poll_vector_backend_upgrades();
+    }
+    let drain = drain_started.elapsed().as_secs_f64();
+    println!(
+        "| compaction | {corpus} | {appends} | memory MiB (RSS) after fixture / after appends | {:.0} / {:.0} |",
+        rss_after_fixture, rss_after_appends
+    );
+    println!(
+        "| compaction | {corpus} | {appends} | live heap MiB after fixture / after appends | {heap_after_fixture:.1} / {heap_after_appends:.1} |"
+    );
+    println!(
+        "| compaction | {corpus} | {appends} | implicit-edge backlog left / drain s / scan vectors per s | {backlog} / {drain:.2} / {:.0} |",
+        backlog as f64 / drain.max(1e-9)
+    );
     let (holds, exposures) = (Samples(holds), Samples(exposures));
     println!(
         "| compaction | {corpus} | {appends} | write hold ms p50/p99/p99.9/max | {:.3} / {:.3} / {:.3} / {:.3} |",
