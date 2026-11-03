@@ -108,8 +108,8 @@ async fn the_alias_is_refused_over_http_and_accepted_over_https() {
         StatusCode::FORBIDDEN,
         "alias over plain REST, from a browser"
     );
-    // A programmatic client sends no browser signal; the REST guard leaves it alone.
-    assert_eq!(rest_status(&c, &url, false).await, StatusCode::OK);
+    // REST on a loopback bind checks Host for every client, not only browsers.
+    assert_eq!(rest_status(&c, &url, false).await, StatusCode::FORBIDDEN);
 
     let c = client_for(https_mcp.local_addr().port());
     assert_eq!(

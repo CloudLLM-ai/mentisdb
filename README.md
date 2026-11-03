@@ -1654,9 +1654,16 @@ data you care about: a rebinding page cannot present a token or the PIN.
   `MENTISDB_DASHBOARD_ALLOWED_HOSTS`.
 - **MCP on a wildcard bind** (Docker, LAN) performs no `Host` check for non-browser
   clients, which reach the daemon by service name or DHCP address.
-- **REST, and MCP with bearer tokens off**, refuse a request from a browser (it carries
-  `Origin` or `Sec-Fetch-Site`) unless its `Host` and `Origin` host are in the list.
-  `curl`, the CLI and agents send neither header and are unaffected.
+- **REST on a loopback bind (the default)** checks `Host` for every request, like MCP does:
+  `curl`, the CLI, agents and browsers alike get `403` (`host 'X' is not allowed; set
+  MENTISDB_DASHBOARD_ALLOWED_HOSTS ...`) unless the name is in the list. A request with no
+  `Host` header at all (HTTP/1.0, in-process) passes. **Reverse proxy note:** an nginx or
+  Caddy in front of a loopback daemon forwards the public name as `Host` by default; add
+  that name to `MENTISDB_DASHBOARD_ALLOWED_HOSTS` (or have the proxy send `Host:
+  127.0.0.1:9472`), or every proxied REST call is refused.
+- **REST on a wildcard bind, and MCP with bearer tokens off**, refuse a request from a
+  browser (it carries `Origin` or `Sec-Fetch-Site`) unless its `Host` and `Origin` host are
+  in the list. `curl`, the CLI and agents send neither header and are unaffected.
 - IPv6 entries match in canonical form (`2001:db8::7`, not `2001:0db8::7`).
 
 Dashboard API rules (0.10.9):

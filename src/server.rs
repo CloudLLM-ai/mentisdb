@@ -89,7 +89,8 @@
 //! |---|---|
 //! | MCP on a loopback bind (default) | `cloudllm_mcp` rejects any other `Host` with `403`, for every client, on `POST /`, `GET /` and the legacy routes. MentisDB passes it the allowlist, so configured names (and the alias on the HTTPS listener) keep working. |
 //! | MCP on a wildcard bind (Docker, LAN) | No `Host` check for programmatic clients, who legitimately use service names and DHCP addresses. |
-//! | REST, and MCP with bearer tokens off | A request from a browser (it carries `Origin` or `Sec-Fetch-Site`) must name an allowed `Host` and, if present, an allowed `Origin` host, else `403`. |
+//! | REST on a loopback bind (default) | Like MCP: every request, from any client, must name an allowed `Host`, else `403` (see [`rest_router_on`]). A request with no `Host` header at all passes. |
+//! | REST on a wildcard bind, and MCP with bearer tokens off | A request from a browser (it carries `Origin` or `Sec-Fetch-Site`) must name an allowed `Host` and, if present, an allowed `Origin` host, else `403`. |
 //! | Dashboard | Every route checks `Host`; state-changing calls also check `Origin`. |
 //!
 //! The library's own `Origin` check admits loopback origins only, which would
@@ -1388,7 +1389,7 @@ pub async fn start_rest_server(
     addr: SocketAddr,
     config: MentisDbServiceConfig,
 ) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
-    start_router(addr, rest_router(config)).await
+    start_router(addr, rest_router_on(config, addr)).await
 }
 
 /// Start a standalone MentisDB MCP server over HTTPS/TLS.
@@ -1528,7 +1529,7 @@ pub async fn start_https_rest_server(
     cert_path: PathBuf,
     key_path: PathBuf,
 ) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
-    start_tls_router(addr, rest_router(config), cert_path, key_path).await
+    start_tls_router(addr, rest_router_on(config, addr), cert_path, key_path).await
 }
 
 /// Start all servers described by a [`MentisDbServerConfig`] and return
@@ -1643,7 +1644,11 @@ pub async fn start_servers_with_migrations(
         Some(Arc::new(event_handler.clone())),
     )
     .await?;
-    let rest = start_router(config.rest_addr, rest_router_with_service(service.clone())).await?;
+    let rest = start_router(
+        config.rest_addr,
+        rest_router_with_service_on(service.clone(), config.rest_addr),
+    )
+    .await?;
 
     let https_mcp = if let Some(addr) = config.https_mcp_addr {
         Some(
@@ -1755,7 +1760,13 @@ async fn start_https_rest_server_with_service(
     cert_path: PathBuf,
     key_path: PathBuf,
 ) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
-    start_tls_router(addr, rest_router_with_service(service), cert_path, key_path).await
+    start_tls_router(
+        addr,
+        rest_router_with_service_on(service, addr),
+        cert_path,
+        key_path,
+    )
+    .await
 }
 
 /// Bind a TCP socket and serve the dashboard router over HTTPS/TLS.
@@ -2125,6 +2136,91 @@ pub fn combined_mcp_router(config: MentisDbServiceConfig, bind_host: IpAddr) -> 
 /// ```
 pub fn rest_router(config: MentisDbServiceConfig) -> Router {
     rest_router_with_service(Arc::new(MentisDbService::new(config)))
+}
+
+/// The REST router for a listener bound to `addr`.
+///
+/// Like [`rest_router`], plus the `Host` check a loopback bind needs: when
+/// `addr` is a loopback address, **every** request (a `curl` or an agent as
+/// much as a browser) must name an allowed `Host` (`localhost`, `127.0.0.1`,
+/// `[::1]`, `MENTISDB_BIND_HOST`, `MENTISDB_DASHBOARD_ALLOWED_HOSTS`, and the
+/// `my.mentisdb.com` alias on a TLS listener, see the module docs), or it is
+/// answered `403`. A DNS-rebinding page cannot make a non-browser request, but
+/// a rebinding page is not the only thing that reaches a loopback port by a
+/// foreign name; this makes REST match what `cloudllm_mcp` already does for
+/// MCP on a loopback bind. A request with no `Host` at all (HTTP/1.0,
+/// in-process callers) is not refused. On any other bind nothing is added
+/// here: Docker and LAN clients legitimately use service names and DHCP
+/// addresses, and the browser guard still refuses foreign names
+/// from browsers.
+///
+/// [`start_rest_server`], [`start_https_rest_server`] and [`start_servers`]
+/// use this with the address they bind. Behind a reverse proxy on a loopback
+/// bind, add the forwarded name to `MENTISDB_DASHBOARD_ALLOWED_HOSTS` before
+/// the daemon starts (the list is read per request).
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use std::{net::SocketAddr, path::PathBuf};
+/// use mentisdb::StorageAdapterKind;
+/// use mentisdb::server::{MentisDbServiceConfig, rest_router_on};
+///
+/// let config = MentisDbServiceConfig::new(
+///     PathBuf::from("/var/lib/mentisdb"),
+///     "my-agent-brain",
+///     StorageAdapterKind::Binary,
+/// );
+/// let app = rest_router_on(config, SocketAddr::from(([127, 0, 0, 1], 9472)));
+/// # let _ = app;
+/// ```
+pub fn rest_router_on(config: MentisDbServiceConfig, addr: SocketAddr) -> Router {
+    rest_router_with_service_on(Arc::new(MentisDbService::new(config)), addr)
+}
+
+/// [`rest_router_with_service`] plus the loopback `Host` check of
+/// [`rest_router_on`].
+fn rest_router_with_service_on(service: Arc<MentisDbService>, addr: SocketAddr) -> Router {
+    let router = rest_router_with_service(service);
+    if addr.ip().is_loopback() {
+        router.layer(middleware::from_fn(loopback_host_guard_middleware))
+    } else {
+        router
+    }
+}
+
+/// Refuse any request whose `Host` is not one of this daemon's own names.
+///
+/// Applied to REST listeners on a loopback bind (see [`rest_router_on`]); the
+/// decision and the `403` body are the dashboard's. A request with no `Host`
+/// header and no URI authority passes.
+async fn loopback_host_guard_middleware(
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    let host = request
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| request.uri().authority().map(|a| a.as_str().to_string()));
+    if let Some(host) = host {
+        if !crate::dashboard::dashboard_host_allowed(
+            &host,
+            crate::dashboard::request_is_tls(&request),
+        ) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": format!(
+                        "host '{host}' is not allowed; set MENTISDB_DASHBOARD_ALLOWED_HOSTS to a comma-separated list of permitted hostnames"
+                    )
+                })),
+            )
+                .into_response();
+        }
+    }
+    next.run(request).await
 }
 
 /// Core service state shared by the MCP and REST servers.

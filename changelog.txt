@@ -1,4 +1,15 @@
 UNRELEASED
+  - security(host): REST on a loopback bind now checks `Host` for every request, not only
+    browser-flagged ones, matching what `cloudllm_mcp` 0.4 does for MCP. A `curl`, CLI or
+    agent request that names a foreign `Host` (and, on the plain HTTP listener, the
+    `my.mentisdb.com` alias unless it is allowlisted) gets `403` with the dashboard's
+    message; loopback names, `MENTISDB_BIND_HOST`, `MENTISDB_DASHBOARD_ALLOWED_HOSTS` and,
+    on the HTTPS REST listener, the alias are accepted; a request with no `Host` passes.
+    Wildcard and LAN binds are unchanged (browser guard only). New `server::rest_router_on`
+    (the standalone servers use it); `rest_router` is unchanged for embedders. Upgrade note,
+    behavior change for nginx/Caddy-fronted loopback daemons: add the public name the proxy
+    forwards as `Host` to `MENTISDB_DASHBOARD_ALLOWED_HOSTS` (or send `Host: 127.0.0.1:9472`
+    upstream), or proxied REST calls answer 403.
   - security(tls): expired or expiring TLS certificates are no longer silent. The generator
     already dated certificates relative to the moment of generation (one day before to two
     years after; the docs and the rcgen example still said 2025-01-01 to 2027-01-01, which
