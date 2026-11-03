@@ -1678,9 +1678,20 @@ Dashboard API rules (0.10.9):
   or **delete** a chain with private segments, and, while the daemon holds any private chain,
   to change settings, create, revoke or delete bearer tokens, or restart the daemon. Set a
   PIN and sign in to do any of it. A daemon with no private chain behaves as before.
-- **Login rate limiting** is keyed per client IP, so one client's failed PIN attempts do not
-  lock out others. `X-Forwarded-For` is ignored, so behind a reverse proxy all clients share
-  the proxy's address and one rate-limit bucket.
+- **PIN brute-force limiting** covers the login form and the `Authorization: Bearer <pin>`
+  path alike, in three layers. (1) Per client: 5 failures in 5 minutes block that client; an
+  IPv6 client is one client per `/64` (a single customer owns a whole `/64`, so rotating
+  addresses inside it does not reset the count), an IPv4-mapped address counts as the IPv4
+  one. One client's failures do not lock out others, except behind a NAT or reverse proxy,
+  where everyone shares one address and one bucket (`X-Forwarded-For` is ignored, it is
+  spoofable). (2) At most 4096 clients are remembered; expired entries, then the oldest, make
+  room. (3) A global budget: more than 50 failures from all clients together in 5 minutes
+  lock **every** PIN attempt, a correct PIN included, for 60 seconds, doubling on each repeat
+  up to one hour (forgiven after two quiet hours). That caps an attacker who rotates through
+  many addresses, at the cost that an attacker can make the owner wait; a signed-in session
+  (cookie) is unaffected. Refusals are `429` with `Retry-After`. These limits bound guessing
+  to roughly a thousand tries an hour, which is not enough against a 4-digit PIN: **use a
+  long random PIN** (12+ characters) for any dashboard reachable beyond localhost.
 - **Chain keys** created from the dashboard (bootstrap, branch target, copy-to target) must
   match `[A-Za-z0-9_-]` and be at most 128 characters, otherwise `400`.
 - **Paging** is clamped to `per_page` at most 500 and `page` at most 1000.

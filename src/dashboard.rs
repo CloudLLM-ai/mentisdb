@@ -737,12 +737,8 @@ async fn pin_auth_middleware(
                 .extensions()
                 .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>(),
         );
-        if pin_attempts_exhausted(&ip_key) {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                "Too many failed attempts. Try again later.",
-            )
-                .into_response();
+        if let Some(retry_after) = pin_retry_after(&ip_key) {
+            return too_many_pin_attempts(retry_after);
         }
         // Constant-time comparison to prevent timing attacks.
         if subtle::ConstantTimeEq::ct_eq(provided.as_bytes(), required_pin.as_bytes()).into() {
@@ -804,12 +800,192 @@ async fn serve_login() -> impl IntoResponse {
 
 // ── Login POST handler ────────────────────────────────────────────────────────
 
-/// Tracks failed login attempts per client IP: (attempt_count, first_attempt_time).
-static RATE_LIMIT_MAP: std::sync::LazyLock<std::sync::Mutex<HashMap<String, (u32, Instant)>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
-
+/// Failed PIN attempts allowed per client within [`RATE_LIMIT_WINDOW_SECS`].
 pub(crate) const RATE_LIMIT_MAX_ATTEMPTS: u32 = 5;
+/// How long a client's failures count, measured from its latest failure.
 pub(crate) const RATE_LIMIT_WINDOW_SECS: u64 = 300; // 5 minutes
+/// Most clients the limiter remembers; the oldest entry makes room for a new one.
+pub(crate) const RATE_LIMIT_MAX_TRACKED: usize = 4096;
+/// Failed PIN attempts, from all clients together, allowed per
+/// [`RATE_LIMIT_WINDOW_SECS`] before the whole dashboard backs off.
+pub(crate) const GLOBAL_FAILURE_BUDGET: u32 = 50;
+/// First global lockout, in seconds; it doubles on every repeat.
+pub(crate) const GLOBAL_BACKOFF_BASE_SECS: u64 = 60;
+/// Longest global lockout, in seconds.
+pub(crate) const GLOBAL_BACKOFF_MAX_SECS: u64 = 3600;
+
+/// Brute-force limiter for the dashboard PIN, shared by the login form and the
+/// `Authorization: Bearer <pin>` path.
+///
+/// Three layers, because each alone has a hole:
+///
+/// 1. **Per client** ([`limiter_key`]): [`RATE_LIMIT_MAX_ATTEMPTS`] failures
+///    within [`RATE_LIMIT_WINDOW_SECS`] block that client. An IPv6 client is
+///    one client per `/64`, since a single customer controls a whole `/64`
+///    and could otherwise rotate addresses at will. One client's lockout does
+///    not touch another's, except behind a NAT or reverse proxy where all
+///    clients share an address (`X-Forwarded-For` is ignored, it is spoofable).
+/// 2. **Bounded memory**: at most [`RATE_LIMIT_MAX_TRACKED`] clients are
+///    remembered; expired entries go first, then the oldest, so a flood of
+///    source addresses cannot grow the table.
+/// 3. **Global budget with backoff**: more than [`GLOBAL_FAILURE_BUDGET`]
+///    failures from all clients together within a window lock *every* PIN
+///    attempt, correct ones included (a correct guess must not be
+///    distinguishable), for [`GLOBAL_BACKOFF_BASE_SECS`] seconds, doubling on
+///    each repeat up to [`GLOBAL_BACKOFF_MAX_SECS`]. This caps an attacker who
+///    rotates through many addresses; the price is that an attacker can make
+///    the owner wait. A signed-in owner (session cookie) is not affected, and
+///    neither is the daemon, only the PIN prompt.
+///
+/// A short numeric PIN is still guessable at the rates this allows: use a long
+/// random PIN (see the README).
+#[derive(Debug)]
+pub(crate) struct PinLimiter {
+    /// Per client: failures counted and the time of the latest one.
+    per_client: HashMap<String, (u32, Instant)>,
+    /// Failures from all clients in the current window.
+    global_failures: u32,
+    /// Start of the current global window.
+    global_window_start: Option<Instant>,
+    /// While set and in the future, every PIN attempt is refused.
+    locked_until: Option<Instant>,
+    /// Consecutive global lockouts, which sets the next one's length.
+    strikes: u32,
+    /// When the latest global lockout began.
+    last_strike: Option<Instant>,
+}
+
+impl PinLimiter {
+    /// An empty limiter.
+    pub(crate) fn new() -> Self {
+        Self {
+            per_client: HashMap::new(),
+            global_failures: 0,
+            global_window_start: None,
+            locked_until: None,
+            strikes: 0,
+            last_strike: None,
+        }
+    }
+
+    /// `Some(seconds to wait)` while `key` may not try a PIN, else `None`.
+    ///
+    /// Expired entries are dropped as a side effect.
+    pub(crate) fn blocked(&mut self, key: &str, now: Instant) -> Option<u64> {
+        if let Some(until) = self.locked_until {
+            if until > now {
+                return Some(until.duration_since(now).as_secs().max(1));
+            }
+            self.locked_until = None;
+        }
+        let (count, last) = self.per_client.get(key).copied()?;
+        let age = now.saturating_duration_since(last).as_secs();
+        if age >= RATE_LIMIT_WINDOW_SECS {
+            self.per_client.remove(key);
+            return None;
+        }
+        (count >= RATE_LIMIT_MAX_ATTEMPTS).then(|| (RATE_LIMIT_WINDOW_SECS - age).max(1))
+    }
+
+    /// Count one failed PIN attempt by `key`.
+    pub(crate) fn record_failure(&mut self, key: &str, now: Instant) {
+        self.count_global_failure(now);
+        if !self.per_client.contains_key(key) && self.per_client.len() >= RATE_LIMIT_MAX_TRACKED {
+            self.per_client.retain(|_, (_, last)| {
+                now.saturating_duration_since(*last).as_secs() < RATE_LIMIT_WINDOW_SECS
+            });
+            if self.per_client.len() >= RATE_LIMIT_MAX_TRACKED {
+                if let Some(oldest) = self
+                    .per_client
+                    .iter()
+                    .min_by_key(|(_, (_, last))| *last)
+                    .map(|(client, _)| client.clone())
+                {
+                    self.per_client.remove(&oldest);
+                }
+            }
+        }
+        let entry = self.per_client.entry(key.to_string()).or_insert((0, now));
+        entry.0 = entry.0.saturating_add(1);
+        entry.1 = now;
+    }
+
+    /// Forget `key`'s failures after a correct PIN. The global budget is not
+    /// refunded: it counts what an attacker spent, not what the owner earned.
+    pub(crate) fn record_success(&mut self, key: &str) {
+        self.per_client.remove(key);
+    }
+
+    /// Clients currently remembered.
+    // Used by the integration tests that compile this file through `#[path]`.
+    #[allow(dead_code)]
+    pub(crate) fn tracked(&self) -> usize {
+        self.per_client.len()
+    }
+
+    /// Whether `key` is currently remembered.
+    // Used by the integration tests that compile this file through `#[path]`.
+    #[allow(dead_code)]
+    pub(crate) fn remembers(&self, key: &str) -> bool {
+        self.per_client.contains_key(key)
+    }
+
+    fn count_global_failure(&mut self, now: Instant) {
+        // A quiet spell forgives earlier lockouts.
+        if self.last_strike.is_some_and(|struck| {
+            now.saturating_duration_since(struck).as_secs() >= GLOBAL_BACKOFF_MAX_SECS * 2
+        }) {
+            self.strikes = 0;
+            self.last_strike = None;
+        }
+        let window_over = self.global_window_start.is_none_or(|start| {
+            now.saturating_duration_since(start).as_secs() >= RATE_LIMIT_WINDOW_SECS
+        });
+        if window_over {
+            self.global_window_start = Some(now);
+            self.global_failures = 0;
+        }
+        self.global_failures += 1;
+        if self.global_failures > GLOBAL_FAILURE_BUDGET {
+            self.strikes = (self.strikes + 1).min(16);
+            let seconds = GLOBAL_BACKOFF_BASE_SECS
+                .saturating_mul(1u64 << (self.strikes - 1).min(16))
+                .min(GLOBAL_BACKOFF_MAX_SECS);
+            self.locked_until = Some(now + std::time::Duration::from_secs(seconds));
+            self.last_strike = Some(now);
+            self.global_failures = 0;
+            self.global_window_start = None;
+        }
+    }
+}
+
+/// The process-wide limiter.
+static PIN_LIMITER: std::sync::LazyLock<std::sync::Mutex<PinLimiter>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(PinLimiter::new()));
+
+/// The limiter's identity for a peer address: the address itself for IPv4 (an
+/// IPv4-mapped IPv6 address counts as the IPv4 one), the `/64` prefix for IPv6.
+///
+/// # Examples
+///
+/// Every address of one `/64` is one client.
+///
+/// ```ignore
+/// assert_eq!(limiter_key("2001:db8:0:1::1".parse().unwrap()), limiter_key("2001:db8:0:1:ffff::2".parse().unwrap()));
+/// assert_ne!(limiter_key("2001:db8:0:1::1".parse().unwrap()), limiter_key("2001:db8:0:2::1".parse().unwrap()));
+/// ```
+pub(crate) fn limiter_key(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        },
+    }
+}
 
 /// How long a server-side session token remains valid after login.
 ///
@@ -861,7 +1037,8 @@ struct LoginForm {
 /// (detected via `X-Forwarded-Proto`), so logins performed through a
 /// TLS-terminating reverse proxy that talks plain HTTP to the daemon still
 /// persist the cookie successfully.
-/// Limiter key for a request: the peer IP, or `"unknown"` for in-process callers.
+/// Limiter key for a request: the peer IP (the `/64` for IPv6, see
+/// [`limiter_key`]), or `"unknown"` for in-process callers.
 ///
 /// `X-Forwarded-For` is deliberately ignored (spoofable); behind a reverse
 /// proxy every client shares the proxy's address.
@@ -869,49 +1046,43 @@ fn client_ip_key(
     connect_info: Option<&axum::extract::ConnectInfo<std::net::SocketAddr>>,
 ) -> String {
     connect_info
-        .map(|axum::extract::ConnectInfo(addr)| addr.ip().to_string())
+        .map(|axum::extract::ConnectInfo(addr)| limiter_key(addr.ip()))
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-/// True while `ip_key` has used up its failed-PIN budget
-/// ([`RATE_LIMIT_MAX_ATTEMPTS`] within [`RATE_LIMIT_WINDOW_SECS`]).
-///
-/// Expired entries are dropped as a side effect.
-fn pin_attempts_exhausted(ip_key: &str) -> bool {
-    let now = Instant::now();
-    let mut map = RATE_LIMIT_MAP.lock().unwrap_or_else(|e| e.into_inner());
-    match map.get(ip_key).copied() {
-        Some((count, first_attempt)) => {
-            if now.duration_since(first_attempt).as_secs() >= RATE_LIMIT_WINDOW_SECS {
-                map.remove(ip_key);
-                false
-            } else {
-                count >= RATE_LIMIT_MAX_ATTEMPTS
-            }
-        }
-        None => false,
-    }
+/// `Some(seconds to wait)` while `ip_key` may not try a PIN (its own budget is
+/// spent, or the dashboard as a whole is backing off), else `None`.
+fn pin_retry_after(ip_key: &str) -> Option<u64> {
+    PIN_LIMITER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .blocked(ip_key, Instant::now())
 }
 
 /// Counts one failed PIN attempt for `ip_key`.
 fn record_pin_failure(ip_key: &str) {
-    let now = Instant::now();
-    let mut map = RATE_LIMIT_MAP.lock().unwrap_or_else(|e| e.into_inner());
-    // Bound memory: drop expired entries once the table grows large.
-    if map.len() >= 10_000 {
-        map.retain(|_, (_, first)| now.duration_since(*first).as_secs() < RATE_LIMIT_WINDOW_SECS);
-    }
-    let entry = map.entry(ip_key.to_string()).or_insert_with(|| (0, now));
-    entry.0 += 1;
-    entry.1 = now;
+    PIN_LIMITER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .record_failure(ip_key, Instant::now());
 }
 
 /// Forgets the failed attempts of `ip_key` after a correct PIN.
 fn clear_pin_failures(ip_key: &str) {
-    RATE_LIMIT_MAP
+    PIN_LIMITER
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .remove(ip_key);
+        .record_success(ip_key);
+}
+
+/// The `429` answer for a PIN attempt refused by the limiter.
+fn too_many_pin_attempts(retry_after_secs: u64) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::RETRY_AFTER, retry_after_secs.to_string())],
+        "Too many failed attempts. Try again later.",
+    )
+        .into_response()
 }
 
 /// On failure redirects back to `/dashboard/login?error=1`.
@@ -936,12 +1107,8 @@ async fn handle_login(
     let ip_key = ip_key_owned.as_str();
 
     // Check rate limit before PIN comparison.
-    if pin_attempts_exhausted(ip_key) {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            "Too many failed attempts. Try again later.",
-        )
-            .into_response();
+    if let Some(retry_after) = pin_retry_after(ip_key) {
+        return too_many_pin_attempts(retry_after);
     }
 
     let pin_matches = state

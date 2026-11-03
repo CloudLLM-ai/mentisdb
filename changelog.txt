@@ -1,4 +1,17 @@
 UNRELEASED
+  - security(dashboard): the PIN brute-force limiter no longer has the three holes the review
+    found. It was per full IP address, so an IPv6 attacker rotating addresses inside their
+    `/64` never reached it: clients are now keyed per `/64` (IPv4-mapped addresses count as
+    IPv4). Only expired entries were ever evicted, so many source addresses inside one
+    window grew the table without bound: it is capped at 4096 clients and the oldest makes
+    room. And nothing bounded an attacker using many addresses: more than 50 failures from
+    all clients together in 5 minutes now lock every PIN attempt (correct ones too, so a
+    correct guess is indistinguishable) for 60 s, doubling per repeat up to 1 h and
+    forgiven after two quiet hours. The login form and the `Authorization: Bearer <pin>`
+    path share it, and `429` carries `Retry-After`. Residual trade-off, documented: an
+    attacker can make the owner wait (a signed-in session is unaffected), and behind a
+    NAT or reverse proxy all clients share one bucket. README now recommends a long random
+    PIN (12+ characters) for any dashboard reachable beyond localhost.
   - security(keys): `mentisdb key generate` without `--out` printed the private seed on
     standard output, where it lands in terminal scrollback, shell logs and the context of any
     AI agent that runs the command. It now always saves the seed to an owner-only (`0600`)
