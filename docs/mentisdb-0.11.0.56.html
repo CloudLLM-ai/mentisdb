@@ -165,6 +165,14 @@ mentisdb search "launch plan" --chain vault \
       generated corpus, at no time cost. The skill tells agents when to use it and when to
       fetch the full record instead, and the Python client supports it.
     </p>
+    <p>
+      That Python client, <code>pymentisdb</code> 0.10.0, is on PyPI with this release:
+      compact search, federated search, the version and provenance fields, and
+      <code>ReadSigner</code> for private chains
+      (<code>pip install 'pymentisdb[signing]'</code>). It also fixes the package
+      itself: the 0.9.0 wheel contained no code, and the client no longer needs
+      LangChain to import.
+    </p>
 
     <h3>6. One host policy, and a dashboard login that works</h3>
     <p>
@@ -195,7 +203,9 @@ mentisdb search "launch plan" --chain vault \
     </ul>
     <pre><code>cargo install mentisdb --locked --force
 # or
-docker pull ghcr.io/cloudllm-ai/mentisdb:0.11.0.56</code></pre>
+docker pull ghcr.io/cloudllm-ai/mentisdb:0.11.0.56
+# Python client
+pip install -U 'pymentisdb[signing]'</code></pre>
     <p>
       Full details: <a href="mentisdb-0.11.0.56-release-notes.md">release notes</a>. The
       <a href="https://github.com/CloudLLM-ai/mentisdb/blob/master/WHITEPAPER.md">whitepaper</a>
