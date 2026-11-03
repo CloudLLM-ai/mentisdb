@@ -472,7 +472,9 @@ fn redirect_refusal(url: &str, status: u16, location: &str) -> String {
 /// Add the read proof for this exact request when a read key is configured.
 ///
 /// Only REST requests carry it; the dashboard authenticates with its PIN. The
-/// signature covers method, path and query, and the body bytes that are sent.
+/// signature covers method, path and query, and the body bytes that are sent;
+/// the body's SHA-256 travels in `X-Mentis-Content-Sha256` as well, which lets a
+/// current daemon accept a body over 1 MiB.
 fn with_read_proof<B>(
     request: ureq::RequestBuilder<B>,
     invocation: &RemoteInvocation,
@@ -499,7 +501,14 @@ fn with_read_proof<B>(
         chrono::Utc::now().timestamp(),
         &crate::read_auth::fresh_nonce(),
     );
-    request.header(crate::read_auth::READ_AUTH_HEADER, header)
+    // Also declare the digest the proof signs, so the daemon can verify the
+    // proof before it reads the body and accept one over 1 MiB (an older daemon
+    // ignores the header and keeps its 1 MiB limit).
+    let digest =
+        crate::read_auth::content_digest_header_value(&crate::read_auth::body_digest(body));
+    request
+        .header(crate::read_auth::READ_AUTH_HEADER, header)
+        .header(crate::read_auth::CONTENT_DIGEST_HEADER, digest)
 }
 
 fn with_headers<B>(

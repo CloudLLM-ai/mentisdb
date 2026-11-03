@@ -309,3 +309,61 @@ async fn bearer_and_a_digest_proof_together() {
     let (status, _) = send(&router, tampered, &headers).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+// ------------------------------------------------------------------ the client
+
+/// `mentisdb memory import` with a read key sends a file well over 1 MiB to a
+/// real listening daemon and every entry lands: the CLI declares the digest the
+/// proof signs, so the daemon does not have to buffer the body to check it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_cli_imports_a_large_file_with_a_read_key() {
+    let router = rest_router(config("cli"));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let dir = std::env::temp_dir().join(format!("mentisdb_cli_big_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("MEMORY.md");
+    std::fs::write(&file, markdown(40)).unwrap();
+    assert!(std::fs::metadata(&file).unwrap().len() > 3 * LEGACY_SIGNED_BODY_BYTES as u64);
+    let seed = dir.join("read.key");
+    std::fs::write(&seed, format!("{}\n", "07".repeat(32))).unwrap();
+
+    let args: Vec<String> = [
+        "memory",
+        "import",
+        file.to_str().unwrap(),
+        "--chain",
+        "big",
+        "--read-key-file",
+        seed.to_str().unwrap(),
+        "--read-agent",
+        "importer",
+        "--read-key-id",
+        "importer-1",
+        "--url",
+        &url,
+        "--json",
+    ]
+    .map(String::from)
+    .to_vec();
+    let (out, code) = tokio::task::spawn_blocking(move || {
+        let argv = std::iter::once("mentisdb".to_string()).chain(args);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = mentisdb::cli::run_with_io(argv, &mut std::io::empty(), &mut out, &mut err);
+        (
+            String::from_utf8(out).unwrap() + &String::from_utf8(err).unwrap(),
+            code,
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        format!("{code:?}"),
+        format!("{:?}", std::process::ExitCode::SUCCESS),
+        "{out}"
+    );
+    assert!(out.contains("\"count\":5"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
