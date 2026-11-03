@@ -204,6 +204,10 @@ UNRELEASED
     never holds two. Every other multi-chain path in the crate was audited and
     already did. New `lineage::cross_chain_successor_on` is the per-chain half of
     `cross_chain_successor` and `CrossSuccessor::is_newer_than` combines them.
+  - fix(server): a failed sidecar/overlay flush after a stored thought no longer
+    turns the append into a `500`. The thought was already durable, so clients
+    that retried errors wrote it twice. The failure is logged and the queued
+    writes are retried on the next append.
   - build: Cargo.toml now declares `rust-version = "1.90"`, the real floor of the
     locked dependency set (roaring needs 1.90, uuid 1.89); a new `msrv` CI job
     checks all features and no default features on 1.90.

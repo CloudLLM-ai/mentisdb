@@ -3646,10 +3646,19 @@ impl MentisDbService {
             .await
             .map_err(|error| format!("embedding commit task failed: {error}"))?;
         }
+        // The thought is already durable. The queued sidecar and overlay writes
+        // are rebuildable derived state that stays queued for the next flush, so
+        // a failure here must not turn a stored thought into an error: clients
+        // retry errors and would store it twice.
         let read_guard = chain.clone().read_owned().await;
-        tokio::task::spawn_blocking(move || read_guard.flush_pending_derived())
-            .await
-            .map_err(|error| format!("flush task failed: {error}"))??;
+        let flushed = tokio::task::spawn_blocking(move || read_guard.flush_pending_derived()).await;
+        match flushed {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => log::error!(
+                "derived-state flush failed after a durable append (retried on the next write): {error}"
+            ),
+            Err(error) => log::error!("derived-state flush task failed after a durable append: {error}"),
+        }
         Ok(thought)
     }
 
