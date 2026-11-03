@@ -147,7 +147,7 @@ the version fields and graph provenance are kept. See
 ## CLI-only commands
 
 `setup`, `wizard` (agent integrations), `backup`, `restore`, `cert`,
-`bearertoken`, `key generate` and `key show` (Ed25519 seed files for signing), `add` (quick thought append), `agents` (alias of `agent list`).
+`bearertoken`, `key generate` (saves an Ed25519 seed to an owner-only file and never prints it) and `key show` (public key of a seed file), `add` (quick thought append), `agents` (alias of `agent list`).
 
 ## Operator commands (no MCP tool, REST answers 403)
 

@@ -39,6 +39,64 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 use uuid::Uuid;
 
+/// A fresh 32-byte Ed25519 seed from the operating system's CSPRNG
+/// (`getrandom`: `getentropy`, `/dev/urandom`, `BCryptGenRandom`).
+///
+/// The seed is the private key. It comes straight from the OS generator, with
+/// no hashing of clocks or identifiers in between, so all 256 bits are
+/// unpredictable.
+///
+/// # Errors
+///
+/// An [`std::io::Error`] when the operating system cannot supply randomness.
+pub(crate) fn fresh_seed() -> std::io::Result<[u8; 32]> {
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed).map_err(|error| {
+        std::io::Error::other(format!(
+            "the operating system's random generator failed: {error}"
+        ))
+    })?;
+    Ok(seed)
+}
+
+/// A warning when the private-key seed file at `path` can be read by other
+/// users (Unix: any group or other permission bit set).
+///
+/// A seed file is the private key. MentisDB creates its own (`mentisdb key
+/// generate`, the operator key) owner-only; a key copied from elsewhere or
+/// created by hand often is not. The text names the file, its mode and the
+/// `chmod 600` command that fixes it. Loading a key warns but still loads it,
+/// and never changes the file's mode: it is the owner's file.
+///
+/// Returns `None` when the file is private, missing, or the platform has no
+/// Unix permission bits.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::signing::seed_file_mode_warning;
+///
+/// assert!(seed_file_mode_warning(std::path::Path::new("/nonexistent/seed.key")).is_none());
+/// ```
+pub fn seed_file_mode_warning(path: &std::path::Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path).ok()?.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Some(format!(
+                "private key file {} is readable by other users (mode {mode:03o}); \
+                 run `chmod 600 {}`",
+                path.display(),
+                path.display()
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    None
+}
+
 /// Domain tag of the thought v2 payload.
 pub const THOUGHT_V2_DOMAIN: &[u8] = b"mentisdb/thought/v2\0";
 /// Domain tag of the key-registration proof-of-possession payload.

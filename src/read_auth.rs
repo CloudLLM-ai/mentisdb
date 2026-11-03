@@ -611,6 +611,9 @@ impl ReadSigner {
     /// Build a signer from `MENTISDB_READ_KEY_FILE`, `MENTISDB_READ_AGENT_ID` and
     /// `MENTISDB_READ_KEY_ID`; `Ok(None)` when none of them is set.
     ///
+    /// A seed file that other users can read is used with a warning on standard
+    /// error naming the `chmod 600` fix; the file is never changed here.
+    ///
     /// # Errors
     ///
     /// A message when the file is set but unreadable or not a 32-byte hex seed, or
@@ -627,6 +630,9 @@ impl ReadSigner {
         };
         let text =
             std::fs::read_to_string(&file).map_err(|e| format!("cannot read '{file}': {e}"))?;
+        if let Some(warning) = crate::signing::seed_file_mode_warning(std::path::Path::new(&file)) {
+            eprintln!("mentisdb: warning: {warning}");
+        }
         let seed: [u8; 32] = from_hex(text.trim())
             .ok()
             .and_then(|bytes| bytes.try_into().ok())

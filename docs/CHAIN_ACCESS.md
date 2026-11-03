@@ -73,7 +73,17 @@ Out of scope, documented limits:
   them; an existing directory is never changed (the daemon warns when one is
   group- or world-accessible). `mentisdb backup` excludes
   `operator/operator.key` on purpose: back it up separately.
-* **Private-key custody** is the agent's.
+* **Private-key custody** is the agent's. `mentisdb key generate` never prints
+  the seed: it saves it to an owner-only (`0600`) file (`--out FILE`, else
+  `$MENTISDB_KEY_DIR`, default `~/.mentisdb/keys/<public key prefix>.key`) and
+  prints only the public key and the path, so a key is never copied into
+  terminal scrollback, a shell log or the context of an AI agent that ran the
+  command. Seeds come straight from the operating system's random generator.
+  Loading a seed file that group or other users can read (`--private-key-file`,
+  `--read-key-file`, `MENTISDB_READ_KEY_FILE`, the operator key) works but
+  prints a warning with the `chmod 600` fix; MentisDB never changes the mode of
+  a file it did not create. Do not hand a seed file to an LLM or paste it into a
+  chat.
 * **Clock.** Proofs are accepted within 60 seconds of the server clock.
 * An attacker with write access to the chain *files* can append well-formed
   records; the hash chain detects edits to existing records, and policy

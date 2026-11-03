@@ -2394,6 +2394,10 @@ Important environment variables:
   MENTISDB_DASHBOARD_PIN
     Optional PIN required to open the HTTPS dashboard
 
+  MENTISDB_KEY_DIR
+    Directory 'mentisdb key generate' saves private keys in when --out is not
+    given (default: ~/.mentisdb/keys, created 0700; files 0600). Keys are never printed
+
   MENTISDB_DASHBOARD_ALLOWED_HOSTS
     Comma-separated extra host names or IPs accepted in the Host header (a public
     DNS name or IP, or the name a reverse proxy forwards). The dashboard, REST and

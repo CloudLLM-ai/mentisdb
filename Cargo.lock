@@ -2775,6 +2775,7 @@ dependencies = [
  "ed25519-dalek",
  "env_logger",
  "fastembed",
+ "getrandom 0.4.3",
  "hnsw",
  "if-addrs",
  "libc",

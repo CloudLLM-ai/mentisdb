@@ -132,6 +132,9 @@ pub const READ_KEY_ID_ENV: &str = crate::read_auth::ENV_READ_KEY_ID;
 ///
 /// A message when the file cannot be read or does not hold 64 hex characters.
 ///
+/// A seed file that other users can read is used with a warning on standard
+/// error naming the `chmod 600` fix; the file is never changed here.
+///
 /// # Examples
 ///
 /// ```
@@ -146,6 +149,9 @@ pub const READ_KEY_ID_ENV: &str = crate::read_auth::ENV_READ_KEY_ID;
 /// ```
 pub fn read_secret_key_file(path: &str) -> Result<Secret, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read '{path}': {e}"))?;
+    if let Some(warning) = crate::signing::seed_file_mode_warning(std::path::Path::new(path)) {
+        eprintln!("mentisdb: warning: {warning}");
+    }
     let bytes = crate::signing::from_hex(&text).map_err(|e| format!("'{path}': {e}"))?;
     let seed: [u8; 32] = bytes
         .try_into()

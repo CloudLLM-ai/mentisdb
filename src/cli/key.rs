@@ -6,7 +6,6 @@
 
 use crate::signing::{from_hex, to_hex};
 use ed25519_dalek::SigningKey;
-use sha2::{Digest, Sha256};
 use std::io::Write;
 
 /// Help text for `mentisdb key`.
@@ -18,24 +17,36 @@ Usage:
   mentisdb key show <file>
 
 Commands:
-  generate   Create a new key. The private seed is written to --out (default:
-             not saved, printed once on standard output) with owner-only
-             permissions; the public key is printed as 64 hex characters.
+  generate   Create a new key. The private seed is ALWAYS written to a file
+             with owner-only permissions (0600) and never printed: a private
+             key on standard output ends up in terminal scrollback, shell logs
+             and, worse, in the context of any AI agent that runs the command.
+             Without --out the file is $MENTISDB_KEY_DIR/<public key prefix>.key
+             (default ~/.mentisdb/keys, created 0700). Only the public key and
+             the file's path are printed.
   show       Print the public key of a key file.
 
 Options:
   --out <file>   Where to save the private seed (refuses to overwrite).
-  --force        Overwrite an existing --out file.
+  --force        Overwrite an existing --out file. The file is made 0600 before
+                 the new seed is written, even if it was more open before.
   -h, --help     Show this help
 
 The seed file is what --private-key-file reads (for 'agent key add',
-'thought append' and 'chain access ...'). Keep it secret; MentisDB only ever
-sees the public key and signatures.
+'thought append' and 'chain access ...'). Keep it secret and never paste it
+into a chat or hand it to an AI agent; MentisDB only ever sees the public key
+and signatures. Loading a seed file that other users can read prints a warning
+with the 'chmod 600' fix.
 
 Examples:
+  mentisdb key generate
   mentisdb key generate --out ~/.mentisdb/builder.key
   mentisdb key show ~/.mentisdb/builder.key
 ";
+
+/// Environment variable naming the directory `mentisdb key generate` writes to
+/// when `--out` is not given.
+pub const KEY_DIR_ENV: &str = "MENTISDB_KEY_DIR";
 
 /// A parsed `mentisdb key ...` invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,21 +114,32 @@ pub fn parse_key_args(args: &[String]) -> Result<KeyCommand, String> {
     }
 }
 
-/// A fresh 32-byte seed: SHA-256 over two random UUIDs and the clock.
+/// The directory `mentisdb key generate` writes to without `--out`:
+/// `$MENTISDB_KEY_DIR`, else `<home>/.mentisdb/keys`.
 ///
-/// UUIDv4 draws from the operating system's CSPRNG, so the seed carries at
-/// least 240 bits of entropy.
-fn fresh_seed() -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(uuid::Uuid::new_v4().as_bytes());
-    hasher.update(uuid::Uuid::new_v4().as_bytes());
-    hasher.update(
-        chrono::Utc::now()
-            .timestamp_nanos_opt()
-            .unwrap_or_default()
-            .to_be_bytes(),
-    );
-    hasher.finalize().into()
+/// # Errors
+///
+/// A message when neither the variable nor a home directory is available.
+///
+/// # Examples
+///
+/// ```
+/// std::env::set_var("MENTISDB_KEY_DIR", "/tmp/mentisdb-doc-keys");
+/// assert_eq!(
+///     mentisdb::cli::key::default_key_dir().unwrap(),
+///     std::path::PathBuf::from("/tmp/mentisdb-doc-keys")
+/// );
+/// std::env::remove_var("MENTISDB_KEY_DIR");
+/// ```
+pub fn default_key_dir() -> Result<std::path::PathBuf, String> {
+    if let Some(dir) = std::env::var_os(KEY_DIR_ENV).filter(|dir| !dir.is_empty()) {
+        return Ok(dir.into());
+    }
+    let environment = crate::paths::PathEnvironment::capture();
+    environment
+        .home_dir_for(crate::paths::HostPlatform::current())
+        .map(|home| home.join(".mentisdb").join("keys"))
+        .ok_or_else(|| format!("no home directory found; pass --out <file> or set {KEY_DIR_ENV}"))
 }
 
 fn write_seed(path: &str, seed: &[u8; 32], force: bool) -> Result<(), String> {
@@ -137,6 +159,14 @@ fn write_seed(path: &str, seed: &[u8; 32], force: bool) -> Result<(), String> {
             format!("cannot write '{path}': {e}")
         }
     })?;
+    // `--force` reuses an existing file, whose mode `open` leaves alone: tighten
+    // it before the seed goes in (the file is empty until now).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("cannot restrict '{path}': {e}"))?;
+    }
     writeln!(file, "{}", to_hex(seed)).map_err(|e| format!("cannot write '{path}': {e}"))
 }
 
@@ -149,21 +179,29 @@ pub fn run_key(command: &KeyCommand, out: &mut dyn Write) -> Result<(), String> 
     let io = |e: std::io::Error| e.to_string();
     match command {
         KeyCommand::Generate { out: path, force } => {
-            let seed = fresh_seed();
+            let seed =
+                crate::signing::fresh_seed().map_err(|e| format!("cannot generate a key: {e}"))?;
             let public = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
-            writeln!(out, "public_key_hex: {}", to_hex(&public)).map_err(io)?;
-            match path {
-                Some(path) => {
-                    write_seed(path, &seed, *force)?;
-                    writeln!(out, "private key saved to {path} (keep it secret)").map_err(io)
+            // The seed is never printed: stdout lands in terminal scrollback,
+            // logs and the context of any agent that ran this command.
+            let target = match path {
+                Some(path) => path.clone(),
+                None => {
+                    let dir = default_key_dir()?;
+                    crate::private_fs::create_dir_all(&dir)
+                        .map_err(|e| format!("cannot create '{}': {e}", dir.display()))?;
+                    dir.join(format!("{}.key", &to_hex(&public)[..16]))
+                        .to_string_lossy()
+                        .into_owned()
                 }
-                None => writeln!(
-                    out,
-                    "private_key_seed_hex: {} (shown once; save it)",
-                    to_hex(&seed)
-                )
-                .map_err(io),
-            }
+            };
+            write_seed(&target, &seed, *force)?;
+            writeln!(out, "public_key_hex: {}", to_hex(&public)).map_err(io)?;
+            writeln!(
+                out,
+                "private key saved to {target} (owner-only; keep it secret, never paste it into a chat or give it to an AI agent)"
+            )
+            .map_err(io)
         }
         KeyCommand::Show { file } => {
             let text =

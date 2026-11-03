@@ -1,4 +1,18 @@
 UNRELEASED
+  - security(keys): `mentisdb key generate` without `--out` printed the private seed on
+    standard output, where it lands in terminal scrollback, shell logs and the context of any
+    AI agent that runs the command. It now always saves the seed to an owner-only (`0600`)
+    file (`--out FILE`, else `$MENTISDB_KEY_DIR`, default `~/.mentisdb/keys/<public key
+    prefix>.key`, directory `0700`) and prints only the public key and the path; `--force`
+    makes an existing file `0600` before the new seed is written (it used to keep a looser
+    mode). Seeds (the CLI's and the operator key's) now come straight from the operating
+    system's CSPRNG (`getrandom`, already in the tree) instead of a SHA-256 over UUIDs and
+    the clock. Loading a seed file that group or other users can read
+    (`--private-key-file`, `--read-key-file`, `MENTISDB_READ_KEY_FILE`, the operator key)
+    still works but warns on stderr with the `chmod 600` fix
+    (`mentisdb::signing::seed_file_mode_warning`); MentisDB never changes the mode of a file
+    it did not create. Upgrade note: scripts that parsed `private_key_seed_hex:` from
+    `key generate` must pass `--out` (the seed is read from that file).
   - security(access): a write that points into a private segment is no longer an oracle
     for which indices and ids are private. An unsigned (or not read-authorized) writer who
     linked a thought to a private index or id got a specific "links to a private segment"

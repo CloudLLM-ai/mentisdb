@@ -61,7 +61,6 @@ use crate::signing::{
 use crate::{AgentStatus, MentisDb, PublicKeyAlgorithm};
 use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -94,19 +93,6 @@ impl std::fmt::Debug for OperatorIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "OperatorIdentity({})", self.key_id())
     }
-}
-
-fn fresh_seed() -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(uuid::Uuid::new_v4().as_bytes());
-    hasher.update(uuid::Uuid::new_v4().as_bytes());
-    hasher.update(
-        chrono::Utc::now()
-            .timestamp_nanos_opt()
-            .unwrap_or_default()
-            .to_be_bytes(),
-    );
-    hasher.finalize().into()
 }
 
 impl OperatorIdentity {
@@ -142,7 +128,7 @@ impl OperatorIdentity {
         match options.open(&path) {
             Ok(mut file) => {
                 use std::io::Write;
-                writeln!(file, "{}", to_hex(&fresh_seed()))?;
+                writeln!(file, "{}", to_hex(&crate::signing::fresh_seed()?))?;
                 file.sync_all()?;
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -153,11 +139,19 @@ impl OperatorIdentity {
 
     /// Load an existing operator key file.
     ///
+    /// A key file that other users can read (Unix mode `077` bits) is loaded
+    /// with a warning on standard error naming the `chmod 600` fix: the file
+    /// is the owner's, so it is never changed here (see
+    /// [`seed_file_mode_warning`](crate::signing::seed_file_mode_warning)).
+    ///
     /// # Errors
     ///
     /// I/O errors, or `InvalidData` when the file is not a 32-byte hex seed.
     pub fn load(path: &Path) -> io::Result<Self> {
         let text = std::fs::read_to_string(path)?;
+        if let Some(warning) = crate::signing::seed_file_mode_warning(path) {
+            eprintln!("mentisdb: warning: {warning}");
+        }
         let seed: [u8; 32] = from_hex(text.trim())
             .ok()
             .and_then(|bytes| bytes.try_into().ok())
