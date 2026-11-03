@@ -320,6 +320,8 @@ pub mod migration;
 pub mod operator;
 pub mod paths;
 pub(crate) mod private_fs;
+pub mod prompt_text;
+pub mod provenance;
 pub mod read_auth;
 pub mod search;
 #[cfg(feature = "server")]
@@ -371,6 +373,7 @@ pub use skills::{
 pub use standing::{
     StandingContext, StandingContextQuery, StandingEntry, StandingGroup,
     DEFAULT_STANDING_PER_TYPE_CAP, DEFAULT_STANDING_TOTAL_CAP, STANDING_DUPLICATE_THRESHOLD,
+    UNVERIFIED_IMPORTANCE_CAP,
 };
 
 /// Persistence interface for MentisDb storage backends.
@@ -8470,23 +8473,33 @@ impl MentisDb {
             })
     }
 
+    /// Display label of a thought's agent for prompt rendering.
+    ///
+    /// Agent ids, display names and owners are writer-supplied, so every part
+    /// goes through [`prompt_text::inline_label`]: the label is one short line
+    /// that cannot carry a line break or a block marker.
     fn agent_label_for(&self, thought: &Thought) -> String {
-        let mut label = if let Some(record) = self.agent_record_for(&thought.agent_id) {
-            if record.display_name.trim().is_empty() || record.display_name == thought.agent_id {
-                thought.agent_id.clone()
-            } else {
-                format!("{} [{}]", record.display_name, thought.agent_id)
+        let record = self.agent_record_for(&thought.agent_id);
+        let id = prompt_text::inline_label(&thought.agent_id);
+        let mut label = match record {
+            Some(record)
+                if !record.display_name.trim().is_empty()
+                    && record.display_name != thought.agent_id =>
+            {
+                format!(
+                    "{} [{}]",
+                    prompt_text::inline_label(&record.display_name),
+                    id
+                )
             }
-        } else {
-            thought.agent_id.clone()
+            _ => id,
         };
 
-        if let Some(owner) = self
-            .agent_record_for(&thought.agent_id)
+        if let Some(owner) = record
             .and_then(|record| record.owner.as_ref())
             .filter(|owner| !owner.trim().is_empty())
         {
-            label.push_str(&format!(" owned by {}", owner));
+            label.push_str(&format!(" owned by {}", prompt_text::inline_label(owner)));
         }
 
         label
@@ -8794,7 +8807,24 @@ impl MentisDb {
             (None, SignatureStatus::Unsigned)
         };
         let valid = matches!(status, SignatureStatus::Valid);
-        let key_active = thought
+        serde_json::json!({
+            "segment": self.segments().kind_at(thought.index).as_str(),
+            "signed": thought.signature_bytes().is_some(),
+            "signature": match &status {
+                SignatureStatus::Unsigned => "unsigned",
+                SignatureStatus::Valid => "valid",
+                SignatureStatus::Invalid(_) => "invalid",
+            },
+            "signature_version": version,
+            "verified_agent": (valid && self.signing_key_is_active(thought)).then(|| thought.agent_id.clone()),
+            "trust": "untrusted_data",
+        })
+    }
+
+    /// Whether the key a thought names is still an active key of its agent
+    /// (agent not revoked, key not revoked).
+    fn signing_key_is_active(&self, thought: &Thought) -> bool {
+        thought
             .signing_key_id
             .as_deref()
             .and_then(|key_id| {
@@ -8809,19 +8839,44 @@ impl MentisDb {
                                 .any(|key| key.key_id == key_id && key.revoked_at.is_none())
                     })
             })
-            .unwrap_or(false);
-        serde_json::json!({
-            "segment": self.segments().kind_at(thought.index).as_str(),
-            "signed": thought.signature_bytes().is_some(),
-            "signature": match &status {
-                SignatureStatus::Unsigned => "unsigned",
-                SignatureStatus::Valid => "valid",
-                SignatureStatus::Invalid(_) => "invalid",
-            },
-            "signature_version": version,
-            "verified_agent": (valid && key_active).then(|| thought.agent_id.clone()),
-            "trust": "untrusted_data",
-        })
+            .unwrap_or(false)
+    }
+
+    /// How far the authorship of `thought` can be trusted: whether its
+    /// signature verifies against an active key registered to its agent.
+    ///
+    /// An unsigned thought is [`provenance::ProvenanceTrust::Unsigned`]: its
+    /// `agent_id` is only a claim. A signature that does not verify, or whose
+    /// key was revoked, is [`provenance::ProvenanceTrust::Unverified`]. The
+    /// check runs one Ed25519 verification for a signed thought, none for an
+    /// unsigned one.
+    ///
+    /// This is about *who wrote* the thought, never about whether its content
+    /// is true or safe to follow.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::provenance::ProvenanceTrust;
+    /// use mentisdb::{MentisDb, StorageAdapterKind, ThoughtType};
+    ///
+    /// let dir = std::env::temp_dir().join(format!("mentisdb_doc_trust_{}", std::process::id()));
+    /// let mut chain = MentisDb::open_with_key_and_storage_kind(&dir, "doc", StorageAdapterKind::Binary).unwrap();
+    /// let thought = chain.append("alice", ThoughtType::Insight, "hello").unwrap().clone();
+    /// assert_eq!(chain.trust_of(&thought), ProvenanceTrust::Unsigned);
+    /// # let _ = std::fs::remove_dir_all(&dir);
+    /// ```
+    pub fn trust_of(&self, thought: &Thought) -> provenance::ProvenanceTrust {
+        use access::SignatureStatus;
+        if thought.signature_bytes().is_none() {
+            return provenance::ProvenanceTrust::Unsigned;
+        }
+        let (_, status) = self.verify_stored_signature(thought, &self.access_policy);
+        if matches!(status, SignatureStatus::Valid) && self.signing_key_is_active(thought) {
+            provenance::ProvenanceTrust::Verified
+        } else {
+            provenance::ProvenanceTrust::Unverified
+        }
     }
 
     /// Query the chain using semantic filters.
@@ -11830,17 +11885,23 @@ impl MentisDb {
                 thought.thought_type,
                 thought.role,
                 self.agent_label_for(thought),
-                thought.content
+                prompt_text::inline_text(&thought.content)
             ));
             if let Some(confidence) = thought.confidence {
                 prompt.push_str(&format!("  confidence: {:.2}\n", confidence));
             }
             prompt.push_str(&format!("  importance: {:.2}\n", thought.importance));
             if !thought.tags.is_empty() {
-                prompt.push_str(&format!("  tags: {}\n", thought.tags.join(", ")));
+                prompt.push_str(&format!(
+                    "  tags: {}\n",
+                    prompt_text::inline_text(&thought.tags.join(", "))
+                ));
             }
             if !thought.concepts.is_empty() {
-                prompt.push_str(&format!("  concepts: {}\n", thought.concepts.join(", ")));
+                prompt.push_str(&format!(
+                    "  concepts: {}\n",
+                    prompt_text::inline_text(&thought.concepts.join(", "))
+                ));
             }
             if !thought.refs.is_empty() {
                 prompt.push_str(&format!("  refs: {:?}\n", thought.refs));
@@ -11875,7 +11936,7 @@ impl MentisDb {
                 thought.thought_type,
                 thought.role,
                 self.agent_label_for(thought),
-                thought.content
+                prompt_text::inline_text(&thought.content)
             ));
         }
         prompt.push_str("\n=== END RECENT CONTEXT ===\n");
@@ -14261,7 +14322,9 @@ fn append_memory_section(
     for thought in items {
         markdown.push_str(&format!(
             "- [#{}] {:?}: {}",
-            thought.index, thought.thought_type, thought.content
+            thought.index,
+            thought.thought_type,
+            prompt_text::inline_text(&thought.content)
         ));
         let mut metadata = Vec::new();
         metadata.push(format!("agent {}", chain.agent_label_for(thought)));
@@ -14276,7 +14339,10 @@ fn append_memory_section(
             metadata.push(format!("confidence {:.2}", confidence));
         }
         if !thought.tags.is_empty() {
-            metadata.push(format!("tags {}", thought.tags.join(", ")));
+            metadata.push(format!(
+                "tags {}",
+                prompt_text::inline_text(&thought.tags.join(", "))
+            ));
         }
         if !metadata.is_empty() {
             markdown.push_str(&format!(" ({})", metadata.join("; ")));

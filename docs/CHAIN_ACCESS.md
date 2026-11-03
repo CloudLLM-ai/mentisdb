@@ -220,6 +220,37 @@ safe. A private-segment thought was signed by a key the operator allowed. An
 agent should never execute commands, change its goals or reveal data because
 a retrieved thought says so; it should weigh the thought as evidence.
 
+### Context blocks cannot be forged by stored text
+
+The blocks MentisDB renders for an agent to load at session start
+(`=== STANDING CONTEXT ===`, `=== RECENT CONTEXT ===`, `=== RESTORED CONTEXT ===`
+and the `MEMORY.md` export) are built so that **stored text never shapes the
+block**: every entry is one physical line, and content, agent ids, display
+names, owners, tags and concepts are interpolated only after escaping
+(`mentisdb::prompt_text`). Line breaks (including U+0085, U+2028, U+2029)
+become `⏎`, tabs a space, other control characters and invisible or
+direction-changing characters (bidi overrides, zero-width space, BOM, Unicode
+tag characters) become `�`, a run of three or more `=` is broken after every
+second `=`, and `[#` becomes `[ #`. A thought can therefore not close the
+block, add a `SYSTEM:` line, open a section or print an entry that looks
+selected by MentisDB. JSON responses carry the raw text; only the rendered
+prompt text is escaped.
+
+Each standing-context entry also states how its author is established:
+`trust=verified` (signed by a registered, active key of the agent),
+`trust=unsigned` (the agent id is only a claim) or `trust=unverified` (a
+signature that does not check out). `StandingEntry.trust` carries the same
+value.
+
+Ranking uses the writer-supplied `importance`. On a chain whose policy
+requires signatures (`signed` or `allowlist`), a thought that is not
+`verified` ranks with at most `UNVERIFIED_IMPORTANCE_CAP` (0.5), so history
+written before the policy, or a forged signature, cannot claim `1.0` to sit
+above verified entries; re-record such a thought with a signature to restore
+its rank. On an **open** chain there is no privilege boundary (anyone who can
+append can already write a constraint), so the importance is used as written
+and `trust` / `agent_id` are what a reader weighs.
+
 ## Operator
 
 The operator is whoever can reach one of two places:

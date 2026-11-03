@@ -307,7 +307,7 @@ fn test_filters_agent_types_and_since() {
     assert!(none.entries.is_empty() && none.prompt.is_empty());
 }
 
-/// The prompt groups by type and each line carries index, type/role, agent and date.
+/// The prompt groups by type and each line carries index, type/role, agent, date and trust.
 #[test]
 fn test_prompt_format_groups_and_shows_age() {
     let (mut chain, _dir) = open();
@@ -322,7 +322,7 @@ fn test_prompt_format_groups_and_shows_age() {
     assert!(standing.prompt.starts_with("=== STANDING CONTEXT ===\n"));
     assert!(standing.prompt.ends_with("=== END STANDING CONTEXT ===\n"));
     assert!(standing.prompt.contains(&format!(
-        "[#0] PreferenceUpdate/Memory (a, {today}) likes tabs"
+        "[#0] PreferenceUpdate/Memory (a, {today}, trust=unsigned) likes tabs"
     )));
     let constraints = standing.prompt.find("-- Constraints --").unwrap();
     let preferences = standing.prompt.find("-- Preferences --").unwrap();

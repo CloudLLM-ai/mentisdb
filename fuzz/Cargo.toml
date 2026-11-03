@@ -88,3 +88,10 @@ path = "fuzz_targets/segment_map.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "prompt_text"
+path = "fuzz_targets/prompt_text.rs"
+test = false
+doc = false
+bench = false

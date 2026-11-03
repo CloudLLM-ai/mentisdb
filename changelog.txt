@@ -84,6 +84,22 @@ UNRELEASED
     now reads the public view (as documented) instead of `503`; malformed, stale,
     badly signed and already-spent proofs still get `401`. Spent nonces are looked
     up without being recorded, so the check costs unauthorized keys nothing.
+  - security(standing): stored text could forge the standing-context block loaded
+    at session start. Content and agent labels were concatenated raw, so a thought
+    containing line breaks could close the `=== STANDING CONTEXT ===` block early,
+    add a `SYSTEM:` line and print a fake `[#n] Constraint/...` entry, ranked first
+    by a writer-supplied importance of 1.0. Every rendered entry is now a single
+    line: line breaks, control and invisible characters (bidi overrides, zero-width,
+    tag characters) in content, agent ids, display names, owners, tags and concepts
+    are replaced by visible marks and `===` / `[#` are broken up (new
+    `mentisdb::prompt_text`). The same escaping covers `to_catchup_prompt`,
+    `to_bootstrap_prompt` and the `MEMORY.md` export. Each standing entry now shows
+    `trust=verified|unsigned|unverified` (new `mentisdb::provenance`,
+    `MentisDb::trust_of`, `StandingEntry.trust`) and the block opens with a line
+    saying its entries are data, not instructions. On a chain that requires
+    signatures, an entry that is not verified ranks with importance capped at
+    `UNVERIFIED_IMPORTANCE_CAP` (0.5); on an open chain importance is used as
+    written (documented). Entry lines changed shape: `(agent, date, trust=...)`.
   - build: Cargo.toml now declares `rust-version = "1.90"`, the real floor of the
     locked dependency set (roaring needs 1.90, uuid 1.89); a new `msrv` CI job
     checks all features and no default features on 1.90.

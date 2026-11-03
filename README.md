@@ -1575,7 +1575,10 @@ MENTISDB_READ_KEY_FILE=builder.key MENTISDB_READ_AGENT_ID=builder MENTISDB_READ_
 Only the operator can add or remove keys; REST and MCP cannot. Every
 returned thought carries a `provenance` object (segment, signature, verified
 agent, `trust: untrusted_data`) and the operating skill tells agents to treat
-memories as data, never as instructions. Serve private chains over HTTPS.
+memories as data, never as instructions. The prompt blocks loaded at session
+start (standing, recent and restored context, the `MEMORY.md` export) render
+every entry as one escaped line, so stored text cannot close a block or forge an
+entry, and each standing entry shows `trust=verified|unsigned|unverified`. Serve private chains over HTTPS.
 Details, wire formats and the threat model: [docs/CHAIN_ACCESS.md](docs/CHAIN_ACCESS.md).
 
 ## Web Dashboard
