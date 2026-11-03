@@ -57,7 +57,7 @@ Federated search lets callers issue a single ranked-search query over **multiple
 |-------|------|----------|-------------|
 | `chain_keys` | `Vec<String>` | **Yes** | List of chain keys to search. |
 | `text` | `String` | No | Lexical query text. |
-| `limit` | `usize` | No | Max hits returned (default 10). |
+| `limit` | `usize` | No | Max hits returned (default 10). `offset + limit` may not exceed 10,000 (`400` above that). |
 | `offset` | `usize` | No | Result offset for paging (default 0). |
 | `graph` | `RankedSearchGraphRequest` | No | Graph expansion config. |
 | `filter` | `ThoughtQuery` | No | Deterministic pre-filter. |

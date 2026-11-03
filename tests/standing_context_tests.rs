@@ -339,3 +339,84 @@ fn test_zero_caps_select_nothing() {
     let standing = chain.standing_context(&StandingContextQuery::new().with_per_type_cap(0));
     assert!(standing.entries.is_empty());
 }
+
+const ANIMALS: [&str; 10] = [
+    "quokka", "marmot", "lemur", "ocelot", "pangolin", "tapir", "wombat", "gecko", "narwhal",
+    "badger",
+];
+
+/// Entries a standing context returns for two decisions holding the first `a`
+/// and the first `b` animals (the duplicate threshold is 0.85).
+fn decision_survivors(a: usize, b: usize) -> usize {
+    let (mut chain, _dir) = open();
+    for n in [a, b] {
+        chain
+            .append("a", ThoughtType::Decision, &ANIMALS[..n].join(" "))
+            .unwrap();
+    }
+    chain
+        .standing_context(&StandingContextQuery::new())
+        .entries
+        .len()
+}
+
+/// The token-set size shortcut must not change which pairs collapse: sets of 10
+/// and 9 tokens have Jaccard 0.9 and collapse, 10 and 8 have 0.8 and both stay.
+#[test]
+fn test_size_shortcut_does_not_change_which_decisions_collapse() {
+    assert_eq!(decision_survivors(10, 9), 1);
+    assert_eq!(decision_survivors(10, 8), 2);
+    assert_eq!(decision_survivors(10, 10), 1);
+}
+
+/// A group only considers its best-ranked thoughts (see
+/// `STANDING_SCAN_WINDOW_FACTOR`), so a low-importance restatement far below
+/// that window is neither tokenized nor counted, while the ranked picks are
+/// the same as ever.
+#[test]
+fn test_thoughts_ranked_beyond_the_scan_window_are_ignored() {
+    let (mut chain, _dir) = open();
+    chain
+        .append_thought(
+            "a",
+            ThoughtInput::new(
+                ThoughtType::Decision,
+                "Use Postgres for all durable storage.",
+            )
+            .with_importance(0.9),
+        )
+        .unwrap();
+    for i in 0..1100 {
+        chain
+            .append_thought(
+                "a",
+                ThoughtInput::new(
+                    ThoughtType::Decision,
+                    format!("Filler decision number {i} about subsystem{i}."),
+                )
+                .with_importance(0.5),
+            )
+            .unwrap();
+    }
+    chain
+        .append_thought(
+            "a",
+            ThoughtInput::new(
+                ThoughtType::Decision,
+                "Use Postgres for all durable storage!",
+            )
+            .with_importance(0.1),
+        )
+        .unwrap();
+    let query = StandingContextQuery::new().with_per_type_cap(3);
+    let standing = chain.standing_context(&query);
+    assert_eq!(standing.entries.len(), 3);
+    assert_eq!(
+        standing.entries[0].content,
+        "Use Postgres for all durable storage."
+    );
+    assert_eq!(
+        standing.duplicates_collapsed, 0,
+        "the restatement ranks past the scan window and is never compared"
+    );
+}

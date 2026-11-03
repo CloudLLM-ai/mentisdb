@@ -232,6 +232,27 @@ fn agent_identity() -> Vec<Flag> {
     ]
 }
 
+/// `--limit`/`--offset` of the endpoints whose `offset + limit` the server caps
+/// (`MAX_RESULT_WINDOW`): ranked, lexical, federated and bundle search.
+fn windowed_limit_offset() -> Vec<Flag> {
+    vec![
+        Flag::opt(
+            "limit",
+            "limit",
+            Kind::Int,
+            "N",
+            "Maximum number of results (offset + limit may not exceed 10000).",
+        ),
+        Flag::opt(
+            "offset",
+            "offset",
+            Kind::Int,
+            "N",
+            "Skip this many results (offset + limit may not exceed 10000).",
+        ),
+    ]
+}
+
 fn limit_offset() -> Vec<Flag> {
     vec![
         Flag::opt(
@@ -442,7 +463,7 @@ fn graph_flags() -> Vec<Flag> {
 }
 
 fn ranked_flags() -> Vec<Flag> {
-    let mut flags = limit_offset();
+    let mut flags = windowed_limit_offset();
     flags.extend(graph_flags());
     flags.extend(thought_filters());
     flags.push(include_invalidated());
@@ -928,7 +949,7 @@ fn thought_commands() -> Vec<Command> {
             Flag::opt("type", "types", Kind::ThoughtType, "TYPE", "Only this ThoughtType (Constraint, PreferenceUpdate, UserTrait, RelationshipUpdate, Goal, Decision, LessonLearned, Handoff, Checkpoint, Summary); repeatable.").many(),
             Flag::opt("since", "since", Kind::Time, "TIME", "Only thoughts at or after this time."),
             Flag::opt("as-of", "as_of", Kind::Time, "TIME", "Show the chain as it was at this time."),
-            Flag::opt("per-type-limit", "per_type_limit", Kind::Int, "N", "Maximum thoughts per type (default 8)."),
+            Flag::opt("per-type-limit", "per_type_limit", Kind::Int, "N", "Maximum thoughts per type (default 8, at most 100)."),
             Flag::opt("limit", "limit", Kind::Int, "N", "Maximum durable thoughts overall (default 40)."),
             include_invalidated(),
         ])
@@ -962,23 +983,12 @@ fn search_commands() -> Vec<Command> {
     filter.extend(thought_filters());
     filter.push(include_invalidated());
 
-    let lexical = vec![
+    let mut lexical = vec![
         Flag::pos("query", "text", Kind::Text, "Words to match.").req(),
         chain(),
-        Flag::opt(
-            "limit",
-            "limit",
-            Kind::Int,
-            "N",
-            "Maximum number of results.",
-        ),
-        Flag::opt(
-            "offset",
-            "offset",
-            Kind::Int,
-            "N",
-            "Skip this many results.",
-        ),
+    ];
+    lexical.extend(windowed_limit_offset());
+    lexical.extend([
         Flag::opt(
             "agent",
             "agent_ids",
@@ -995,7 +1005,7 @@ fn search_commands() -> Vec<Command> {
             "Only thoughts of this ThoughtType.",
         )
         .many(),
-    ];
+    ]);
 
     let mut federated = vec![
         text_opt("What to look for."),
@@ -1013,7 +1023,7 @@ fn search_commands() -> Vec<Command> {
     federated.extend(ranked_flags());
 
     let mut bundles = vec![text_opt("What to look for."), chain()];
-    bundles.extend(limit_offset());
+    bundles.extend(windowed_limit_offset());
     bundles.extend(graph_flags());
     bundles.extend(thought_filters());
     bundles.push(include_invalidated());

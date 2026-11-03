@@ -117,6 +117,19 @@
 //! one `tool_called` event per tool call with the tool name, chain key,
 //! outcome and duration.
 //!
+//! # Result windows and caps
+//!
+//! A page is ranked from the top, so asking for `offset: 9000, limit: 10` costs
+//! as much as asking for the 9,010 best hits. `POST /v1/ranked-search`,
+//! `/v1/lexical-search`, `/v1/federated-search` and `/v1/context-bundles`, their
+//! MCP tools and the matching `mentisdb search` commands therefore refuse any
+//! request whose `offset + limit` is above [`MAX_RESULT_WINDOW`] (10,000) with
+//! `400` and a message naming the maximum. The request is refused, not clamped,
+//! because a clamped page would silently return the wrong results; to read
+//! deeper, narrow the query with filters or `since`/`until`. A standing-context
+//! `per_type_limit` above [`crate::standing::MAX_STANDING_PER_TYPE_CAP`] (100)
+//! is refused the same way.
+//!
 //! # Compact search results
 //!
 //! `POST /v1/ranked-search` and `POST /v1/federated-search`, and the MCP tools
@@ -145,6 +158,7 @@ use crate::auth::{bearer_token_access_from_env, BearerTokenScope, BearerTokenSto
 pub use crate::dashboard::ListenerTls;
 use crate::migration::{MigrationBlock, MigrationManager};
 use crate::server_lens::{audience_for, scope_allows_chain};
+use crate::standing::MAX_STANDING_PER_TYPE_CAP;
 use crate::webhooks::{WebhookManager, WebhookRegistration};
 use crate::{
     chain_storage_filename, deregister_chain, load_registered_chains, AgentPublicKey, AgentRecord,
@@ -4219,6 +4233,7 @@ impl MentisDbService {
         &self,
         request: LexicalSearchRequest,
     ) -> Result<LexicalSearchResponse, Box<dyn Error + Send + Sync>> {
+        ensure_result_window(request.offset, request.limit)?;
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
@@ -4277,6 +4292,7 @@ impl MentisDbService {
         &self,
         request: RankedSearchRequest,
     ) -> Result<RankedSearchResponse, Box<dyn Error + Send + Sync>> {
+        ensure_result_window(request.offset, request.limit)?;
         let compact = request.compact.unwrap_or(false);
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let offset = request.offset.unwrap_or(0);
@@ -4479,6 +4495,7 @@ impl MentisDbService {
     ) -> Result<RankedSearchResponse, Box<dyn Error + Send + Sync>> {
         use crate::search::ranked::RRF_SCORE_SCALE;
         use std::collections::BTreeMap;
+        ensure_result_window(request.offset, request.limit)?;
         let compact = request.compact.unwrap_or(false);
 
         type FederatedHit = (
@@ -4834,6 +4851,7 @@ impl MentisDbService {
         &self,
         request: RankedSearchRequest,
     ) -> Result<ContextBundlesResponse, Box<dyn Error + Send + Sync>> {
+        ensure_result_window(request.offset, request.limit)?;
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
@@ -5375,6 +5393,14 @@ impl MentisDbService {
         &self,
         request: StandingContextRequest,
     ) -> Result<crate::StandingContext, Box<dyn Error + Send + Sync>> {
+        if let Some(cap) = request
+            .per_type_limit
+            .filter(|cap| *cap > MAX_STANDING_PER_TYPE_CAP)
+        {
+            return Err(invalid_input_error(format!(
+                "per_type_limit is {cap}, above the maximum of {MAX_STANDING_PER_TYPE_CAP}"
+            )));
+        }
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
@@ -9089,6 +9115,36 @@ where
     Ok(serde_json::to_value(f(request).await?)?)
 }
 
+/// Largest `offset + limit` a ranked, lexical, federated or context-bundle
+/// request may ask for.
+///
+/// Every page is ranked from the top, so a request for the window ending at
+/// `offset + limit` ranks and de-duplicates that many hits on each chain
+/// whatever size the page is. The cap keeps one caller-sized number from
+/// turning a search into minutes of work; larger windows are refused with `400`
+/// (REST, MCP and the CLI alike) rather than silently clamped, because a
+/// clamped page would return the wrong results. To read deeper than the
+/// window, narrow the query with filters or `since`/`until` instead of paging.
+pub const MAX_RESULT_WINDOW: usize = 10_000;
+
+/// Refuse a request whose `offset + limit` exceeds [`MAX_RESULT_WINDOW`].
+///
+/// Runs before any chain lock is taken. A missing `limit` counts as zero here:
+/// the endpoint defaults are far below the cap.
+fn ensure_result_window(
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let window = offset.unwrap_or(0).saturating_add(limit.unwrap_or(0));
+    if window > MAX_RESULT_WINDOW {
+        return Err(invalid_input_error(format!(
+            "offset + limit is {window}, above the maximum of {MAX_RESULT_WINDOW}; \
+             narrow the query with filters or since/until instead of paging deeper"
+        )));
+    }
+    Ok(())
+}
+
 /// Build a boxed `io::Error` for an invalid client-supplied input.
 ///
 /// The `service_call` error mapper surfaces `io::ErrorKind::InvalidInput` as
@@ -9353,8 +9409,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         )
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
         .with_parameter(ToolParameter::new("text", ToolParameterType::String).with_description("Text to rank against.").required())
-        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of results to return."))
-        .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Result offset for paging."))
+        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of results to return. offset + limit may not exceed 10000."))
+        .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Result offset for paging. offset + limit may not exceed 10000."))
         .with_parameter(ToolParameter::new("agent_ids", ToolParameterType::Array).with_description("Optional producing agent ids to match.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String)),
         ToolMetadata::new(
@@ -9363,8 +9419,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         )
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
         .with_parameter(ToolParameter::new("text", ToolParameterType::String).with_description("Optional lexical query text used for ranking."))
-        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of results to return."))
-        .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Result offset for paging."))
+        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of results to return. offset + limit may not exceed 10000."))
+        .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Result offset for paging. offset + limit may not exceed 10000."))
         .with_parameter(ToolParameter::new("graph", ToolParameterType::Object).with_description("Optional graph expansion config object: max_depth, max_visited, include_seeds, mode."))
         .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("roles", ToolParameterType::Array).with_description("Optional list of ThoughtRole names.").with_items(ToolParameterType::String))
@@ -9392,8 +9448,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         )
         .with_parameter(ToolParameter::new("chain_keys", ToolParameterType::Array).with_description("List of chain keys to search.").with_items(ToolParameterType::String).required())
         .with_parameter(ToolParameter::new("text", ToolParameterType::String).with_description("Optional lexical query text."))
-        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of results to return."))
-        .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Result offset for paging."))
+        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of results to return. offset + limit may not exceed 10000."))
+        .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Result offset for paging. offset + limit may not exceed 10000."))
         .with_parameter(ToolParameter::new("graph", ToolParameterType::Object).with_description("Optional graph expansion config object: max_depth, max_visited, include_seeds, mode."))
         .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("roles", ToolParameterType::Array).with_description("Optional list of ThoughtRole names.").with_items(ToolParameterType::String))
@@ -9425,8 +9481,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         )
         .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
         .with_parameter(ToolParameter::new("text", ToolParameterType::String).with_description("Lexical query text used to derive seed thoughts."))
-        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of bundles to return."))
-        .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Bundle offset for paging."))
+        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of bundles to return. offset + limit may not exceed 10000."))
+        .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Bundle offset for paging. offset + limit may not exceed 10000."))
         .with_parameter(ToolParameter::new("graph", ToolParameterType::Object).with_description("Optional graph expansion config object: max_depth, max_visited, include_seeds, mode."))
         .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("roles", ToolParameterType::Array).with_description("Optional list of ThoughtRole names.").with_items(ToolParameterType::String))
@@ -9539,7 +9595,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
         .with_parameter(ToolParameter::new("as_of", ToolParameterType::String).with_description("Optional RFC 3339 point-in-time view of the chain."))
         .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, keep superseded/corrected/invalidated thoughts. Default false."))
-        .with_parameter(ToolParameter::new("per_type_limit", ToolParameterType::Integer).with_description("Maximum thoughts per type. Default 8."))
+        .with_parameter(ToolParameter::new("per_type_limit", ToolParameterType::Integer).with_description("Maximum thoughts per type. Default 8, at most 100."))
         .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum durable thoughts overall. Default 40.")),
         ToolMetadata::new(
             "mentisdb_memory_markdown",

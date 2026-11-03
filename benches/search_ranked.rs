@@ -71,6 +71,42 @@ fn populate_ranked_chain(chain: &mut MentisDb, count: usize) {
     }
 }
 
+/// Collapsing weighs every hit of the ranked window against the survivors so
+/// far, so a deep page used to cost the square of the window. The server caps
+/// `offset + limit` at 10,000; this measures windows of 1,000 and 2,000 over
+/// 3,000 same-sized, non-duplicate hits (a tenth of 30,000 thoughts carry the
+/// query word, which is rare enough to stay out of the document-frequency gate),
+/// the worst case for the size shortcut.
+pub fn collapse_window_latency(c: &mut Criterion) {
+    let (mut chain, _dir) = temp_chain("collapse-window-benchmark");
+    for i in 0..30_000 {
+        let word = if i % 10 == 0 { "quokka" } else { "wombat" };
+        let content = format!(
+            "{word} survey entry{i} covers habitat{} diet{} range{} season{} notes{}",
+            i % 97,
+            i % 89,
+            i % 83,
+            i % 79,
+            i % 73
+        );
+        chain
+            .append_thought("bench", ThoughtInput::new(ThoughtType::Finding, content))
+            .expect("failed to append collapse benchmark thought");
+    }
+    let mut group = c.benchmark_group("search_ranked_collapse");
+    group.sample_size(10);
+    for limit in [1_000usize, 2_000] {
+        group.bench_function(format!("window_{limit}"), |b| {
+            let query = RankedSearchQuery::new()
+                .with_text("quokka")
+                .with_limit(limit)
+                .with_collapse_duplicates(Some(0.9));
+            b.iter(|| black_box(chain.query_ranked(black_box(&query)).hits.len()));
+        });
+    }
+    group.finish();
+}
+
 pub fn ranked_search_latency(c: &mut Criterion) {
     let mut group = c.benchmark_group("search_ranked");
     group.measurement_time(std::time::Duration::from_secs(10));
@@ -153,5 +189,9 @@ pub fn ranked_search_latency(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(search_ranked_benches, ranked_search_latency);
+criterion_group!(
+    search_ranked_benches,
+    ranked_search_latency,
+    collapse_window_latency
+);
 criterion_main!(search_ranked_benches);

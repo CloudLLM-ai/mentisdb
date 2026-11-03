@@ -218,3 +218,35 @@ fn agent_alias_and_owner_added_later_are_searchable() {
         assert_eq!(r.hits.len(), 1, "{word}");
     }
 }
+
+const ANIMALS: [&str; 10] = [
+    "quokka", "marmot", "lemur", "ocelot", "pangolin", "tapir", "wombat", "gecko", "narwhal",
+    "badger",
+];
+
+/// How many hits survive collapsing at 0.9 when one thought holds the first
+/// `a` animals and the other the first `b`.
+fn survivors(a: usize, b: usize) -> usize {
+    let (_d, mut c) = chain("dup-sizes");
+    for n in [a, b] {
+        c.append_thought(
+            "a",
+            ThoughtInput::new(ThoughtType::Finding, ANIMALS[..n].join(" ")),
+        )
+        .unwrap();
+    }
+    let q = RankedSearchQuery::new()
+        .with_text("quokka marmot")
+        .with_collapse_duplicates(Some(0.9));
+    c.query_ranked(&q).hits.len()
+}
+
+/// The token-set size shortcut must not change which pairs collapse: sets of 10
+/// and 9 tokens sit exactly on the 0.9 Jaccard threshold and collapse, sets of
+/// 10 and 8 are too far apart in size to reach it and both stay.
+#[test]
+fn size_shortcut_keeps_the_threshold_boundary_exact() {
+    assert_eq!(survivors(10, 9), 1, "Jaccard 9/10 reaches 0.9");
+    assert_eq!(survivors(10, 8), 2, "Jaccard 8/10 stays below 0.9");
+    assert_eq!(survivors(10, 10), 1, "identical sets collapse");
+}

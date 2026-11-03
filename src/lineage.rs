@@ -1217,12 +1217,124 @@ pub fn collapse_duplicates_from_env() -> Option<f32> {
 /// Built-in default of [`collapse_duplicates_from_env`].
 pub const DEFAULT_COLLAPSE_DUPLICATES: Option<f32> = Some(0.9);
 
-fn token_jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f32 {
+/// Jaccard similarity of two sorted, duplicate-free token-id sets; `0.0` when
+/// either is empty.
+fn id_jaccard(a: &[u32], b: &[u32]) -> f32 {
     if a.is_empty() || b.is_empty() {
         return 0.0;
     }
-    let inter = a.intersection(b).count();
+    let (mut i, mut j, mut inter) = (0, 0, 0usize);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                inter += 1;
+                i += 1;
+                j += 1;
+            }
+        }
+    }
     inter as f32 / (a.len() + b.len() - inter) as f32
+}
+
+/// For each set in rank order, the survivor slot of the first earlier survivor
+/// it is a near-duplicate of (Jaccard at least `threshold`), or `None` when it
+/// becomes a survivor itself. Slots count survivors in the order they appeared.
+///
+/// This is the reference definition, `O(sets x survivors)` set intersections.
+/// [`duplicate_slots`] computes the same answer without comparing every pair.
+fn duplicate_slots_naive(sets: &[Vec<u32>], threshold: f32) -> Vec<Option<usize>> {
+    let mut survivors: Vec<usize> = Vec::new();
+    sets.iter()
+        .enumerate()
+        .map(|(i, set)| {
+            let slot = survivors
+                .iter()
+                .position(|&s| id_jaccard(&sets[s], set) >= threshold);
+            if slot.is_none() {
+                survivors.push(i);
+            }
+            slot
+        })
+        .collect()
+}
+
+/// Smallest overlap two sets can have when one of size `n` reaches
+/// `threshold`: Jaccard never exceeds `overlap / n`. Rounded down a little
+/// (`0.01` of a token) so `f32` rounding can only make the bound looser, which
+/// keeps every true match.
+fn min_overlap(n: usize, threshold: f32) -> usize {
+    (((threshold as f64) * n as f64 - 0.01).ceil().max(1.0) as usize).min(n)
+}
+
+/// Same answer as [`duplicate_slots_naive`] for `threshold > 0`, without
+/// comparing every pair.
+///
+/// Prefix filtering: order every set's tokens rarest first (document frequency
+/// over `sets`, then id). Two sets with Jaccard at least `threshold` overlap in
+/// at least `min_overlap` tokens, so they must share a token among each one's
+/// first `n - min_overlap + 1`. Survivors are indexed only by that prefix, a
+/// set probes only with its prefix, and the few survivors found are checked
+/// exactly (size ratio first, then the intersection). Near-duplicates cluster
+/// on rare tokens, so a window of thousands of same-sized hits costs about one
+/// short posting-list walk per hit instead of one intersection per pair.
+fn duplicate_slots(sets: &[Vec<u32>], token_count: usize, threshold: f32) -> Vec<Option<usize>> {
+    let mut frequency = vec![0u32; token_count];
+    for token in sets.iter().flatten() {
+        frequency[*token as usize] += 1;
+    }
+    let prefix_of = |set: &[u32]| -> Vec<u32> {
+        let mut rare_first = set.to_vec();
+        rare_first.sort_unstable_by_key(|t| (frequency[*t as usize], *t));
+        rare_first.truncate(set.len() - min_overlap(set.len(), threshold) + 1);
+        rare_first
+    };
+    let mut postings: Vec<Vec<u32>> = vec![Vec::new(); token_count];
+    let mut survivors: Vec<usize> = Vec::new();
+    // Last set that already looked at a survivor, so each is checked once.
+    let mut visited: Vec<usize> = Vec::new();
+    sets.iter()
+        .enumerate()
+        .map(|(i, set)| {
+            if set.is_empty() {
+                survivors.push(i);
+                visited.push(usize::MAX);
+                return None;
+            }
+            let prefix = prefix_of(set);
+            let mut first: Option<usize> = None;
+            for token in &prefix {
+                for &slot in &postings[*token as usize] {
+                    let slot = slot as usize;
+                    if visited[slot] == i || first.is_some_and(|f| f < slot) {
+                        continue;
+                    }
+                    visited[slot] = i;
+                    let other = &sets[survivors[slot]];
+                    let (small, large) = if other.len() < set.len() {
+                        (other.len(), set.len())
+                    } else {
+                        (set.len(), other.len())
+                    };
+                    if small as f32 / large as f32 >= threshold
+                        && id_jaccard(other, set) >= threshold
+                    {
+                        first = Some(slot);
+                    }
+                }
+            }
+            if first.is_none() {
+                let slot = survivors.len() as u32;
+                survivors.push(i);
+                visited.push(usize::MAX);
+                for token in prefix {
+                    postings[token as usize].push(slot);
+                }
+            }
+            first
+        })
+        .collect()
 }
 
 /// Drop every hit that is a near-duplicate (Jaccard of normalized tokens at
@@ -1252,20 +1364,37 @@ pub(crate) fn collapse_duplicate_hits<'a>(
     threshold: f32,
 ) -> Vec<RankedSearchHit<'a>> {
     use crate::search::lexical::normalize_lexical_tokens;
-    let mut kept: Vec<(HashSet<String>, RankedSearchHit<'a>)> = Vec::with_capacity(hits.len());
-    for hit in hits {
-        let tokens: HashSet<String> = normalize_lexical_tokens(&hit.thought.content, false)
-            .into_iter()
-            .collect();
-        match kept
-            .iter_mut()
-            .find(|(t, _)| token_jaccard(t, &tokens) >= threshold)
-        {
-            Some((_, survivor)) => survivor.collapsed.push(hit.thought.id),
-            None => kept.push((tokens, hit)),
+    let mut interned: HashMap<String, u32> = HashMap::new();
+    let sets: Vec<Vec<u32>> = hits
+        .iter()
+        .map(|hit| {
+            let mut ids: Vec<u32> = normalize_lexical_tokens(&hit.thought.content, false)
+                .into_iter()
+                .map(|token| {
+                    let next = interned.len() as u32;
+                    *interned.entry(token).or_insert(next)
+                })
+                .collect();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
+        })
+        .collect();
+    // A threshold that is zero, negative or NaN is not a similarity bound the
+    // prefix filter can use (zero matches every pair); keep the plain scan.
+    let slots = if threshold > 0.0 {
+        duplicate_slots(&sets, interned.len(), threshold)
+    } else {
+        duplicate_slots_naive(&sets, threshold)
+    };
+    let mut kept: Vec<RankedSearchHit<'a>> = Vec::new();
+    for (hit, slot) in hits.into_iter().zip(slots) {
+        match slot {
+            Some(slot) => kept[slot].collapsed.push(hit.thought.id),
+            None => kept.push(hit),
         }
     }
-    kept.into_iter().map(|(_, hit)| hit).collect()
+    kept
 }
 
 /// The live thought on another chain that supersedes a target, found by
@@ -1494,5 +1623,82 @@ impl MentisDb {
         }
         out.truncate(request.limit);
         Some(out)
+    }
+}
+
+#[cfg(test)]
+mod duplicate_slot_tests {
+    use super::{duplicate_slots, duplicate_slots_naive};
+
+    /// Tiny deterministic generator (xorshift) so the corpus is reproducible.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self, bound: u64) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0 % bound
+        }
+    }
+
+    /// Sets over a small vocabulary, many of them mutated copies of an earlier
+    /// set (add, drop or swap a token) so every similarity level occurs.
+    fn corpus(seed: u64, count: usize, vocab: u64) -> Vec<Vec<u32>> {
+        let mut rng = Rng(seed | 1);
+        let mut sets: Vec<Vec<u32>> = Vec::new();
+        for _ in 0..count {
+            let mut set: Vec<u32> = if !sets.is_empty() && rng.next(3) > 0 {
+                let mut copy = sets[rng.next(sets.len() as u64) as usize].clone();
+                for _ in 0..rng.next(3) {
+                    match rng.next(3) {
+                        0 if !copy.is_empty() => {
+                            copy.remove(rng.next(copy.len() as u64) as usize);
+                        }
+                        1 => copy.push(rng.next(vocab) as u32),
+                        _ if !copy.is_empty() => {
+                            let at = rng.next(copy.len() as u64) as usize;
+                            copy[at] = rng.next(vocab) as u32;
+                        }
+                        _ => {}
+                    }
+                }
+                copy
+            } else {
+                (0..rng.next(14)).map(|_| rng.next(vocab) as u32).collect()
+            };
+            set.sort_unstable();
+            set.dedup();
+            sets.push(set);
+        }
+        sets
+    }
+
+    /// The prefix-filtered index must pick exactly the survivor the plain
+    /// pairwise scan picks, for every threshold, including the boundaries.
+    #[test]
+    fn test_prefix_filter_agrees_with_the_pairwise_scan() {
+        for seed in 1..=40u64 {
+            for vocab in [12u64, 40, 400] {
+                let sets = corpus(seed, 250, vocab);
+                for threshold in [0.01f32, 0.3, 0.5, 0.7, 0.85, 0.9, 0.95, 0.99, 1.0, 1.5] {
+                    assert_eq!(
+                        duplicate_slots(&sets, vocab as usize, threshold),
+                        duplicate_slots_naive(&sets, threshold),
+                        "seed {seed} vocab {vocab} threshold {threshold}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Empty sets never match (their Jaccard with anything is 0) and every one
+    /// of them survives.
+    #[test]
+    fn test_empty_sets_always_survive() {
+        let sets = vec![vec![], vec![], vec![1], vec![]];
+        let slots = duplicate_slots(&sets, 2, 0.5);
+        assert_eq!(slots, vec![None, None, None, None]);
+        assert_eq!(slots, duplicate_slots_naive(&sets, 0.5));
     }
 }

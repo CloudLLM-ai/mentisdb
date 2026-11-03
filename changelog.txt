@@ -208,6 +208,27 @@ UNRELEASED
     turns the append into a `500`. The thought was already durable, so clients
     that retried errors wrote it twice. The failure is logged and the queued
     writes are retried on the next append.
+  - fix(server): caller-sized numbers can no longer make a search or a standing
+    context cost minutes. `offset + limit` above 10,000 on `ranked-search`,
+    `lexical-search`, `federated-search` and `context-bundles` (REST, MCP and the
+    CLI) is now refused with `400` and a message naming the maximum
+    (`server::MAX_RESULT_WINDOW`); it is not clamped, since a clamped page would be
+    the wrong page. To read deeper, narrow the query with filters or `since`/`until`.
+    A standing-context `per_type_limit` above 100 is refused the same way
+    (`standing::MAX_STANDING_PER_TYPE_CAP`). CLI help and the MCP tool schemas state
+    the limits. Release note: a client that asked for a window above 10,000 now gets
+    a `400` instead of a very slow answer.
+  - perf(search): near-duplicate collapsing no longer compares every hit with every
+    survivor. It interns tokens and finds candidates through a prefix-filtered
+    inverted index (rarest tokens first), then checks them exactly, so results are
+    identical (a differential test against the pairwise scan covers every threshold)
+    while a 1,000-hit window over a 3,000-hit pool drops from 322 ms to 5 ms and a
+    2,000-hit window from 829 ms to 8 ms (new `search_ranked_collapse` bench).
+  - perf(standing): `standing_context` only tokenizes and compares each group's
+    best `per_type_cap x 16` thoughts (never fewer than 1,024) instead of every
+    standing-type thought on each call, and skips pairs whose token-set sizes
+    cannot reach the duplicate threshold. A restatement ranked far below the
+    window is no longer counted in `duplicates_collapsed`.
   - build: Cargo.toml now declares `rust-version = "1.90"`, the real floor of the
     locked dependency set (roaring needs 1.90, uuid 1.89); a new `msrv` CI job
     checks all features and no default features on 1.90.

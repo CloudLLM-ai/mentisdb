@@ -1506,6 +1506,8 @@ Example `POST /v1/ranked-search` request:
 }
 ```
 
+**Result window.** A page is ranked from the top, so `offset + limit` may not exceed 10,000 on `/v1/ranked-search`, `/v1/lexical-search`, `/v1/federated-search`, `/v1/context-bundles`, their MCP tools and `mentisdb search`. A larger window is refused with `400` and a message naming the maximum (it is not clamped, which would return the wrong page); narrow the query with filters or `since`/`until` to read deeper. A standing-context `per_type_limit` above 100 is refused the same way.
+
 When a managed vector sidecar such as the built-in `fastembed-minilm` provider is active for that chain, the ranked backend becomes `hybrid` or `hybrid_graph` and the response includes a non-zero `score.vector` component for semantic-only or semantic-boosted hits.
 
 Ranked response contract fields:

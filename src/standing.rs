@@ -101,6 +101,12 @@ pub const DEFAULT_STANDING_PER_TYPE_CAP: usize = 8;
 /// Default cap on the durable (non-slot) thoughts across all groups.
 pub const DEFAULT_STANDING_TOTAL_CAP: usize = 40;
 
+/// Largest `per_type_limit` the MentisDB server accepts for a standing-context
+/// request. Larger values are refused with `400` instead of making every call
+/// compare each candidate with an unbounded selection. Library callers that
+/// build a [`StandingContextQuery`] themselves are not limited by it.
+pub const MAX_STANDING_PER_TYPE_CAP: usize = 100;
+
 /// Normalized-token Jaccard similarity at or above which two standing
 /// thoughts of the same group are considered restatements of one another.
 pub const STANDING_DUPLICATE_THRESHOLD: f32 = 0.85;
@@ -109,6 +115,18 @@ pub const STANDING_DUPLICATE_THRESHOLD: f32 = 0.85;
 /// rank with on a chain whose access policy requires signatures. See the
 /// [module documentation](crate::standing).
 pub const UNVERIFIED_IMPORTANCE_CAP: f32 = 0.5;
+
+/// A group considers its best `cap x STANDING_SCAN_WINDOW_FACTOR` thoughts
+/// (never fewer than [`STANDING_SCAN_WINDOW_MIN`]), ranked by importance and
+/// then recency, when it picks and de-duplicates. Thoughts further down the
+/// ranking cannot make the selection and are never tokenized, so a chain with
+/// a very large number of standing-type thoughts costs one sort rather than
+/// one tokenization per thought on every call.
+pub const STANDING_SCAN_WINDOW_FACTOR: usize = 16;
+
+/// Smallest number of thoughts per group a standing-context call considers,
+/// see [`STANDING_SCAN_WINDOW_FACTOR`].
+pub const STANDING_SCAN_WINDOW_MIN: usize = 1024;
 
 /// A bucket of standing thoughts, rendered as one section of the prompt.
 ///
@@ -376,8 +394,18 @@ pub struct StandingContext {
     pub prompt: String,
 }
 
-/// A candidate with its precomputed token set for duplicate detection and
-/// the importance it ranks with.
+/// A thought waiting in its group's pool, before any text work: the thought,
+/// the importance it ranks with and the thought it stands in for. Tokenizing is
+/// deferred until it is inside the group's scan window (see
+/// [`STANDING_SCAN_WINDOW_FACTOR`]).
+struct Pending<'a> {
+    thought: &'a Thought,
+    rank_importance: f32,
+    replaces: Option<&'a Thought>,
+}
+
+/// A selected-or-considered candidate with its token set for duplicate
+/// detection and the importance it ranks with.
 struct Candidate<'a> {
     thought: &'a Thought,
     tokens: HashSet<String>,
@@ -403,8 +431,18 @@ impl<'a> Candidate<'a> {
     }
 
     fn similar_to(&self, other: &Candidate<'_>) -> bool {
-        jaccard(&self.tokens, &other.tokens) >= STANDING_DUPLICATE_THRESHOLD
+        sizes_can_match(self.tokens.len(), other.tokens.len())
+            && jaccard(&self.tokens, &other.tokens) >= STANDING_DUPLICATE_THRESHOLD
     }
+}
+
+/// Whether two token sets of these sizes can reach
+/// [`STANDING_DUPLICATE_THRESHOLD`]: Jaccard never exceeds `smaller / larger`,
+/// so a pair further apart in size is skipped without intersecting it. An empty
+/// set matches nothing ([`jaccard`] is `0.0` for it), so it needs no check.
+fn sizes_can_match(a: usize, b: usize) -> bool {
+    let (small, large) = if a < b { (a, b) } else { (b, a) };
+    small == 0 || small as f32 / large as f32 >= STANDING_DUPLICATE_THRESHOLD
 }
 
 /// Jaccard similarity of two token sets; `0.0` when either set is empty.
@@ -423,6 +461,13 @@ fn rank_order(a: &Candidate<'_>, b: &Candidate<'_>) -> std::cmp::Ordering {
         .then(b.thought.index.cmp(&a.thought.index))
 }
 
+/// [`rank_order`] for a thought that has not been tokenized yet.
+fn pending_rank_order(a: &Pending<'_>, b: &Pending<'_>) -> std::cmp::Ordering {
+    b.rank_importance
+        .total_cmp(&a.rank_importance)
+        .then(b.thought.index.cmp(&a.thought.index))
+}
+
 /// `true` when the thought is user-scoped or carries no scope tag.
 fn is_standing_scope(thought: &Thought) -> bool {
     let mut scopes = thought
@@ -436,13 +481,20 @@ fn is_standing_scope(thought: &Thought) -> bool {
 /// Pick up to `cap` candidates of one group by rank, collapsing near-duplicates.
 ///
 /// A candidate similar to an already selected thought replaces it only when it
-/// is newer; otherwise it is dropped. Returns the selection and the number of
-/// collapsed duplicates.
-fn select_group<'a>(mut pool: Vec<Candidate<'a>>, cap: usize) -> (Vec<Candidate<'a>>, usize) {
-    pool.sort_by(|a, b| rank_order(a, b));
+/// is newer; otherwise it is dropped. Only the best
+/// `cap x STANDING_SCAN_WINDOW_FACTOR` thoughts (at least
+/// [`STANDING_SCAN_WINDOW_MIN`]) are considered; the rest are never tokenized.
+/// Returns the selection and the number of collapsed duplicates.
+fn select_group<'a>(mut pool: Vec<Pending<'a>>, cap: usize) -> (Vec<Candidate<'a>>, usize) {
+    pool.sort_by(pending_rank_order);
+    pool.truncate(
+        cap.saturating_mul(STANDING_SCAN_WINDOW_FACTOR)
+            .max(STANDING_SCAN_WINDOW_MIN),
+    );
     let mut selected: Vec<Candidate<'a>> = Vec::with_capacity(cap.min(pool.len()));
     let mut collapsed = 0;
-    for candidate in pool {
+    for pending in pool {
+        let candidate = Candidate::new(pending.thought, pending.rank_importance, pending.replaces);
         match selected.iter().position(|kept| candidate.similar_to(kept)) {
             Some(slot) => {
                 collapsed += 1;
@@ -470,8 +522,11 @@ impl MentisDb {
     /// [`StandingContextQuery::include_invalidated`] is set; `as_of` applies
     /// the same point-in-time rules as ranked search.
     ///
-    /// Runs in one pass over the chain plus, per group, at most
-    /// `candidates x per_type_cap` token-set comparisons.
+    /// Runs in one pass over the chain plus, per group, a sort and at most
+    /// `window x per_type_cap` token-set comparisons, where `window` is
+    /// `per_type_cap x` [`STANDING_SCAN_WINDOW_FACTOR`] (at least
+    /// [`STANDING_SCAN_WINDOW_MIN`]): only a group's best-ranked thoughts are
+    /// tokenized and compared, see [`STANDING_SCAN_WINDOW_FACTOR`].
     ///
     /// # Examples
     ///
@@ -505,7 +560,7 @@ impl MentisDb {
         let candidates = self.retrieval_candidates(&filter, query.as_of, true);
         let mut seen: HashSet<Uuid> = HashSet::new();
 
-        let mut pools: Vec<(StandingGroup, Vec<Candidate<'_>>)> = StandingGroup::ALL
+        let mut pools: Vec<(StandingGroup, Vec<Pending<'_>>)> = StandingGroup::ALL
             .iter()
             .map(|group| (*group, Vec::new()))
             .collect();
@@ -540,11 +595,11 @@ impl MentisDb {
                     continue;
                 }
                 if let Some((_, pool)) = pools.iter_mut().find(|(g, _)| *g == group) {
-                    pool.push(Candidate::new(
-                        subject,
-                        self.standing_rank_importance(subject),
+                    pool.push(Pending {
+                        thought: subject,
+                        rank_importance: self.standing_rank_importance(subject),
                         replaces,
-                    ));
+                    });
                 }
             }
         }
