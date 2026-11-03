@@ -141,6 +141,11 @@ Clients:
   key for the head lookup.
 * `mentisdb --mode stdio` reads the same environment variables once and signs
   every request it forwards to the daemon.
+* The CLI and the stdio proxy **never follow redirects**: the request carries
+  the proof (and the bearer token or dashboard PIN), and following a redirect
+  would hand them to another host. A `3xx` from `--url` is an error naming the
+  target; point `--url` at the final address. (The proof header is bound to
+  method, path, query and body, not to a host, see *Out of scope* above.)
 * Library: `mentisdb::read_auth::{sign_request, ReadSigner}`.
 * Python: `pymentisdb.ReadSigner` (`pip install pymentisdb[signing]`) or the same environment variables; `MentisDbClient(read_signer=...)` signs every request. A pinned test vector is shared with the Rust tests.
 

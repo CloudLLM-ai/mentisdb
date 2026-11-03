@@ -1038,7 +1038,12 @@ async fn proxy_jsonrpc_to_daemon(mcp_addr: &str, request: &str) -> Option<String
         let request_bytes = request.as_bytes().to_vec();
         let proof = read_proof.clone();
         let _ = tokio::task::spawn_blocking(move || {
-            let mut post = ureq::post(&url).header("Content-Type", "application/json");
+            // No redirects: the request carries the read proof (`X-Mentis-Auth`).
+            let mut post = ureq::post(&url)
+                .config()
+                .max_redirects(0)
+                .build()
+                .header("Content-Type", "application/json");
             if let Some(proof) = &proof {
                 post = post.header(mentisdb::read_auth::READ_AUTH_HEADER, proof);
             }
@@ -1075,7 +1080,11 @@ async fn proxy_jsonrpc_to_daemon(mcp_addr: &str, request: &str) -> Option<String
     let request_bytes = request.as_bytes().to_vec();
     #[allow(clippy::result_large_err)]
     let resp = tokio::task::spawn_blocking(move || {
+        // No redirects: the request carries the read proof (`X-Mentis-Auth`).
         let mut post = ureq::post(&url)
+            .config()
+            .max_redirects(0)
+            .build()
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream");
         if let Some(proof) = &read_proof {

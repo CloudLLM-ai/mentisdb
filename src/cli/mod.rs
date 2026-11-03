@@ -606,7 +606,11 @@ pub fn bearer_authorization_header(token: Option<&str>) -> Option<String> {
 /// POST `/v1/admin/flush` to the local daemon, authenticating with
 /// `MENTISDB_BEARER_TOKEN` when it is set.
 fn post_admin_flush() -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
-    let mut request = ureq::post("http://127.0.0.1:9472/v1/admin/flush");
+    // No redirects: the request carries the bearer token.
+    let mut request = ureq::post("http://127.0.0.1:9472/v1/admin/flush")
+        .config()
+        .max_redirects(0)
+        .build();
     let token = std::env::var(BEARER_TOKEN_ENV).ok();
     if let Some(value) = bearer_authorization_header(token.as_deref()) {
         request = request.header("Authorization", value);

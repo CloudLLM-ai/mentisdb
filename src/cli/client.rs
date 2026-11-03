@@ -355,8 +355,13 @@ fn agent_for(invocation: &RemoteInvocation) -> ureq::Agent {
     let tls = ureq::tls::TlsConfig::builder()
         .disable_verification(skip_verify)
         .build();
+    // Never follow a redirect: the request carries the bearer token, the
+    // dashboard PIN and the read proof (`X-Mentis-Auth`), and ureq forwards
+    // custom headers to wherever a redirect points. A daemon does not redirect
+    // its API; one that does is misconfigured or not the daemon.
     ureq::Agent::config_builder()
         .http_status_as_error(false)
+        .max_redirects(0)
         .timeout_global(Some(Duration::from_secs(300)))
         .tls_config(tls)
         .build()
@@ -405,6 +410,21 @@ fn send(invocation: &RemoteInvocation) -> Result<Reply, String> {
     .map_err(|e| format!("cannot reach {url}: {e} (is the daemon running? use --url)"))?;
 
     let status = response.status().as_u16();
+    if (300..400).contains(&status) {
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        // The dashboard answers an unauthenticated request with a redirect to
+        // its login page.
+        if invocation.transport == Transport::Dashboard && location.contains("/dashboard/login") {
+            return Err(format!(
+                "the dashboard at {url} asked for a login (PIN missing or wrong); pass --pin or set {DASHBOARD_PIN_ENV}"
+            ));
+        }
+        return Err(redirect_refusal(url, status, location));
+    }
     let is_json = response
         .headers()
         .get("content-type")
@@ -437,6 +457,16 @@ fn send(invocation: &RemoteInvocation) -> Result<Reply, String> {
     } else {
         Ok(Reply::Text(text))
     }
+}
+
+/// The error for a `3xx` reply: the CLI does not follow redirects, so a
+/// credential never leaves for a host the operator did not name.
+fn redirect_refusal(url: &str, status: u16, location: &str) -> String {
+    format!(
+        "HTTP {status} from {url}: the daemon redirected to '{location}'. The CLI does not \
+         follow redirects, because the request carries your credentials; point --url at \
+         the final address"
+    )
 }
 
 /// Add the read proof for this exact request when a read key is configured.

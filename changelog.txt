@@ -1,4 +1,11 @@
 UNRELEASED
+  - security(cli): the CLI and the stdio MCP proxy no longer follow HTTP redirects. ureq
+    re-sends custom headers to a redirect target, so a daemon address that answered `3xx`
+    (misconfigured proxy, hostile `--url`) received the read proof (`X-Mentis-Auth`) and,
+    on the daemon-flush call, the bearer token. A `3xx` is now an error naming the
+    target ("point --url at the final address"); the dashboard's login redirect still
+    reports "asked for a login". The read-proof preimage and wire format are unchanged
+    (mentischat interop).
   - security(files): MentisDB data is no longer created world-readable under a default
     umask. Directories MentisDB creates (the data directory, migration backups, restore
     staging) are `0700`; chain files (binary and JSONL), registries, agent and entity-type

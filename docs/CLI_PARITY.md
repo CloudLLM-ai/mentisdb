@@ -183,4 +183,6 @@ key gets the key list and every segment. Every REST command accepts
 signs each request locally with it; the key is never sent. `thought append` and
 `thought retro` sign a thought with `--private-key-file` for a chain that
 requires signatures, and use that key for the head lookup too. The stdio MCP
-proxy reads the same environment variables.
+proxy reads the same environment variables. The CLI never follows an HTTP
+redirect (its requests carry the proof, token and PIN); a `3xx` from `--url`
+is reported as an error with the redirect target.
