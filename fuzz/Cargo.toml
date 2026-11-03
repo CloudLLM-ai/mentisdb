@@ -13,6 +13,8 @@ arbitrary = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = { version = "2.0.1", features = ["serde"] }
 url = "2"
+chrono = "0.4"
+uuid = "1"
 mentisdb = { path = "..", default-features = false, features = ["server"] }
 
 # Its own workspace keeps the fuzz crate out of the parent's builds, clippy
@@ -92,6 +94,13 @@ bench = false
 [[bin]]
 name = "prompt_text"
 path = "fuzz_targets/prompt_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sidecar_wal"
+path = "fuzz_targets/sidecar_wal.rs"
 test = false
 doc = false
 bench = false

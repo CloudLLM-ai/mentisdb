@@ -502,17 +502,18 @@ dependencies = [
 
 [[package]]
 name = "cloudllm_mcp"
-version = "0.3.6"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a251dc8ab92049ad1f36f1eabaeda3e43726f3ccb9a67436ab00877a1888d664"
+checksum = "9c6b4b0703646008c759c5df24b26a06bdd182ac07bbca499d6287af83102f6f"
 dependencies = [
  "async-trait",
  "axum",
  "futures",
- "reqwest 0.12.28",
+ "log",
+ "reqwest",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "subtle",
  "tokio",
  "tokio-stream",
@@ -2026,7 +2027,7 @@ dependencies = [
  "rand_pcg 0.3.1",
  "ratatui",
  "rcgen",
- "reqwest 0.13.5",
+ "reqwest",
  "roaring",
  "rust-stemmers",
  "rustls",
@@ -2054,10 +2055,12 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "bincode",
+ "chrono",
  "libfuzzer-sys",
  "mentisdb",
  "serde_json",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -2883,11 +2886,11 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reqwest"
-version = "0.12.28"
+version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
+checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "encoding_rs",
  "futures-core",
@@ -2902,43 +2905,6 @@ dependencies = [
  "js-sys",
  "log",
  "mime",
- "native-tls",
- "percent-encoding",
- "pin-project-lite",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sync_wrapper",
- "tokio",
- "tokio-native-tls",
- "tower",
- "tower-http",
- "tower-service",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
-name = "reqwest"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
-dependencies = [
- "base64 0.23.1",
- "bytes",
- "futures-core",
- "http",
- "http-body",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-tls",
- "hyper-util",
- "js-sys",
- "log",
  "native-tls",
  "percent-encoding",
  "pin-project-lite",

@@ -163,3 +163,7 @@ required-features = ["local-embeddings"]
 name = "mentisdb"
 path = "src/bin/mentisdb.rs"
 required-features = ["server"]
+
+[[bench]]
+name = "embed_commit_latency"
+harness = false

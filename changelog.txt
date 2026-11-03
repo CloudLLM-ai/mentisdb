@@ -598,6 +598,45 @@ UNRELEASED
     commit after (local model: about 4 ms before, about 0.4 ms plus 0.24 ms).
     Library callers are unchanged unless they opt in with
     `MentisDb::defer_next_embedding`. New `storage_paths/append_lock_hold` bench.
+  - fix(storage): one slow embedding no longer re-embeds the whole corpus. A
+    straggling embedding that outlasted 64 later appends (a 1.3 s provider hiccup
+    at 50 appends per second) cleared every parked vector and rebuilt the sidecar:
+    the rebuild built an input row per thought under the write lock, embedded the
+    entire chain again and then adopted the result under the write lock. Now later
+    vectors wait behind the slow one (up to `MAX_PIPELINED_EMBEDDINGS`, 512, so
+    memory stays bounded; appends past that are shed and embedded again alone), a
+    failed or dropped embedding is detected exactly (a drop guard on the ticket)
+    and only that thought is embedded again on the background worker, and the full
+    rebuild remains only for a sidecar that cannot be extended or a thought that
+    failed `MAX_EMBED_ATTEMPTS` times. A synchronous append that lands while
+    deferred embeddings are in flight (import, branch copy) is applied in order
+    behind them instead of being read as a stale sidecar. One commit applies at
+    most 32 parked vectors; the rest drain on later commits or polls. New
+    `MentisDb::embedding_backlog` and `EmbeddingBacklog`. At 20 000 thoughts a
+    600-append straggler used to embed 20 667 thoughts and stall adoption for 5.1 s;
+    it now embeds 601 and the worst stall is 0.29 s.
+  - perf(storage): vector sidecar compaction no longer runs under the chain's
+    write lock. Every `N / 16` appends the append path serialized and SHA-256
+    hashed the whole sidecar and deep-copied every vector under the write lock,
+    and the flush then wrote the snapshot under the read lock that blocks the next
+    writer (the doc claimed constant cost; the spike was `O(N x dimension)`:
+    seconds at 100 000 x 384). The append path now only queues a request; a
+    background thread (`spawn_sidecar_compaction`) re-reads the files, folds the
+    WAL into a new snapshot and swaps it in, holding the I/O lock for two short
+    file steps. The live handle keeps chaining WAL records from its incremental
+    digest: a compacted snapshot records where the WAL continues in a new optional
+    `wal_base_digest_hex` field (older binaries ignore it, fail to replay the WAL
+    and rebuild the derived sidecar). The snapshot is swapped before the WAL, and
+    replay skips records the snapshot already covers, so a crash between the two
+    steps recovers; records appended during a compaction are retained. At 20 000
+    thoughts the worst append-cycle lock exposure fell from 1559 ms to 14 ms (p99.9
+    34 ms to 10 ms). New `embed_commit_latency` bench (p50/p99/p99.9/max at a
+    large corpus, before and after).
+  - fix(storage): sidecar WAL replay checked the digest chain but not the rows: a
+    record of the wrong dimension, with a non-finite component or out of
+    `thought_index` order loaded as part of the sidecar. It is now rejected like the
+    same row in a snapshot (the digest is a checksum, not an authenticator). New
+    `sidecar_wal` fuzz target (loading and compaction with arbitrary WAL bytes).
   - fix(storage): a persisted HNSW graph was trusted when its entry count
     matched the sidecar, so a same-size graph built from other vectors (or
     another model) was served. The graph file (format 2) now starts with a
