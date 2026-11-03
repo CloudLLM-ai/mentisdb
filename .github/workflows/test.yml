@@ -46,6 +46,38 @@ jobs:
           python3 scripts/extract_cookbook_examples.py docs/cookbook/
           cargo test --test cookbook_tests --all-features
 
+  msrv:
+    name: MSRV (rust-version 1.90)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Keep in sync with `rust-version` in Cargo.toml.
+      - name: Install Rust 1.90
+        uses: dtolnay/rust-toolchain@1.90
+
+      - name: Install Linux audio build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libasound2-dev
+
+      - name: Cache Cargo registry + build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-msrv-
+
+      - name: cargo check on the declared minimum Rust
+        run: |
+          cargo check --all-features --locked
+          cargo check --no-default-features --locked
+
 # Cookbook-as-test: every Rust code example in docs/cookbook/*.html
 # is extracted and compiled. If a chapter claims the library does X,
 # this proves it. See scripts/extract_cookbook_examples.py and

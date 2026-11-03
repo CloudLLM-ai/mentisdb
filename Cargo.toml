@@ -3,6 +3,7 @@ name = "mentisdb"
 version = "0.10.10"
 authors = ["Angel Leon <gubatron@gmail.com>"]
 edition = "2021"
+rust-version = "1.90"
 license = "MIT"
 description = "Semantic, hash-chained durable memory for long-running and multi-agent systems."
 repository = "https://github.com/CloudLLM-ai/mentisdb"

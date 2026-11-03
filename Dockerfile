@@ -7,10 +7,10 @@
 # bookworm (`undefined reference to __isoc23_strtol`, `_M_replace_cold`).
 # The runtime stage must match the builder's glibc. The image is self-contained,
 # so the host's glibc does not matter.
-# CI (build.yml / test.yml) uses the `stable` toolchain and Cargo.toml declares
-# no `rust-version`, so track the current stable 1.x line. Cargo.lock pins every
-# crate, so image builds stay reproducible with `--locked`. Several locked
-# crates need rustc >= 1.88 and edition 2024 support.
+# Cargo.toml declares `rust-version = "1.90"` (roaring needs 1.90, uuid 1.89)
+# and CI checks that floor in the `msrv` job, while builds use the current
+# stable 1.x line. Cargo.lock pins every crate, so image builds stay
+# reproducible with `--locked`.
 ARG RUST_VERSION=1
 FROM rust:${RUST_VERSION}-trixie AS builder
 

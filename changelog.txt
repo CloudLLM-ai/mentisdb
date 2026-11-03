@@ -1,4 +1,7 @@
 UNRELEASED
+  - build: Cargo.toml now declares `rust-version = "1.90"`, the real floor of the
+    locked dependency set (roaring needs 1.90, uuid 1.89); a new `msrv` CI job
+    checks all features and no default features on 1.90.
   - security(mcp): `cloudllm_mcp` 0.4.0. The library now rejects every `Host` that
     is not `localhost`, `127.0.0.1` or `[::1]` on a loopback bind (DNS rebinding,
     for every client, not only browsers), authenticates the `GET /` event stream,

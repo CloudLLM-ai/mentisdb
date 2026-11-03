@@ -54,7 +54,7 @@ sudo apt install -y \
     curl
 ```
 
-Then install Rust (if you don't already have it):
+Then install Rust 1.90 or newer (if you don't already have it; `rustup update` upgrades an older one):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
