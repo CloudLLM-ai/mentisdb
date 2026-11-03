@@ -509,7 +509,8 @@ and `cert` work on the data directory directly and do not need the daemon.
   even if console verbosity is disabled. If `MENTISDB_VERBOSE=true`, the same lines are also
   mirrored to the console logger.
 - `MENTISDB_BIND_HOST`
-  Bind host for both HTTP servers. Default: `127.0.0.1`
+  Bind host for both HTTP servers. Default: `127.0.0.1`. It is also one of the names the
+  daemon answers to in the `Host` header (see "Host allowlist" below).
 - `MENTISDB_MCP_PORT`
   MCP server port. Default: `9471`
 - `MENTISDB_REST_PORT`
@@ -522,7 +523,8 @@ and `cert` work on the data directory directly and do not need the daemon.
   Comma-separated extra hostnames or IPs the dashboard accepts in the `Host` header (for
   example a public DNS name or the name a reverse proxy forwards). Set it in the environment
   or a `.env` file (`./.env` or `<MENTISDB_DIR>/.env`); it is not editable from the dashboard Settings
-  tab. See "Dashboard API rules" below for the built-in allowlist.
+  tab. The MCP and REST listeners use the same list. See "Host allowlist" below for the
+  built-in names and how each listener applies them. Set it before the daemon starts.
 - `MENTISDB_WEBHOOK_ALLOWED_CIDRS`
   Private ranges webhooks may target despite the SSRF guard, for self-hosted consumers on a
   private network. One or more CIDRs or bare IPs separated by commas and/or whitespace, e.g.
@@ -1595,6 +1597,27 @@ Dashboard capabilities:
 Protect the dashboard with `MENTISDB_DASHBOARD_PIN` whenever the daemon is reachable
 outside localhost.
 
+### Host allowlist
+
+One list of `Host` names serves the dashboard, REST and MCP: `localhost`, `127.0.0.1`,
+`[::1]`, `my.mentisdb.com`, the configured `MENTISDB_BIND_HOST`, every entry of
+`MENTISDB_DASHBOARD_ALLOWED_HOSTS` and, when `MENTISDB_BIND_HOST` is `0.0.0.0` or `::`, the
+machine's own interface IPs. A VPS reached by its public IP or DNS name through a loopback
+bind and a reverse proxy lists that name in `MENTISDB_DASHBOARD_ALLOWED_HOSTS`.
+
+- **MCP on a loopback bind (the default)** refuses any other `Host` with `403`, for every
+  client, on `POST /`, the `GET /` event stream and the legacy `/tools/*` and
+  `/resources/*` routes. This is the DNS-rebinding defence of `cloudllm_mcp` 0.4, fed with
+  the list above so `my.mentisdb.com` and your configured names keep working. A proxy that
+  forwards an unlisted `Host` gets `403 Forbidden host`: add the name to
+  `MENTISDB_DASHBOARD_ALLOWED_HOSTS`.
+- **MCP on a wildcard bind** (Docker, LAN) performs no `Host` check for non-browser
+  clients, which reach the daemon by service name or DHCP address.
+- **REST, and MCP with bearer tokens off**, refuse a request from a browser (it carries
+  `Origin` or `Sec-Fetch-Site`) unless its `Host` and `Origin` host are in the list.
+  `curl`, the CLI and agents send neither header and are unaffected.
+- IPv6 entries match in canonical form (`2001:db8::7`, not `2001:0db8::7`).
+
 Dashboard API rules (0.10.9):
 
 - **Host allowlist (DNS-rebinding defence).** Every dashboard route, including `GET` pages
@@ -2118,10 +2141,12 @@ qwen mcp add --transport http mentisdb http://127.0.0.1:9471
 `mentisdb` exposes both:
 
 - a standard streamable HTTP MCP endpoint at `POST /`
-- a Server-Sent Events (SSE) endpoint at `GET /` returning `text/event-stream` with
-  one `tool_called` event per tool call (tool name, chain key, outcome, duration). Tool
-  arguments and results are never broadcast: they can be private text. With bearer
-  enforcement on, subscribing needs a valid token
+- a Server-Sent Events (SSE) endpoint at `GET /` returning `text/event-stream`: one
+  `tool_called` event per tool call (tool name, chain key, outcome, duration) plus
+  metadata-only events for each JSON-RPC method (method, client address, outcome). Tool
+  arguments, results and error text are never broadcast: they can be private text. The
+  stream runs the same `Host`, bearer-token and `Origin` checks as `POST /`; with bearer
+  enforcement on, any valid token (global or chain-scoped) can subscribe
 - the legacy CloudLLM-compatible MCP endpoints at `POST /tools/list` and
   `POST /tools/execute`
 

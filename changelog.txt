@@ -1,4 +1,48 @@
 UNRELEASED
+  - security(mcp): `cloudllm_mcp` 0.4.0. The library now rejects every `Host` that
+    is not `localhost`, `127.0.0.1` or `[::1]` on a loopback bind (DNS rebinding,
+    for every client, not only browsers), authenticates the `GET /` event stream,
+    caps and sanitizes what it sends, and fixes the other 0.3.6 holes itself.
+    Left alone, that upgrade would have made a loopback daemon answer `403` to
+    `my.mentisdb.com` and to a VPS reached through `MENTISDB_DASHBOARD_ALLOWED_HOSTS`.
+    MentisDB now has one host policy (`HostPolicy`): the dashboard, the REST and
+    MCP browser guard and the allowlist handed to the library are all derived from
+    it (`localhost`, `127.0.0.1`, `[::1]`, `my.mentisdb.com`, `MENTISDB_BIND_HOST`,
+    `MENTISDB_DASHBOARD_ALLOWED_HOSTS`, interface IPs for a wildcard
+    `MENTISDB_BIND_HOST`). Streamable HTTP, the legacy `/tools/*` and `/resources/*`
+    routes and the event stream refuse any other `Host` with `403` on a loopback
+    bind. Wildcard binds (Docker, LAN) keep doing no `Host` check for programmatic
+    clients; browsers are still checked by the browser guard. The library's
+    loopback-only `Origin` check is switched off (it refused `https://my.mentisdb.com`
+    although the host is allowed); the guard compares the `Origin` host against the
+    same policy. Set `MENTISDB_DASHBOARD_ALLOWED_HOSTS` before the daemon starts: the
+    MCP list is read when the routers are built. IPv6 entries match in canonical form.
+  - refactor(mcp): deleted the workarounds for the 0.3.6 holes now that the library
+    closes them: MentisDB's own `GET /` route (`SseGate`, `sse_events_middleware`,
+    which existed because the library's stream was unauthenticated) and the
+    `RedactingEventHandler` that stripped tool arguments (the library's default
+    `SsePayloadMode::Minimal` removes arguments, results and error text). `GET /`
+    is the library's stream: same `Host`, bearer (action `events/subscribe`, any
+    active token) and `Origin` checks as `POST /`, CR/LF stripped from event fields,
+    a lagging subscriber is told how many events it missed. The stream now also
+    carries the library's metadata-only events per JSON-RPC method (method, client
+    address, outcome) next to MentisDB's `tool_called` events. Kept: MentisDB's
+    exact-host `Origin` guard (it follows the host policy), and `tool_called`.
+  - feat(mcp): the library's 401 body no longer names MentisDB's environment variable
+    or CLI. MentisDB puts its guidance back on every MCP 401 (streamable HTTP, legacy
+    routes, event stream): `MENTISDB_BEARER_TOKEN_ACCESS=false` and
+    `mentisdb bearertoken create`.
+  - build(deps): `cloudllm_mcp` 0.4.0 and `openai-rust2` 2.0 (reqwest 0.13, shared
+    with MentisDB's own reqwest). The tree no longer builds reqwest 0.12 except for
+    fastembed's `hf-hub`. `ResourceMetadata` gained `name`/`title` and writes
+    `mimeType`; `mentisdb://skill/core` lists with a name and `mimeType: text/markdown`
+    on `resources/list` and `POST /resources/list`.
+  - test(mcp): regression tests for the host policy (`tests/mcp_host_policy_tests.rs`:
+    alias, allowlisted names and public IPs, bind host, wildcard interface IPs,
+    foreign hosts and look-alikes rejected on every MCP transport; `Origin`; REST;
+    event-stream authentication; resource shape; 401 guidance), an agreement test
+    between the dashboard decision and the library list, and a check that the legacy
+    `/tools/execute` route leaks no arguments into the event stream.
   - fix(dashboard): the PIN login form, and every other dashboard POST from a
     browser, was rejected with "cross-origin request rejected". The dashboard
     sent `Referrer-Policy: no-referrer`, under which browsers send `Origin: null`
@@ -145,12 +189,12 @@ UNRELEASED
     AGENT_ID/KEY_ID; a pinned vector is shared with the Rust tests.
   - security(mcp): audited the published cloudllm_mcp 0.3.6 holes. Not exposed or already
     closed in mentisdb, each with a regression test (tests/sec_mcp_library_tests.rs): the
-    streamable-HTTP GET SSE stream (library GET is disabled and MentisDB serves its own
-    token-gated, argument-free stream), the prefix-match Origin check (MentisDB's own guard
+    streamable-HTTP GET SSE stream, the prefix-match Origin check (MentisDB's own guard
     compares the host exactly), an empty bearer token (no static token is used; an empty
-    presented token matches nothing) and CR/LF in SSE event/id (stripped before the frame is
-    written). The MCP client holes (unbounded body, redirects) do not apply: MentisDB is not
-    an MCP client.
+    presented token matches nothing) and CR/LF in SSE event/id. The MCP client holes
+    (unbounded body, redirects) do not apply: MentisDB is not an MCP client. With
+    cloudllm_mcp 0.4 the library closes them itself and the workarounds are gone; the tests
+    stay and now exercise the library.
   - fix(build): `lineage` was gated on the `llm-extraction` feature by a
     misplaced attribute, so `--no-default-features` (with or without `server`)
     did not compile. Both configurations build again.

@@ -440,8 +440,9 @@ verification reports.
 Writes respect the boundary too. An unsigned writer cannot link to, supersede or
 deduplicate against a thought in a private segment, and a refused write does not reveal
 which agents or keys exist. Push channels respect it as well. Webhooks never receive
-private thoughts or governance records, and the MCP event stream carries only
-`tool_called` events (tool, chain, outcome and duration), never arguments or results.
+private thoughts or governance records, and the MCP event stream carries metadata only
+(tool, chain, outcome, duration, method and client address), never arguments, results or
+error text.
 
 Some metadata stays public by design, so that the chain remains verifiable. A public
 reader can see that a chain has private segments and where they are, how many thoughts
@@ -506,7 +507,8 @@ executes. Chain-scoped tools that name no chain require access to the default ch
 
 While tokens are off, requests that come from a browser (they carry `Origin` or
 `Sec-Fetch-Site`) must name an allowed host, which blocks DNS-rebinding and cross-site
-requests to the loopback listeners. The dashboard sits behind an optional PIN with a
+requests to the loopback listeners. On a loopback bind the MCP listener also refuses every
+client whose `Host` is not on the same allowlist, whether or not tokens are on. The dashboard sits behind an optional PIN with a
 per-IP limit of five failures per five minutes, sends a strict Content-Security-Policy and
 frame-denial headers, and guards state-changing calls against cross-site requests.
 
