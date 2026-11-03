@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.11.0.56 — The current version of a memory, private chains, background migrations</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article .meta { color: #888; font-size: 0.85rem; margin-bottom: 1rem; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    article table { border-collapse: collapse; margin-bottom: 1rem; font-size: 0.9rem; width: 100%; }
+    article th, article td { border-bottom: 1px solid #e0e0e0; padding: 0.35rem 0.5rem; text-align: left; }
+    a { color: #4361ee; }
+    .callout { background: #eef2ff; border-left: 3px solid #4361ee; border-radius: 0 4px 4px 0; padding: 1rem; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="index.html">MentisDB Blog</a></h1>
+    <p>Durable memory for AI agents</p>
+  </header>
+
+  <article>
+    <h2>MentisDB 0.11.0.56 &mdash; The current version of a memory, private chains, background migrations</h2>
+    <div class="meta">November 2, 2026</div>
+
+    <p>
+      0.11 starts from a problem we measured on a real installation: agents almost
+      never say which memory a correction replaces. Out of 14 correction thoughts and
+      about 90 decisions, not one carried a typed <code>Supersedes</code> or
+      <code>Corrects</code> link. So when an agent asked about a policy that had been
+      changed, the old policy often came back first. This release fixes that, adds
+      public and private chains with real cryptographic read access, moves format
+      upgrades into the background, and closes a set of security holes. It is a
+      minor-version bump because some behaviour changes on purpose.
+    </p>
+
+    <div class="callout">
+      <strong>Security notice: upgrade recommended.</strong> 0.10.10.55 and earlier let a
+      web page in a browser on the same machine drive the local REST and MCP API when
+      bearer tokens were off (the default), let chain-scoped tokens reach chains outside
+      their scope in several ways, let any API client register signing keys for any
+      agent, and allowed unlimited PIN guesses through one dashboard path. All are
+      fixed. The <a href="mentisdb-0.11.0.56-release-notes.md">release notes</a> say who
+      is affected and what to check after upgrading.
+    </div>
+
+    <h3>1. Agents get the current version of a memory</h3>
+    <p>
+      We could have told agents to link better, and the skill now does: a policy change
+      must carry <code>Supersedes</code> with the old id. But a memory system should not
+      depend on perfect bookkeeping, so retrieval now reasons about lineage itself:
+    </p>
+    <ul>
+      <li>A superseded thought that would have ranked is replaced by its live successor, and the hit says what it replaced (<code>successor_of</code>).</li>
+      <li>A thought that a newer correction or decision only references is not hidden (references are often background), but it is reported <code>version_status: "contested"</code> and the newer thought is ranked above it.</li>
+      <li>Every thought on every surface carries <code>version_status</code>, <code>successors</code> and <code>current_version</code> when it is not plainly current.</li>
+      <li>When an agent appends a correction without a typed link, the response carries <code>warnings</code> naming the likely target, so it can add the missing <code>Supersedes</code> right away.</li>
+      <li>It works across chains too: a <code>Supersedes</code> with a <code>chain_key</code> applies in branch and federated search.</li>
+    </ul>
+    <p>
+      This is derived when a chain opens, so existing chains benefit with no migration.
+      Two ranking changes landed with it. Vector fusion no longer depends on query
+      length: the old blend silenced the vector channel for long paraphrased questions,
+      exactly when wording differs most. And near-duplicate hits collapse at result time
+      (one real chain had 301 of 749 live thoughts in duplicate clusters). Startup also
+      loads <em>standing context</em> now (durable preferences, decisions and
+      constraints regardless of age), so agents stop forgetting what you told them months
+      ago.
+    </p>
+
+    <h3>2. Better numbers on both benchmarks</h3>
+    <p>
+      We ran the full LoCoMo-10P and LongMemEval protocol from a fresh ingest with the
+      same scripts as 0.10.9.54:
+    </p>
+    <table>
+      <tr><th>Benchmark</th><th>R@5</th><th>R@10</th><th>R@20</th><th>0.10.9.54</th></tr>
+      <tr><td>LoCoMo-10P</td><td>67.9</td><td><strong>76.7</strong></td><td>83.4</td><td>R@10 73.5</td></tr>
+      <tr><td>LongMemEval</td><td><strong>69.8</strong></td><td>75.6</td><td>81.4</td><td>R@5 68.0</td></tr>
+    </table>
+    <p>
+      Library users get the same defaults as the server now; the thesaurus used to be off
+      in the library and on in the daemon.
+    </p>
+
+    <h3>3. Public and private chains</h3>
+    <p>
+      A chain is now either public (unsigned writes, free reads) or private (writes must
+      be signed by an allowed Ed25519 key, and what was written while private can only be
+      read by someone who proves they hold an allowed key). Switching modes writes a
+      signed record into the chain, so the history of who could read what is part of the
+      chain itself. A reader without a key sees the public segments only, on every read
+      path: search, context, traversal, exports, listings, even counts and BM25
+      statistics.
+    </p>
+    <pre><code># the operator (dashboard PIN, or --offline on the host)
+mentisdb chain access set private --chain vault --pin 123456
+mentisdb chain access allow builder builder-1 &lt;64 hex&gt; --chain vault --pin 123456
+
+# an authorized reader signs each request locally
+mentisdb search "launch plan" --chain vault \
+  --read-key-file builder.key --read-agent builder --read-key-id builder-1</code></pre>
+    <p>
+      Read proofs travel in an <code>X-Mentis-Auth</code> header: a signature over the
+      request with a timestamp and a single-use nonce. The CLI, the stdio MCP proxy and
+      the Python client sign locally, so a private key never has to be pasted into an LLM
+      context. Keys and modes are administered only by the operator, from the dashboard or
+      the local CLI; the old REST and MCP routes for that now answer <code>403</code>.
+      Governed chains are verified when they open, an operator-signed checkpoint keeps
+      later opens fast, and every hit carries a <code>provenance</code> object with
+      <code>trust: "untrusted_data"</code>, because a memory is data, not an instruction.
+    </p>
+
+    <h3>4. Upgrades that never block startup</h3>
+    <p>
+      Format upgrades used to run before the daemon would serve anything. Now the daemon
+      is up in about a second (0.97 s with a 600,000-thought legacy chain, which finished
+      migrating 17 seconds later in the background). A chain that is still migrating
+      answers <code>503</code> with <code>Retry-After</code>; everything else is served.
+      Each chain is backed up, staged, verified end to end and swapped in atomically,
+      with a journal so that a kill at any moment is resumed or rolled back on the next
+      start. A chain whose hashes do not verify is refused and left untouched rather than
+      silently rehashed. <code>mentisdb migrate status|run|verify|retry|skip|rollback|purge-backups</code>
+      gives operators full control.
+    </p>
+    <p>
+      The same work fixed chains written by March and April 2026 builds, which had stamped
+      a schema number that later releases refused, and moved the embedding model call out
+      of the chain's write lock: lock hold per append dropped from about 9.5 ms to about
+      0.5 ms. A data directory now has exactly one daemon; a second one refuses to start.
+    </p>
+
+    <h3>5. Compact search results</h3>
+    <p>
+      Austin Faulkner-Pearce contributed a <code>compact</code> option for ranked and
+      federated search in <a href="https://github.com/CloudLLM-ai/mentisdb/pull/25">#25</a>.
+      It drops what an agent rarely reads during recall (hashes, signatures, agent name and
+      owner, score components) and keeps what it needs, including provenance and every
+      version field. Responses were 23.7% smaller on real chains and 34.2% smaller on a
+      generated corpus, at no time cost. The skill tells agents when to use it and when to
+      fetch the full record instead, and the Python client supports it.
+    </p>
+
+    <h3>6. One host policy, and a dashboard login that works</h3>
+    <p>
+      MentisDB now moves to <code>cloudllm_mcp</code> 0.4.0, which checks the
+      <code>Host</code> header on loopback binds to stop DNS rebinding. To keep
+      <code>my.mentisdb.com</code> and your own names working, the dashboard, REST and MCP
+      now share one allowlist. If you reach the daemon by a public IP or domain, put it in
+      <code>MENTISDB_DASHBOARD_ALLOWED_HOSTS</code> before starting it. We also fixed a bug
+      where real browsers could not log in to a PIN-protected dashboard: the dashboard's
+      own referrer policy made the browser send <code>Origin: null</code>, which the CSRF
+      guard rejected.
+    </p>
+
+    <h3>Upgrade notes</h3>
+    <ul>
+      <li>The first start may migrate chains in the background; requests for those chains get <code>503</code> until they are done. Originals are kept for 14 days.</li>
+      <li>Exposing the dashboard or MCP on a public IP or domain? Set <code>MENTISDB_DASHBOARD_ALLOWED_HOSTS</code>.</li>
+      <li>Key registration, key revocation, agent disabling and access policies are operator-only (dashboard or CLI).</li>
+      <li>Search results change: superseded hits become their successors, duplicates collapse. Each change has a per-request and a process-wide opt-out.</li>
+      <li>The <code>GET /</code> event stream no longer carries tool arguments or results.</li>
+      <li><code>llm_rerank</code> and <code>ppr</code> are deprecated no-ops; the minimum Rust version is 1.90.</li>
+    </ul>
+    <pre><code>cargo install mentisdb --locked --force
+# or
+docker pull ghcr.io/cloudllm-ai/mentisdb:0.11.0.56</code></pre>
+    <p>
+      Full details: <a href="mentisdb-0.11.0.56-release-notes.md">release notes</a>. The
+      <a href="https://github.com/CloudLLM-ai/mentisdb/blob/master/WHITEPAPER.md">whitepaper</a>
+      was rewritten for this release around what agent memory has to guarantee. Thanks to
+      Austin Faulkner-Pearce for compact search.
+    </p>
+  </article>
+</body>
+</html>
