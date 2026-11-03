@@ -76,6 +76,7 @@ pub mod summary_index;
 pub mod thesaurus;
 /// Provider-agnostic vector and embedding helpers for deterministic ranking.
 pub mod vector;
+pub(crate) mod vector_scan;
 
 /// Real semantic embedding provider backed by the `fastembed` crate.
 #[cfg(feature = "local-embeddings")]

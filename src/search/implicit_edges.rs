@@ -199,39 +199,97 @@ impl ImplicitEdgeOverlay {
     ///
     /// Crash catch-up uses this to replay missing thoughts in order, each
     /// against only the thoughts that preceded it, so no pair is counted twice.
+    ///
+    /// This is [`Self::scan_candidates`] followed by [`Self::apply_candidates`]:
+    /// a caller that cannot afford the scan under a lock runs the two halves
+    /// separately and gets the identical overlay.
     pub fn add_thought_among<'a>(
         &mut self,
         new_id: Uuid,
         new_vector: &[f32],
         entries: impl Iterator<Item = &'a crate::search::VectorSidecarEntry>,
     ) {
-        let mut forward_neighbors: Vec<ImplicitNeighbor> = Vec::new();
+        let candidates = Self::scan_candidates(
+            self.threshold,
+            new_id,
+            new_vector,
+            entries.map(|entry| (entry.thought_id, entry.vector.as_slice())),
+        );
+        self.apply_candidates(new_id, candidates);
+    }
 
-        for entry in entries {
-            if entry.thought_id == new_id {
-                continue; // skip self
-            }
-            let Some(score) = cosine_similarity(new_vector, &entry.vector) else {
-                continue;
-            };
-            if score < self.threshold {
-                continue;
-            }
+    /// The expensive half of [`Self::add_thought_among`]: every entry whose
+    /// cosine similarity to `new_vector` is at least `threshold`, in the order
+    /// `entries` yields them (the thought itself is skipped).
+    ///
+    /// `O(entries x dimension)` and independent of any overlay, so it can run
+    /// on a snapshot of the vectors without holding whatever lock guards the
+    /// overlay. Hand the result to [`Self::apply_candidates`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::search::ImplicitEdgeOverlay;
+    /// use uuid::Uuid;
+    ///
+    /// let (a, b, new) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+    /// let stored = [(a, vec![1.0_f32, 0.0]), (b, vec![0.0, 1.0])];
+    /// let candidates = ImplicitEdgeOverlay::scan_candidates(
+    ///     0.9,
+    ///     new,
+    ///     &[1.0, 0.1],
+    ///     stored.iter().map(|(id, vector)| (*id, vector.as_slice())),
+    /// );
+    /// assert_eq!(candidates.len(), 1);
+    /// assert_eq!(candidates[0].thought_id, a);
+    ///
+    /// let mut overlay = ImplicitEdgeOverlay::new(0.9, 5);
+    /// overlay.apply_candidates(new, candidates);
+    /// assert!(overlay.edges.contains_key(&new) && overlay.edges.contains_key(&a));
+    /// ```
+    pub fn scan_candidates<'a>(
+        threshold: f32,
+        new_id: Uuid,
+        new_vector: &[f32],
+        entries: impl Iterator<Item = (Uuid, &'a [f32])>,
+    ) -> Vec<ImplicitNeighbor> {
+        entries
+            .filter(|(id, _)| *id != new_id)
+            .filter_map(|(id, vector)| {
+                let score = cosine_similarity(new_vector, vector)?;
+                // Written as "not below" so a NaN score is kept, as it always was.
+                if score < threshold {
+                    return None;
+                }
+                Some(ImplicitNeighbor {
+                    thought_id: id,
+                    cosine_score: score,
+                })
+            })
+            .collect()
+    }
 
-            // Forward edge: new_id → existing
-            forward_neighbors.push(ImplicitNeighbor {
-                thought_id: entry.thought_id,
-                cosine_score: score,
-            });
-
+    /// The cheap half of [`Self::add_thought_among`]: record `candidates` (from
+    /// [`Self::scan_candidates`], in scan order) as the forward edges of
+    /// `new_id` and as back edges on each candidate, keeping each list sorted by
+    /// score and at most `k` long.
+    ///
+    /// Cost is proportional to the number of candidates, not to the corpus.
+    /// Applying the candidates of successive thoughts in append order gives the
+    /// same overlay as calling [`Self::add_thought_among`] for each.
+    pub fn apply_candidates(&mut self, new_id: Uuid, candidates: Vec<ImplicitNeighbor>) {
+        let mut forward_neighbors: Vec<ImplicitNeighbor> = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
             // Back edge: existing → new_id
-            let back_list = self.edges.entry(entry.thought_id).or_default();
+            let back_list = self.edges.entry(candidate.thought_id).or_default();
             back_list.push(ImplicitNeighbor {
                 thought_id: new_id,
-                cosine_score: score,
+                cosine_score: candidate.cosine_score,
             });
             back_list.sort_by(|a, b| b.cosine_score.total_cmp(&a.cosine_score));
             back_list.truncate(self.k);
+            // Forward edge: new_id → existing
+            forward_neighbors.push(candidate);
         }
 
         forward_neighbors.sort_by(|a, b| b.cosine_score.total_cmp(&a.cosine_score));

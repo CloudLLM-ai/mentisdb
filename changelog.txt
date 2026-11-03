@@ -605,8 +605,11 @@ UNRELEASED
     appends finish out of order, a failed or lost embedding schedules the
     background rebuild instead of wedging the sidecar, and the whole sequence
     runs in a detached task so a dropped request cannot strand it. Lock hold per
-    append with a 5 ms model: about 9.5 ms before, about 0.33 ms plus a 0.15 ms
-    commit after (local model: about 4 ms before, about 0.4 ms plus 0.24 ms).
+    append with a 5 ms model, measured on a 200-thought chain: about 9.5 ms
+    before, about 0.33 ms plus a 0.15 ms commit after (local model: about 4 ms
+    before, about 0.4 ms plus 0.24 ms). That is the embedding's share only: on a
+    large chain the implicit-edge scan then dominated the lock hold (about 24 ms
+    at 100 000 thoughts), see the next entries.
     Library callers are unchanged unless they opt in with
     `MentisDb::defer_next_embedding`. New `storage_paths/append_lock_hold` bench.
   - fix(storage): one slow embedding no longer re-embeds the whole corpus. A
@@ -643,6 +646,38 @@ UNRELEASED
     thoughts the worst append-cycle lock exposure fell from 1559 ms to 14 ms (p99.9
     34 ms to 10 ms). New `embed_commit_latency` bench (p50/p99/p99.9/max at a
     large corpus, before and after).
+  - perf(storage): implicit-edge neighbours are computed off the chain's write
+    lock. Every applied vector was compared with every earlier vector under the
+    write lock (`O(entries x dimension)`, about 24 ms at 100 000 x 384), which
+    made it the dominant lock hold on a large chain (p50 24 ms at 100 000
+    thoughts, 4.8 ms at 20 000). Above `DEFAULT_INLINE_EDGE_SCAN_LIMIT` (4096
+    entries; `MentisDb::with_inline_edge_scan_limit`) the scan runs on a
+    background thread against a snapshot of the sidecar vectors (sealed chunks
+    behind `Arc`, so a snapshot copies no vector) and a later commit, append or
+    `poll_vector_backend_upgrades` applies it after scanning the fewer-than-128
+    vectors the snapshot lacked. Candidates are produced in the same order with
+    the same `cosine_similarity` calls and applied in append order, so the
+    overlay is identical to the inline one (a randomized test with out-of-order
+    commits, scans held on a latch and appends landing meanwhile compares the two
+    entry by entry, scores bit for bit); a scan for an overlay replaced
+    meanwhile is discarded and a failed scan drops the overlay for the usual
+    rebuild. Trade-offs: on a large chain the overlay can trail the chain by a
+    few appends (`MentisDb::implicit_edge_backlog`), and the scan store keeps a
+    second copy of the vectors in memory. Small chains are unchanged (inline).
+    `ImplicitEdgeOverlay::add_thought_among` is now `scan_candidates` plus
+    `apply_candidates`. Append cycle at 100 000 x 384 (write hold p50 / p99 / max):
+    24.1 / 26.3 / 38.6 ms before, 0.03 / 0.72 / 16.3 ms after; at 20 000:
+    4.8 / 5.7 / 6.2 ms before, 0.03 / 0.61 / 3.8 ms after (machine load average
+    8 to 20). Straggler release at 100 000: worst commit 726 ms to 17 ms, worst
+    adoption stall 1464 ms to 0.7 ms.
+  - perf(storage): adopting a rebuilt vector sidecar no longer hashes and rewrites
+    the whole sidecar under the write lock (`compact_to_path`) to persist the
+    thoughts embedded during adoption: they go to the WAL, chained from the
+    rebuilt snapshot's digest. Adoption also uses the live sidecar to rebuild
+    the implicit-edge overlay instead of parsing the file again.
+  - fix(storage): loading a vector sidecar while a background compaction swapped
+    its files could return the old snapshot without its WAL (stale, so rebuilt at
+    open). The load now notices the snapshot changed under it and reads again.
   - fix(storage): sidecar WAL replay checked the digest chain but not the rows: a
     record of the wrong dimension, with a non-finite component or out of
     `thought_index` order loaded as part of the sidecar. It is now rejected like the

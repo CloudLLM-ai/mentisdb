@@ -4886,6 +4886,10 @@ struct ManagedSidecarEntry {
     attempts: BTreeMap<u64, u32>,
     /// Indices of tickets dropped without being committed.
     ledger: Arc<TicketLedger>,
+    /// Snapshot source of this sidecar's vectors for off-lock implicit-edge
+    /// scans; built the first time one is needed and kept in step with the
+    /// sidecar (see [`crate::search::vector_scan`]).
+    scan_store: Option<crate::search::vector_scan::VectorScanStore>,
 }
 
 /// Most embeddings a managed sidecar keeps in the pipeline between an append
@@ -5143,6 +5147,7 @@ impl ManagedSidecarEntry {
             missing: BTreeSet::new(),
             attempts: BTreeMap::new(),
             ledger: Arc::new(TicketLedger::default()),
+            scan_store: None,
         }
     }
 
@@ -5259,6 +5264,69 @@ impl DedupTokenWindow {
         }
         self.tail_hash = thoughts.last().map(|thought| thought.hash.clone());
         self.start
+    }
+}
+
+/// Entries up to which a managed sidecar's implicit edges are computed inline,
+/// under the caller's lock, as they always were.
+///
+/// Below this a scan is a millisecond or less and a thread hand-off would cost
+/// more than it saves. Above it the scan runs on a snapshot off the lock (see
+/// [`MentisDb::with_inline_edge_scan_limit`]).
+pub const DEFAULT_INLINE_EDGE_SCAN_LIMIT: usize = 4096;
+
+/// Applied vectors whose implicit edges one background scan computes together.
+const EDGE_SCAN_BATCH: usize = 32;
+
+/// Threads a background implicit-edge scan may use.
+const EDGE_SCAN_THREADS: usize = 4;
+
+/// One applied vector whose implicit edges have not been computed yet.
+struct EdgeWork {
+    metadata: crate::search::EmbeddingMetadata,
+    id: Uuid,
+    index: u64,
+    hash: String,
+    vector: Arc<[f32]>,
+}
+
+/// How one queued vector relates to the snapshot its scan ran against.
+struct EdgePlan {
+    /// Stored vectors that precede it.
+    prefix_len: usize,
+    /// Stored vectors the snapshot (and so the background scan) covers.
+    sealed_len: usize,
+    /// Identity of the scan store the snapshot came from.
+    epoch: u64,
+}
+
+/// Result slot of a background implicit-edge scan: empty until finished, then
+/// the candidate list per queued vector, or `None` if the scan failed.
+type EdgeScanSlot = Arc<Mutex<Option<Option<Vec<Vec<crate::search::ImplicitNeighbor>>>>>>;
+
+/// A background scan this handle is waiting on.
+struct PendingEdgeJob {
+    /// [`MentisDb::edge_generation`] when it started; a result from an older
+    /// generation belongs to an overlay that has since been replaced.
+    generation: u64,
+    items: Vec<EdgeWork>,
+    plans: Vec<EdgePlan>,
+    /// `None` until finished; `Some(None)` when the scan failed.
+    slot: EdgeScanSlot,
+}
+
+/// Publishes a failure if the scan thread ends without publishing a result
+/// (a panic), so the handle never waits on it forever.
+struct EdgeJobGuard {
+    slot: EdgeScanSlot,
+}
+
+impl Drop for EdgeJobGuard {
+    fn drop(&mut self) {
+        let mut slot = self.slot.lock().unwrap_or_else(|error| error.into_inner());
+        if slot.is_none() {
+            *slot = Some(None);
+        }
     }
 }
 
@@ -5450,6 +5518,10 @@ type SidecarRebuildOutcome = io::Result<(
 struct PendingSidecarRebuild {
     metadata: crate::search::EmbeddingMetadata,
     slot: Arc<Mutex<Option<SidecarRebuildOutcome>>>,
+    /// The sidecar in the slot was already adopted once and extended with
+    /// some of the thoughts appended during the rebuild; its WAL has been
+    /// started, so a later adoption continues it instead of restarting it.
+    resumed: bool,
 }
 
 /// A gap repair this handle is waiting on.
@@ -6046,6 +6118,19 @@ pub struct MentisDb {
     dedup_tokens: DedupTokenWindow,
     /// In-memory overlay of vector-inferred semantic edges.
     implicit_edge_overlay: Option<crate::search::ImplicitEdgeOverlay>,
+    /// Applied vectors waiting for their implicit edges, oldest first. Edges
+    /// are applied strictly in this order so the overlay matches the one an
+    /// inline scan per append would build.
+    edge_queue: std::collections::VecDeque<EdgeWork>,
+    /// The background scan computing the front of `edge_queue`, if any.
+    edge_job: Option<PendingEdgeJob>,
+    /// Bumped whenever the overlay is replaced, so a scan started against the
+    /// old one is recognised and dropped.
+    edge_generation: u64,
+    /// See [`MentisDb::with_inline_edge_scan_limit`].
+    edge_inline_limit: usize,
+    /// Test hook: runs on the scan thread after the snapshot is taken.
+    edge_scan_hook: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Cached explicit-relation adjacency, keyed by `thoughts.len()`.
     /// Rebuilt on first graph-enabled query after the chain grows.
     adjacency_index: std::sync::Mutex<Option<(usize, Arc<crate::search::ThoughtAdjacencyIndex>)>>,
@@ -6207,6 +6292,11 @@ impl MentisDb {
             dedup_scan_window: 64,
             dedup_tokens: DedupTokenWindow::default(),
             implicit_edge_overlay: None,
+            edge_queue: std::collections::VecDeque::new(),
+            edge_job: None,
+            edge_generation: 0,
+            edge_inline_limit: DEFAULT_INLINE_EDGE_SCAN_LIMIT,
+            edge_scan_hook: None,
             adjacency_index: std::sync::Mutex::new(None),
             pending_derived: std::sync::Mutex::new(PendingDerivedWrite::default()),
             derived_flush_lock: Arc::new(std::sync::Mutex::new(())),
@@ -7588,11 +7678,7 @@ impl MentisDb {
         if let Some(entry) = self.managed_vector_sidecars.get_mut(metadata) {
             entry.cached_sidecar = Some(sidecar);
         }
-        if self.implicit_edge_overlay.is_some() {
-            for (id, index, hash, vector) in &applied {
-                self.apply_implicit_edges_for(metadata, *id, *index, hash, vector);
-            }
-        }
+        self.queue_implicit_edges(metadata, applied);
         if needs_repair {
             self.fall_back_to_full_repair(metadata);
         }
@@ -10469,8 +10555,11 @@ impl MentisDb {
         queue
             .send(job)
             .map_err(|_| io::Error::other("sidecar rebuild worker has stopped"))?;
-        self.pending_sidecar_rebuilds
-            .push(PendingSidecarRebuild { metadata, slot });
+        self.pending_sidecar_rebuilds.push(PendingSidecarRebuild {
+            metadata,
+            slot,
+            resumed: false,
+        });
         Ok(true)
     }
 
@@ -10484,6 +10573,7 @@ impl MentisDb {
         !self.pending_sidecar_rebuilds.is_empty()
             || !self.pending_gap_repairs.is_empty()
             || self.has_drainable_parked_vectors()
+            || self.edge_job.is_some()
     }
 
     /// Cheap `&self` check: has any background sidecar rebuild or gap repair
@@ -10501,6 +10591,12 @@ impl MentisDb {
                 .unwrap_or_else(|error| error.into_inner())
                 .is_some()
         }) || self.has_drainable_parked_vectors()
+            || self.edge_job.as_ref().is_some_and(|job| {
+                job.slot
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .is_some()
+            })
     }
 
     /// Cheap `&self` check: is the implicit-edge overlay missing (in memory or
@@ -10539,6 +10635,7 @@ impl MentisDb {
         self.adopt_finished_full_rebuilds();
         self.adopt_finished_gap_repairs();
         self.drain_leftover_parked_vectors();
+        self.adopt_finished_edge_job();
     }
 
     /// Adopt full background sidecar rebuilds that have finished.
@@ -10556,7 +10653,8 @@ impl MentisDb {
                     item.metadata.model_id
                 ),
                 Some(Ok((provider, sidecar))) => {
-                    if let Err(error) = self.adopt_rebuilt_sidecar(item.metadata, provider, sidecar)
+                    if let Err(error) =
+                        self.adopt_rebuilt_sidecar(item.metadata, provider, sidecar, item.resumed)
                     {
                         eprintln!("[mentisdb] could not adopt rebuilt vector sidecar: {error}");
                     }
@@ -10572,6 +10670,7 @@ impl MentisDb {
         metadata: crate::search::EmbeddingMetadata,
         provider: Arc<dyn ManagedEmbeddingProvider>,
         mut sidecar: crate::search::VectorSidecar,
+        resumed: bool,
     ) -> io::Result<()> {
         let path = self.vector_sidecar_path(&metadata)?;
         let covered = sidecar.thought_count;
@@ -10592,6 +10691,7 @@ impl MentisDb {
         // Bound the embedding work done per adoption attempt; a larger gap is
         // closed over several polls instead of abandoning the finished rebuild.
         let step = delta.min(SIDECAR_ADOPT_CATCHUP_LIMIT);
+        let mut wal_records = Vec::with_capacity(step);
         for (chunk_start, chunk) in self.thoughts[covered..covered + step]
             .chunks(SIDECAR_REBUILD_BATCH)
             .enumerate()
@@ -10608,7 +10708,7 @@ impl MentisDb {
             let documents = provider.embed_documents(&inputs)?;
             for (offset, (thought, document)) in chunk.iter().zip(documents).enumerate() {
                 let count = covered + chunk_start * SIDECAR_REBUILD_BATCH + offset + 1;
-                sidecar.extend_with_entry(
+                wal_records.push(sidecar.extend_with_entry(
                     crate::search::VectorSidecarEntry::new(
                         thought.id,
                         thought.index,
@@ -10617,19 +10717,24 @@ impl MentisDb {
                     ),
                     count,
                     Some(thought.hash.clone()),
-                )?;
+                )?);
             }
         }
+        // The rebuilt snapshot is already on disk. The thoughts embedded here
+        // go to the WAL, chained from the snapshot's digest, instead of
+        // re-serializing and re-hashing the whole sidecar under the caller's
+        // lock (`O(entries x dimension)`: seconds for a large chain).
+        self.queue_adoption_wal(&path, wal_records, resumed);
         if step < delta {
             // Still behind: park the extended sidecar and finish on a later poll.
             let slot: Arc<Mutex<Option<SidecarRebuildOutcome>>> =
                 Arc::new(Mutex::new(Some(Ok((provider, sidecar)))));
-            self.pending_sidecar_rebuilds
-                .push(PendingSidecarRebuild { metadata, slot });
+            self.pending_sidecar_rebuilds.push(PendingSidecarRebuild {
+                metadata,
+                slot,
+                resumed: true,
+            });
             return Ok(());
-        }
-        if delta > 0 {
-            sidecar.compact_to_path(&path)?;
         }
         let graph_path = self.vector_hnsw_graph_path(&metadata).ok();
         let build_result = build_vector_backend_async(
@@ -10643,6 +10748,47 @@ impl MentisDb {
         );
         self.load_or_rebuild_implicit_edge_overlay();
         Ok(())
+    }
+
+    /// Persist the WAL records of thoughts embedded while adopting a rebuilt
+    /// sidecar.
+    ///
+    /// The first adoption of a rebuilt sidecar starts a fresh WAL: the rebuild
+    /// replaced the snapshot and removed the WAL, so a leftover file or a queued
+    /// record of the previous sidecar chains from a digest that is gone and is
+    /// dropped. A resumed adoption continues the WAL it already started.
+    fn queue_adoption_wal(
+        &mut self,
+        snapshot_path: &Path,
+        records: Vec<crate::search::VectorSidecarWalRecord>,
+        resumed: bool,
+    ) {
+        let wal_path = crate::search::sidecar_wal_path(snapshot_path);
+        if !resumed {
+            {
+                let _flush = self
+                    .derived_flush_lock
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let _ = fs::remove_file(&wal_path);
+            }
+            self.pending_derived
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .sidecar_wals
+                .retain(|(path, _)| *path != wal_path);
+        }
+        if records.is_empty() {
+            return;
+        }
+        self.pending_derived
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .sidecar_wals
+            .extend(records.into_iter().map(|record| (wal_path.clone(), record)));
+        if let Err(error) = self.flush_pending_derived() {
+            log_derived_failure("derived sidecar flush", &error);
+        }
     }
 
     /// Check for finished background HNSW graph builds and swap them into the
@@ -11251,13 +11397,294 @@ impl MentisDb {
         let Some((metadata, new_vector)) = found else {
             return;
         };
-        self.apply_implicit_edges_for(
+        self.queue_implicit_edges(
             &metadata,
-            thought.id,
-            thought.index,
-            &thought.hash,
-            &new_vector,
+            vec![(
+                thought.id,
+                thought.index,
+                thought.hash.clone(),
+                new_vector.to_vec(),
+            )],
         );
+    }
+
+    /// Set how many sidecar entries a chain may have before the implicit edges
+    /// of a newly applied vector are computed off the caller's lock.
+    ///
+    /// Each applied vector is compared with every earlier one (`O(entries x
+    /// dimension)`, about 25 ms at 100 000 x 384). Up to `entries` the scan runs
+    /// inline, under whatever lock the caller holds, and the overlay is current
+    /// when the call returns. Beyond it the scan runs on a background thread
+    /// against a snapshot of the vectors and a later
+    /// [`MentisDb::poll_vector_backend_upgrades`] (or the next commit or
+    /// append, which poll) applies the result, so the overlay can trail the
+    /// chain by a few appends. The resulting edges are identical either way.
+    /// Default: [`DEFAULT_INLINE_EDGE_SCAN_LIMIT`]; `0` always scans in the
+    /// background.
+    pub fn with_inline_edge_scan_limit(&mut self, entries: usize) -> &mut Self {
+        self.edge_inline_limit = entries;
+        self
+    }
+
+    /// Implicit-edge work not yet applied to the overlay: vectors queued or
+    /// being scanned in the background.
+    pub fn implicit_edge_backlog(&self) -> usize {
+        self.edge_queue.len() + self.edge_job.as_ref().map_or(0, |job| job.items.len())
+    }
+
+    /// The overlay of vector-inferred edges, if this chain has one.
+    pub fn implicit_edge_overlay(&self) -> Option<&crate::search::ImplicitEdgeOverlay> {
+        self.implicit_edge_overlay.as_ref()
+    }
+
+    /// Run `hook` on the implicit-edge scan thread once it holds its snapshot
+    /// and before it scans. For tests that must append while a scan is running.
+    #[doc(hidden)]
+    pub fn set_edge_scan_hook(&mut self, hook: Option<Arc<dyn Fn() + Send + Sync>>) {
+        self.edge_scan_hook = hook;
+    }
+
+    /// Give applied vectors their implicit edges: inline when the sidecar is
+    /// small and nothing is queued, otherwise through the background scan.
+    ///
+    /// Order is preserved: while anything is queued or being scanned, new
+    /// vectors queue behind it instead of jumping ahead inline.
+    fn queue_implicit_edges(
+        &mut self,
+        metadata: &crate::search::EmbeddingMetadata,
+        applied: Vec<(Uuid, u64, String, Vec<f32>)>,
+    ) {
+        if self.implicit_edge_overlay.is_none() {
+            return;
+        }
+        for (id, index, hash, vector) in applied {
+            let small = self
+                .managed_vector_sidecars
+                .get(metadata)
+                .and_then(|entry| entry.cached_sidecar.as_ref())
+                .is_some_and(|sidecar| sidecar.entries.len() <= self.edge_inline_limit);
+            if small && self.edge_queue.is_empty() && self.edge_job.is_none() {
+                self.apply_implicit_edges_for(metadata, id, index, &hash, &vector);
+            } else {
+                self.edge_queue.push_back(EdgeWork {
+                    metadata: metadata.clone(),
+                    id,
+                    index,
+                    hash,
+                    vector: Arc::from(vector),
+                });
+            }
+        }
+        self.start_edge_job();
+    }
+
+    /// Start the background scan for the front of the queue, if none is
+    /// running.
+    ///
+    /// Under the caller's lock this only syncs the scan store with the sidecar
+    /// (copying the vectors appended since the last sync) and clones the sealed
+    /// chunk pointers; the `O(entries x dimension)` scan happens on the new
+    /// thread.
+    fn start_edge_job(&mut self) {
+        use crate::search::vector_scan::{scan_snapshot, ScanItem, ScanQuery, ScanSnapshot};
+        if self.edge_job.is_some() || self.edge_queue.is_empty() {
+            return;
+        }
+        let Some(threshold) = self
+            .implicit_edge_overlay
+            .as_ref()
+            .map(|overlay| overlay.threshold)
+        else {
+            self.edge_queue.clear();
+            return;
+        };
+        let mut items: Vec<EdgeWork> = Vec::new();
+        let mut plans: Vec<EdgePlan> = Vec::new();
+        let mut snapshots: HashMap<crate::search::EmbeddingMetadata, ScanSnapshot> = HashMap::new();
+        while items.len() < EDGE_SCAN_BATCH {
+            let Some(work) = self.edge_queue.pop_front() else {
+                break;
+            };
+            let Some(entry) = self.managed_vector_sidecars.get_mut(&work.metadata) else {
+                continue;
+            };
+            let ManagedSidecarEntry {
+                cached_sidecar,
+                scan_store,
+                ..
+            } = entry;
+            let Some(sidecar) = cached_sidecar.as_ref() else {
+                continue;
+            };
+            let store = scan_store.get_or_insert_with(|| {
+                crate::search::vector_scan::VectorScanStore::new(sidecar.metadata.dimension)
+            });
+            store.sync_with(sidecar);
+            let prefix_len = store.position_before(work.index);
+            if store.index_at(prefix_len) != Some(work.index) {
+                continue; // the sidecar no longer holds this thought
+            }
+            let snapshot = snapshots
+                .entry(work.metadata.clone())
+                .or_insert_with(|| store.snapshot());
+            plans.push(EdgePlan {
+                prefix_len,
+                sealed_len: snapshot.len(),
+                epoch: snapshot.epoch,
+            });
+            items.push(work);
+        }
+        if items.is_empty() {
+            return;
+        }
+        let slot = Arc::new(Mutex::new(None));
+        let work: Vec<(Arc<[f32]>, Uuid, usize, crate::search::EmbeddingMetadata)> = items
+            .iter()
+            .zip(&plans)
+            .map(|(item, plan)| {
+                (
+                    Arc::clone(&item.vector),
+                    item.id,
+                    plan.prefix_len,
+                    item.metadata.clone(),
+                )
+            })
+            .collect();
+        let guard = EdgeJobGuard {
+            slot: Arc::clone(&slot),
+        };
+        let hook = self.edge_scan_hook.clone();
+        let spawned = std::thread::Builder::new()
+            .name("mentisdb-edge-scan".to_string())
+            .spawn(move || {
+                if let Some(hook) = hook {
+                    hook();
+                }
+                let threads = std::thread::available_parallelism()
+                    .map_or(1, std::num::NonZeroUsize::get)
+                    .min(EDGE_SCAN_THREADS);
+                // One batch can mix embedding spaces; scan each against its own
+                // snapshot and put the results back in queue order.
+                let mut results: Vec<Vec<crate::search::ImplicitNeighbor>> =
+                    work.iter().map(|_| Vec::new()).collect();
+                for (metadata, snapshot) in &snapshots {
+                    let positions: Vec<usize> = (0..work.len())
+                        .filter(|&position| &work[position].3 == metadata)
+                        .collect();
+                    let scan_items: Vec<ScanItem<'_>> = positions
+                        .iter()
+                        .map(|&position| ScanItem {
+                            query: ScanQuery {
+                                id: work[position].1,
+                                vector: &work[position].0,
+                                threshold,
+                            },
+                            prefix_len: work[position].2,
+                        })
+                        .collect();
+                    for (position, found) in
+                        positions
+                            .iter()
+                            .zip(scan_snapshot(snapshot, &scan_items, threads))
+                    {
+                        results[*position] = found;
+                    }
+                }
+                *guard.slot.lock().unwrap_or_else(|error| error.into_inner()) = Some(Some(results));
+            });
+        match spawned {
+            Ok(_) => {
+                self.edge_job = Some(PendingEdgeJob {
+                    generation: self.edge_generation,
+                    items,
+                    plans,
+                    slot,
+                });
+            }
+            Err(error) => {
+                log_derived_failure("implicit edge scan", &error);
+                self.abandon_implicit_edges();
+            }
+        }
+    }
+
+    /// Give up on the queued edges and have the overlay rebuilt from the
+    /// sidecar, the always-correct repair.
+    fn abandon_implicit_edges(&mut self) {
+        self.edge_queue.clear();
+        self.edge_job = None;
+        self.edge_generation += 1;
+        self.implicit_edge_overlay = None;
+    }
+
+    /// Apply the background scan's result if it has finished, then start the
+    /// next one.
+    ///
+    /// Under the lock this finishes each vector's scan over the few vectors the
+    /// snapshot did not hold (fewer than one chunk) and records the edges.
+    fn adopt_finished_edge_job(&mut self) {
+        let Some(job) = self.edge_job.take() else {
+            return;
+        };
+        let finished = job
+            .slot
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        let Some(finished) = finished else {
+            self.edge_job = Some(job);
+            return;
+        };
+        if job.generation != self.edge_generation {
+            return; // the overlay was replaced; its rebuild covers these
+        }
+        let Some(candidates) = finished else {
+            log_derived_failure(
+                "implicit edge scan",
+                &io::Error::other("the scan thread failed"),
+            );
+            self.abandon_implicit_edges();
+            return;
+        };
+        let stale = job.plans.iter().zip(&job.items).any(|(plan, item)| {
+            self.managed_vector_sidecars
+                .get(&item.metadata)
+                .and_then(|entry| entry.scan_store.as_ref())
+                .is_none_or(|store| store.epoch() != plan.epoch)
+        });
+        if stale {
+            // A sidecar was rebuilt under the scan: its snapshot is of vectors
+            // that are gone. Scan these again against the current ones.
+            for item in job.items.into_iter().rev() {
+                self.edge_queue.push_front(item);
+            }
+            self.start_edge_job();
+            return;
+        }
+        for ((item, plan), mut found) in job.items.into_iter().zip(job.plans).zip(candidates) {
+            let (Some(overlay), Some(store)) = (
+                self.implicit_edge_overlay.as_mut(),
+                self.managed_vector_sidecars
+                    .get(&item.metadata)
+                    .and_then(|entry| entry.scan_store.as_ref()),
+            ) else {
+                continue;
+            };
+            store.scan_range(
+                plan.sealed_len.min(plan.prefix_len),
+                plan.prefix_len,
+                &crate::search::vector_scan::ScanQuery {
+                    id: item.id,
+                    vector: &item.vector,
+                    threshold: overlay.threshold,
+                },
+                &mut found,
+            );
+            overlay.apply_candidates(item.id, found);
+            overlay.set_coverage(item.index as usize + 1, &item.hash);
+            self.note_overlay_updated();
+        }
+        self.start_edge_job();
     }
 
     /// Add the implicit edges of one thought, comparing it only against the
@@ -11275,9 +11702,9 @@ impl MentisDb {
         hash: &str,
         vector: &[f32],
     ) {
-        let Some(persistence) = &self.persistence else {
+        if self.persistence.is_none() {
             return;
-        };
+        }
         let Some(entry) = self.managed_vector_sidecars.get(metadata) else {
             return;
         };
@@ -11285,11 +11712,6 @@ impl MentisDb {
         let Some(sidecar) = entry.cached_sidecar.as_ref() else {
             return;
         };
-        let overlay_path = chain_auto_edges_path(
-            &persistence.chain_dir,
-            &persistence.chain_key,
-            persistence.storage_kind,
-        );
         let Some(overlay) = self.implicit_edge_overlay.as_mut() else {
             return;
         };
@@ -11302,24 +11724,40 @@ impl MentisDb {
                 .filter(|other| other.thought_index < index),
         );
         overlay.set_coverage(index as usize + 1, hash);
+        self.note_overlay_updated();
+    }
 
-        // The overlay file is rebuildable derived state, so it is persisted
-        // every OVERLAY_PERSIST_INTERVAL appends (and on flush/drop) instead
-        // of cloning and rewriting the whole overlay on every append.
+    /// Count one overlay update and, every `OVERLAY_PERSIST_INTERVAL`, queue a
+    /// copy of the overlay for [`Self::flush_pending_derived`].
+    ///
+    /// The overlay file is rebuildable derived state, so it is persisted every
+    /// `OVERLAY_PERSIST_INTERVAL` appends (and on flush/drop) instead of
+    /// cloning and rewriting the whole overlay on every append.
+    fn note_overlay_updated(&mut self) {
         let unsaved = self
             .overlay_unsaved_appends
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
-        if unsaved >= OVERLAY_PERSIST_INTERVAL {
-            self.overlay_unsaved_appends
-                .store(0, std::sync::atomic::Ordering::Relaxed);
-            let snapshot = overlay.clone();
-            let mut pending = self
-                .pending_derived
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            pending.overlay = Some((overlay_path, snapshot));
+        if unsaved < OVERLAY_PERSIST_INTERVAL {
+            return;
         }
+        let (Some(overlay), Some(persistence)) = (&self.implicit_edge_overlay, &self.persistence)
+        else {
+            return;
+        };
+        self.overlay_unsaved_appends
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        let overlay_path = chain_auto_edges_path(
+            &persistence.chain_dir,
+            &persistence.chain_key,
+            persistence.storage_kind,
+        );
+        let snapshot = overlay.clone();
+        let mut pending = self
+            .pending_derived
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        pending.overlay = Some((overlay_path, snapshot));
     }
 
     /// Write the implicit-edge overlay now if appends have changed it since
@@ -11372,12 +11810,26 @@ impl MentisDb {
             persistence.storage_kind,
             &metadata,
         );
-        let Ok(loaded_sidecar) = crate::search::VectorSidecar::load_from_path(&sidecar_path) else {
-            eprintln!(
-                "[mentisdb] load_or_rebuild_implicit_edge_overlay: failed to load sidecar at {}",
-                sidecar_path.display()
-            );
-            return;
+        // Prefer the live sidecar: parsing and re-hashing the file here would
+        // hold the caller's lock for `O(entries x dimension)` (seconds for a
+        // large chain), and the live one is never older than the file.
+        let cached = self
+            .managed_vector_sidecars
+            .get_mut(&metadata)
+            .and_then(|entry| entry.cached_sidecar.take());
+        let was_cached = cached.is_some();
+        let loaded_sidecar = match cached {
+            Some(sidecar) => sidecar,
+            None => match crate::search::VectorSidecar::load_from_path(&sidecar_path) {
+                Ok(sidecar) => sidecar,
+                Err(_) => {
+                    eprintln!(
+                        "[mentisdb] load_or_rebuild_implicit_edge_overlay: failed to load sidecar at {}",
+                        sidecar_path.display()
+                    );
+                    return;
+                }
+            },
         };
 
         let overlay_path = chain_auto_edges_path(
@@ -11407,6 +11859,11 @@ impl MentisDb {
             .last()
             .map(|thought| thought.hash.clone())
             .unwrap_or_default();
+        // A new overlay covers everything the sidecar holds, so edges queued for
+        // the old one are moot and a scan still running for it is discarded.
+        self.edge_queue.clear();
+        self.edge_job = None;
+        self.edge_generation += 1;
         self.implicit_edge_overlay = match loaded {
             Some(overlay) => Some(overlay),
             None => {
@@ -11442,6 +11899,11 @@ impl MentisDb {
                 Some(overlay)
             }
         };
+        if was_cached {
+            if let Some(entry) = self.managed_vector_sidecars.get_mut(&metadata) {
+                entry.cached_sidecar = Some(loaded_sidecar);
+            }
+        }
     }
 
     /// Bring a persisted overlay up to the current chain head after a crash.
