@@ -305,7 +305,9 @@ impl VectorSidecar {
         let dimension = self.metadata.dimension;
         self.store = VectorStore::new(dimension);
         for entry in &mut self.entries {
-            if entry.vector.len() == dimension {
+            // Rows a producer already packed (a rebuild) stay where they are:
+            // copying them would hold the corpus twice.
+            if entry.vector.len() == dimension && !entry.vector.is_packed() {
                 entry.vector = self.store.adopt(&entry.vector);
             }
         }
@@ -314,7 +316,7 @@ impl VectorSidecar {
     /// Append `entry`, moving its vector into the store first.
     fn push_entry(&mut self, mut entry: VectorSidecarEntry) {
         let dimension = self.metadata.dimension;
-        if entry.vector.len() == dimension {
+        if entry.vector.len() == dimension && !entry.vector.is_packed() {
             if !self.store.has_dimension(dimension) {
                 self.store = VectorStore::new(dimension);
             }

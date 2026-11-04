@@ -159,6 +159,12 @@ impl VectorRow {
         self.chunk.row_lines(self.row as usize)
     }
 
+    /// Whether the row lives in a chunk of a [`VectorStore`] (many rows per
+    /// allocation) rather than in a one-row chunk of its own.
+    pub fn is_packed(&self) -> bool {
+        self.chunk.cells.len() > self.chunk.stride
+    }
+
     /// Whether both handles point at the same stored row.
     pub fn same_row(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.chunk, &other.chunk) && self.row == other.row
@@ -331,8 +337,8 @@ impl fmt::Debug for VectorStore {
 pub fn dot(left: &[Line], right: &[Line]) -> f32 {
     let mut lanes = [0.0_f32; LINE_FLOATS];
     for (left, right) in left.iter().zip(right) {
-        for lane in 0..LINE_FLOATS {
-            lanes[lane] += left.0[lane] * right.0[lane];
+        for ((lane, left), right) in lanes.iter_mut().zip(&left.0).zip(&right.0) {
+            *lane += left * right;
         }
     }
     let mut width = LINE_FLOATS;

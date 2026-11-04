@@ -50,8 +50,8 @@ UNRELEASED
     The daemon's first-run notice says the same.
   - BREAKING (public API; the next crate version must be 0.12.0, not 0.11.x). Every
     signature change, because `cargo-semver-checks` does not see field and parameter
-    type changes (it reports only the first two items below, and `UnwindSafe`
-    stays intact):
+    type changes (run against 0.11.0 it reports only the private field in the third item; `UnwindSafe`
+    is kept):
     * `VectorSidecarEntry::vector` is a `VectorRow` (a handle into a flat store that
       dereferences to `&[f32]`), not a `Vec<f32>`. Use `.to_vec()` where a `Vec` is
       needed, `VectorRow::standalone(&values)` to make one.
@@ -71,13 +71,27 @@ UNRELEASED
     perf(search): exact vector search runs over a flat, aligned store with a
     lane-parallel dot product (portable safe Rust that the compiler turns into NEON
     on aarch64 and SSE2 on x86_64; no nightly, no runtime probing; same bits on
-    every platform): @SEARCH_NUMBERS@
+    every platform): measured with
+    `benches/exact_search.rs`: `VectorIndex::search`, top 10, one thread, 384
+    dimensions, p50 per query, background priority, baseline-new-baseline. 100 000
+    vectors: 65.6 / 64.2 ms before, 14.2 ms after (15.5 to 71.7 queries per
+    second); 20 000 vectors: 11.5 / 12.3 ms before, 2.7 ms after (80 to 366
+    queries per second). Full LoCoMo and LongMemEval recall is identical on
+    all five protocol runs (LoCoMo R@10 76.7 / 76.9 %, R@5 67.9 %, LongMemEval R@5
+    70.2 / 69.8 %; the LoCoMo result file is byte-identical).
     perf(storage): every vector exists once in memory. The sidecar entries, the exact
     index, the HNSW graph (items and exact-vector cache) and the implicit-edge scanner
     hold handles to the same 128-row, 64-byte-aligned chunks instead of copies; a
     snapshot still clones only `entries / 128` chunk pointers. An HNSW graph loaded
     from disk keeps the graph's own copy (the `hnsw` crate owns its items); only its
-    cache is re-pointed. @MEMORY_NUMBERS@
+    cache is re-pointed. Exact live heap of the
+    whole `embed_commit_latency` process (counting allocator, `compaction`
+    scenario, 100 000 thoughts x 384, exact backend, background priority) against
+    the build before: 475.2 to 332.4 MiB after the fixture (-142.8 MiB, the exact
+    index's copy of the corpus) and 531.5 to 369.5 MiB after 12 700 appends
+    (-162.0 MiB). This stacks on the earlier entry's 239.2 to 56.3 MiB, which is
+    heap growth over the append phase (the scan store's copy). A rebuild now
+    packs rows as it embeds, so the corpus is not held loose and packed at once.
   - perf(storage): the implicit-edge queue holds positions, not vectors, so it
     cannot grow without bound in memory. A backlog costs a few bytes per run of
     consecutive appends; it never blocks an append and never drops an edge (the

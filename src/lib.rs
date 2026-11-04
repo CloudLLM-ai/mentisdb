@@ -5685,6 +5685,9 @@ where
         ));
     }
     let mut entries = Vec::with_capacity(rows.len());
+    // Rows go straight into packed chunks as they are embedded, so the corpus
+    // is never held twice (once loose, once packed).
+    let mut store = crate::search::flat_store::VectorStore::new(metadata.dimension);
     for chunk in rows.chunks(SIDECAR_REBUILD_BATCH) {
         let batch: Vec<crate::search::EmbeddingInput> =
             chunk.iter().map(|row| row.input.clone()).collect();
@@ -5694,7 +5697,7 @@ where
                 row.thought_id,
                 row.thought_index,
                 row.thought_hash.clone(),
-                document.vector,
+                store.push(&document.vector),
             )
         }));
     }
@@ -10511,6 +10514,7 @@ impl MentisDb {
             .collect();
         let documents = crate::search::embed_batch_to_documents(provider, &inputs)
             .map_err(VectorSearchError::Embedding)?;
+        let mut store = crate::search::flat_store::VectorStore::new(provider.metadata().dimension);
         let entries: Vec<crate::search::VectorSidecarEntry> = self
             .thoughts
             .iter()
@@ -10520,7 +10524,7 @@ impl MentisDb {
                     thought.id,
                     thought.index,
                     thought.hash.clone(),
-                    document.vector,
+                    store.push(&document.vector),
                 )
             })
             .collect();

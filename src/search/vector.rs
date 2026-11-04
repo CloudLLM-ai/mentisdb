@@ -431,6 +431,10 @@ impl VectorBackendKind {
 /// Returned by [`VectorIndex::with_backend_kind`]. Holds either the
 /// in-memory exact cosine [`VectorIndex`] or a boxed HNSW backend; both
 /// impl [`VectorSearchBackend`] so callers can dispatch through the trait.
+// Boxing the exact index would change a public variant's type (a breaking change
+// beyond the vector-store one) to save a few hundred bytes in a value that exists
+// once per managed sidecar.
+#[allow(clippy::large_enum_variant)]
 pub enum VectorBackend {
     /// Deterministic in-memory exact cosine over every stored vector.
     Exact(VectorIndex),
@@ -629,7 +633,7 @@ fn filter_hits(hits: Vec<VectorSearchHit>, filter: &VectorFilter) -> Vec<VectorS
 
 /// In-memory exact cosine index for vector documents.
 ///
-/// Vectors live in a flat, aligned [`VectorStore`](super::flat_store::VectorStore)
+/// Vectors live in a flat, aligned [`VectorStore`]
 /// and a query is scored with one lane-parallel dot product per stored vector
 /// (see [`super::flat_store`]), against a cached Euclidean norm. Documents added
 /// with [`VectorIndex::upsert_row`] are not copied at all: the index keeps a
