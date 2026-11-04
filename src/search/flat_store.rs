@@ -332,7 +332,9 @@ impl fmt::Debug for VectorStore {
 ///
 /// Sixteen independent lane accumulators, reduced pairwise in a fixed order.
 /// See the module docs for the precision contract ([`DOT_EPSILON`]).
-
+///
+/// Both rows must have the same number of lines (the same dimension); a
+/// mismatch would silently drop the longer row's tail, so debug builds assert it.
 ///
 /// # Examples
 ///
@@ -344,6 +346,7 @@ impl fmt::Debug for VectorStore {
 /// assert_eq!(dot(a.lines(), b.lines()), 32.0);
 /// ```
 pub fn dot(left: &[Line], right: &[Line]) -> f32 {
+    debug_assert_eq!(left.len(), right.len(), "rows of different dimension");
     let mut lanes = [0.0_f32; LINE_FLOATS];
     for (left, right) in left.iter().zip(right) {
         for ((lane, left), right) in lanes.iter_mut().zip(&left.0).zip(&right.0) {

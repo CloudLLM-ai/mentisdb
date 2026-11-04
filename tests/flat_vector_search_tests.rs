@@ -297,3 +297,14 @@ fn test_remove_and_readd_churn_does_not_grow_the_index() {
             .collect::<Vec<_>>()
     );
 }
+
+/// Regression: `dot` zips its operands, so rows of different dimension used to
+/// score silently on the shorter prefix. Debug builds now assert.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "rows of different dimension")]
+fn test_dot_rejects_rows_of_different_dimension() {
+    let short = VectorRow::standalone(&[1.0; 16]);
+    let long = VectorRow::standalone(&[1.0; 40]);
+    mentisdb::search::flat_store::dot(short.lines(), long.lines());
+}
