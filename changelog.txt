@@ -1,4 +1,13 @@
 UNRELEASED
+  - security(server): anonymous request bodies no longer share a pool with
+    authenticated traffic. Bodies from a caller with no valid token (bearer-token
+    access on) draw on a 16 MiB pool of their own (8 MiB per peer), so slow
+    anonymous peers can never push legitimate small requests into `503`; the small
+    pool is 64 MiB with a 32 MiB share per peer, so with bearer access off one peer
+    cannot take all of it either. The per-peer bookkeeping now holds only peers with
+    something charged and removes an entry as soon as its counters reach zero (it
+    grew without bound under IPv6 address rotation, and kept entries for refused
+    charges).
   - security(server): the in-flight body budget could starve normal traffic. Large
     imports and ordinary requests now draw on separate pools: only the three import
     routes (from a caller allowed the large cap) use the large pool, reserved from their

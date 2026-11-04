@@ -30,10 +30,13 @@
 //!   fit is refused at once with `503` and `Retry-After`.
 //! * **Small** (everything else, from a caller that is not anonymous): the *small
 //!   pool*, 64 MiB for all of them, charged only for the bytes that actually
-//!   arrive, never for a declared length. No per-peer limit: on a loopback bind
-//!   every local agent is the same peer.
-//! * **Anonymous** (bearer-token access on, no valid token): the same small
-//!   pool, but one peer may hold at most 8 MiB of it, charged as bytes arrive.
+//!   arrive, never for a declared length. One peer may hold at most half of it
+//!   (32 MiB): on a loopback bind every local agent is the same peer, so the share
+//!   is large, but with bearer-token access off (where every caller is alike) one
+//!   peer cannot take the whole pool.
+//! * **Anonymous** (bearer-token access on, no valid token): a pool of their own,
+//!   16 MiB for all of them, so they can never draw on what authenticated traffic
+//!   uses; one peer may hold at most 8 MiB of it, charged as bytes arrive.
 //!
 //! A reservation is returned as soon as the body has been read to its end (or
 //! the request ends, whichever is first); a handler that goes on to hold the
@@ -94,8 +97,17 @@ const UNIT: usize = 1024;
 /// Bytes of body all small and anonymous requests may hold at once: 64 MiB.
 pub const SMALL_POOL_BYTES: usize = 64 * 1024 * 1024;
 
-/// Bytes of the small pool one anonymous peer may hold: 8 MiB.
+/// Bytes of body all anonymous requests (bearer-token access on, no valid token)
+/// may hold at once: 16 MiB, a pool of their own so they can never draw on the
+/// small pool authenticated traffic uses.
+pub const ANONYMOUS_POOL_BYTES: usize = 16 * 1024 * 1024;
+
+/// Bytes of the anonymous pool one peer may hold: 8 MiB.
 pub const ANONYMOUS_PEER_BYTES: usize = 8 * 1024 * 1024;
+
+/// Bytes of the small pool one peer may hold: 32 MiB, so that with bearer-token
+/// access off (where every caller is alike) one peer cannot take the whole pool.
+pub const SMALL_PEER_BYTES: usize = 32 * 1024 * 1024;
 
 /// Large bodies one peer may have in flight at once.
 pub const LARGE_BODIES_PER_PEER: usize = 4;
@@ -121,6 +133,17 @@ struct PeerUse {
     large_units: usize,
     large_bodies: usize,
     anonymous_units: usize,
+    small_units: usize,
+}
+
+impl PeerUse {
+    /// Nothing is charged to this peer: its map entry can go.
+    fn is_idle(&self) -> bool {
+        self.large_units == 0
+            && self.large_bodies == 0
+            && self.anonymous_units == 0
+            && self.small_units == 0
+    }
 }
 
 /// The in-flight body budget shared by every request of one service.
@@ -128,6 +151,7 @@ struct PeerUse {
 pub(crate) struct BodyBudget {
     large: Arc<Semaphore>,
     small: Arc<Semaphore>,
+    anonymous: Arc<Semaphore>,
     per_peer_large_units: usize,
     peers: Mutex<HashMap<IpAddr, PeerUse>>,
 }
@@ -143,6 +167,7 @@ impl BodyBudget {
         Arc::new(Self {
             large: Arc::new(Semaphore::new(units(large_bytes))),
             small: Arc::new(Semaphore::new(units(SMALL_POOL_BYTES))),
+            anonymous: Arc::new(Semaphore::new(units(ANONYMOUS_POOL_BYTES))),
             per_peer_large_units: units(per_peer_bytes).min(units(large_bytes)),
             peers: Mutex::new(HashMap::new()),
         })
@@ -150,6 +175,22 @@ impl BodyBudget {
 
     /// Start an (empty) reservation for a request of `class` from `peer`; `None`
     /// when the peer already has [`LARGE_BODIES_PER_PEER`] large bodies in flight.
+    fn pool(&self, class: BodyClass) -> &Arc<Semaphore> {
+        match class {
+            BodyClass::Large => &self.large,
+            BodyClass::Small => &self.small,
+            BodyClass::Anonymous => &self.anonymous,
+        }
+    }
+
+    /// Drop `peer`'s map entry if nothing is charged to it, so the map holds
+    /// only peers with a body in flight (it cannot grow with address rotation).
+    fn prune(peers: &mut HashMap<IpAddr, PeerUse>, peer: IpAddr) {
+        if peers.get(&peer).is_some_and(PeerUse::is_idle) {
+            peers.remove(&peer);
+        }
+    }
+
     fn reservation(
         self: &Arc<Self>,
         class: BodyClass,
@@ -195,11 +236,7 @@ impl Reservation {
         if !self.charge_peer(extra) {
             return Err(());
         }
-        let pool = match self.class {
-            BodyClass::Large => &self.budget.large,
-            BodyClass::Small | BodyClass::Anonymous => &self.budget.small,
-        };
-        match pool.try_acquire_many(extra as u32) {
+        match self.budget.pool(self.class).try_acquire_many(extra as u32) {
             Ok(permit) => {
                 permit.forget();
                 self.held_units.store(want, Ordering::Release);
@@ -212,36 +249,37 @@ impl Reservation {
         }
     }
 
+    /// The peer's counter for this reservation's class and the limit on it.
+    fn peer_slot<'a>(&self, used: &'a mut PeerUse) -> (&'a mut usize, usize) {
+        match self.class {
+            BodyClass::Large => (&mut used.large_units, self.budget.per_peer_large_units),
+            BodyClass::Anonymous => (&mut used.anonymous_units, units(ANONYMOUS_PEER_BYTES)),
+            BodyClass::Small => (&mut used.small_units, units(SMALL_PEER_BYTES)),
+        }
+    }
+
     fn charge_peer(&self, extra: usize) -> bool {
         let Some(peer) = self.peer else { return true };
         let mut peers = self.budget.peers.lock().unwrap_or_else(|e| e.into_inner());
         let used = peers.entry(peer).or_default();
-        match self.class {
-            BodyClass::Large if used.large_units + extra > self.budget.per_peer_large_units => {
-                return false
-            }
-            BodyClass::Large => used.large_units += extra,
-            BodyClass::Anonymous if used.anonymous_units + extra > units(ANONYMOUS_PEER_BYTES) => {
-                return false
-            }
-            BodyClass::Anonymous => used.anonymous_units += extra,
-            BodyClass::Small => {}
+        let (slot, limit) = self.peer_slot(used);
+        let fits = *slot + extra <= limit;
+        if fits {
+            *slot += extra;
+        } else {
+            BodyBudget::prune(&mut peers, peer);
         }
-        true
+        fits
     }
 
     fn uncharge_peer(&self, units: usize) {
         let Some(peer) = self.peer else { return };
         let mut peers = self.budget.peers.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(used) = peers.get_mut(&peer) {
-            match self.class {
-                BodyClass::Large => used.large_units = used.large_units.saturating_sub(units),
-                BodyClass::Anonymous => {
-                    used.anonymous_units = used.anonymous_units.saturating_sub(units)
-                }
-                BodyClass::Small => {}
-            }
+            let (slot, _) = self.peer_slot(used);
+            *slot = slot.saturating_sub(units);
         }
+        BodyBudget::prune(&mut peers, peer);
     }
 
     /// Give back everything charged so far (idempotent). The concurrent-body
@@ -251,11 +289,7 @@ impl Reservation {
         if held == 0 {
             return;
         }
-        let pool = match self.class {
-            BodyClass::Large => &self.budget.large,
-            BodyClass::Small | BodyClass::Anonymous => &self.budget.small,
-        };
-        pool.add_permits(held);
+        self.budget.pool(self.class).add_permits(held);
         self.uncharge_peer(held);
     }
 }
@@ -267,10 +301,8 @@ impl Drop for Reservation {
             let mut peers = self.budget.peers.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(used) = peers.get_mut(&peer) {
                 used.large_bodies = used.large_bodies.saturating_sub(1);
-                if used.large_bodies == 0 && used.large_units == 0 && used.anonymous_units == 0 {
-                    peers.remove(&peer);
-                }
             }
+            BodyBudget::prune(&mut peers, peer);
         }
     }
 }
@@ -478,4 +510,119 @@ pub(crate) async fn body_admission_middleware(
     let response = next.run(Request::from_parts(parts, body)).await;
     drop(reservation);
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv6Addr;
+
+    const MIB: usize = 1024 * 1024;
+
+    fn peer(n: u32) -> IpAddr {
+        IpAddr::V6(Ipv6Addr::new(
+            0x2001,
+            0xdb8,
+            0,
+            0,
+            0,
+            0,
+            (n >> 16) as u16,
+            n as u16,
+        ))
+    }
+
+    fn budget() -> Arc<BodyBudget> {
+        BodyBudget::new(256 * MIB, 128 * MIB)
+    }
+
+    /// Anonymous bodies draw on a pool of their own: however many anonymous
+    /// peers fill it, the small pool authenticated traffic uses is untouched.
+    #[test]
+    fn anonymous_bodies_cannot_drain_the_small_pool() {
+        let budget = budget();
+        // Four anonymous peers want 8 MiB each: only the 16 MiB pool's worth fits.
+        let anonymous: Vec<_> = (0..4)
+            .map(|n| {
+                budget
+                    .reservation(BodyClass::Anonymous, Some(peer(n)))
+                    .unwrap()
+            })
+            .collect();
+        let admitted = anonymous
+            .iter()
+            .filter(|r| r.ensure(8 * MIB).is_ok())
+            .count();
+        assert_eq!(admitted, 2, "the anonymous pool is 16 MiB");
+        // The whole small pool is still there for a legitimate peer (up to its share).
+        let small = budget
+            .reservation(BodyClass::Small, Some(peer(100)))
+            .unwrap();
+        assert!(small.ensure(SMALL_PEER_BYTES).is_ok());
+        let other = budget
+            .reservation(BodyClass::Small, Some(peer(101)))
+            .unwrap();
+        assert!(other.ensure(SMALL_PEER_BYTES).is_ok());
+    }
+
+    /// One small-body peer cannot take the whole small pool (bearer access off:
+    /// every caller is alike), while other peers are unaffected.
+    #[test]
+    fn one_peer_cannot_take_the_whole_small_pool() {
+        let budget = budget();
+        let first = budget.reservation(BodyClass::Small, Some(peer(1))).unwrap();
+        assert!(first.ensure(SMALL_PEER_BYTES).is_ok());
+        assert!(first.ensure(SMALL_PEER_BYTES + MIB).is_err());
+        let second = budget.reservation(BodyClass::Small, Some(peer(1))).unwrap();
+        assert!(
+            second.ensure(MIB).is_err(),
+            "the share is per peer, not per request"
+        );
+        let elsewhere = budget.reservation(BodyClass::Small, Some(peer(2))).unwrap();
+        assert!(elsewhere.ensure(MIB).is_ok());
+    }
+
+    /// The per-peer map holds only peers with something charged: rotating through
+    /// many addresses, charging and releasing or being refused, leaves it empty.
+    #[test]
+    fn the_peer_map_does_not_grow_with_address_rotation() {
+        let budget = budget();
+        for n in 0..5_000u32 {
+            for class in [BodyClass::Small, BodyClass::Anonymous, BodyClass::Large] {
+                let reservation = budget.reservation(class, Some(peer(n))).unwrap();
+                let _ = reservation.ensure(MIB);
+                // A charge the peer's share refuses must not leave an entry either.
+                let _ = reservation.ensure(1024 * MIB);
+                if n % 2 == 0 {
+                    reservation.release();
+                }
+            }
+        }
+        assert!(
+            budget.peers.lock().unwrap().is_empty(),
+            "{} stale peer entries",
+            budget.peers.lock().unwrap().len()
+        );
+    }
+
+    /// While a body is in flight its peer has an entry; releasing it removes it.
+    #[test]
+    fn an_entry_exists_only_while_something_is_charged() {
+        let budget = budget();
+        let reservation = budget.reservation(BodyClass::Large, Some(peer(7))).unwrap();
+        assert_eq!(
+            budget.peers.lock().unwrap().len(),
+            1,
+            "concurrent-body count"
+        );
+        reservation.ensure(MIB).unwrap();
+        reservation.release();
+        assert_eq!(
+            budget.peers.lock().unwrap().len(),
+            1,
+            "the body is still open"
+        );
+        drop(reservation);
+        assert!(budget.peers.lock().unwrap().is_empty());
+    }
 }
