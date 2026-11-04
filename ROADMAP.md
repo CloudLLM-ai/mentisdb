@@ -8,7 +8,14 @@
   which is a wire-format change for every client (CLI, pymentisdb, other implementations), so it needs a
   versioned `v2` proof that clients opt into and servers accept alongside `v1`. Not in 0.12.0.
 
-## Shipped (0.8.2 -> 0.11.0.56)
+## Shipped (0.8.2 -> 0.12.0.57)
+
+### 0.12.0.57 - Shared vectors, derived-state backlog, large signed requests
+- **Shared vectors** — the implicit-edge scanner shares the sidecar's `Arc<[f32]>` vectors instead of copying them; heap growth over the append phase 46.4 -> 11.9 MiB at 20k and 239.2 -> 56.3 MiB at 100k. BREAKING (library): `VectorSidecarEntry::vector` is `Arc<[f32]>`; file format and digest unchanged.
+- **Bounded edge queue** — the scan queue holds positions, never blocks an append or drops an edge; sustains ~155 appends/s at 100k, ~720/s at 20k. Resolves both trade-offs documented in 0.11.0.56.
+- **`derived_backlog`** per chain in `GET /v1/chains` and the MCP chain listing (embeddings in flight, parked, missing; implicit-edge backlog).
+- **Large signed requests** — PLACEHOLDER: lifting the 1 MiB `X-Mentis-Auth`/bearer body cap (fill in at tag time).
+- **Benchmark harness** — `--rebuild-timeout` / `--request-timeout`, `PHASE FAILED` with exit 2.
 
 ### 0.11.0.56 - Valid-version retrieval, public and private chains, background migrations
 - **Security** — browser-driven access to REST/MCP with bearer tokens off (DNS rebinding, cross-site; one `Host` policy for dashboard, REST and MCP on `cloudllm_mcp` 0.4.0); chain-scoped tokens reaching other chains (alternative chain fields, blank federated keys, fail-open MCP tool list, branch ancestors); open agent-key registration, unverified thought signatures; dashboard PIN guessing via bearer path, security headers; `0600` token registry; bounded decode of forged length prefixes; capped traverse reservation. Upgrade recommended.
@@ -267,14 +274,14 @@ The next phase closes the remaining competitive gaps and ships what enterprise u
 
 **Go/No-Go Gate for Track B**: Library reaches ≥85% LoCoMo R@10, 3+ design partners committed, cookbook published, crates.io downloads >1k/mo.
 
-### Carried over from 0.11.0.56
+### Carried over from 0.11.0.56 (still open after 0.12.0.57)
 - **Faster open of governed chains** — persist the verified prefix so open-time verification is not O(n)
 - **Checkpoint re-issue** after a hash-changing migration (today the signed checkpoint is dropped)
 - **Thought schema 5** — hash `entity_type` and `source_episode` (schema 4 is a taken historical alias)
 - **General request rate limiting** (only the dashboard PIN is rate limited)
 - **Migration fixtures from real old releases**
 - **Compact context bundles** (bundles accept `compact` and ignore it)
-- **Remove `llm_rerank` and `ppr`** at the next breaking release
+- **Remove `llm_rerank` and `ppr`** at a breaking release (0.12.0 kept them)
 
 ### Developer Experience
 - **Browser extension** — read/write memories from any webpage
