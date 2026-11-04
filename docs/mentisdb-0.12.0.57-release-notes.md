@@ -50,8 +50,20 @@ Peak process RSS after the append phase at 100,000 × 384, measured with the sam
 went from about 1,120 MiB to 970 MiB. Lock hold is unchanged:
 the write-lock hold per append at 100,000 × 384 is 0.028 / 0.60 / 4.3 ms (p50 / p99 / max).
 
-The release verification run on the final 0.12 code also measured 143 MiB less heap at
-100,000 thoughts, and exact vector search 4.3x faster (65 ms to 14 ms over 100,000 vectors).
+### Flat vector store for exact search
+
+The exact vector index kept its own copy of every vector too. It now reads the sidecar's
+flat, aligned vector store and computes dot products lane-parallel, so that copy is gone
+and exact search is faster:
+
+- **Memory.** Live heap at 100,000 thoughts × 384 dimensions, with a managed sidecar and
+  the exact backend (`embed_commit_latency`, `compaction` scenario, counting allocator,
+  background priority): 475.2 → 332.4 MiB after loading the fixture (−142.8 MiB, one
+  100,000 × 1,536-byte vector copy), and 531.5 → 369.5 MiB after 12,700 appends (−162.0
+  MiB). This saving is in addition to the scan-store saving above.
+- **Speed.** Exact top-10 search, one thread, random 384-dimension vectors in 64 clusters,
+  300 queries (`benches/exact_search.rs`), p50 latency per query: 65 → 14 ms at 100,000
+  vectors (15.3–15.7 → 71.7 queries/s, 4.3x), and 11.5–12.3 → 2.7 ms at 20,000.
 
 The scan's sustainable rate is about 155 appends per second at 100,000 thoughts and about
 720 per second at 20,000 (4 threads, 384 dimensions, a shared machine). If appends outrun

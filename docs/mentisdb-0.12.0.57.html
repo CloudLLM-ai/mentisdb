@@ -107,8 +107,9 @@
     <p>
       Recall did not move: five LoCoMo and LongMemEval runs on the final code matched
       0.11.0.56 exactly (LoCoMo R@10 76.7, LongMemEval R@5 69.8), and the LoCoMo results
-      were byte-identical. The same verification measured 143 MiB less heap at 100,000
-      thoughts and exact vector search 4.3x faster (65 ms to 14 ms over 100,000 vectors).
+      were byte-identical. A flat vector store also removed the exact index's own copy of
+      every vector (143 MiB less live heap at 100,000 thoughts) and made exact top-10
+      search 4.3x faster (65 ms to 14 ms per query over 100,000 vectors).
     </p>
 
     <h3>Why 0.12</h3>

@@ -16,7 +16,8 @@
 - **`derived_backlog`** per chain in `GET /v1/chains` and the MCP chain listing (embeddings in flight, parked, missing; implicit-edge backlog).
 - **Large signed requests** — optional `X-Mentis-Content-Sha256` (the digest the read proof already signs) lets the daemon verify the proof before reading the body and hash it as it streams; without it, 1 MiB as before. The CLI and pymentisdb 0.10.1 send the header, so large `memory import` with a read key works; proof format unchanged.
 - **Body admission** — token checked from the headers before any body is read; ordinary routes and all MCP bodies capped at 2 MiB, only `/v1/import-markdown`, `/v1/skills/upload` and `/v1/extract-memories` take up to `MENTISDB_MAX_BODY_BYTES` (64 MiB) from an authenticated caller; separate import (`MENTISDB_MAX_INFLIGHT_BODY_BYTES`) and ordinary (64 MiB) budgets, per-peer shares with 8 MiB for anonymous callers; idle timeout (`MENTISDB_BODY_IDLE_TIMEOUT_SECS`) and total deadline give `408`, over budget `503` + `Retry-After`; read proofs never follow redirects (CLI, pymentisdb). BREAKING (library): `MentisDbServiceConfig` is `#[non_exhaustive]`.
-- **Verification** — recall identical to 0.11.0.56 on all five benchmark runs (LoCoMo JSON byte-identical); exact vector search 4.3x faster at 100k (65 -> 14 ms).
+- **Flat vector store** — the exact index reads the sidecar's flat aligned store with lane-parallel dot products instead of its own copy: live heap at 100k x 384 475.2 -> 332.4 MiB, exact top-10 p50 65 -> 14 ms (4.3x).
+- **Verification** — recall identical to 0.11.0.56 on all five benchmark runs (LoCoMo JSON byte-identical).
 - **`mentisdb --help`** says any agent works over MCP, REST or the CLI instead of listing supported agents.
 - **Benchmark harness** — `--rebuild-timeout` / `--request-timeout`, `PHASE FAILED` with exit 2.
 
