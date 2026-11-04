@@ -492,21 +492,34 @@ fn rendered_setup_plan_includes_status_and_action() {
     assert!(rendered.contains("codex mcp add mentisdb --url http://127.0.0.1:9471"));
 }
 
+/// `mentisdb --help` says any agent works and points at `mentisdb setup --help`;
+/// the agents `setup` can write a config for are listed there, as valid
+/// `setup <agent>` arguments.
 #[test]
-fn help_text_lists_all_supported_agents_and_commands() {
+fn help_text_says_any_agent_works_and_setup_help_lists_its_targets() {
+    use mentisdb::cli::run_with_io;
+    use std::io::Cursor;
+
     let help = mentisdb::cli::parse_args(["mentisdb", "--help"]);
     assert!(help.is_ok());
 
-    let text = {
-        use mentisdb::cli::run_with_io;
-        use std::io::Cursor;
+    let render = |args: &[&str]| {
         let mut input = Cursor::new(Vec::<u8>::new());
         let mut output = Vec::new();
         let mut errors = Vec::new();
-        let _ = run_with_io(["mentisdb", "--help"], &mut input, &mut output, &mut errors);
+        let _ = run_with_io(args.iter().copied(), &mut input, &mut output, &mut errors);
         String::from_utf8(output).unwrap()
     };
 
+    let overview = render(&["mentisdb", "--help"]);
+    assert!(overview.contains("MentisDB works with any agent that can reach it"));
+    assert!(overview.contains("mentisdb setup <agent|all>"));
+    assert!(overview.contains("mentisdb wizard"));
+    assert!(overview
+        .contains("--yes         Apply the rendered plan without the final confirmation prompt"));
+    assert!(!overview.contains("Supported agents"));
+
+    let setup = render(&["mentisdb", "setup", "--help"]);
     for agent in [
         "codex",
         "claude-code",
@@ -517,12 +530,11 @@ fn help_text_lists_all_supported_agents_and_commands() {
         "copilot",
         "vscode-copilot",
     ] {
-        assert!(text.contains(agent), "missing {agent} in help text");
+        assert!(
+            setup.contains(agent),
+            "missing {agent} in mentisdb setup --help"
+        );
     }
-    assert!(text.contains("mentisdb setup <agent|all>"));
-    assert!(text.contains("mentisdb wizard"));
-    assert!(text
-        .contains("--yes         Apply the rendered plan without the final confirmation prompt"));
 }
 
 #[test]
