@@ -10,13 +10,13 @@
 
 ## Shipped (0.8.2 -> 0.12.0.57)
 
-### 0.12.0.57 - Shared vectors, derived-state backlog, large signed requests
-- **Shared vectors** — the implicit-edge scanner shares the sidecar's `Arc<[f32]>` vectors instead of copying them; heap growth over the append phase 46.4 -> 11.9 MiB at 20k and 239.2 -> 56.3 MiB at 100k. BREAKING (library): `VectorSidecarEntry::vector` is `Arc<[f32]>`; file format and digest unchanged.
+### 0.12.0.57 - One copy of every vector, derived-state backlog, large signed requests
+- **One copy of every vector** — sidecar, exact index, HNSW graph and implicit-edge scanner share one flat, 64-byte-aligned store (84313b5, e7a1c46); heap growth over the append phase 46.4 -> 11.9 MiB at 20k and 239.2 -> 56.3 MiB at 100k (scanner copy, 5b6ccc7), live heap at 100k x 384 475.2 -> 332.4 MiB (exact-index copy). BREAKING (library): `VectorSidecarEntry::vector` is a `VectorRow`, `VectorSidecar` needs `VectorSidecar::build`; files, digests and HNSW graphs byte-identical.
 - **Bounded edge queue** — the scan queue holds positions, never blocks an append or drops an edge; sustains ~155 appends/s at 100k, ~720/s at 20k. Resolves both trade-offs documented in 0.11.0.56.
 - **`derived_backlog`** per chain in `GET /v1/chains` and the MCP chain listing (embeddings in flight, parked, missing; implicit-edge backlog).
 - **Large signed requests** — optional `X-Mentis-Content-Sha256` (the digest the read proof already signs) lets the daemon verify the proof before reading the body and hash it as it streams; without it, 1 MiB as before. The CLI and pymentisdb 0.10.1 send the header, so large `memory import` with a read key works; proof format unchanged.
 - **Body admission** — token checked from the headers before any body is read; ordinary routes and all MCP bodies capped at 2 MiB, only `/v1/import-markdown`, `/v1/skills/upload` and `/v1/extract-memories` take up to `MENTISDB_MAX_BODY_BYTES` (64 MiB) from an authenticated caller; separate import (`MENTISDB_MAX_INFLIGHT_BODY_BYTES`) and ordinary (64 MiB) budgets, per-peer shares with 8 MiB for anonymous callers; idle timeout (`MENTISDB_BODY_IDLE_TIMEOUT_SECS`) and total deadline give `408`, over budget `503` + `Retry-After`; read proofs never follow redirects (CLI, pymentisdb). BREAKING (library): `MentisDbServiceConfig` is `#[non_exhaustive]`.
-- **Flat vector store** — the exact index reads the sidecar's flat aligned store with lane-parallel dot products instead of its own copy: live heap at 100k x 384 475.2 -> 332.4 MiB, exact top-10 p50 65 -> 14 ms (4.3x).
+- **Faster exact search** — lane-parallel dot product over the flat store (NEON/SSE2 from portable Rust, same bits everywhere): exact top-10 p50 at 100k 65.6/64.2 -> 14.2 ms (4.3x), at 20k 11.5/12.3 -> 2.7 ms; scores within 1e-5 of the old cosine.
 - **Verification** — recall identical to 0.11.0.56 on all five benchmark runs (LoCoMo JSON byte-identical).
 - **`mentisdb --help`** says any agent works over MCP, REST or the CLI instead of listing supported agents.
 - **Benchmark harness** — `--rebuild-timeout` / `--request-timeout`, `PHASE FAILED` with exit 2.
