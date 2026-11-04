@@ -24,6 +24,7 @@
 //! between a snapshot and the live delta returns exactly the candidates (same
 //! order, bit-identical scores) a single scan over the sidecar would.
 
+use crate::search::flat_store::VectorRow;
 use crate::search::implicit_edges::ImplicitNeighbor;
 use crate::search::sidecar::{VectorSidecar, VectorSidecarEntry};
 use crate::search::vector::cosine_similarity;
@@ -43,7 +44,7 @@ static NEXT_EPOCH: AtomicU64 = AtomicU64::new(1);
 #[derive(Default)]
 pub(crate) struct ScanChunk {
     ids: Vec<Uuid>,
-    vectors: Vec<Arc<[f32]>>,
+    vectors: Vec<VectorRow>,
 }
 
 /// An immutable view of the sealed part of a [`VectorScanStore`].
@@ -147,22 +148,19 @@ impl VectorScanStore {
             self.sealed.push(Arc::new(std::mem::take(&mut self.tail)));
         }
         self.tail.ids.push(entry.thought_id);
-        self.tail.vectors.push(Arc::clone(&entry.vector));
+        self.tail.vectors.push(entry.vector.clone());
         self.indices.push(entry.thought_index);
         self.last_hash = Some(entry.thought_hash.clone());
     }
 
     /// Thought id and (shared) vector at `position`.
-    pub(crate) fn entry_at(&self, position: usize) -> Option<(Uuid, Arc<[f32]>)> {
+    pub(crate) fn entry_at(&self, position: usize) -> Option<(Uuid, VectorRow)> {
         let chunk = self
             .sealed
             .get(position / SCAN_CHUNK_ENTRIES)
             .map_or(&self.tail, |sealed| sealed.as_ref());
         let offset = position % SCAN_CHUNK_ENTRIES;
-        Some((
-            *chunk.ids.get(offset)?,
-            Arc::clone(chunk.vectors.get(offset)?),
-        ))
+        Some((*chunk.ids.get(offset)?, chunk.vectors.get(offset)?.clone()))
     }
 
     /// Snapshot of the sealed chunks: `O(entries / SCAN_CHUNK_ENTRIES)`
@@ -400,9 +398,9 @@ mod tests {
         assert_eq!(store.len(), 7);
     }
 
-    /// The store shares the sidecar's vector allocations: each is held by
-    /// exactly the sidecar and the store (reference count 2), and a snapshot
-    /// and a scan add none. A copy would show as a different pointer.
+    /// The store shares the sidecar's rows instead of copying them: every
+    /// stored vector is the same row of the same chunk, at the same address, as
+    /// the sidecar's, and a snapshot and a scan add no copy.
     #[test]
     fn test_store_shares_the_sidecar_vectors_instead_of_copying_them() {
         let sidecar = sidecar(2 * SCAN_CHUNK_ENTRIES + 9);
@@ -421,18 +419,10 @@ mod tests {
         for (position, entry) in sidecar.entries.iter().enumerate() {
             let (_, shared) = store.entry_at(position).expect("stored");
             assert!(
-                Arc::ptr_eq(&shared, &entry.vector),
+                shared.same_row(&entry.vector),
                 "position {position} was copied"
             );
-            // sidecar + store + the clone just taken
-            assert_eq!(Arc::strong_count(&entry.vector), 3);
+            assert_eq!(shared.lines().as_ptr(), entry.vector.lines().as_ptr());
         }
-        // Dropping the store releases its share.
-        drop(snapshot);
-        drop(store);
-        assert!(sidecar
-            .entries
-            .iter()
-            .all(|e| Arc::strong_count(&e.vector) == 1));
     }
 }

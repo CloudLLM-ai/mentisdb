@@ -1,5 +1,5 @@
 use crate::search::hnsw_backend::HnswBackend;
-use crate::search::vector::{cosine_similarity, VectorDocument, VectorQuery, VectorSearchBackend};
+use crate::search::vector::{cosine_similarity, VectorQuery, VectorSearchBackend};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io;
@@ -143,12 +143,12 @@ impl ImplicitEdgeOverlay {
         k: usize,
         threshold: f32,
     ) -> Result<Self, crate::search::VectorIndexError> {
-        let documents: Vec<VectorDocument> = sidecar
+        let rows: Vec<(String, crate::search::flat_store::VectorRow)> = sidecar
             .entries
             .iter()
-            .map(|entry| VectorDocument::new(entry.thought_id.to_string(), entry.vector.to_vec()))
+            .map(|entry| (entry.thought_id.to_string(), entry.vector.clone()))
             .collect();
-        let backend = HnswBackend::from_documents(sidecar.metadata.clone(), documents)?;
+        let backend = HnswBackend::from_rows(sidecar.metadata.clone(), rows)?;
         Ok(Self::build_from_backend(sidecar, &backend, k, threshold))
     }
 

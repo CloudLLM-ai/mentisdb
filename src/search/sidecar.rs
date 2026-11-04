@@ -41,6 +41,7 @@
 //! same sidecar. Older binaries ignore `wal_base_digest_hex`, fail to replay a
 //! WAL that continues from it, and rebuild the derived sidecar from the chain.
 
+use crate::search::flat_store::{VectorRow, VectorStore};
 use crate::search::EmbeddingMetadata;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -97,44 +98,25 @@ pub struct VectorSidecarEntry {
     pub thought_hash: String,
     /// Dense vector in the sidecar's embedding space.
     ///
-    /// Reference-counted so the implicit-edge scanner can read the same
-    /// allocation from another thread without a second copy of every vector
-    /// (about 150 MB at 100 000 x 384), and so cloning an entry or a whole
-    /// sidecar copies pointers, not floats. It serializes exactly as a
-    /// `Vec<f32>` does (a JSON array), so the on-disk format and the integrity
-    /// digest are unchanged.
-    #[serde(with = "arc_slice")]
-    pub vector: Arc<[f32]>,
-}
-
-/// `serde` adapter that stores an `Arc<[f32]>` as a plain sequence, byte for
-/// byte what `Vec<f32>` produced before the field became reference-counted.
-mod arc_slice {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::sync::Arc;
-
-    pub(super) fn serialize<S: Serializer>(
-        vector: &Arc<[f32]>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq(vector.iter())
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Arc<[f32]>, D::Error> {
-        Vec::<f32>::deserialize(deserializer).map(Arc::from)
-    }
+    /// A handle into the sidecar's flat [`VectorStore`], not a private
+    /// allocation: the exact index, the HNSW graph and the implicit-edge scanner
+    /// hold handles to the same rows, so every vector exists once in memory, and
+    /// cloning an entry or a whole sidecar copies pointers, not floats. It
+    /// dereferences to `&[f32]` and serializes as a plain JSON array of floats,
+    /// so the on-disk format and the integrity digest are unchanged.
+    pub vector: VectorRow,
 }
 
 impl VectorSidecarEntry {
-    /// Create one persisted vector row. `vector` may be a `Vec<f32>` (moved
-    /// into a shared allocation) or an `Arc<[f32]>` (shared as is).
+    /// Create one persisted vector row. `vector` may be a `Vec<f32>` or a
+    /// slice (copied into a one-row store of its own) or a [`VectorRow`]
+    /// (shared as is). A sidecar moves the vector into its own store when the
+    /// entry is added to it.
     pub fn new(
         thought_id: Uuid,
         thought_index: u64,
         thought_hash: impl Into<String>,
-        vector: impl Into<Arc<[f32]>>,
+        vector: impl Into<VectorRow>,
     ) -> Self {
         Self {
             thought_id,
@@ -246,6 +228,9 @@ pub struct VectorSidecar {
     /// `integrity.digest_hex`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wal_base_digest_hex: Option<String>,
+    /// Where the rows of `entries` live (see [`VectorStore`]). Never persisted.
+    #[serde(skip)]
+    store: VectorStore,
 }
 
 impl VectorSidecar {
@@ -268,7 +253,9 @@ impl VectorSidecar {
             integrity: VectorSidecarIntegrity::sha256(0, String::new()),
             entries,
             wal_base_digest_hex: None,
+            store: VectorStore::default(),
         };
+        sidecar.rehome();
         sidecar.validate_entries()?;
         sidecar.integrity = sidecar.compute_integrity()?;
         Ok(sidecar)
@@ -310,6 +297,32 @@ impl VectorSidecar {
         }
     }
 
+    /// Move every entry's vector into this sidecar's own flat store, one entry
+    /// at a time so the loose copies are freed as the store fills (peak memory
+    /// stays near one copy plus a chunk). Entries of the wrong dimension are
+    /// left alone for validation to reject.
+    fn rehome(&mut self) {
+        let dimension = self.metadata.dimension;
+        self.store = VectorStore::new(dimension);
+        for entry in &mut self.entries {
+            if entry.vector.len() == dimension {
+                entry.vector = self.store.adopt(&entry.vector);
+            }
+        }
+    }
+
+    /// Append `entry`, moving its vector into the store first.
+    fn push_entry(&mut self, mut entry: VectorSidecarEntry) {
+        let dimension = self.metadata.dimension;
+        if entry.vector.len() == dimension {
+            if !self.store.has_dimension(dimension) {
+                self.store = VectorStore::new(dimension);
+            }
+            entry.vector = self.store.adopt(&entry.vector);
+        }
+        self.entries.push(entry);
+    }
+
     /// Read and verify the JSON snapshot alone, leaving the WAL unreplayed.
     ///
     /// The returned sidecar's `integrity` is already the WAL chain head (see
@@ -323,6 +336,7 @@ impl VectorSidecar {
                 format!("Failed to deserialize vector sidecar: {error}"),
             )
         })?;
+        sidecar.rehome();
         sidecar.verify_integrity()?;
         if let Some(base) = sidecar.wal_base_digest_hex.take() {
             sidecar.integrity.digest_hex = base;
@@ -372,7 +386,7 @@ impl VectorSidecar {
             prev_digest_hex,
             digest_hex: digest_hex.clone(),
         };
-        self.entries.push(entry);
+        self.push_entry(entry);
         self.thought_count = thought_count;
         self.head_hash = head_hash;
         self.generated_at = Utc::now();
@@ -884,7 +898,7 @@ fn replay_sidecar_wal_bytes(sidecar: &mut VectorSidecar, bytes: &[u8]) -> io::Re
         // The digest chain proves the record follows the previous one, not that
         // it is well formed: it is a checksum, not an authenticator.
         check_wal_entry(sidecar, &entry)?;
-        sidecar.entries.push(entry);
+        sidecar.push_entry(entry);
         sidecar.thought_count = record.thought_count;
         sidecar.head_hash = record.head_hash;
         sidecar.integrity =

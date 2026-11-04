@@ -5328,7 +5328,7 @@ struct EdgeWork {
     id: Uuid,
     index: u64,
     hash: String,
-    vector: Arc<[f32]>,
+    vector: crate::search::flat_store::VectorRow,
 }
 
 /// How one queued vector relates to the snapshot its scan ran against.
@@ -7727,11 +7727,9 @@ impl MentisDb {
             };
             if let Some(cached) = entry.cached_index.as_mut() {
                 if let Some(last) = sidecar.entries.last() {
-                    let document = crate::search::VectorDocument::new(
-                        last.thought_id.to_string(),
-                        last.vector.to_vec(),
-                    );
-                    if let Err(error) = cached.upsert_document(document) {
+                    if let Err(error) =
+                        cached.upsert_row(last.thought_id.to_string(), last.vector.clone())
+                    {
                         eprintln!(
                             "[mentisdb] commit_embeddings: failed to upsert into cached backend: {error}"
                         );
@@ -10564,7 +10562,7 @@ impl MentisDb {
         };
         let graph_path = self.vector_hnsw_graph_path(provider.metadata()).ok();
         let build_result = {
-            let documents = sidecar_entries_to_documents(&sidecar.entries);
+            let documents = sidecar_entries_to_rows(&sidecar.entries);
             build_vector_backend_async(provider.metadata(), documents, graph_path.as_deref())
         };
         self.managed_vector_sidecars.insert(
@@ -10855,7 +10853,7 @@ impl MentisDb {
         let graph_path = self.vector_hnsw_graph_path(&metadata).ok();
         let build_result = build_vector_backend_async(
             &metadata,
-            sidecar_entries_to_documents(&sidecar.entries),
+            sidecar_entries_to_rows(&sidecar.entries),
             graph_path.as_deref(),
         );
         self.managed_vector_sidecars.insert(
@@ -10957,10 +10955,7 @@ impl MentisDb {
                     let built = backend.document_count();
                     let caught_up = sidecar.entries[built..].iter().all(|entry| {
                         backend
-                            .upsert_document(crate::search::VectorDocument::new(
-                                entry.thought_id.to_string(),
-                                entry.vector.to_vec(),
-                            ))
+                            .upsert_row(entry.thought_id.to_string(), entry.vector.clone())
                             .is_ok()
                     });
                     (caught_up && backend.document_count() == sidecar.entries.len())
@@ -10986,7 +10981,7 @@ impl MentisDb {
                     if crate::search::select_backend_kind(count)
                         == crate::search::VectorBackendKind::Hnsw
                     {
-                        let documents = sidecar_entries_to_documents(&sidecar.entries);
+                        let documents = sidecar_entries_to_rows(&sidecar.entries);
                         if let Ok(graph_path) = self.vector_hnsw_graph_path(&metadata) {
                             let result =
                                 load_or_build_hnsw_backend(&graph_path, &metadata, documents);
@@ -11016,7 +11011,7 @@ impl MentisDb {
         let build_result = loaded
             .as_ref()
             .map(|sidecar| {
-                let documents = sidecar_entries_to_documents(&sidecar.entries);
+                let documents = sidecar_entries_to_rows(&sidecar.entries);
                 build_vector_backend_async(provider.metadata(), documents, graph_path.as_deref())
             })
             .unwrap_or_else(|| VectorBackendBuildResult::ready(None));
@@ -11335,7 +11330,7 @@ impl MentisDb {
                 let sidecar = self
                     .rebuild_vector_sidecar(&provider)
                     .map_err(vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>)?;
-                let documents = sidecar_entries_to_documents(&sidecar.entries);
+                let documents = sidecar_entries_to_rows(&sidecar.entries);
                 let graph_path = self.vector_hnsw_graph_path(&metadata).ok();
                 let build_result =
                     build_vector_backend_async(&metadata, documents, graph_path.as_deref());
@@ -11357,7 +11352,7 @@ impl MentisDb {
                 let sidecar = self
                     .rebuild_vector_sidecar(&provider)
                     .map_err(|e| io::Error::other(format!("fastembed sidecar rebuild: {e}")))?;
-                let documents = sidecar_entries_to_documents(&sidecar.entries);
+                let documents = sidecar_entries_to_rows(&sidecar.entries);
                 let graph_path = self.vector_hnsw_graph_path(&metadata).ok();
                 let build_result =
                     build_vector_backend_async(&metadata, documents, graph_path.as_deref());
@@ -11445,16 +11440,11 @@ impl MentisDb {
             .into_iter()
             .map(|thought| thought.id)
             .collect();
-        let documents: Vec<crate::search::VectorDocument> = sidecar
+        let documents: SharedDocuments = sidecar
             .entries
             .iter()
             .filter(|entry| candidate_ids.contains(&entry.thought_id))
-            .map(|entry| {
-                crate::search::VectorDocument::new(
-                    entry.thought_id.to_string(),
-                    entry.vector.to_vec(),
-                )
-            })
+            .map(|entry| (entry.thought_id.to_string(), entry.vector.clone()))
             .collect();
         let total_candidates = documents.len();
         if documents.is_empty() {
@@ -11466,7 +11456,7 @@ impl MentisDb {
             });
         }
 
-        let index = crate::search::VectorIndex::from_documents(metadata.clone(), documents)
+        let index = crate::search::VectorIndex::from_rows(metadata.clone(), documents)
             .map_err(VectorSearchError::Index)?;
         let mut hits = index
             .search(&crate::search::VectorQuery::new(query_vector).with_limit(request.limit))
@@ -11723,12 +11713,17 @@ impl MentisDb {
             return;
         }
         let slot = Arc::new(Mutex::new(None));
-        let work: Vec<(Arc<[f32]>, Uuid, usize, crate::search::EmbeddingMetadata)> = items
+        let work: Vec<(
+            crate::search::flat_store::VectorRow,
+            Uuid,
+            usize,
+            crate::search::EmbeddingMetadata,
+        )> = items
             .iter()
             .zip(&plans)
             .map(|(item, plan)| {
                 (
-                    Arc::clone(&item.vector),
+                    item.vector.clone(),
                     item.id,
                     plan.prefix_len,
                     item.metadata.clone(),
@@ -12302,11 +12297,10 @@ impl MentisDb {
                         let entry = self.managed_vector_sidecars.get_mut(&metadata).unwrap();
                         if let Some(ref mut cached) = entry.cached_index {
                             if let Some(last_entry) = sidecar.entries.last() {
-                                let document = crate::search::VectorDocument::new(
+                                if let Err(e) = cached.upsert_row(
                                     last_entry.thought_id.to_string(),
-                                    last_entry.vector.to_vec(),
-                                );
-                                if let Err(e) = cached.upsert_document(document) {
+                                    last_entry.vector.clone(),
+                                ) {
                                     eprintln!(
                                         "[mentisdb] sync_managed_vector_sidecars_for_append: \
                                          failed to upsert into cached backend: {e}"
@@ -14259,21 +14253,21 @@ fn chain_vector_hnsw_graph_path(
     ))
 }
 
-fn sidecar_entries_to_documents(
-    entries: &[crate::search::VectorSidecarEntry],
-) -> Vec<crate::search::VectorDocument> {
+/// One `(document id, vector)` pair per sidecar entry, sharing the entry's
+/// row: building an index from these copies no vector.
+type SharedDocuments = Vec<(String, crate::search::flat_store::VectorRow)>;
+
+fn sidecar_entries_to_rows(entries: &[crate::search::VectorSidecarEntry]) -> SharedDocuments {
     entries
         .iter()
-        .map(|entry| {
-            crate::search::VectorDocument::new(entry.thought_id.to_string(), entry.vector.to_vec())
-        })
+        .map(|entry| (entry.thought_id.to_string(), entry.vector.clone()))
         .collect()
 }
 
 fn load_or_build_hnsw_backend(
     path: &Path,
     metadata: &crate::search::EmbeddingMetadata,
-    documents: Vec<crate::search::VectorDocument>,
+    documents: SharedDocuments,
 ) -> VectorBackendBuildResult {
     if path.exists() {
         // Trust the persisted graph only when it was built from exactly these
@@ -14281,14 +14275,13 @@ fn load_or_build_hnsw_backend(
         // content (or embedding model) differs.
         let expected = crate::search::hnsw_backend::documents_digest(
             metadata,
-            documents
-                .iter()
-                .map(|document| (document.document_id.as_str(), document.vector.as_slice())),
+            documents.iter().map(|(id, row)| (id.as_str(), &row[..])),
         );
-        if let Ok(backend) = crate::search::hnsw_backend::HnswBackend::load_from_path_matching(
+        if let Ok(mut backend) = crate::search::hnsw_backend::HnswBackend::load_from_path_matching(
             path, metadata, &expected,
         ) {
             if backend.document_count() == documents.len() {
+                backend.share_cached_rows(&documents);
                 return VectorBackendBuildResult::ready(Some(crate::search::VectorBackend::Hnsw(
                     Box::new(backend),
                 )));
@@ -14298,22 +14291,17 @@ fn load_or_build_hnsw_backend(
 
     // Keep an Exact placeholder available while the approximate graph is built
     // so ranked/vector queries can continue to return results.
-    let placeholder = crate::search::VectorIndex::with_backend_kind(
-        metadata.clone(),
-        documents.clone(),
-        crate::search::VectorBackendKind::Exact,
-    )
-    .ok();
+    let placeholder = crate::search::VectorIndex::from_rows(metadata.clone(), documents.clone())
+        .ok()
+        .map(crate::search::VectorBackend::Exact);
 
     if crate::search::hnsw_backend::hnsw_background_build_enabled() {
         let metadata_for_thread = metadata.clone();
         let path_for_thread = path.to_path_buf();
         let handle = std::thread::spawn(move || {
-            let backend = crate::search::hnsw_backend::HnswBackend::from_documents(
-                metadata_for_thread,
-                documents,
-            )
-            .ok()?;
+            let backend =
+                crate::search::hnsw_backend::HnswBackend::from_rows(metadata_for_thread, documents)
+                    .ok()?;
             if let Err(e) = backend.persist_to_path(&path_for_thread) {
                 eprintln!(
                     "[mentisdb] background HNSW build: failed to persist graph to {path_for_thread:?}: {e}"
@@ -14328,7 +14316,7 @@ fn load_or_build_hnsw_backend(
     }
 
     if let Ok(backend) =
-        crate::search::hnsw_backend::HnswBackend::from_documents(metadata.clone(), documents)
+        crate::search::hnsw_backend::HnswBackend::from_rows(metadata.clone(), documents)
     {
         if let Err(e) = backend.persist_to_path(path) {
             eprintln!("[mentisdb] HNSW build: failed to persist graph to {path:?}: {e}");
@@ -14367,7 +14355,7 @@ impl VectorBackendBuildResult {
 
 fn build_vector_backend_async(
     metadata: &crate::search::EmbeddingMetadata,
-    documents: Vec<crate::search::VectorDocument>,
+    documents: SharedDocuments,
     graph_path: Option<&Path>,
 ) -> VectorBackendBuildResult {
     let kind = crate::search::select_backend_kind(documents.len());
@@ -14377,12 +14365,9 @@ fn build_vector_backend_async(
         }
     }
     VectorBackendBuildResult::ready(
-        crate::search::VectorIndex::with_backend_kind(
-            metadata.clone(),
-            documents,
-            crate::search::VectorBackendKind::Exact,
-        )
-        .ok(),
+        crate::search::VectorIndex::from_rows(metadata.clone(), documents)
+            .ok()
+            .map(crate::search::VectorBackend::Exact),
     )
 }
 

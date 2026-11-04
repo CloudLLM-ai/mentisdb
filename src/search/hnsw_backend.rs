@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use space::{Metric, Neighbor};
 
+use super::flat_store::VectorRow;
 use super::vector::{
     EmbeddingMetadata, VectorDocument, VectorFilter, VectorIndexError, VectorQuery,
     VectorSearchBackend, VectorSearchHit,
@@ -104,10 +105,10 @@ const DISTANCE_SCALE: f32 = 1_000_000.0;
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 struct CosineDistance;
 
-impl Metric<Vec<f32>> for CosineDistance {
+impl Metric<VectorRow> for CosineDistance {
     type Unit = u32;
 
-    fn distance(&self, a: &Vec<f32>, b: &Vec<f32>) -> Self::Unit {
+    fn distance(&self, a: &VectorRow, b: &VectorRow) -> Self::Unit {
         let similarity = super::vector::cosine_similarity(a, b).unwrap_or(0.0);
         // Clamp to [0.0, 2.0] before scaling. On unit vectors the float math
         // can overshoot to 1.0 + epsilon or -1.0 - epsilon by a few ULPs, and
@@ -127,7 +128,7 @@ impl Metric<Vec<f32>> for CosineDistance {
 #[derive(Serialize, Deserialize)]
 pub struct HnswBackend {
     metadata: EmbeddingMetadata,
-    hnsw: Hnsw<CosineDistance, Vec<f32>, Pcg64, HNSW_M, HNSW_M0>,
+    hnsw: Hnsw<CosineDistance, VectorRow, Pcg64, HNSW_M, HNSW_M0>,
     /// HNSW item id (assigned at insert time) -> our `document_id`.
     id_to_doc: Vec<String>,
     /// Our `document_id` -> HNSW item id, for upsert / remove.
@@ -136,7 +137,7 @@ pub struct HnswBackend {
     /// Exact backend would. The HNSW graph itself does not store a
     /// user-visible "score" (only the integer distance); the hit's `score`
     /// field is therefore recomputed from the cached exact vector.
-    vectors: BTreeMap<String, Vec<f32>>,
+    vectors: BTreeMap<String, VectorRow>,
 }
 
 impl HnswBackend {
@@ -152,7 +153,7 @@ impl HnswBackend {
         // deterministic, and `Pcg64::default()` uses a fixed seed, so the
         // graph is reproducible across processes. That is important for
         // the sidecar integrity hash and for cache rebuilds.
-        let hnsw = Hnsw::<CosineDistance, Vec<f32>, Pcg64, HNSW_M, HNSW_M0>::new_params(
+        let hnsw = Hnsw::<CosineDistance, VectorRow, Pcg64, HNSW_M, HNSW_M0>::new_params(
             CosineDistance,
             params,
         );
@@ -162,6 +163,35 @@ impl HnswBackend {
             id_to_doc: Vec::new(),
             doc_to_id: std::collections::BTreeMap::new(),
             vectors: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Create an HNSW backend preloaded with vectors the caller already
+    /// stores. The graph and the exact-vector cache hold handles to those rows
+    /// instead of copies. A backend loaded from disk cannot do this: its rows
+    /// are decoded into storage of their own.
+    pub fn from_rows(
+        metadata: EmbeddingMetadata,
+        rows: Vec<(String, VectorRow)>,
+    ) -> Result<Self, VectorIndexError> {
+        let mut backend = Self::new(metadata);
+        for (document_id, row) in rows {
+            backend.upsert_row(document_id, row)?;
+        }
+        Ok(backend)
+    }
+
+    /// Point the exact-vector cache at rows the caller already stores, dropping
+    /// the cache's own copies. Used after loading a graph from disk: the graph's
+    /// own items cannot be re-pointed (the `hnsw` crate owns them), but the cache
+    /// can share.
+    pub fn share_cached_rows(&mut self, rows: &[(String, VectorRow)]) {
+        for (document_id, row) in rows {
+            if let Some(cached) = self.vectors.get_mut(document_id) {
+                if cached == row {
+                    *cached = row.clone();
+                }
+            }
         }
     }
 
@@ -188,14 +218,19 @@ impl VectorSearchBackend for HnswBackend {
     }
 
     fn upsert_document(&mut self, document: VectorDocument) -> Result<(), VectorIndexError> {
+        let row = VectorRow::standalone(&document.vector);
+        self.upsert_row(document.document_id, row)
+    }
+
+    fn upsert_row(&mut self, document_id: String, row: VectorRow) -> Result<(), VectorIndexError> {
         super::vector::validate_vector(
-            &document.vector,
+            &row,
             self.metadata.dimension,
-            Some(document.document_id.as_str()),
+            Some(document_id.as_str()),
             "document",
         )?;
 
-        if self.doc_to_id.contains_key(&document.document_id) {
+        if self.doc_to_id.contains_key(&document_id) {
             // The HNSW crate (0.11) is append-only: graph nodes cannot be
             // updated or removed. On an upsert we refresh the cached exact
             // vector so the score reported by search_inner stays correct.
@@ -203,14 +238,13 @@ impl VectorSearchBackend for HnswBackend {
             // which is a minor approximation; a full graph rebuild is needed
             // to pick up topology changes. This matches the Exact backend's
             // "replace by id" semantics for the score path.
-            self.vectors
-                .insert(document.document_id.clone(), document.vector);
+            self.vectors.insert(document_id, row);
         } else {
             let mut searcher = hnsw::Searcher::default();
-            let hnsw_id = self.hnsw.insert(document.vector.clone(), &mut searcher);
-            self.id_to_doc.push(document.document_id.clone());
-            self.doc_to_id.insert(document.document_id.clone(), hnsw_id);
-            self.vectors.insert(document.document_id, document.vector);
+            let hnsw_id = self.hnsw.insert(row.clone(), &mut searcher);
+            self.id_to_doc.push(document_id.clone());
+            self.doc_to_id.insert(document_id.clone(), hnsw_id);
+            self.vectors.insert(document_id, row);
         }
         Ok(())
     }
@@ -230,7 +264,7 @@ impl VectorSearchBackend for HnswBackend {
     }
 
     fn get_vector(&self, document_id: &str) -> Option<Vec<f32>> {
-        self.vectors.get(document_id).cloned()
+        self.vectors.get(document_id).map(|row| row.to_vec())
     }
 
     fn search(&self, query: &VectorQuery) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
@@ -324,9 +358,8 @@ impl HnswBackend {
             candidate_count
         ];
         let mut searcher = hnsw::Searcher::default();
-        let found = self
-            .hnsw
-            .nearest(&query.vector, ef, &mut searcher, &mut dest);
+        let query_row = VectorRow::standalone(&query.vector);
+        let found = self.hnsw.nearest(&query_row, ef, &mut searcher, &mut dest);
 
         let ids = found.iter().filter_map(|neighbor| {
             let index = neighbor.index;
@@ -515,7 +548,7 @@ impl HnswBackend {
             &self.metadata,
             self.vectors
                 .iter()
-                .map(|(id, vector)| (id.as_str(), vector.as_slice())),
+                .map(|(id, vector)| (id.as_str(), &vector[..])),
         )
     }
 
