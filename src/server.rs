@@ -1969,7 +1969,7 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         .route("/v1/skills/manifest", get(rest_skill_manifest_handler))
         .route(
             "/v1/skills/upload",
-            post(rest_upload_skill_handler).layer(large.clone()),
+            post(rest_upload_skill_handler).layer(large),
         )
         .route("/v1/skills/search", post(rest_search_skill_handler))
         .route("/v1/skills/read", post(rest_read_skill_handler))
@@ -1997,7 +1997,7 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         .route("/v1/memory-markdown", post(rest_memory_markdown_handler))
         .route(
             "/v1/import-markdown",
-            post(rest_import_markdown_handler).layer(large.clone()),
+            post(rest_import_markdown_handler).layer(large),
         )
         .route("/v1/thought", post(rest_get_thought_handler))
         .route("/v1/thoughts/genesis", post(rest_genesis_thought_handler))

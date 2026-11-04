@@ -18,9 +18,9 @@ use mentisdb::read_auth::{
     READ_AUTH_HEADER,
 };
 use mentisdb::server::{rest_router, MentisDbServiceConfig, MIN_MAX_BODY_BYTES};
-use mentisdb::server_body::SMALL_BODY_BYTES;
+
 use mentisdb::StorageAdapterKind;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -100,7 +100,6 @@ async fn a_non_import_route_rejects_a_3_mib_body_and_an_import_route_takes_it() 
         status(&router, declared).await,
         StatusCode::PAYLOAD_TOO_LARGE
     );
-    assert!(SMALL_BODY_BYTES == 2 * 1024 * 1024);
 }
 
 fn bearer_router(name: &str) -> (axum::Router, String) {

@@ -4,7 +4,7 @@
 //! Reading a request body costs memory and a connection slot. Without limits
 //! one unauthenticated peer can pin the largest body the daemon accepts, and
 //! many peers (or one peer with many connections) can multiply that. Every REST
-//! and MCP request therefore passes through [`body_admission_middleware`], the
+//! and MCP request therefore passes through `body_admission_middleware`, the
 //! outermost layer, before any authentication step reads its body:
 //!
 //! * **A per-route cap.** Ordinary routes accept at most
