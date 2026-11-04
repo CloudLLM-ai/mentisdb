@@ -78,8 +78,20 @@
 
     <h3>3. Large signed requests</h3>
     <p>
-      <strong>PLACEHOLDER &mdash; fill in before tagging:</strong> the 1 MiB limit on
-      <code>X-Mentis-Auth</code> and bearer-token REST bodies, and what replaces it.
+      0.11 could not import a large <code>MEMORY.md</code> into a private chain, because
+      signed requests were capped at 1 MiB: to check a read proof, the daemon had to read
+      the whole body first. A client can now send the body's SHA-256 (the same digest the
+      proof already signs) in <code>X-Mentis-Content-Sha256</code>. The daemon verifies
+      the proof first, then hashes the body as it streams, and a body that does not match
+      fails with <code>400</code> before anything acts on it. The <code>mentisdb</code>
+      CLI and <code>pymentisdb</code> 0.10.1 send the header automatically, so large
+      imports just work. Without the header nothing changes, and existing clients,
+      mentischat included, need no update.
+    </p>
+    <p>
+      The overall cap for every request is now <code>MENTISDB_MAX_BODY_BYTES</code>
+      (default 64 MiB), bearer-token requests included. If a reverse proxy sits in front
+      of MentisDB, raise its body limit to match.
     </p>
 
     <h3>Why 0.12</h3>
@@ -88,12 +100,14 @@
       <code>Arc&lt;[f32]&gt;</code>. Code that embeds MentisDB and reads that field as a
       <code>Vec</code> needs <code>.to_vec()</code>; the
       <a href="mentisdb-0.12.0.57-release-notes.md">release notes</a>
-      have a before-and-after snippet. The file format, the wire protocol and the CLI are
-      unchanged, and no migration runs.
+      have a before-and-after snippet. The file format and the proof format are unchanged,
+      and no migration runs. <code>mentisdb --help</code> also stopped listing "supported
+      agents": any agent works over MCP, REST or the CLI.
     </p>
     <pre><code>cargo install mentisdb --locked --force
 # or
-docker pull ghcr.io/cloudllm-ai/mentisdb:0.12.0.57</code></pre>
+docker pull ghcr.io/cloudllm-ai/mentisdb:0.12.0.57
+pip install -U 'pymentisdb[signing]'   # 0.10.1</code></pre>
   </article>
 </body>
 </html>

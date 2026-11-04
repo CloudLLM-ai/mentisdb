@@ -15,7 +15,10 @@ library type changed; the wire protocol and the on-disk format did not.
   56.3 MiB.
 - **`derived_backlog` in the chain listing** shows embeddings in flight, parked or missing
   and the implicit-edge backlog for each chain.
-- **Large signed requests** (see the placeholder section below).
+- **Large signed requests.** A read proof can declare its body digest in
+  `X-Mentis-Content-Sha256`, which lifts the 1 MiB limit. Large `mentisdb memory import`
+  with a read key works, and `MENTISDB_MAX_BODY_BYTES` (default 64 MiB) sets the
+  overall cap.
 - **BREAKING for library users:** `VectorSidecarEntry::vector` is now `Arc<[f32]>`.
 
 ## Shared vectors and a bounded edge queue
@@ -81,12 +84,36 @@ returns a `DerivedBacklog`.
 
 ## Large signed requests
 
-> **PLACEHOLDER — fill in before tagging.** rel56-fix-a's work is still in progress:
-> lifting the 1 MiB body limit for `X-Mentis-Auth` and bearer-token REST requests with an
-> opt-in streamed body digest, a configurable overall limit (environment variable),
-> wire compatibility with existing proofs, and large `mentisdb memory import` with a read
-> key. Replace this block with the final behaviour, the variable name and its default,
-> and an example.
+0.11.0.56 documented a limitation: requests signed with `X-Mentis-Auth`, and REST requests
+with a bearer token, were buffered up to 1 MiB, so a large `mentisdb memory import` with a
+read key got `413`. That limit is gone for clients that opt in, and the proof format did
+not change.
+
+- **Optional `X-Mentis-Content-Sha256`.** A read proof already signs the SHA-256 of the
+  body. A client that also sends that digest in `X-Mentis-Content-Sha256: <64 lowercase
+  hex>` lets the daemon verify the proof *before* reading the body and then hash the body
+  as it streams. The signed body goes through. Any other body fails at its end with `400`
+  before any handler has acted, so nothing is imported or changed, and memory use no
+  longer depends on the body's size.
+- **Without the header**, a read proof behaves exactly as before: the daemon reads up to
+  1 MiB to check the signature. Its `413` now says how to send more.
+- **`MENTISDB_MAX_BODY_BYTES`** (default 64 MiB, never below 1 MiB; library
+  `MentisDbServiceConfig::with_max_body_bytes`) is the overall cap for every REST and MCP
+  body. It also governs bearer-token requests, which still buffer the body up to the cap
+  because the token check reads `chain_key` from it. Over the cap: `413`.
+- **Clients.** The `mentisdb` CLI (`memory import` and every other command with a read
+  key) and pymentisdb 0.10.1 send the header with every proof, so large imports just work:
+
+  ```bash
+  mentisdb memory import MEMORY.md --chain vault \
+    --read-key-file builder.key --read-agent builder --read-key-id builder-1
+  ```
+
+- **Compatibility.** Existing proofs verify as before, so mentischat and older clients
+  need no change, and a daemon that predates the header ignores it. If you sign requests
+  yourself, add the header and hash exactly the bytes you send. Library:
+  `read_auth::{body_digest, parse_content_digest, verify_request_for_digest,
+  CONTENT_DIGEST_HEADER}`, plus a new `content_digest` fuzz target.
 
 ## Benchmark harness
 
@@ -108,8 +135,17 @@ cargo install mentisdb --locked --force
 ```
 
 Or download a release binary, or `docker pull ghcr.io/cloudllm-ai/mentisdb:0.12.0.57`.
-There is no data migration, and REST, MCP and the CLI are unchanged apart from the new
-`derived_backlog` field.
+Python clients: `pip install -U 'pymentisdb[signing]'` (0.10.1). There is no data
+migration.
+
+- **Reverse proxies** in front of MentisDB must allow request bodies up to
+  `MENTISDB_MAX_BODY_BYTES` (default 64 MiB; nginx's `client_max_body_size` defaults to
+  1 MiB). Otherwise large imports fail at the proxy. To keep the old ceiling, set
+  `MENTISDB_MAX_BODY_BYTES=1048576`.
+- **`derived_backlog`** is a new field in each `GET /v1/chains` chain summary.
+- **`mentisdb --help`** no longer lists "Supported agents": any agent works over MCP (HTTP
+  or stdio), REST or the CLI. The agents `mentisdb setup` can configure are listed in
+  `mentisdb setup --help`.
 
 ### Library users: `VectorSidecarEntry::vector` is `Arc<[f32]>`
 
