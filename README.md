@@ -1005,11 +1005,12 @@ REST and MCP errors map to HTTP statuses as follows:
 | `401` | Missing/invalid bearer token, or a token whose scope does not cover the operation |
 | `403` | Permission denied: missing or invalid signature on a signed skill upload, inactive agent, a write the chain's access policy refused, a `Host` outside the allowlist, or an operator-only route (`/v1/agents/keys`, `/v1/agents/keys/revoke`, `/v1/agents/disable`, `/v1/access/policy/set`) |
 | `404` | Unknown chain (see above) or another missing resource |
+| `408` | A request body stopped arriving for `MENTISDB_BODY_IDLE_TIMEOUT_SECS`, or a small or anonymous body missed its total deadline (twice that) |
 | `409` | Conflict, e.g. `POST /v1/chains/branch` into a chain key that already exists |
 | `413` | Request body over the route's limit: 2 MiB, or `MENTISDB_MAX_BODY_BYTES` (default 64 MiB) on the import routes for an authenticated caller; over 1 MiB for a read proof (`X-Mentis-Auth`) that does not also send `X-Mentis-Content-Sha256` (see [Large request bodies](#large-request-bodies)). The `mentisdb` CLI and `pymentisdb` send it, so a large `memory import` works |
 | `500` | Server fault; the body says only `"internal server error"` and details go to the daemon log |
 | `501` | `POST /v1/extract-memories` on a build without the `llm-extraction` feature |
-| `503` | The chain is being migrated or is quarantined; the body names the state, and a migrating chain adds `Retry-After` and `retry_after_secs` (see [Upgrading and chain migrations](#upgrading-and-chain-migrations)) |
+| `503` | The chain is being migrated or is quarantined; the body names the state, and a migrating chain adds `Retry-After` and `retry_after_secs` (see [Upgrading and chain migrations](#upgrading-and-chain-migrations)). Also, with `Retry-After`, when the in-flight body budget is exhausted (see [Large request bodies](#large-request-bodies)) |
 
 ### Large request bodies
 
