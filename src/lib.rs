@@ -7292,9 +7292,23 @@ impl MentisDb {
             ..DerivedBacklog::default()
         };
         for entry in self.managed_vector_sidecars.values() {
-            backlog.embeddings_in_flight += entry.in_flight.len();
+            // A ticket dropped without a commit (a cancelled request, a
+            // panicking provider) stays in `in_flight` until the next commit or
+            // append reclaims it, so an idle chain would report it in flight
+            // forever. It is lost work waiting to be redone: count it as missing.
+            let abandoned = entry
+                .ledger
+                .abandoned
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .iter()
+                .filter(|index| {
+                    entry.in_flight.contains(index) && !entry.parked.contains_key(index)
+                })
+                .count();
+            backlog.embeddings_in_flight += entry.in_flight.len() - abandoned;
             backlog.embeddings_parked += entry.parked.len();
-            backlog.embeddings_missing += entry.missing.len();
+            backlog.embeddings_missing += entry.missing.len() + abandoned;
         }
         backlog
     }

@@ -605,3 +605,25 @@ fn test_deferred_commit_updates_implicit_edge_overlay_like_sync_append() {
         sync_chain.implicit_edge_thought_coverage()
     );
 }
+
+/// Regression: `derived_backlog` read `in_flight` as is, so a ticket dropped by
+/// a cancelled request stayed "in flight" on an idle chain until the next
+/// commit or append reclaimed it. A dropped ticket is lost work waiting to be
+/// redone, and the operator's view must say so without waiting for traffic.
+#[test]
+fn test_dropped_ticket_is_missing_not_in_flight_on_an_idle_chain() {
+    let dir = tempdir().unwrap();
+    let (mut chain, _, _) = open_chain(dir.path(), "idle-drop");
+    chain.defer_next_embedding();
+    chain
+        .append_thought("a", ThoughtInput::new(ThoughtType::Finding, "dropped"))
+        .unwrap();
+    let held = chain.take_embed_tickets();
+    assert_eq!(chain.derived_backlog().embeddings_in_flight, 1);
+    drop(held);
+    // No commit, no append: the chain is idle.
+    let backlog = chain.derived_backlog();
+    assert_eq!(backlog.embeddings_in_flight, 0);
+    assert_eq!(backlog.embeddings_missing, 1);
+    assert_eq!(backlog.embeddings_parked, 0);
+}
