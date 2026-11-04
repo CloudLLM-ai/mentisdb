@@ -20,9 +20,14 @@
 //! snapshot; the caller scans those under the lock with
 //! [`VectorScanStore::scan_range`], which is the small "delta".
 //!
-//! Scores come from [`cosine_similarity`] on identical slices, so a scan split
-//! between a snapshot and the live delta returns exactly the candidates (same
-//! order, bit-identical scores) a single scan over the sidecar would.
+//! Scores come from the sequential [`cosine_similarity`] on identical slices, so a
+//! scan split between a snapshot and the live delta returns exactly the
+//! candidates (same order, bit-identical scores) a single scan over the sidecar
+//! would. Exact vector search scores with the lane-parallel
+//! [`dot`](crate::search::flat_store::dot) instead; the same pair of vectors can
+//! score differently on the two paths by up to
+//! [`DOT_EPSILON`](crate::search::flat_store::DOT_EPSILON) (1e-5), which only
+//! matters to a caller that compares a search score with the edge threshold.
 
 use crate::search::flat_store::VectorRow;
 use crate::search::implicit_edges::ImplicitNeighbor;

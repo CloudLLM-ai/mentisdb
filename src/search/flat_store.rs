@@ -19,6 +19,12 @@
 //! platform. It differs from a left-to-right sum by float reassociation only:
 //! see [`DOT_EPSILON`].
 //!
+//! Only exact search scores with [`dot`]. The HNSW distance and re-scoring and the
+//! implicit-edge scan keep the sequential
+//! [`cosine_similarity`](crate::search::cosine_similarity), whose bits define
+//! persisted graphs and the edge set, so a score for the same pair can differ
+//! between the two paths by up to [`DOT_EPSILON`].
+//!
 //! # Soundness of the append-in-place chunks
 //!
 //! A chunk is allocated whole and rows are written once, in order, by the single
