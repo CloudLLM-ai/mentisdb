@@ -47,7 +47,8 @@ async fn post(app: &axum::Router, token: &str, body: Body) -> StatusCode {
 #[tokio::test]
 async fn test_oversize_body_returns_413() {
     let (dir, config, token) = setup();
-    let app = rest_router(config);
+    // The cap is configurable (`MENTISDB_MAX_BODY_BYTES`); use its floor.
+    let app = rest_router(config.with_max_body_bytes(mentisdb::server::MIN_MAX_BODY_BYTES));
     let big = format!(
         r#"{{"chain_key":"main","pad":"{}"}}"#,
         "a".repeat(1024 * 1024 + 16)
