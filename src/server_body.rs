@@ -47,10 +47,13 @@
 //! A body that delivers nothing for `MENTISDB_BODY_IDLE_TIMEOUT_SECS` (default
 //! 30) fails. Because that timer restarts on every chunk, small and anonymous
 //! bodies also get a total deadline of twice the idle timeout, and every body,
-//! large ones included, must average at least [`MIN_BODY_BYTES_PER_SEC`] (64
-//! KiB/s) once its grace period (twice the idle timeout) is over: a client
-//! dripping one byte per chunk, each just inside the idle timeout, fails with
-//! `408` instead of holding a connection and its charge for as long as it likes.
+//! large ones included, must reach at least [`MIN_BODY_BYTES_PER_SEC`] (64 KiB/s)
+//! in every window of one idle timeout once its grace period (twice the idle
+//! timeout) is over. The rate is judged window by window, so credit cannot be
+//! banked: a client that sends nearly everything at once and then drips one byte
+//! per chunk, each just inside the idle timeout, fails with `408` at the end of
+//! the next window instead of holding a connection and its charge for as long as
+//! it likes.
 //! Failures are `408` (too slow) and `503` with `Retry-After` (budget),
 //! whether the failure surfaces in a bearer-token middleware or in a handler's own
 //! body extractor (bearer-token access off).
@@ -363,16 +366,39 @@ struct MeteredBody {
     /// Absolute deadline for the whole body (small and anonymous requests).
     total: Option<Pin<Box<tokio::time::Sleep>>>,
     started: tokio::time::Instant,
+    /// Start of the rate window in progress and the bytes that arrived in it.
+    window_start: Option<tokio::time::Instant>,
+    window_bytes: usize,
 }
 
 impl MeteredBody {
-    /// Whether the body, past its grace period, has fallen below
-    /// [`MIN_BODY_BYTES_PER_SEC`] on average since the grace period ended.
-    fn too_slow(&self) -> bool {
-        let grace = self.idle.saturating_mul(2);
-        let past = self.started.elapsed().saturating_sub(grace);
-        past > Duration::ZERO
-            && (self.received as f64) < past.as_secs_f64() * MIN_BODY_BYTES_PER_SEC as f64
+    /// Count `added` bytes that just arrived and report whether the body has
+    /// fallen below [`MIN_BODY_BYTES_PER_SEC`] over the window they belong to.
+    ///
+    /// The rate is measured over consecutive windows, each as long as the idle
+    /// timeout, starting when the grace period (twice the idle timeout) ends, and
+    /// a window is judged on its own bytes. Credit cannot be banked: a body that
+    /// sent most of its data at once and then trickles fails at the end of the
+    /// next window, not after the whole transfer has averaged out.
+    fn too_slow(&mut self, added: usize) -> bool {
+        let now = tokio::time::Instant::now();
+        let grace_end = self.started + self.idle.saturating_mul(2);
+        if now <= grace_end {
+            return false;
+        }
+        let start = *self.window_start.get_or_insert(grace_end);
+        self.window_bytes = self.window_bytes.saturating_add(added);
+        let elapsed = now.saturating_duration_since(start);
+        if elapsed < self.idle {
+            return false;
+        }
+        let required = elapsed.as_secs_f64() * MIN_BODY_BYTES_PER_SEC as f64;
+        if (self.window_bytes as f64) < required {
+            return true;
+        }
+        self.window_start = Some(now);
+        self.window_bytes = 0;
+        false
     }
 }
 
@@ -395,7 +421,8 @@ impl http_body::Body for MeteredBody {
                         ))));
                     }
                 }
-                if this.too_slow() {
+                let added = frame.data_ref().map_or(0, |data| data.len());
+                if this.too_slow(added) {
                     return Poll::Ready(Some(Err(Box::new(
                         this.reservation.record_stop(BodyStop::Idle),
                     ))));
@@ -554,6 +581,8 @@ pub(crate) async fn body_admission_middleware(
         deadline: Box::pin(tokio::time::sleep(idle)),
         total,
         started: tokio::time::Instant::now(),
+        window_start: None,
+        window_bytes: 0,
     };
     let body = Body::new(http_body_util::Limited::new(metered, cap));
     let response = next.run(Request::from_parts(parts, body)).await;
@@ -713,6 +742,8 @@ mod tests {
                 deadline: Box::pin(tokio::time::sleep(idle)),
                 total: None,
                 started: tokio::time::Instant::now(),
+                window_start: None,
+                window_bytes: 0,
             };
             metered
                 .collect()
@@ -728,6 +759,71 @@ mod tests {
         );
         // 8 KiB every 40 ms is 200 KiB/s: fine.
         assert_eq!(run(8 * 1024, 10).await.unwrap(), 80 * 1024);
+    }
+
+    /// Credit cannot be banked: a body that sends a large burst right away and
+    /// then trickles still fails in the first window after the grace period.
+    #[tokio::test]
+    async fn a_burst_followed_by_a_trickle_does_not_bank_credit() {
+        use http_body_util::BodyExt;
+
+        struct Burst {
+            sent: usize,
+            sleep: Pin<Box<tokio::time::Sleep>>,
+        }
+        impl http_body::Body for Burst {
+            type Data = axum::body::Bytes;
+            type Error = std::convert::Infallible;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+                if self.sent >= 400 {
+                    return Poll::Ready(None);
+                }
+                let first = self.sent == 0;
+                if !first && self.sleep.as_mut().poll(cx).is_pending() {
+                    return Poll::Pending;
+                }
+                let next = tokio::time::Instant::now() + Duration::from_millis(40);
+                self.sleep.as_mut().reset(next);
+                self.sent += 1;
+                // 8 MiB in the first frame, then one byte every 40 ms.
+                let size = if first { 8 * MIB } else { 1 };
+                let data = axum::body::Bytes::from(vec![b'x'; size]);
+                Poll::Ready(Some(Ok(http_body::Frame::data(data))))
+            }
+        }
+        let budget = budget();
+        let reservation = budget.reservation(BodyClass::Large, None).unwrap();
+        let idle = Duration::from_millis(100);
+        let metered = MeteredBody {
+            inner: Body::new(Burst {
+                sent: 0,
+                sleep: Box::pin(tokio::time::sleep(Duration::ZERO)),
+            }),
+            reservation,
+            received: 0,
+            idle,
+            deadline: Box::pin(tokio::time::sleep(idle)),
+            total: None,
+            started: tokio::time::Instant::now(),
+            window_start: None,
+            window_bytes: 0,
+        };
+        // 8 MiB already averages far above 64 KiB/s over the 16 s a whole-transfer
+        // average would allow; the window rule fails the trickle after ~300 ms.
+        let began = std::time::Instant::now();
+        let error = metered.collect().await.expect_err("the trickle must fail");
+        assert!(matches!(
+            error.downcast_ref::<BodyStop>(),
+            Some(BodyStop::Idle)
+        ));
+        assert!(
+            began.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            began.elapsed()
+        );
     }
 
     /// While a body is in flight its peer has an entry; releasing it removes it.

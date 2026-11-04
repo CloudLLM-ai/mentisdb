@@ -1,4 +1,10 @@
 UNRELEASED
+  - security(server): the minimum transfer rate could be pre-paid. It compared the
+    whole body's byte count with the time past the grace period, so a client that sent
+    63 MiB at once could then trickle for about 16 minutes while holding a 64 MiB
+    reservation. The rate is now judged per window (one idle timeout long, from the end
+    of the grace period), each window on its own bytes, so credit cannot be banked: the
+    trickle fails with `408` at the end of the first window.
   - fix(server): a request body cut off by the body limits (stalled, too slow, or
     over the in-flight budget) is `408` or `503` with `Retry-After` on every route,
     also with bearer-token access off. Handlers' own JSON extractors used to turn it
