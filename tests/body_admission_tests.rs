@@ -208,7 +208,7 @@ async fn a_slow_drip_body_times_out() {
     let outcome = tokio::time::timeout(Duration::from_secs(10), router.clone().oneshot(response))
         .await
         .expect("a stalled body must not hang the request");
-    assert_eq!(outcome.unwrap().status(), StatusCode::BAD_REQUEST);
+    assert_eq!(outcome.unwrap().status(), StatusCode::REQUEST_TIMEOUT);
 }
 
 /// The body bytes in flight are budgeted: while one 1 MiB upload is held open,
@@ -345,6 +345,25 @@ async fn stalled_and_over_budget_bodies_get_408_and_503_with_a_bearer_token() {
         (0..2).map(|_| Ok::<_, std::io::Error>(Bytes::from(vec![b'x'; 600 * 1024]))),
     );
     let big = request("/v1/import-markdown", Body::from_stream(chunks), &auth);
+    let response = router.clone().oneshot(big).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(response.headers().contains_key("retry-after"));
+}
+
+/// With bearer-token access off no middleware reads the body, so a handler's own
+/// extractor sees the failure: a body that exhausts the in-flight budget is still
+/// `503` with `Retry-After` (not the extractor's generic `400`).
+#[tokio::test]
+async fn over_budget_bodies_are_503_without_bearer_tokens_too() {
+    let router = rest_router(
+        config("nobearer503")
+            .with_max_body_bytes(MIN_MAX_BODY_BYTES)
+            .with_max_inflight_body_bytes(MIN_MAX_BODY_BYTES),
+    );
+    let chunks = tokio_stream::iter(
+        (0..2).map(|_| Ok::<_, std::io::Error>(Bytes::from(vec![b'x'; 600 * 1024]))),
+    );
+    let big = request("/v1/import-markdown", Body::from_stream(chunks), &[]);
     let response = router.clone().oneshot(big).await.unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(response.headers().contains_key("retry-after"));

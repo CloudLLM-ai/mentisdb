@@ -51,8 +51,9 @@
 //! KiB/s) once its grace period (twice the idle timeout) is over: a client
 //! dripping one byte per chunk, each just inside the idle timeout, fails with
 //! `408` instead of holding a connection and its charge for as long as it likes.
-//! Failures are `408` (too slow) and `503` with `Retry-After` (budget), also
-//! when the failure surfaces in the bearer-token middleware.
+//! Failures are `408` (too slow) and `503` with `Retry-After` (budget),
+//! whether the failure surfaces in a bearer-token middleware or in a handler's own
+//! body extractor (bearer-token access off).
 //!
 //! Who may use the large cap is decided from the request headers alone (a valid
 //! bearer token), never from the body. A read proof (`X-Mentis-Auth`) is checked
@@ -217,6 +218,7 @@ impl BodyBudget {
             class,
             peer,
             held_units: AtomicUsize::new(0),
+            stop: Mutex::new(None),
         }))
     }
 }
@@ -229,9 +231,22 @@ pub(crate) struct Reservation {
     class: BodyClass,
     peer: Option<IpAddr>,
     held_units: AtomicUsize,
+    /// Why this request's body was cut off, if it was. Lets the admission layer
+    /// turn the generic `400` an extractor makes of a failed body into `408` or
+    /// `503` when bearer-token access is off and no middleware read the body.
+    stop: Mutex<Option<BodyStop>>,
 }
 
 impl Reservation {
+    fn record_stop(&self, stop: BodyStop) -> BodyStop {
+        *self.stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop);
+        stop
+    }
+
+    fn take_stop(&self) -> Option<BodyStop> {
+        self.stop.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
     /// Make sure at least `bytes` are charged. `Err` when the pool or this
     /// peer's share cannot cover it; nothing more is charged then.
     fn ensure(&self, bytes: usize) -> Result<(), ()> {
@@ -316,7 +331,7 @@ impl Drop for Reservation {
 }
 
 /// Why a body stopped.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum BodyStop {
     /// No data for the idle timeout, or the total deadline passed.
     Idle,
@@ -375,11 +390,15 @@ impl http_body::Body for MeteredBody {
                 if let Some(data) = frame.data_ref() {
                     this.received = this.received.saturating_add(data.len());
                     if this.reservation.ensure(this.received).is_err() {
-                        return Poll::Ready(Some(Err(Box::new(BodyStop::Budget))));
+                        return Poll::Ready(Some(Err(Box::new(
+                            this.reservation.record_stop(BodyStop::Budget),
+                        ))));
                     }
                 }
                 if this.too_slow() {
-                    return Poll::Ready(Some(Err(Box::new(BodyStop::Idle))));
+                    return Poll::Ready(Some(Err(Box::new(
+                        this.reservation.record_stop(BodyStop::Idle),
+                    ))));
                 }
                 let next = tokio::time::Instant::now() + this.idle;
                 this.deadline.as_mut().reset(next);
@@ -397,7 +416,9 @@ impl http_body::Body for MeteredBody {
                     .as_mut()
                     .is_some_and(|total| total.as_mut().poll(cx).is_ready());
                 if total_over || this.deadline.as_mut().poll(cx).is_ready() {
-                    Poll::Ready(Some(Err(Box::new(BodyStop::Idle))))
+                    Poll::Ready(Some(Err(Box::new(
+                        this.reservation.record_stop(BodyStop::Idle),
+                    ))))
                 } else {
                     Poll::Pending
                 }
@@ -443,16 +464,20 @@ pub(crate) fn body_stop_response(error: &(dyn std::error::Error + 'static)) -> O
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
     while let Some(error) = current {
         if let Some(stop) = error.downcast_ref::<BodyStop>() {
-            return Some(match stop {
-                BodyStop::Idle => refuse(StatusCode::REQUEST_TIMEOUT, &stop.to_string(), false),
-                BodyStop::Budget => {
-                    refuse(StatusCode::SERVICE_UNAVAILABLE, &stop.to_string(), true)
-                }
-            });
+            return Some(stop_response(*stop));
         }
         current = error.source();
     }
     None
+}
+
+/// The response for a body that was cut off: `408` for a stall or a transfer
+/// that was too slow, `503` with `Retry-After` for an exhausted budget.
+fn stop_response(stop: BodyStop) -> Response {
+    match stop {
+        BodyStop::Idle => refuse(StatusCode::REQUEST_TIMEOUT, &stop.to_string(), false),
+        BodyStop::Budget => refuse(StatusCode::SERVICE_UNAVAILABLE, &stop.to_string(), true),
+    }
 }
 
 fn refuse(status: StatusCode, message: &str, retry_after: bool) -> Response {
@@ -532,8 +557,14 @@ pub(crate) async fn body_admission_middleware(
     };
     let body = Body::new(http_body_util::Limited::new(metered, cap));
     let response = next.run(Request::from_parts(parts, body)).await;
+    // A handler's extractor reports a failed body as a generic client error
+    // (`400`); when it was this layer that cut the body off, say so.
+    let stopped = reservation.take_stop();
     drop(reservation);
-    response
+    match stopped {
+        Some(stop) if response.status().is_client_error() => stop_response(stop),
+        _ => response,
+    }
 }
 
 #[cfg(test)]

@@ -1,4 +1,9 @@
 UNRELEASED
+  - fix(server): a request body cut off by the body limits (stalled, too slow, or
+    over the in-flight budget) is `408` or `503` with `Retry-After` on every route,
+    also with bearer-token access off. Handlers' own JSON extractors used to turn it
+    into a generic `400`; the admission layer now replaces a client-error response
+    with the real cause when it was the one that stopped the body.
   - security(server): a body could hold the large pool indefinitely by declaring
     64 MiB and sending a byte every 29 s: the idle timer restarts on every chunk and
     large bodies had no total deadline. Every body (large ones too) must now average

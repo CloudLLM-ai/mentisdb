@@ -985,8 +985,9 @@ refused (`401`, or `413` for a declared length over 2 MiB) without the daemon pu
 imports draw on their own budget (`MENTISDB_MAX_INFLIGHT_BODY_BYTES`, reserved from the declared length; beyond it
 `503` with `Retry-After`); every other request is charged only for the bytes that actually arrive, from a separate
 pool, so imports never starve appends and searches, and an anonymous peer may hold only 8 MiB of it. A body that
-stops arriving fails with `408` after `MENTISDB_BODY_IDLE_TIMEOUT_SECS`, and small or anonymous bodies also get a
-total deadline of twice that. MCP request bodies (including the `mentisdb_import_memory_markdown` tool) are always
+stops arriving fails with `408` after `MENTISDB_BODY_IDLE_TIMEOUT_SECS`, small or anonymous bodies also get a
+total deadline of twice that, and every body must average 64 KiB/s once its grace period (twice the idle timeout)
+is over. Anonymous bodies have a 16 MiB pool of their own. MCP request bodies (including the `mentisdb_import_memory_markdown` tool) are always
 limited to 2 MiB: send a large import to the REST route, or use the CLI. Two paths decide who is asking, and
 they treat a large body differently:
 
