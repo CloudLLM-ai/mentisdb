@@ -55,10 +55,6 @@ bench, run at background priority):
 | 20,000 thoughts | 2,700 | 46.4 MiB | 11.9 MiB |
 | 100,000 thoughts | 12,700 | 239.2 MiB | 56.3 MiB |
 
-Peak process RSS after the append phase at 100,000 × 384, measured with the same bench,
-went from about 1,120 MiB to 970 MiB. Lock hold is unchanged:
-the write-lock hold per append at 100,000 × 384 is 0.028 / 0.60 / 4.3 ms (p50 / p99 / max).
-
 Removing the exact index's copy saves memory on top of that. Exact live heap of the whole
 `embed_commit_latency` process (`compaction` scenario, counting allocator, 100,000 thoughts
 × 384, exact backend, background priority), compared with the build before:
@@ -67,6 +63,14 @@ Removing the exact index's copy saves memory on top of that. Exact live heap of 
 |---|---|---|---|
 | after loading the fixture | 475.2 MiB | 332.4 MiB | 142.8 MiB (the exact index's copy) |
 | after 12,700 appends | 531.5 MiB | 369.5 MiB | 162.0 MiB |
+
+Process RSS in the same bench at 100,000 × 384, at background priority, base build against
+the final 0.12 code: 716 → 519 MiB after the fixture, and 963 → 916 MiB after 12,700
+appends.
+
+The exact index also no longer grows under churn. A removed document's slot is reused, and
+once replaced or removed rows outnumber the live ones (beyond 256), the live rows are
+copied to a fresh store (7e7125f).
 
 ### Faster exact search
 
@@ -82,7 +86,9 @@ dimensions, p50 per query, background priority, baseline-new-baseline):
 | 20,000 | 11.5 / 12.3 ms | 2.7 ms | 80 → 366 |
 
 Scores equal the old sequential cosine within `1e-5` (float reassociation), so two
-documents whose scores differed by less than that may swap places. Recall on the full
+documents whose scores differed by less than that may swap places. The HNSW and
+implicit-edge paths still use the sequential cosine, so they can score the same pair up to
+`1e-5` apart from exact search (af19c9d). Recall on the full
 benchmarks is identical (see [Benchmarks](#benchmarks)).
 
 The scan's sustainable rate is about 155 appends per second at 100,000 thoughts and about
