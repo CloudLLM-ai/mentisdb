@@ -64,10 +64,10 @@ Removing the exact index's copy saves memory on top of that. Exact live heap of 
 | after loading the fixture | 475.2 MiB | 332.4 MiB | 142.8 MiB (the exact index's copy) |
 | after 12,700 appends | 531.5 MiB | 369.5 MiB | 162.0 MiB |
 
-Process RSS in the same bench at 100,000 × 384, at background priority, comparing the 0.12
-code before the flat vector store (7b68537, which already shares the scanner's vectors)
-with the final 0.12 code: 716 → 519 MiB after the fixture, and 963 → 916 MiB after 12,700
-appends.
+Process RSS is noisier than live heap. In the same bench after the fixture, the final 0.12
+code used 519 MiB, against 561–716 MiB across two runs of the 0.12 code before the flat
+vector store (7b68537, which already shares the scanner's vectors). The exact live-heap
+figures above are the reliable measure.
 
 The exact index also no longer grows under churn. A removed document's slot is reused, and
 once replaced or removed rows outnumber the live ones (beyond 256), the live rows are
