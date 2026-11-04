@@ -40,7 +40,7 @@
   </header>
 
   <article>
-    <h2><a href="mentisdb-0.12.0.57.html">MentisDB 0.12.0.57 &mdash; Shared vectors, derived-state backlog, large signed requests</a></h2>
+    <h2><a href="mentisdb-0.12.0.57.html">MentisDB 0.12.0.57 &mdash; One copy of every vector, derived-state backlog, large signed requests</a></h2>
     <div class="meta">November 3, 2026</div>
     <p>
       The implicit-edge scanner shares the sidecar's vectors instead of copying them (heap
@@ -48,7 +48,7 @@
       without bound; <code>GET /v1/chains</code> reports a per-chain
       <code>derived_backlog</code>; large signed imports work behind a new body-admission
       layer (token first, 2 MiB route cap, separate import budget). Library users:
-      <code>VectorSidecarEntry::vector</code> is now <code>Arc&lt;[f32]&gt;</code> and
+      <code>VectorSidecarEntry::vector</code> is now a <code>VectorRow</code> and
       <code>MentisDbServiceConfig</code> is <code>#[non_exhaustive]</code>.
     </p>
   </article>

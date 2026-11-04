@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MentisDB 0.12.0.57 — Shared vectors, derived-state backlog, large signed requests</title>
+  <title>MentisDB 0.12.0.57 — One copy of every vector, derived-state backlog, large signed requests</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -45,7 +45,7 @@
   </header>
 
   <article>
-    <h2>MentisDB 0.12.0.57 &mdash; Shared vectors, derived-state backlog, large signed requests</h2>
+    <h2>MentisDB 0.12.0.57 &mdash; One copy of every vector, derived-state backlog, large signed requests</h2>
     <div class="meta">November 3, 2026</div>
 
     <p>
@@ -107,20 +107,27 @@
     <p>
       Recall did not move: five LoCoMo and LongMemEval runs on the final code matched
       0.11.0.56 exactly (LoCoMo R@10 76.7, LongMemEval R@5 69.8), and the LoCoMo results
-      were byte-identical. A flat vector store also removed the exact index's own copy of
-      every vector (143 MiB less live heap at 100,000 thoughts) and made exact top-10
-      search 4.3x faster (65 ms to 14 ms per query over 100,000 vectors).
+      were byte-identical.
+    </p>
+    <p>
+      The same work went further than the scanner. The sidecar, the exact index, the HNSW
+      graph and the scanner now share one flat, aligned vector store, so every vector is in
+      memory once: the exact index's own copy is gone too (143 MiB less live heap at 100,000
+      thoughts). Exact search over that store uses a lane-parallel dot product that the
+      compiler turns into NEON or SSE2, with the same results on every platform, and top-10
+      search over 100,000 vectors went from about 65 ms to 14.2 ms, 4.3x faster.
     </p>
 
     <h3>Why 0.12</h3>
     <p>
-      Two library types changed. To share vectors, <code>VectorSidecarEntry::vector</code>
-      became <code>Arc&lt;[f32]&gt;</code>; code that reads it as a <code>Vec</code> needs
-      <code>.to_vec()</code>. <code>MentisDbServiceConfig</code> is now
+      Public library types changed. <code>VectorSidecarEntry::vector</code> is now a
+      <code>VectorRow</code>, a handle into the shared store that reads as a slice; code
+      that needs a <code>Vec</code> calls <code>.to_vec()</code>, and
+      <code>VectorSidecar</code> is built with <code>VectorSidecar::build</code>. <code>MentisDbServiceConfig</code> is now
       <code>#[non_exhaustive]</code>, so build it with <code>new()</code> and the
       <code>with_*</code> methods instead of a struct literal. The
       <a href="mentisdb-0.12.0.57-release-notes.md">release notes</a>
-      have before-and-after snippets for both. The file format and the proof format are unchanged,
+      list every signature change and have before-and-after snippets. The file format and the proof format are unchanged,
       and no migration runs. <code>mentisdb --help</code> also stopped listing "supported
       agents": any agent works over MCP, REST or the CLI.
     </p>
