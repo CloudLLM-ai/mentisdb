@@ -1,19 +1,22 @@
-# MentisDB 0.12.0.57 (Shared vectors, derived-state backlog, large signed requests)
+# MentisDB 0.12.0.57 (One copy of every vector, derived-state backlog, large signed requests)
 
 **Date:** November 3, 2026
 
-A focused follow-up to 0.11.0.56. It removes the two memory trade-offs that release
-documented for large chains, shows operators how far derived state is behind, and
-lifts the 1 MiB limit on signed requests behind a body-admission layer that checks the
-caller before reading a byte. The minor version changes because two public library types
-changed; the proof format and the on-disk format did not.
+A focused follow-up to 0.11.0.56. It keeps every vector in memory exactly once and makes
+exact search 4.3x faster, removes the two memory trade-offs 0.11.0.56 documented for large
+chains, shows operators how far derived state is behind, and lifts the 1 MiB limit on
+signed requests behind a body-admission layer that checks the caller before reading a
+byte. The minor version changes because public library types changed (see
+[Upgrading](#upgrading)); the proof format and the on-disk files did not.
 
 ## Highlights
 
-- **No second copy of every vector.** The background implicit-edge scanner now shares the
-  sidecar's vectors instead of copying them, and its queue holds positions instead of
-  vectors. At 100,000 thoughts, heap growth while appending fell from 239.2 MiB to
-  56.3 MiB.
+- **One copy of every vector.** The sidecar, the exact index, the HNSW graph and the
+  implicit-edge scanner now share one flat, aligned vector store instead of keeping their
+  own copies, and the scanner's queue holds positions instead of vectors. At 100,000
+  thoughts this removes about 150 MB per former copy.
+- **Exact search 4.3x faster.** Exact top-10 search over 100,000 vectors takes 14.2 ms
+  instead of about 65 ms, with recall unchanged on every benchmark run.
 - **`derived_backlog` in the chain listing** shows embeddings in flight, parked or missing
   and the implicit-edge backlog for each chain.
 - **Large imports, admitted safely.** A read proof can declare its body digest in
@@ -22,23 +25,29 @@ changed; the proof format and the on-disk format did not.
   take at most 2 MiB, and only the three import routes take up to `MENTISDB_MAX_BODY_BYTES`
   (64 MiB), and only from an authenticated caller. Imports and ordinary requests draw on
   separate budgets.
-- **BREAKING for library users:** `VectorSidecarEntry::vector` is now `Arc<[f32]>`, and
-  `MentisDbServiceConfig` is `#[non_exhaustive]`.
+- **BREAKING for library users:** `VectorSidecarEntry::vector` is now a `VectorRow`,
+  `VectorSidecar` and `MentisDbServiceConfig` can no longer be built with struct literals,
+  and exact-search scores may differ from 0.11 by up to `1e-5`.
 
-## Shared vectors and a bounded edge queue
+## One copy of every vector
 
 0.11.0.56 moved the implicit-edge neighbour scan off the chain's write lock on chains above
 4,096 entries, with two documented trade-offs: the scanner kept its own copy of every
-vector (about 150 MB at 100,000 × 384 dimensions), and its queue had no cap. Both are gone.
+vector (about 150 MB at 100,000 × 384 dimensions), and its queue had no cap. Both are gone,
+and so is the exact index's separate copy.
 
-- `VectorSidecarEntry::vector` is reference-counted (`Arc<[f32]>`). The scanner holds
-  pointers to the sidecar's vectors, about 40 bytes per vector instead of 1,536 at 384
-  dimensions. Cloning an entry or a whole sidecar now copies pointers, not floats.
-- The edge queue stores runs of positions and reads the vectors when a scan starts, so a
-  backlog costs a few bytes however long it grows. It still never blocks an append and
-  never drops an edge.
+- **A flat, aligned store** (84313b5, e7a1c46). Vectors live in 128-row, 64-byte-aligned
+  chunks. The sidecar entries, the exact index, the HNSW graph (its items and exact-vector
+  cache) and the implicit-edge scanner all hold handles (`VectorRow`) into the same chunks.
+  Cloning an entry or a whole sidecar copies pointers, not floats, and a snapshot clones
+  only `entries / 128` chunk pointers. An HNSW graph loaded from disk keeps the graph's own
+  copy (the `hnsw` crate owns its items); only its cache is re-pointed. A rebuild packs rows
+  as it embeds, so the corpus is never held twice during a rebuild.
+- **A bounded edge queue** (5b6ccc7). The edge queue stores runs of positions and reads the
+  vectors when a scan starts, so a backlog costs a few bytes however long it grows. It
+  still never blocks an append and never drops an edge.
 
-Heap growth over the append phase (counting allocator in the `embed_commit_latency`
+Heap growth over the append phase from removing the scanner's copy (counting allocator in the `embed_commit_latency`
 bench, run at background priority):
 
 | Chain size | Appends | 0.11.0.56 | 0.12.0.57 |
@@ -50,20 +59,31 @@ Peak process RSS after the append phase at 100,000 × 384, measured with the sam
 went from about 1,120 MiB to 970 MiB. Lock hold is unchanged:
 the write-lock hold per append at 100,000 × 384 is 0.028 / 0.60 / 4.3 ms (p50 / p99 / max).
 
-### Flat vector store for exact search
+Removing the exact index's copy saves memory on top of that. Exact live heap of the whole
+`embed_commit_latency` process (`compaction` scenario, counting allocator, 100,000 thoughts
+× 384, exact backend, background priority), compared with the build before:
 
-The exact vector index kept its own copy of every vector too. It now reads the sidecar's
-flat, aligned vector store and computes dot products lane-parallel, so that copy is gone
-and exact search is faster:
+| Point | Before | After | Saved |
+|---|---|---|---|
+| after loading the fixture | 475.2 MiB | 332.4 MiB | 142.8 MiB (the exact index's copy) |
+| after 12,700 appends | 531.5 MiB | 369.5 MiB | 162.0 MiB |
 
-- **Memory.** Live heap at 100,000 thoughts × 384 dimensions, with a managed sidecar and
-  the exact backend (`embed_commit_latency`, `compaction` scenario, counting allocator,
-  background priority): 475.2 → 332.4 MiB after loading the fixture (−142.8 MiB, one
-  100,000 × 1,536-byte vector copy), and 531.5 → 369.5 MiB after 12,700 appends (−162.0
-  MiB). This saving is in addition to the scan-store saving above.
-- **Speed.** Exact top-10 search, one thread, random 384-dimension vectors in 64 clusters,
-  300 queries (`benches/exact_search.rs`), p50 latency per query: 65 → 14 ms at 100,000
-  vectors (15.3–15.7 → 71.7 queries/s, 4.3x), and 11.5–12.3 → 2.7 ms at 20,000.
+### Faster exact search
+
+Exact search runs over the flat store with a lane-parallel dot product (84313b5). It is
+portable safe Rust that the compiler turns into NEON on aarch64 and SSE2 on x86_64, with no
+nightly features and no runtime CPU probing, and it gives the same bits on every platform.
+Measured with `benches/exact_search.rs` (`VectorIndex::search`, top 10, one thread, 384
+dimensions, p50 per query, background priority, baseline-new-baseline):
+
+| Vectors | Before | After | Queries/s |
+|---|---|---|---|
+| 100,000 | 65.6 / 64.2 ms | 14.2 ms | 15.5 → 71.7 |
+| 20,000 | 11.5 / 12.3 ms | 2.7 ms | 80 → 366 |
+
+Scores equal the old sequential cosine within `1e-5` (float reassociation), so two
+documents whose scores differed by less than that may swap places. Recall on the full
+benchmarks is identical (see [Benchmarks](#benchmarks)).
 
 The scan's sustainable rate is about 155 appends per second at 100,000 thoughts and about
 720 per second at 20,000 (4 threads, 384 dimensions, a shared machine). If appends outrun
@@ -71,8 +91,8 @@ it, nothing is blocked or lost: edges for the newest thoughts appear late, and t
 drains when appends slow down (12,475 queued at 100,000 thoughts drained in 80 s). The new
 `derived_backlog` shows when that happens.
 
-The sidecar file format and its integrity digest are unchanged: the field serializes
-exactly as the `Vec<f32>` did.
+Sidecar files, their integrity digest and persisted HNSW graphs are byte-identical and load
+unchanged: a `VectorRow` serializes exactly as the `Vec<f32>` did.
 
 ## `derived_backlog` in the chain listing
 
@@ -212,11 +232,24 @@ migration.
   or stdio), REST or the CLI. The agents `mentisdb setup` can configure are listed in
   `mentisdb setup --help`.
 
-### Library users: `VectorSidecarEntry::vector` is `Arc<[f32]>`
+### Library users: the vector store types
 
-If your code reads or builds `mentisdb::search::VectorSidecarEntry::vector` directly, it
-may need a small change. Reading it as a slice works as before. Where you need a `Vec<f32>`,
-call `.to_vec()`. `VectorSidecarEntry::new` accepts a `Vec<f32>` or an `Arc<[f32]>`.
+`cargo-semver-checks` does not see field and parameter type changes, so here is every
+signature change:
+
+- `mentisdb::search::VectorSidecarEntry::vector` is a `VectorRow`
+  (`mentisdb::search::flat_store::VectorRow`), a handle into the flat store that
+  dereferences to `&[f32]`, instead of a `Vec<f32>`. Reading it as a slice works as before.
+  Call `.to_vec()` where you need a `Vec<f32>`, and `VectorRow::standalone(&values)` to make
+  one.
+- `VectorSidecarEntry::new` takes `impl Into<VectorRow>` for the vector. `Vec<f32>` and
+  `&[f32]` still convert, but an argument whose type is only inferred (for example a bare
+  `.collect()`) no longer compiles, so annotate it.
+- `VectorSidecar` has a new private field, so it can no longer be built with a struct
+  literal. Use `VectorSidecar::build`.
+- New public API: `search::flat_store` (`VectorStore`, `VectorRow`, `dot`, `DOT_EPSILON`),
+  `VectorIndex::{from_rows, upsert_row}`, `VectorSearchBackend::upsert_row` (provided, so
+  implementors keep compiling) and `HnswBackend::{from_rows, share_cached_rows}`.
 
 Before (0.11):
 
@@ -225,6 +258,7 @@ use mentisdb::search::VectorSidecarEntry;
 
 let entry = VectorSidecarEntry::new(id, index, hash, vec![0.1, 0.2, 0.3]);
 let owned: Vec<f32> = entry.vector.clone();
+let entry2 = VectorSidecarEntry::new(id, index, hash, (0..3).map(|i| i as f32).collect());
 let literal = VectorSidecarEntry { thought_id: id, thought_index: index,
     thought_hash: hash.to_string(), vector: vec![0.1, 0.2, 0.3] };
 ```
@@ -233,17 +267,19 @@ After (0.12):
 
 ```rust
 use mentisdb::search::VectorSidecarEntry;
-use std::sync::Arc;
+use mentisdb::search::flat_store::VectorRow;
 
 let entry = VectorSidecarEntry::new(id, index, hash, vec![0.1, 0.2, 0.3]); // unchanged
 let owned: Vec<f32> = entry.vector.to_vec();
+let values: Vec<f32> = (0..3).map(|i| i as f32).collect(); // annotate inferred types
+let entry2 = VectorSidecarEntry::new(id, index, hash, values);
 let literal = VectorSidecarEntry { thought_id: id, thought_index: index,
-    thought_hash: hash.to_string(), vector: Arc::from(vec![0.1, 0.2, 0.3]) };
+    thought_hash: hash.to_string(), vector: VectorRow::standalone(&[0.1, 0.2, 0.3]) };
 let slice: &[f32] = &entry.vector; // reading as a slice is unchanged
 ```
 
-`entry.vector.clone()` still compiles, but it now copies a pointer and returns an
-`Arc<[f32]>`, not a `Vec<f32>`.
+`entry.vector.clone()` still compiles, but it now copies a pointer and returns a
+`VectorRow`, not a `Vec<f32>`.
 
 ### Library users: `MentisDbServiceConfig` is `#[non_exhaustive]`
 
@@ -279,8 +315,9 @@ let config = MentisDbServiceConfig::new("/var/lib/mentisdb".into(), "project", S
 
 ## Benchmarks
 
-Retrieval and scoring did not change since 0.11.0.56. The release verification checked
-that with five benchmark runs on the 0.12 code: recall was identical to
+The ranking logic did not change since 0.11.0.56; only exact-search scores moved, by at
+most `1e-5`. The release verification (1addbdf) checked recall with five full LoCoMo and
+LongMemEval protocol runs on the 0.12 code: recall was identical to
 [0.11.0.56](mentisdb-0.11.0.56-release-notes.md#benchmarks) on all five, and the LoCoMo
 result JSON was byte-identical.
 
