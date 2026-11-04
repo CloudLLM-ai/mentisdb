@@ -113,6 +113,12 @@ UNRELEASED
     (-162.0 MiB). This stacks on the earlier entry's 239.2 to 56.3 MiB, which is
     heap growth over the append phase (the scan store's copy). A rebuild now
     packs rows as it embeds, so the corpus is not held loose and packed at once.
+  - fix(search): the exact index no longer grows without bound under churn: a
+    removed document's slot is reused, and once replaced or removed rows in the
+    index's own store outnumber the live ones (beyond 256) the live rows are copied
+    to a fresh store. `flat_store::dot` asserts equal row lengths in debug builds.
+    Documented: exact search (lane-parallel dot) and the HNSW / implicit-edge paths
+    (sequential cosine) can score one pair up to 1e-5 apart.
   - perf(storage): the implicit-edge queue holds positions, not vectors, so it
     cannot grow without bound in memory. A backlog costs a few bytes per run of
     consecutive appends; it never blocks an append and never drops an edge (the
