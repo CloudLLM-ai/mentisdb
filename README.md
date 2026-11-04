@@ -949,6 +949,37 @@ REST endpoints:
 - `POST /v1/migrations/retry` (global token)
 - `POST /v1/migrations/skip` (global token)
 
+#### Chain listing and derived-state backlog
+
+`GET /v1/chains` (global token; MCP `mentisdb_list_chains`) lists every chain with
+`derived_backlog`, the work still pending on its derived state (0.12):
+
+```json
+{
+  "chain_key": "project", "version": 3, "storage_adapter": "binary",
+  "thought_count": 100000, "agent_count": 4, "storage_location": "...",
+  "derived_backlog": {
+    "embeddings_in_flight": 0, "embeddings_parked": 0,
+    "embeddings_missing": 0, "implicit_edges": 312
+  }
+}
+```
+
+- `embeddings_in_flight`: thoughts whose embedding has been requested but not committed.
+- `embeddings_parked`: vectors that are ready but wait for an earlier thought's vector, so
+  they are applied in chain order.
+- `embeddings_missing`: thoughts waiting to be embedded again after a failure.
+- `implicit_edges`: applied vectors whose implicit `RelatedTo` edges have not reached the
+  overlay yet.
+
+All four are zero on a healthy, idle chain. A steadily growing `embeddings_missing` or
+`embeddings_in_flight` points at a stalling embedding provider. A growing `implicit_edges`
+means appends are outrunning the background edge scan: about 155 appends per second at
+100,000 thoughts and 720 at 20,000 (4 threads, 384 dimensions). The backlog never blocks an
+append or drops an edge. It only delays edges for recent thoughts, and it drains when
+appends slow down. A chain that is not open, or whose private segments are hidden from the
+caller, reports zeros. Library: `MentisDb::derived_backlog`.
+
 #### Chain resolution and error statuses
 
 Only operations that write a chain create it when its `chain_key` does not exist yet:
