@@ -287,6 +287,7 @@ const SKILL_SAFETY_WARNINGS: [&str; 4] = [
 /// ```
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
+#[non_exhaustive]
 pub struct MentisDbServiceConfig {
     /// Root directory that contains all MentisDB chain storage files.
     ///
@@ -369,14 +370,24 @@ pub struct MentisDbServiceConfig {
     pub bearer_token_access: Arc<AtomicBool>,
     /// Durable bearer-token registry used by MCP HTTP endpoints.
     pub bearer_token_store: BearerTokenStore,
-    /// Largest request body, in bytes, any REST or MCP endpoint accepts.
-    /// Defaults to [`DEFAULT_MAX_BODY_BYTES`] (64 MiB), never below
-    /// [`MIN_MAX_BODY_BYTES`] (1 MiB). A larger body is refused with `413`. It
-    /// bounds the memory a bearer-token or read-proof request can make the
-    /// server hold while it checks who is asking, so raise it only as far as the
-    /// biggest import you need. Controlled by `MENTISDB_MAX_BODY_BYTES` in the
-    /// daemon; see [`MentisDbServiceConfig::with_max_body_bytes`].
+    /// Largest request body, in bytes, the *import routes*
+    /// ([`LARGE_BODY_ROUTES`](crate::server_body::LARGE_BODY_ROUTES)) accept from
+    /// an authenticated caller. Defaults to [`DEFAULT_MAX_BODY_BYTES`] (64 MiB),
+    /// clamped to [`MIN_MAX_BODY_BYTES`]..=[`MAX_MAX_BODY_BYTES`] (1 MiB..1 GiB)
+    /// wherever it is used. Every other route is held to
+    /// [`SMALL_BODY_BYTES`](crate::server_body::SMALL_BODY_BYTES) (2 MiB), and a
+    /// larger body gets `413`. Controlled by `MENTISDB_MAX_BODY_BYTES` in the
+    /// daemon; set it with [`MentisDbServiceConfig::with_max_body_bytes`]. See
+    /// the [`server_body`](crate::server_body) module for the full admission
+    /// rules.
     pub max_body_bytes: usize,
+    /// Body bytes all requests in flight may hold together; `None` (the
+    /// default) is four times [`max_body_bytes`](Self::max_body_bytes). Over it a
+    /// request gets `503` with `Retry-After`. `MENTISDB_MAX_INFLIGHT_BODY_BYTES`.
+    pub max_inflight_body_bytes: Option<usize>,
+    /// How long a request body may go without delivering data before it fails.
+    /// Default 30 s. `MENTISDB_BODY_IDLE_TIMEOUT_SECS`.
+    pub body_idle_timeout: std::time::Duration,
 }
 
 /// Default of [`MentisDbServiceConfig::max_body_bytes`]: 64 MiB.
@@ -385,6 +396,13 @@ pub const DEFAULT_MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// Floor of [`MentisDbServiceConfig::max_body_bytes`]: 1 MiB, the limit
 /// every release before this setting existed enforced.
 pub const MIN_MAX_BODY_BYTES: usize = 1024 * 1024;
+
+/// Ceiling of [`MentisDbServiceConfig::max_body_bytes`]: 1 GiB. A larger
+/// `MENTISDB_MAX_BODY_BYTES` stops the daemon from starting.
+pub const MAX_MAX_BODY_BYTES: usize = 1024 * 1024 * 1024;
+
+/// Default of [`MentisDbServiceConfig::body_idle_timeout`], in seconds.
+pub const DEFAULT_BODY_IDLE_TIMEOUT_SECS: u64 = 30;
 
 impl std::fmt::Debug for MentisDbServiceConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -411,6 +429,8 @@ impl std::fmt::Debug for MentisDbServiceConfig {
             )
             .field("bearer_token_store", &self.bearer_token_store.path())
             .field("max_body_bytes", &self.max_body_bytes)
+            .field("max_inflight_body_bytes", &self.max_inflight_body_bytes)
+            .field("body_idle_timeout", &self.body_idle_timeout)
             .finish()
     }
 }
@@ -462,6 +482,8 @@ impl MentisDbServiceConfig {
             bearer_token_access: Arc::new(AtomicBool::new(false)),
             bearer_token_store: BearerTokenStore::new(chain_dir),
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            max_inflight_body_bytes: None,
+            body_idle_timeout: std::time::Duration::from_secs(DEFAULT_BODY_IDLE_TIMEOUT_SECS),
         }
     }
 
@@ -641,10 +663,11 @@ impl MentisDbServiceConfig {
         self
     }
 
-    /// Set the largest request body the REST and MCP endpoints accept.
+    /// Set the largest body the import routes accept from an authenticated
+    /// caller.
     ///
-    /// Values below [`MIN_MAX_BODY_BYTES`] (1 MiB) are raised to it. See
-    /// [`MentisDbServiceConfig::max_body_bytes`].
+    /// Values are clamped to [`MIN_MAX_BODY_BYTES`]..=[`MAX_MAX_BODY_BYTES`]
+    /// (1 MiB..1 GiB). See [`MentisDbServiceConfig::max_body_bytes`].
     ///
     /// # Examples
     ///
@@ -658,7 +681,28 @@ impl MentisDbServiceConfig {
     /// assert_eq!(config.max_body_bytes, MIN_MAX_BODY_BYTES);
     /// ```
     pub fn with_max_body_bytes(mut self, bytes: usize) -> Self {
-        self.max_body_bytes = bytes.max(MIN_MAX_BODY_BYTES);
+        self.max_body_bytes = bytes.clamp(MIN_MAX_BODY_BYTES, MAX_MAX_BODY_BYTES);
+        self
+    }
+
+    fn with_body_limits(mut self, limits: BodyLimits) -> Self {
+        self.max_body_bytes = limits.max_body_bytes;
+        self.max_inflight_body_bytes = limits.max_inflight_body_bytes;
+        self.body_idle_timeout = limits.body_idle_timeout;
+        self
+    }
+
+    /// Set the body bytes all requests in flight may hold together. See
+    /// [`MentisDbServiceConfig::max_inflight_body_bytes`].
+    pub fn with_max_inflight_body_bytes(mut self, bytes: usize) -> Self {
+        self.max_inflight_body_bytes = Some(bytes);
+        self
+    }
+
+    /// Set how long a request body may go quiet before it fails. See
+    /// [`MentisDbServiceConfig::body_idle_timeout`].
+    pub fn with_body_idle_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.body_idle_timeout = timeout;
         self
     }
 
@@ -667,6 +711,74 @@ impl MentisDbServiceConfig {
         self.bearer_token_access.store(enabled, Ordering::Relaxed);
         self
     }
+}
+
+/// The body limits read from the environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BodyLimits {
+    max_body_bytes: usize,
+    max_inflight_body_bytes: Option<usize>,
+    body_idle_timeout: std::time::Duration,
+}
+
+impl Default for BodyLimits {
+    fn default() -> Self {
+        Self {
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            max_inflight_body_bytes: None,
+            body_idle_timeout: std::time::Duration::from_secs(DEFAULT_BODY_IDLE_TIMEOUT_SECS),
+        }
+    }
+}
+
+/// Read and validate `MENTISDB_MAX_BODY_BYTES`, `MENTISDB_MAX_INFLIGHT_BODY_BYTES`
+/// and `MENTISDB_BODY_IDLE_TIMEOUT_SECS`.
+///
+/// Unset variables take their defaults. A set variable must be a whole number in
+/// range, otherwise the daemon refuses to start ([`validate_body_limits_env`])
+/// instead of quietly running with a different limit than the operator wrote.
+fn body_limits_from_env() -> Result<BodyLimits, String> {
+    let number = |name: &str, min: u64, max: u64| -> Result<Option<u64>, String> {
+        let Ok(raw) = env_var(&[name]) else {
+            return Ok(None);
+        };
+        let value = raw
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| format!("{name}={raw:?} is not a whole number"))?;
+        if !(min..=max).contains(&value) {
+            return Err(format!("{name}={value} is outside {min}..={max}"));
+        }
+        Ok(Some(value))
+    };
+    let defaults = BodyLimits::default();
+    Ok(BodyLimits {
+        max_body_bytes: number(
+            "MENTISDB_MAX_BODY_BYTES",
+            MIN_MAX_BODY_BYTES as u64,
+            MAX_MAX_BODY_BYTES as u64,
+        )?
+        .map_or(defaults.max_body_bytes, |v| v as usize),
+        max_inflight_body_bytes: number("MENTISDB_MAX_INFLIGHT_BODY_BYTES", 1, u64::MAX / 2)?
+            .map(|v| v as usize),
+        body_idle_timeout: number("MENTISDB_BODY_IDLE_TIMEOUT_SECS", 1, 3600)?
+            .map_or(defaults.body_idle_timeout, std::time::Duration::from_secs),
+    })
+}
+
+/// Check the body-limit environment variables.
+///
+/// The daemon calls this before it binds anything and exits with the message on
+/// `Err`: a typo in `MENTISDB_MAX_BODY_BYTES` must not silently become the
+/// default. `MENTISDB_MAX_BODY_BYTES` must be `1048576..=1073741824`,
+/// `MENTISDB_MAX_INFLIGHT_BODY_BYTES` a positive number of bytes and
+/// `MENTISDB_BODY_IDLE_TIMEOUT_SECS` `1..=3600`.
+///
+/// # Errors
+///
+/// A message naming the variable and what is wrong with it.
+pub fn validate_body_limits_env() -> Result<(), String> {
+    body_limits_from_env().map(|_| ())
 }
 
 /// Full runtime configuration for the standalone `mentisdb` daemon process.
@@ -978,12 +1090,10 @@ impl MentisDbServerConfig {
                     .unwrap_or(64)
                     .max(1),
             )
-            .with_max_body_bytes(
-                env_var(&["MENTISDB_MAX_BODY_BYTES"])
-                    .ok()
-                    .and_then(|v| v.trim().parse::<usize>().ok())
-                    .unwrap_or(DEFAULT_MAX_BODY_BYTES),
-            )
+            .with_body_limits(body_limits_from_env().unwrap_or_else(|error| {
+                log::error!("{error}; using the defaults");
+                BodyLimits::default()
+            }))
             .with_bearer_token_access(bearer_token_access_from_env()),
             mcp_addr: SocketAddr::new(bind_host, mcp_port),
             rest_addr: SocketAddr::new(bind_host, rest_port),
@@ -1851,13 +1961,16 @@ pub(crate) async fn start_dashboard_server(
 /// second `MentisDbService` when the caller already holds one (e.g. in
 /// [`start_servers`] where the dashboard needs to share the same arc).
 fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
-    let body_cap = service.config.max_body_bytes;
+    let large = axum::extract::DefaultBodyLimit::max(service.max_body_bytes());
     Router::new()
         .route("/health", get(health_handler))
         .route("/mentisdb_skill_md", get(rest_skill_markdown_handler))
         .route("/v1/skills", get(rest_list_skills_handler))
         .route("/v1/skills/manifest", get(rest_skill_manifest_handler))
-        .route("/v1/skills/upload", post(rest_upload_skill_handler))
+        .route(
+            "/v1/skills/upload",
+            post(rest_upload_skill_handler).layer(large.clone()),
+        )
         .route("/v1/skills/search", post(rest_search_skill_handler))
         .route("/v1/skills/read", post(rest_read_skill_handler))
         .route("/v1/skills/versions", post(rest_skill_versions_handler))
@@ -1882,7 +1995,10 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         .route("/v1/recent-context", post(rest_recent_context_handler))
         .route("/v1/standing-context", post(rest_standing_context_handler))
         .route("/v1/memory-markdown", post(rest_memory_markdown_handler))
-        .route("/v1/import-markdown", post(rest_import_markdown_handler))
+        .route(
+            "/v1/import-markdown",
+            post(rest_import_markdown_handler).layer(large.clone()),
+        )
         .route("/v1/thought", post(rest_get_thought_handler))
         .route("/v1/thoughts/genesis", post(rest_genesis_thought_handler))
         .route(
@@ -1927,7 +2043,10 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         .route("/v1/webhooks", get(rest_list_webhooks_handler))
         .route("/v1/webhooks", post(rest_register_webhook_handler))
         .route("/v1/webhooks/{id}", delete(rest_delete_webhook_handler))
-        .route("/v1/extract-memories", post(rest_extract_memories_handler))
+        .route(
+            "/v1/extract-memories",
+            post(rest_extract_memories_handler).layer(large),
+        )
         .with_state(service.clone())
         .layer(middleware::from_fn_with_state(
             service.clone(),
@@ -1942,7 +2061,13 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
             crate::server_lens::read_auth_middleware,
         ))
         .layer(middleware::map_response(retry_after_for_migrations))
-        .layer(axum::extract::DefaultBodyLimit::max(body_cap))
+        .layer(axum::extract::DefaultBodyLimit::max(
+            crate::server_body::SMALL_BODY_BYTES,
+        ))
+        .layer(middleware::from_fn_with_state(
+            service,
+            crate::server_body::body_admission_middleware,
+        ))
 }
 
 /// Add a `Retry-After` header to a 503 whose body carries `retry_after_secs`
@@ -2020,7 +2145,6 @@ async fn retry_after_for_migrations(
 /// ```
 pub fn mcp_router(config: MentisDbServiceConfig) -> Router {
     let service = Arc::new(MentisDbService::new(config));
-    let body_cap = service.config.max_body_bytes;
     Router::new()
         .route("/health", get(health_handler))
         .route("/tools/list", post(mcp_list_tools_handler))
@@ -2038,7 +2162,10 @@ pub fn mcp_router(config: MentisDbServiceConfig) -> Router {
             service.clone(),
             crate::server_lens::read_auth_middleware,
         ))
-        .layer(axum::extract::DefaultBodyLimit::max(body_cap))
+        .layer(middleware::from_fn_with_state(
+            service,
+            crate::server_body::body_admission_middleware,
+        ))
 }
 
 /// Build the standard streamable-HTTP MCP router without binding a socket.
@@ -2318,6 +2445,8 @@ pub struct MentisDbService {
     /// startup; library users and tests that never set it keep the original
     /// behaviour (a legacy chain is upgraded in place when first opened).
     migrations: Arc<std::sync::OnceLock<MigrationManager>>,
+    /// Body bytes held by requests in flight, see [`crate::server_body`].
+    body_budget: Arc<crate::server_body::BodyBudget>,
 }
 
 #[derive(Debug)]
@@ -2873,9 +3002,16 @@ async fn inject_single_chain_bearer_scope_middleware(
         return next.run(request).await;
     }
 
+    // Only a request that carries a valid token has its body inspected here;
+    // anyone else goes straight to the library's authorizer, which refuses it,
+    // without the body having been buffered or parsed.
+    if !crate::server_body::may_use_large_cap(&service, &request) {
+        return next.run(request).await;
+    }
     let (parts, body) = request.into_parts();
     let is_legacy_execute = parts.uri.path().ends_with("/tools/execute");
-    let body_bytes = match axum::body::to_bytes(body, service.config.max_body_bytes).await {
+    let body_cap = crate::server_body::body_cap(&service, parts.uri.path(), false);
+    let body_bytes = match axum::body::to_bytes(body, body_cap).await {
         Ok(bytes) => bytes,
         Err(_) => {
             return (
@@ -3283,8 +3419,9 @@ fn standard_and_legacy_mcp_router(
         crate::server_lens::read_auth_middleware,
     ))
     .layer(middleware::from_fn(mcp_unauthorized_guidance_middleware))
-    .layer(axum::extract::DefaultBodyLimit::max(
-        service.config.max_body_bytes,
+    .layer(middleware::from_fn_with_state(
+        service.clone(),
+        crate::server_body::body_admission_middleware,
     ));
     standard_mcp_only_router(
         service,
@@ -3306,7 +3443,7 @@ fn standard_mcp_only_router(
     bearer_authorizer: Arc<dyn BearerTokenAuthorizer>,
 ) -> Router {
     let hosts = mcp_allowed_hosts(addr, tls);
-    let body_cap = service.config.max_body_bytes;
+    let admission = service.clone();
     Router::new()
         .route("/health", get(health_handler))
         .merge(streamable_http_router_with_sse(
@@ -3339,7 +3476,10 @@ fn standard_mcp_only_router(
             crate::server_lens::read_auth_middleware,
         ))
         .layer(middleware::from_fn(mcp_unauthorized_guidance_middleware))
-        .layer(axum::extract::DefaultBodyLimit::max(body_cap))
+        .layer(middleware::from_fn_with_state(
+            admission,
+            crate::server_body::body_admission_middleware,
+        ))
 }
 
 /// The `Host` values `cloudllm_mcp` is told to accept on a listener bound to
@@ -3555,7 +3695,16 @@ impl MentisDbService {
             )
         })?;
         let config_dir = config.chain_dir.clone();
+        let body_cap = config
+            .max_body_bytes
+            .clamp(MIN_MAX_BODY_BYTES, MAX_MAX_BODY_BYTES);
+        let inflight = config
+            .max_inflight_body_bytes
+            .unwrap_or_else(|| body_cap.saturating_mul(4));
+        let body_budget =
+            crate::server_body::BodyBudget::new(inflight, body_cap.saturating_mul(2).min(inflight));
         Ok(Self {
+            body_budget,
             skills: Arc::new(RwLock::new(skills)),
             interaction_log,
             config,
@@ -3583,7 +3732,27 @@ impl MentisDbService {
     /// The largest request body this service accepts, see
     /// [`MentisDbServiceConfig::max_body_bytes`].
     pub(crate) fn max_body_bytes(&self) -> usize {
-        self.config.max_body_bytes
+        self.config
+            .max_body_bytes
+            .clamp(MIN_MAX_BODY_BYTES, MAX_MAX_BODY_BYTES)
+    }
+
+    pub(crate) fn body_budget(&self) -> &Arc<crate::server_body::BodyBudget> {
+        &self.body_budget
+    }
+
+    pub(crate) fn body_idle_timeout(&self) -> std::time::Duration {
+        self.config.body_idle_timeout
+    }
+
+    /// Whether bearer-token access is currently enforced.
+    pub(crate) fn bearer_access_enabled(&self) -> bool {
+        self.config.bearer_token_access.load(Ordering::Relaxed)
+    }
+
+    /// Whether `token` is an active bearer token (no scope check).
+    pub(crate) fn bearer_token_valid(&self, token: &str) -> bool {
+        self.config.bearer_token_store.authorize(token)
     }
 
     /// The attached migration manager, if any.
@@ -8499,10 +8668,26 @@ pub(crate) async fn rest_bearer_auth_middleware(
     let route = request.uri().path().to_string();
     let method = request.method().as_str().to_ascii_lowercase();
 
+    // Who is asking is decided from the headers alone, before any of the body
+    // is read: a request without a valid token is refused here, so an anonymous
+    // peer never gets the daemon to buffer (or parse) its body.
+    let provided = request
+        .headers()
+        .get("Authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let scope = provided.and_then(|token| service.config.bearer_token_store.authenticate(token));
+    if scope.is_none() {
+        let (status, body) = bearer_token_required_response(&route);
+        return (status, body).into_response();
+    }
+
     // Buffer the request body so we can extract chain keys for scope-aware
     // authorization, then reconstruct the request for the downstream handler.
+    // The admission layer has already capped it for this route.
     let (parts, body) = request.into_parts();
-    let body_bytes = match axum::body::to_bytes(body, service.config.max_body_bytes).await {
+    let body_cap = crate::server_body::body_cap(&service, &route, true);
+    let body_bytes = match axum::body::to_bytes(body, body_cap).await {
         Ok(bytes) => bytes,
         Err(error) => {
             // `to_bytes` fails when the limit is exceeded or the stream breaks.
@@ -8533,14 +8718,6 @@ pub(crate) async fn rest_bearer_auth_middleware(
         }
     };
     let mut payload: Option<Value> = serde_json::from_slice(&body_bytes).ok();
-
-    // Resolve the token's scope exactly once per request (also records usage).
-    let provided = parts
-        .headers
-        .get("Authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    let scope = provided.and_then(|token| service.config.bearer_token_store.authenticate(token));
 
     // Single-chain tokens omit chain_key on many write clients; bind the body
     // to the token's only chain so auth and handlers agree. The body is only

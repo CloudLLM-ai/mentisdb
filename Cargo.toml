@@ -15,7 +15,7 @@ exclude = ["fuzz/", "data/", "docs/", "lme-benches/", ".fastembed_cache/", ".git
 
 [features]
 default = ["server", "startup-sound", "llm-extraction", "local-embeddings"]
-server = ["dep:tokio-stream", "dep:axum", "dep:http-body", "dep:env_logger", "dep:if-addrs", "dep:log", "dep:tokio", "mcp/server", "dep:rcgen", "dep:axum-server", "dep:rustls-pemfile", "dep:x509-parser", "dep:reqwest", "dep:rustls"]
+server = ["dep:tokio-stream", "dep:axum", "dep:http-body", "dep:http-body-util", "dep:env_logger", "dep:if-addrs", "dep:log", "dep:tokio", "mcp/server", "dep:rcgen", "dep:axum-server", "dep:rustls-pemfile", "dep:x509-parser", "dep:reqwest", "dep:rustls"]
 startup-sound = ["dep:rodio"]
 local-embeddings = ["dep:fastembed", "dep:rustls"]
 llm-extraction = ["dep:openai-rust2", "dep:anyhow"]
@@ -42,6 +42,7 @@ getrandom = "0.4"
 mcp = { package = "cloudllm_mcp", version = "0.4.0" }
 axum = { version = "0.8.8", optional = true }
 http-body = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
 axum-server = { version = "0.8", features = ["tls-rustls"], optional = true }
 if-addrs = { version = "0.15", optional = true }
 env_logger = { version = "0.11.8", optional = true }

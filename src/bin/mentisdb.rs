@@ -2719,6 +2719,19 @@ async fn main() -> ExitCode {
     // settings). Missing files are ignored; existing env vars take precedence.
     let _ = mentisdb::paths::load_dotenv_files();
 
+    // A typo in a request-body limit must not silently become the default, so
+    // the daemon refuses to start on one. CLI subcommands and `--help` never
+    // read the limits and are not affected.
+    let first = std::env::args().nth(1).unwrap_or_default();
+    let reads_limits = !mentisdb::cli::is_subcommand(&first)
+        && !matches!(first.as_str(), "--help" | "-h" | "--version" | "-V");
+    if reads_limits {
+        if let Err(error) = mentisdb::server::validate_body_limits_env() {
+            eprintln!("error: {error}");
+            return ExitCode::from(2);
+        }
+    }
+
     match parse_daemon_args(std::env::args_os().skip(1)) {
         Ok(DaemonArgMode::Help) => {
             println!("{}", daemon_help_text());

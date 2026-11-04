@@ -2778,6 +2778,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hnsw",
  "http-body",
+ "http-body-util",
  "if-addrs",
  "libc",
  "log",

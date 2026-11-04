@@ -116,7 +116,9 @@ impl http_body::Body for DigestCheckedBody {
                 }
                 Poll::Ready(Some(Ok(frame)))
             }
-            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(Box::new(error)))),
+            // Hand the inner error on unwrapped: extractors recognise a body that
+            // hit its length limit (`413`) only when it is the error itself.
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error.into_inner()))),
             Poll::Ready(None) => {
                 let matches = this
                     .hasher
@@ -392,7 +394,7 @@ pub(crate) async fn read_auth_middleware(
         Ok(declared) => declared,
         Err(error) => return fail(StatusCode::BAD_REQUEST, &error.to_string()),
     };
-    let cap = service.max_body_bytes();
+    let cap = crate::server_body::body_cap(&service, parts.uri.path(), true);
     let content_length = parts
         .headers
         .get(axum::http::header::CONTENT_LENGTH)

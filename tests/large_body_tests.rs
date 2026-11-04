@@ -387,6 +387,23 @@ fn the_cap_comes_from_the_environment() {
     assert_eq!(read(Some("not a number")), DEFAULT_MAX_BODY_BYTES);
     assert_eq!(read(Some("5242880")), 5 * 1024 * 1024);
     assert_eq!(read(Some(" 2097152 ")), 2 * 1024 * 1024);
-    assert_eq!(read(Some("10")), MIN_MAX_BODY_BYTES);
+    // Out of range is an error the daemon refuses to start on (see
+    // `body_admission_tests`); a library caller of `from_env` gets the default.
+    assert_eq!(read(Some("10")), DEFAULT_MAX_BODY_BYTES);
+    assert_eq!(read(Some("2147483648")), DEFAULT_MAX_BODY_BYTES);
+    assert_eq!(
+        read(Some("1073741824")),
+        mentisdb::server::MAX_MAX_BODY_BYTES
+    );
+    // The builder clamps to the same range.
+    let config = MentisDbServiceConfig::new("/tmp/x".into(), "c", StorageAdapterKind::Binary);
+    assert_eq!(
+        config.clone().with_max_body_bytes(10).max_body_bytes,
+        MIN_MAX_BODY_BYTES
+    );
+    assert_eq!(
+        config.with_max_body_bytes(usize::MAX).max_body_bytes,
+        mentisdb::server::MAX_MAX_BODY_BYTES
+    );
     std::env::remove_var("MENTISDB_MAX_BODY_BYTES");
 }
