@@ -7,6 +7,14 @@
   within its 60 second window (the nonce cache is per daemon). Binding `Host` changes the signed preimage,
   which is a wire-format change for every client (CLI, pymentisdb, other implementations), so it needs a
   versioned `v2` proof that clients opt into and servers accept alongside `v1`. Not in 0.12.0.
+- **Do not blame the client for a slow server.** The minimum body rate
+  (`MENTISDB_MIN_BODY_BYTES_PER_SEC`) is measured from when the server reads the body, so a server
+  that polls a body late (under heavy load) can answer `408` to a client that sent its bytes in time.
+  Count the rate only while the body was pollable, or measure arrival at the transport. Until then,
+  lower the floor or set it to `0` on a busy server.
+- **Per-peer connection cap.** There is no limit on how many connections one peer may open; only the
+  per-peer and pool byte budgets brake a many-connection flood. Add a per-peer connection (or
+  in-flight request) cap.
 
 ## Shipped (0.8.2 -> 0.12.0.57)
 
