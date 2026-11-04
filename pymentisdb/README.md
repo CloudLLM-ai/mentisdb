@@ -148,6 +148,10 @@ memory.save_context({"input": "Use tabs, not spaces."}, {"output": "Noted."})
 print(memory.load_memory_variables({})["chat_history"])
 ```
 
+## Changes in 0.10.1
+
+- Every read proof is sent with `X-Mentis-Content-Sha256`, the digest the proof signs, so a daemon that supports it accepts bodies over 1 MiB (for example a large import). Older daemons ignore the header.
+
 ## Changes in 0.10.0
 
 - The wheel contains the package: the 0.9.0 wheel on PyPI held only metadata.

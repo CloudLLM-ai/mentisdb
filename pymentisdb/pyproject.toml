@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymentisdb"
-version = "0.10.0"
+version = "0.10.1"
 description = "Python client for MentisDB - semantic hash-chained memory for agents"
 readme = "README.md"
 license = "MIT"

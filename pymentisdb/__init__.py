@@ -17,7 +17,7 @@ Example:
     >>> print(f"Appended thought {thought.id}")
 """
 
-__version__ = "0.10.0"
+__version__ = "0.10.1"
 
 from .read_auth import ReadSigner
 from .client import MentisDbClient
