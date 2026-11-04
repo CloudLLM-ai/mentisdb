@@ -166,21 +166,29 @@ A new outermost layer decides whether to read a body at all:
 - **MCP bodies are always capped at 2 MiB,** including the
   `mentisdb_import_memory_markdown` tool. Send a large import to the REST route, or use the
   CLI.
-- **Separate budgets.** Large imports draw on their own pool,
-  `MENTISDB_MAX_INFLIGHT_BODY_BYTES` (default 4 × the cap). Each import is reserved from
-  its declared length, and the reservation is returned as soon as the body has been read.
-  Every other request is charged only for the bytes that actually arrive, from a separate,
-  fixed 64 MiB pool, so imports never starve appends and searches.
-- **Per-peer limits.** One peer may hold at most twice the cap and four large bodies at
-  once. An anonymous caller (bearer on, no valid token) may hold at most **8 MiB** of the
-  ordinary pool. On a loopback bind every local agent counts as one peer, so the ordinary
-  pool has no per-peer limit.
-- **Deadlines.** A body that delivers nothing for `MENTISDB_BODY_IDLE_TIMEOUT_SECS`
-  (default 30, range 1 to 3600) fails with **`408`**. Small and anonymous bodies also get a
-  total deadline of twice that, so a body dripped one byte at a time cannot hold its
-  charge.
-- **Over budget** is **`503` with `Retry-After`**, also through the bearer-token path.
-  Before this, stalled and over-budget bodies were a generic `400`.
+- **Three separate budgets,** so one class of request can never starve another:
+
+  | Class | Pool (all peers) | One peer may hold | Charged |
+  |---|---|---|---|
+  | Large: an import route, from an allowed caller | `MENTISDB_MAX_INFLIGHT_BODY_BYTES` (default 4 × the cap) | 2 × the cap, at most 4 bodies | the declared length, reserved on arrival |
+  | Small: every other request from a caller that is not anonymous | 64 MiB | 32 MiB | bytes as they arrive |
+  | Anonymous: bearer tokens on, no valid token | 16 MiB | 8 MiB | bytes as they arrive |
+
+  A reservation is returned as soon as the body has been read. A declared length costs
+  nothing for small and anonymous requests. On a loopback bind every local agent is the
+  same peer, so the 32 MiB small share is generous there; with bearer tokens off it stops
+  one peer from taking the whole pool.
+- **Time limits.** A body that delivers nothing for `MENTISDB_BODY_IDLE_TIMEOUT_SECS`
+  (default 30, range 1 to 3600) fails. Small and anonymous bodies also have a total
+  deadline of twice that (60 s by default). Every body, large imports included, must keep
+  up at least **64 KiB/s** once its grace period (twice the idle timeout, 60 s by default)
+  is over. Without that floor, a client could declare 64 MiB and send one byte every 29 s,
+  holding an import slot indefinitely. A link slower than about 0.5 Mbit/s cannot upload
+  for longer than the grace period.
+- **`408` and `503` everywhere.** A body that is too slow or stalls gets **`408`**. A body
+  that does not fit its budget gets **`503` with `Retry-After`**. This holds on every
+  route, with bearer tokens on or off. Before, handlers' own JSON parsing turned both into
+  a generic `400`.
 - **Bad settings stop the daemon.** A non-numeric or out-of-range
   `MENTISDB_MAX_BODY_BYTES`, `MENTISDB_MAX_INFLIGHT_BODY_BYTES` or
   `MENTISDB_BODY_IDLE_TIMEOUT_SECS` stops the daemon at startup instead of silently
@@ -219,8 +227,10 @@ migration.
 - **Request bodies.** Ordinary REST and MCP routes take at most 2 MiB. Only the three import routes take
   more, up to `MENTISDB_MAX_BODY_BYTES`, and only from an authenticated caller. Large imports
   over MCP fail with `413`: use the REST route or the CLI.
-- **New statuses.** A stalled body gets `408`, and an exhausted body budget gets `503` with
-  `Retry-After`. Retry the `503`.
+- **New statuses.** A stalled or too-slow body (under 64 KiB/s after the first 60 s) gets
+  `408`, and an exhausted body budget gets `503` with `Retry-After`, on every route. Retry
+  the `503`. Clients on very slow links should keep each upload short enough to finish
+  within the grace period.
 - **Reverse proxies** in front of MentisDB must allow request bodies up to
   `MENTISDB_MAX_BODY_BYTES` on the import routes (nginx's `client_max_body_size` defaults to
   1 MiB). Otherwise large imports fail at the proxy.
