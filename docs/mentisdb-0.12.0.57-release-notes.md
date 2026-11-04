@@ -1,6 +1,6 @@
 # MentisDB 0.12.0.57 (One copy of every vector, derived-state backlog, large signed requests)
 
-**Date:** November 3, 2026
+**Date:** November 4, 2026
 
 A focused follow-up to 0.11.0.56. It keeps every vector in memory exactly once and makes
 exact search 4.3x faster, removes the two memory trade-offs 0.11.0.56 documented for large
