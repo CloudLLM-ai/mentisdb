@@ -1,6 +1,7 @@
+use super::flat_store::{dot as flat_dot, norm as flat_norm, PaddedQuery, VectorRow, VectorStore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt;
 
@@ -486,6 +487,14 @@ impl VectorSearchBackend for VectorBackend {
         }
     }
 
+    fn upsert_row(&mut self, document_id: String, row: VectorRow) -> Result<(), VectorIndexError> {
+        match self {
+            Self::Exact(index) => index.upsert_row(document_id, row),
+
+            Self::Hnsw(backend) => backend.upsert_row(document_id, row),
+        }
+    }
+
     fn remove_document(&mut self, document_id: &str) -> bool {
         match self {
             Self::Exact(index) => index.remove_document(document_id),
@@ -575,6 +584,13 @@ pub trait VectorSearchBackend: Send + Sync {
     /// Insert or replace one document vector by id.
     fn upsert_document(&mut self, document: VectorDocument) -> Result<(), VectorIndexError>;
 
+    /// Insert or replace one document by id from a vector the caller already
+    /// stores. Backends that can read the shared storage keep a handle instead
+    /// of a copy; the default copies.
+    fn upsert_row(&mut self, document_id: String, row: VectorRow) -> Result<(), VectorIndexError> {
+        self.upsert_document(VectorDocument::new(document_id, row.to_vec()))
+    }
+
     /// Remove one document by id, returning `true` when it existed.
     fn remove_document(&mut self, document_id: &str) -> bool;
 
@@ -611,37 +627,44 @@ fn filter_hits(hits: Vec<VectorSearchHit>, filter: &VectorFilter) -> Vec<VectorS
         .collect()
 }
 
-/// In-memory deterministic cosine index for vector documents.
+/// In-memory exact cosine index for vector documents.
+///
+/// Vectors live in a flat, aligned [`VectorStore`](super::flat_store::VectorStore)
+/// and a query is scored with one lane-parallel dot product per stored vector
+/// (see [`super::flat_store`]), against a cached Euclidean norm. Documents added
+/// with [`VectorIndex::upsert_row`] are not copied at all: the index keeps a
+/// handle to the row the caller already stores (a sidecar's, typically), so the
+/// vectors exist once in memory.
+///
+/// Scores equal a left-to-right `f32` cosine to within
+/// [`DOT_EPSILON`](super::flat_store::DOT_EPSILON); ties are broken by document
+/// id, so equal scores rank the same way they always did.
 #[derive(Debug, Clone)]
 pub struct VectorIndex {
     metadata: EmbeddingMetadata,
-    documents: BTreeMap<String, StoredVector>,
-}
-
-/// One stored document vector with its cached Euclidean norm.
-///
-/// The norm is derived in memory on insert and is never serialized, so the
-/// persisted sidecar format and integrity digests are unaffected. Caching it
-/// removes two of the three multiply-adds per document from every exact scan.
-#[derive(Debug, Clone)]
-struct StoredVector {
-    values: Vec<f32>,
-    norm: f32,
-}
-
-impl StoredVector {
-    fn new(values: Vec<f32>) -> Self {
-        let norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
-        Self { values, norm }
-    }
+    /// Where vectors added by value ([`Self::upsert_document`]) are copied to.
+    store: VectorStore,
+    /// Stored vectors in insertion order; a removed document leaves a hole.
+    rows: Vec<VectorRow>,
+    /// Euclidean norm of `rows[slot]`, computed once on insert.
+    norms: Vec<f32>,
+    ids: Vec<String>,
+    alive: Vec<bool>,
+    by_id: HashMap<String, usize>,
 }
 
 impl VectorIndex {
     /// Create an empty index for one embedding space.
     pub fn new(metadata: EmbeddingMetadata) -> Self {
+        let dimension = metadata.dimension;
         Self {
             metadata,
-            documents: BTreeMap::new(),
+            store: VectorStore::new(dimension),
+            rows: Vec::new(),
+            norms: Vec::new(),
+            ids: Vec::new(),
+            alive: Vec::new(),
+            by_id: HashMap::new(),
         }
     }
 
@@ -681,6 +704,23 @@ impl VectorIndex {
         Ok(index)
     }
 
+    /// Build an index that shares vectors the caller already stores: it keeps
+    /// a handle to each row instead of copying it.
+    ///
+    /// # Errors
+    ///
+    /// The first vector that does not fit the embedding space.
+    pub fn from_rows(
+        metadata: EmbeddingMetadata,
+        rows: Vec<(String, VectorRow)>,
+    ) -> Result<Self, VectorIndexError> {
+        let mut index = Self::new(metadata);
+        for (document_id, row) in rows {
+            index.upsert_row(document_id, row)?;
+        }
+        Ok(index)
+    }
+
     /// Return immutable embedding metadata for this index.
     pub fn metadata(&self) -> &EmbeddingMetadata {
         &self.metadata
@@ -688,10 +728,11 @@ impl VectorIndex {
 
     /// Return number of stored vector documents.
     pub fn document_count(&self) -> usize {
-        self.documents.len()
+        self.by_id.len()
     }
 
-    /// Insert or replace one document vector by id.
+    /// Insert or replace one document vector by id, copying it into the
+    /// index's own store.
     pub fn upsert_document(&mut self, document: VectorDocument) -> Result<(), VectorIndexError> {
         validate_vector(
             &document.vector,
@@ -699,35 +740,79 @@ impl VectorIndex {
             Some(document.document_id.as_str()),
             "document",
         )?;
-        self.documents
-            .insert(document.document_id, StoredVector::new(document.vector));
+        let row = self.store.push(&document.vector);
+        self.place(document.document_id, row);
         Ok(())
+    }
+
+    /// Insert or replace one document by id, sharing `row` instead of copying
+    /// it. The caller keeps owning the storage; the index holds a handle.
+    ///
+    /// # Errors
+    ///
+    /// [`VectorIndexError::DimensionMismatch`] or
+    /// [`VectorIndexError::NonFiniteValue`] for a vector that does not fit the
+    /// index's embedding space.
+    pub fn upsert_row(
+        &mut self,
+        document_id: String,
+        row: VectorRow,
+    ) -> Result<(), VectorIndexError> {
+        validate_vector(
+            &row,
+            self.metadata.dimension,
+            Some(document_id.as_str()),
+            "document",
+        )?;
+        self.place(document_id, row);
+        Ok(())
+    }
+
+    fn place(&mut self, document_id: String, row: VectorRow) {
+        let norm = flat_norm(row.lines());
+        if let Some(&slot) = self.by_id.get(&document_id) {
+            self.rows[slot] = row;
+            self.norms[slot] = norm;
+            return;
+        }
+        let slot = self.rows.len();
+        self.rows.push(row);
+        self.norms.push(norm);
+        self.ids.push(document_id.clone());
+        self.alive.push(true);
+        self.by_id.insert(document_id, slot);
     }
 
     /// Remove one document by id, returning `true` when it existed.
     pub fn remove_document(&mut self, document_id: &str) -> bool {
-        self.documents.remove(document_id).is_some()
+        match self.by_id.remove(document_id) {
+            Some(slot) => {
+                self.alive[slot] = false;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The stored row for one document id, if present. Lets a test or a caller
+    /// confirm the index shares storage with the vectors it was built from.
+    #[doc(hidden)]
+    pub fn shared_row(&self, document_id: &str) -> Option<&VectorRow> {
+        self.by_id.get(document_id).map(|&slot| &self.rows[slot])
     }
 
     /// Return a clone of the stored vector for one document id, if present.
     pub fn get_vector(&self, document_id: &str) -> Option<Vec<f32>> {
-        self.documents
+        self.by_id
             .get(document_id)
-            .map(|stored| stored.values.clone())
+            .map(|&slot| self.rows[slot].to_vec())
     }
 
     /// Rank indexed vectors by cosine similarity to the query vector,
     /// optionally restricted by a [`VectorFilter`].
     pub fn search(&self, query: &VectorQuery) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
         validate_vector(&query.vector, self.metadata.dimension, None, "query")?;
-
-        Ok(collect_top_vector_hits(
-            self.documents
-                .iter()
-                .map(|(id, stored)| (id.as_str(), stored.values.as_slice(), stored.norm)),
-            &query.vector,
-            query.limit,
-        ))
+        Ok(self.top_hits(&query.vector, query.limit, |_| true))
     }
 
     /// Rank indexed vectors by cosine similarity, restricted by a
@@ -742,19 +827,54 @@ impl VectorIndex {
         filter: &VectorFilter,
     ) -> Result<Vec<VectorSearchHit>, VectorIndexError> {
         validate_vector(&query.vector, self.metadata.dimension, None, "query")?;
-
         if filter.allows_all() {
             return self.search(query);
         }
+        Ok(self.top_hits(&query.vector, query.limit, |id| filter.allows(id)))
+    }
 
-        Ok(collect_top_vector_hits(
-            self.documents
-                .iter()
-                .filter(|(document_id, _)| filter.allows(document_id))
-                .map(|(id, stored)| (id.as_str(), stored.values.as_slice(), stored.norm)),
-            &query.vector,
-            query.limit,
-        ))
+    /// Score every live document `allowed` accepts and keep the best `limit`.
+    fn top_hits(
+        &self,
+        query: &[f32],
+        limit: usize,
+        allowed: impl Fn(&str) -> bool,
+    ) -> Vec<VectorSearchHit> {
+        let query = PaddedQuery::new(query);
+        let query_norm = query.norm();
+        // Score first, keyed by slot; allocate id strings only for the `limit`
+        // hits that are returned.
+        let mut scored: Vec<(f32, usize)> = (0..self.rows.len())
+            .filter(|&slot| self.alive[slot] && allowed(&self.ids[slot]))
+            .map(|slot| {
+                let norm = self.norms[slot];
+                let score = if query_norm == 0.0 || norm == 0.0 {
+                    0.0
+                } else {
+                    flat_dot(query.lines(), self.rows[slot].lines()) / (query_norm * norm)
+                };
+                (score, slot)
+            })
+            .collect();
+        let limit = limit.max(1);
+        let order = |left: &(f32, usize), right: &(f32, usize)| {
+            right
+                .0
+                .total_cmp(&left.0)
+                .then_with(|| self.ids[left.1].cmp(&self.ids[right.1]))
+        };
+        if scored.len() > limit {
+            scored.select_nth_unstable_by(limit, order);
+            scored.truncate(limit);
+        }
+        scored.sort_by(order);
+        scored
+            .into_iter()
+            .map(|(score, slot)| VectorSearchHit {
+                document_id: self.ids[slot].clone(),
+                score,
+            })
+            .collect()
     }
 }
 
@@ -764,11 +884,15 @@ impl VectorSearchBackend for VectorIndex {
     }
 
     fn document_count(&self) -> usize {
-        self.documents.len()
+        self.by_id.len()
     }
 
     fn upsert_document(&mut self, document: VectorDocument) -> Result<(), VectorIndexError> {
         VectorIndex::upsert_document(self, document)
+    }
+
+    fn upsert_row(&mut self, document_id: String, row: VectorRow) -> Result<(), VectorIndexError> {
+        VectorIndex::upsert_row(self, document_id, row)
     }
 
     fn remove_document(&mut self, document_id: &str) -> bool {
@@ -859,59 +983,6 @@ impl fmt::Display for VectorIndexError {
 }
 
 impl Error for VectorIndexError {}
-
-fn collect_top_vector_hits<'a>(
-    documents: impl Iterator<Item = (&'a str, &'a [f32], f32)>,
-    query: &[f32],
-    limit: usize,
-) -> Vec<VectorSearchHit> {
-    let query_norm = query.iter().map(|value| value * value).sum::<f32>().sqrt();
-    // Score first, keyed by borrowed ids; allocate id strings only for the
-    // `limit` hits that are returned.
-    let mut scored: Vec<(f32, &str)> = documents
-        .map(|(document_id, vector, norm)| {
-            (
-                cosine_with_norms(query, query_norm, vector, norm).unwrap_or(0.0),
-                document_id,
-            )
-        })
-        .collect();
-    let limit = limit.max(1);
-    let order = |left: &(f32, &str), right: &(f32, &str)| {
-        right.0.total_cmp(&left.0).then_with(|| left.1.cmp(right.1))
-    };
-    if scored.len() > limit {
-        scored.select_nth_unstable_by(limit, order);
-        scored.truncate(limit);
-    }
-    scored.sort_by(order);
-    scored
-        .into_iter()
-        .map(|(score, document_id)| VectorSearchHit {
-            document_id: document_id.to_string(),
-            score,
-        })
-        .collect()
-}
-
-/// Cosine similarity with both Euclidean norms precomputed.
-///
-/// Produces bit-identical results to [`cosine_similarity`]: the dot product is
-/// accumulated in the same order and the denominator is the same
-/// `left_norm * right_norm` product.
-fn cosine_with_norms(left: &[f32], left_norm: f32, right: &[f32], right_norm: f32) -> Option<f32> {
-    if left.len() != right.len() || left.is_empty() {
-        return None;
-    }
-    if left_norm == 0.0 || right_norm == 0.0 {
-        return None;
-    }
-    let mut dot = 0.0_f32;
-    for (left_value, right_value) in left.iter().zip(right.iter()) {
-        dot += left_value * right_value;
-    }
-    Some(dot / (left_norm * right_norm))
-}
 
 /// Compute cosine similarity for two vectors in the same space.
 ///

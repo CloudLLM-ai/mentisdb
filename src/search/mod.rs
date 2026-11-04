@@ -33,6 +33,7 @@ pub mod embedding_synonyms;
 /// Deterministic breadth-first expansion helpers built on top of the adjacency
 /// layer.
 pub mod expansion;
+pub mod flat_store;
 /// Graph adjacency and edge-provenance structures derived from committed
 /// thoughts.
 pub mod graph;

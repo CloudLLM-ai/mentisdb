@@ -169,3 +169,7 @@ required-features = ["server"]
 [[bench]]
 name = "embed_commit_latency"
 harness = false
+
+[[bench]]
+name = "exact_search"
+harness = false
