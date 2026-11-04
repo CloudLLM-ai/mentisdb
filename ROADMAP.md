@@ -14,7 +14,8 @@
 - **Shared vectors** — the implicit-edge scanner shares the sidecar's `Arc<[f32]>` vectors instead of copying them; heap growth over the append phase 46.4 -> 11.9 MiB at 20k and 239.2 -> 56.3 MiB at 100k. BREAKING (library): `VectorSidecarEntry::vector` is `Arc<[f32]>`; file format and digest unchanged.
 - **Bounded edge queue** — the scan queue holds positions, never blocks an append or drops an edge; sustains ~155 appends/s at 100k, ~720/s at 20k. Resolves both trade-offs documented in 0.11.0.56.
 - **`derived_backlog`** per chain in `GET /v1/chains` and the MCP chain listing (embeddings in flight, parked, missing; implicit-edge backlog).
-- **Large signed requests** — PLACEHOLDER: lifting the 1 MiB `X-Mentis-Auth`/bearer body cap (fill in at tag time).
+- **Large signed requests** — optional `X-Mentis-Content-Sha256` (the digest the read proof already signs) lets the daemon verify the proof before reading the body and hash it as it streams; without it, 1 MiB as before. `MENTISDB_MAX_BODY_BYTES` (default 64 MiB) caps every body, bearer requests included. The CLI and pymentisdb 0.10.1 send the header, so large `memory import` with a read key works; proof format unchanged.
+- **`mentisdb --help`** says any agent works over MCP, REST or the CLI instead of listing supported agents.
 - **Benchmark harness** — `--rebuild-timeout` / `--request-timeout`, `PHASE FAILED` with exit 2.
 
 ### 0.11.0.56 - Valid-version retrieval, public and private chains, background migrations
@@ -39,7 +40,7 @@
 - **Issue #23 memory blow-up** — one shared FastEmbed model per process, bounded inference chunks, single background sidecar rebuild worker, model cache under `<MENTISDB_DIR>`, `MENTISDB_EMBEDDINGS` opt-out. 13 chains / 2,704 thoughts: previously >6 GB (reporter OOM at 28.8 GiB), now ~1.7 GB peak.
 - **Retrieval** — RRF rerank is a scaled consensus bonus (LoCoMo rerank R@10 5.9% -> 74.1%, LongMemEval rerank R@5 2.8% -> 68.6%); stemmed thesaurus damped to weight 0.3 / cap 3; federated RRF keyed by (chain, id); filtered HNSW recall. Default LoCoMo R@10 72.7 -> 73.5, LongMemEval R@5 66.8 -> 68.0; query throughput ~206/159 -> ~384/385 q/s.
 - **Durability** — torn-tail repair limited to a strict partial final record (mid-file corruption fails open); atomic registries; overlay coverage metadata with crash catch-up; opt-in `MENTISDB_FSYNC`; lone durable appends skip the group-commit wait. Per-append cost 6.3-7.8 ms -> 1.4 ms.
-- **Server behaviour** — unknown-chain reads return 404; accurate error statuses; 413 over 2 MiB (`MENTISDB_MAX_BODY_BYTES`, 64 MiB, on the import routes for an authenticated caller; 1 MiB for a read proof without a content digest); single-flight off-thread chain open; `<MENTISDB_DIR>/.env` loaded.
+- **Server behaviour** — unknown-chain reads return 404; accurate error statuses; 413 over 1 MiB; single-flight off-thread chain open; `<MENTISDB_DIR>/.env` loaded.
 - **CI and deps** — Intel macOS binary returns without `local-embeddings`; ureq 3, sha2 0.11, ed25519-dalek 3, zip 9, crossterm 0.29 and more; fastembed kept on 5.x (fastembed 7 / ort rc.15 auto-registers CoreML on macOS, ~2.5x slower queries).
 - Audit run as parallel agent workstreams coordinated through MentisDB. Full LoCoMo/LongMemEval re-run.
 
