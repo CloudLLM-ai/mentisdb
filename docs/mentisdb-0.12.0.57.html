@@ -61,8 +61,9 @@
       The background scanner now shares the sidecar's vectors instead of copying them, and
       its queue stores positions instead of vectors. Heap growth while appending fell from
       239.2 MiB to 56.3 MiB at 100,000 thoughts and from 46.4 MiB to 11.9 MiB at 20,000.
-      Together with the shared store described below, process RSS at 100,000 thoughts fell
-      from 716 to 519 MiB after loading and from 963 to 916 MiB after 12,700 appends. A
+      The shared store described below then cut process RSS at 100,000 thoughts further,
+      compared with the 0.12 code before it, from 716 to 519 MiB after loading and from
+      963 to 916 MiB after 12,700 appends. A
       backlog now costs a few bytes however long it grows, never blocks an append and never
       drops an edge.
     </p>
