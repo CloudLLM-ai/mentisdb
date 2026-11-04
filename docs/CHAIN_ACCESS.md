@@ -144,8 +144,11 @@ X-Mentis-Content-Sha256: <64 lowercase hex>
 carrying the digest the proof signed. The signed bytes are unchanged, so every existing client (including
 `mentischat` and the interop vectors) verifies as before. A server that knows the header verifies the
 signature against the declared digest *without reading the body*, then hashes the body as it streams and
-fails the request at its end (`400`) if the bytes are not the signed ones; the body is limited only by
-`MENTISDB_MAX_BODY_BYTES` (default 64 MiB). The header is strict (exactly 64 lowercase hex characters, given
+fails the request at its end (`400`) if the bytes are not the signed ones; the body is limited only by the
+route's cap (2 MiB, or `MENTISDB_MAX_BODY_BYTES`, default 64 MiB, on the import routes) and the in-flight body
+budget (`MENTISDB_MAX_INFLIGHT_BODY_BYTES`). A proof is checked per chain and the chain is named inside the body,
+so a proof from an unregistered key cannot be told apart from a real one before the body has been read; that is
+why proof requests are bounded by the budgets rather than a smaller cap. The header is strict (exactly 64 lowercase hex characters, given
 once; anything else is `400`) and a digest that is not the signed body's fails the signature (`401`).
 
 The digest is confirmed only at the end of the body. MentisDB's handlers collect the whole body before they

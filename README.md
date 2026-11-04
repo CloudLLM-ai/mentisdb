@@ -550,11 +550,15 @@ and `cert` work on the data directory directly and do not need the daemon.
   from starting. Set it in the
   environment or a `.env` file (`./.env` or `<MENTISDB_DIR>/.env`). See "Webhook targets" below.
 - `MENTISDB_MAX_BODY_BYTES`
-  Largest request body, in bytes, any REST or MCP endpoint accepts. Default: `67108864` (64 MiB);
-  values below `1048576` (1 MiB) are raised to it. Over it the answer is `413`. It bounds the memory
-  one request can make the daemon hold while it checks who is asking (bearer-token authorization reads
-  the body to find the `chain_key`), so raise it only as far as your biggest import needs. See
-  [Large request bodies](#large-request-bodies).
+  Largest body, in bytes, the import routes (`/v1/import-markdown`, `/v1/skills/upload`,
+  `/v1/extract-memories`) accept from an authenticated caller. Default: `67108864` (64 MiB); must be
+  `1048576` to `1073741824` (1 MiB to 1 GiB), otherwise the daemon refuses to start. Every other route
+  takes at most 2 MiB; over the limit the answer is `413`. See [Large request bodies](#large-request-bodies).
+- `MENTISDB_MAX_INFLIGHT_BODY_BYTES`
+  Body bytes all requests in flight may hold together. Default: four times `MENTISDB_MAX_BODY_BYTES`
+  (one peer may hold twice the cap). Beyond it the answer is `503` with `Retry-After`.
+- `MENTISDB_BODY_IDLE_TIMEOUT_SECS`
+  A request body that delivers no data for this long fails. Default: `30`; `1` to `3600`.
 - `MENTISDB_BEARER_TOKEN_ACCESS`
   Require bearer tokens for MCP requests. Default: `false`. Set `true` for remote
   or multi-user MCP servers. This can also be toggled live from the dashboard Settings screen.
@@ -965,18 +969,24 @@ REST and MCP errors map to HTTP statuses as follows:
 | `403` | Permission denied: missing or invalid signature on a signed skill upload, inactive agent, a write the chain's access policy refused, a `Host` outside the allowlist, or an operator-only route (`/v1/agents/keys`, `/v1/agents/keys/revoke`, `/v1/agents/disable`, `/v1/access/policy/set`) |
 | `404` | Unknown chain (see above) or another missing resource |
 | `409` | Conflict, e.g. `POST /v1/chains/branch` into a chain key that already exists |
-| `413` | Request body over `MENTISDB_MAX_BODY_BYTES` (default 64 MiB), or over 1 MiB for a read proof (`X-Mentis-Auth`) that does not also send `X-Mentis-Content-Sha256` (see [Large request bodies](#large-request-bodies)). The `mentisdb` CLI and `pymentisdb` send it, so a large `memory import` works |
+| `413` | Request body over the route's limit: 2 MiB, or `MENTISDB_MAX_BODY_BYTES` (default 64 MiB) on the import routes for an authenticated caller; over 1 MiB for a read proof (`X-Mentis-Auth`) that does not also send `X-Mentis-Content-Sha256` (see [Large request bodies](#large-request-bodies)). The `mentisdb` CLI and `pymentisdb` send it, so a large `memory import` works |
 | `500` | Server fault; the body says only `"internal server error"` and details go to the daemon log |
 | `501` | `POST /v1/extract-memories` on a build without the `llm-extraction` feature |
 | `503` | The chain is being migrated or is quarantined; the body names the state, and a migrating chain adds `Retry-After` and `retry_after_secs` (see [Upgrading and chain migrations](#upgrading-and-chain-migrations)) |
 
 ### Large request bodies
 
-Every REST and MCP body is limited to `MENTISDB_MAX_BODY_BYTES` (default 64 MiB). Two paths
-decide who is asking, and they treat a large body differently:
+Request bodies are limited per route. Ordinary routes take at most **2 MiB**. The import family
+(`/v1/import-markdown`, `/v1/skills/upload`, `/v1/extract-memories`) takes up to
+`MENTISDB_MAX_BODY_BYTES` (default 64 MiB), and with bearer-token access on only from a caller whose token
+is valid: the token is checked from the headers before any of the body is read, so a request without one is
+refused (`401`, or `413` for a declared length over 2 MiB) without the daemon pulling its body. The bytes held
+by requests in flight are budgeted (`MENTISDB_MAX_INFLIGHT_BODY_BYTES`; beyond it `503` with `Retry-After`) and
+a body that stops arriving fails after `MENTISDB_BODY_IDLE_TIMEOUT_SECS`. Two paths decide who is asking, and
+they treat a large body differently:
 
-- **Bearer token.** The daemon reads the body (up to the cap) to find the `chain_key` the token must
-  cover, then hands it to the handler.
+- **Bearer token.** The daemon reads the body (up to the route's limit) to find the `chain_key` the token
+  must cover, then hands it to the handler.
 - **Read proof (`X-Mentis-Auth`).** The signature covers `SHA-256(body)`, so by itself the daemon must
   read the whole body to check it, which it only does up to **1 MiB**. A client that also sends
   `X-Mentis-Content-Sha256: <64 lowercase hex>` (the same digest the proof signed) lets the daemon verify

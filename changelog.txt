@@ -1,4 +1,34 @@
 UNRELEASED
+  - security(server): an anonymous peer could make a bearer-protected daemon
+    buffer, and JSON-parse, a request body of up to 64 MiB before the token was
+    checked, and many peers could multiply that. Introduced by the large-body
+    change in this cycle; not in 0.11.0.56. Body admission is now decided before
+    any body is read, by one outermost layer (`server_body`): the token is checked
+    from the headers first, and a request with no valid token is refused (`401`)
+    without a byte of its body being pulled; only the import routes
+    (`/v1/import-markdown`, `/v1/skills/upload`, `/v1/extract-memories`) take more
+    than 2 MiB, and only up to `MENTISDB_MAX_BODY_BYTES` from an authenticated
+    caller (every other route, and any caller without a valid token, is held to 2
+    MiB: `413`). The body bytes held by requests in flight are budgeted
+    (`MENTISDB_MAX_INFLIGHT_BODY_BYTES`, default 4x the cap, and a per-peer share of
+    2x the cap): beyond it `503` with `Retry-After`. A body that stops arriving fails
+    after `MENTISDB_BODY_IDLE_TIMEOUT_SECS` (default 30). The cap also holds for a
+    body with no declared length (chunked, HTTP/2), including a digest-checked one.
+    A read proof is verified per chain and the chain is named in the body, so a proof
+    from an unregistered key cannot be told from a real one before the body is read;
+    proof requests are bounded by the budgets above instead of a smaller cap.
+  - security(server): `MENTISDB_MAX_BODY_BYTES` must be a whole number from
+    1048576 to 1073741824; the daemon refuses to start on anything else (and on a bad
+    `MENTISDB_MAX_INFLIGHT_BODY_BYTES` or `MENTISDB_BODY_IDLE_TIMEOUT_SECS`) instead of
+    silently using 64 MiB.
+  - security(pymentisdb): requests carrying a read proof never follow redirects
+    (`allow_redirects=False`; a redirect is an error), as the CLI already did.
+  - BREAKING (public API; with the 0.12.0 change below): `MentisDbServiceConfig` is
+    `#[non_exhaustive]`, so it can no longer be built with a struct literal; use
+    `MentisDbServiceConfig::new(..)` and the `with_*` builders
+    (`with_max_body_bytes`, `with_max_inflight_body_bytes`, `with_body_idle_timeout`).
+    The fields stay readable and assignable; the body cap is clamped to 1 MiB..1 GiB
+    wherever it is used.
   - docs(cli): `mentisdb --help` no longer lists "Supported agents (setup/wizard)".
     MentisDB works with any agent that can reach it over MCP (HTTP or stdio), REST
     or the CLI, and the help now says so. The agents `mentisdb setup` can write a
