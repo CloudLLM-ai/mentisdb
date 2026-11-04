@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.12.0.57 — Shared vectors, derived-state backlog, large signed requests</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article .meta { color: #888; font-size: 0.85rem; margin-bottom: 1rem; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    article table { border-collapse: collapse; margin-bottom: 1rem; font-size: 0.9rem; width: 100%; }
+    article th, article td { border-bottom: 1px solid #e0e0e0; padding: 0.35rem 0.5rem; text-align: left; }
+    a { color: #4361ee; }
+    .callout { background: #eef2ff; border-left: 3px solid #4361ee; border-radius: 0 4px 4px 0; padding: 1rem; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="index.html">MentisDB Blog</a></h1>
+    <p>Durable memory for AI agents</p>
+  </header>
+
+  <article>
+    <h2>MentisDB 0.12.0.57 &mdash; Shared vectors, derived-state backlog, large signed requests</h2>
+    <div class="meta">November 3, 2026</div>
+
+    <p>
+      A short release that closes the open ends of 0.11.0.56. That release moved the
+      implicit-edge scan off the write lock and said what it cost: a second copy of every
+      vector (about 150 MB at 100,000 thoughts) and a queue with no cap. Both costs are
+      gone, operators can now see how far derived state is behind, and signed requests
+      are no longer capped at 1 MiB.
+    </p>
+
+    <h3>1. One copy of every vector</h3>
+    <p>
+      The background scanner now shares the sidecar's vectors instead of copying them, and
+      its queue stores positions instead of vectors. At 100,000 thoughts, heap growth while
+      appending fell from 239.2 MiB to 56.3 MiB, and peak RSS from about 1,120 MiB to 970 MiB.
+      At 20,000 thoughts it fell from 46.4 MiB to 11.9 MiB. A backlog now costs a few bytes
+      however long it grows, never blocks an append and never drops an edge.
+    </p>
+
+    <h3>2. See what is still catching up</h3>
+    <p>
+      <code>GET /v1/chains</code> and the MCP chain listing report a
+      <code>derived_backlog</code> per chain: embeddings in flight, parked or missing, and
+      implicit edges not yet in the overlay. All zeros means healthy. A growing embedding
+      count points at a stalling provider. A growing edge count means appends are faster
+      than the scan (about 155 per second at 100,000 thoughts); the edges for the newest
+      thoughts then arrive late and catch up when appends slow down.
+    </p>
+
+    <h3>3. Large signed requests</h3>
+    <p>
+      <strong>PLACEHOLDER &mdash; fill in before tagging:</strong> the 1 MiB limit on
+      <code>X-Mentis-Auth</code> and bearer-token REST bodies, and what replaces it.
+    </p>
+
+    <h3>Why 0.12</h3>
+    <p>
+      To share vectors, <code>VectorSidecarEntry::vector</code> became
+      <code>Arc&lt;[f32]&gt;</code>. Code that embeds MentisDB and reads that field as a
+      <code>Vec</code> needs <code>.to_vec()</code>; the
+      <a href="mentisdb-0.12.0.57-release-notes.md">release notes</a>
+      have a before-and-after snippet. The file format, the wire protocol and the CLI are
+      unchanged, and no migration runs.
+    </p>
+    <pre><code>cargo install mentisdb --locked --force
+# or
+docker pull ghcr.io/cloudllm-ai/mentisdb:0.12.0.57</code></pre>
+  </article>
+</body>
+</html>

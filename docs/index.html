@@ -40,6 +40,18 @@
   </header>
 
   <article>
+    <h2><a href="mentisdb-0.12.0.57.html">MentisDB 0.12.0.57 &mdash; Shared vectors, derived-state backlog, large signed requests</a></h2>
+    <div class="meta">November 3, 2026</div>
+    <p>
+      The implicit-edge scanner shares the sidecar's vectors instead of copying them (heap
+      growth at 100,000 thoughts 239 MiB &rarr; 56 MiB) and its queue no longer grows
+      without bound; <code>GET /v1/chains</code> reports a per-chain
+      <code>derived_backlog</code>; signed requests are no longer capped at 1 MiB. Library
+      users: <code>VectorSidecarEntry::vector</code> is now <code>Arc&lt;[f32]&gt;</code>.
+    </p>
+  </article>
+
+  <article>
     <h2><a href="mentisdb-0.11.0.56.html">MentisDB 0.11.0.56 &mdash; The current version of a memory, private chains, background migrations</a></h2>
     <div class="meta">November 2, 2026</div>
     <p>
