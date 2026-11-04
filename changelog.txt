@@ -1,4 +1,11 @@
 UNRELEASED
+  - security(server): a body could hold the large pool indefinitely by declaring
+    64 MiB and sending a byte every 29 s: the idle timer restarts on every chunk and
+    large bodies had no total deadline. Every body (large ones too) must now average
+    at least 64 KiB/s (`MIN_BODY_BYTES_PER_SEC`) once its grace period (twice the idle
+    timeout, 60 s by default) is over, otherwise it fails with `408`. A genuinely
+    slower link than 64 KiB/s (about 0.5 Mbit/s) cannot upload a body for longer than
+    the grace period.
   - security(server): anonymous request bodies no longer share a pool with
     authenticated traffic. Bodies from a caller with no valid token (bearer-token
     access on) draw on a 16 MiB pool of their own (8 MiB per peer), so slow

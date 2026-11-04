@@ -46,8 +46,11 @@
 //!
 //! A body that delivers nothing for `MENTISDB_BODY_IDLE_TIMEOUT_SECS` (default
 //! 30) fails. Because that timer restarts on every chunk, small and anonymous
-//! bodies also get a total deadline of twice the idle timeout: a client dripping
-//! one byte per chunk cannot keep a connection and its charge for longer.
+//! bodies also get a total deadline of twice the idle timeout, and every body,
+//! large ones included, must average at least [`MIN_BODY_BYTES_PER_SEC`] (64
+//! KiB/s) once its grace period (twice the idle timeout) is over: a client
+//! dripping one byte per chunk, each just inside the idle timeout, fails with
+//! `408` instead of holding a connection and its charge for as long as it likes.
 //! Failures are `408` (too slow) and `503` with `Retry-After` (budget), also
 //! when the failure surfaces in the bearer-token middleware.
 //!
@@ -108,6 +111,11 @@ pub const ANONYMOUS_PEER_BYTES: usize = 8 * 1024 * 1024;
 /// Bytes of the small pool one peer may hold: 32 MiB, so that with bearer-token
 /// access off (where every caller is alike) one peer cannot take the whole pool.
 pub const SMALL_PEER_BYTES: usize = 32 * 1024 * 1024;
+
+/// Slowest average rate, in bytes per second, a body may arrive at once its grace
+/// period (twice the idle timeout) is over: 64 KiB/s. A body that goes on arriving
+/// just often enough to beat the idle timer, but slower than this, fails with `408`.
+pub const MIN_BODY_BYTES_PER_SEC: usize = 64 * 1024;
 
 /// Large bodies one peer may have in flight at once.
 pub const LARGE_BODIES_PER_PEER: usize = 4;
@@ -339,6 +347,18 @@ struct MeteredBody {
     deadline: Pin<Box<tokio::time::Sleep>>,
     /// Absolute deadline for the whole body (small and anonymous requests).
     total: Option<Pin<Box<tokio::time::Sleep>>>,
+    started: tokio::time::Instant,
+}
+
+impl MeteredBody {
+    /// Whether the body, past its grace period, has fallen below
+    /// [`MIN_BODY_BYTES_PER_SEC`] on average since the grace period ended.
+    fn too_slow(&self) -> bool {
+        let grace = self.idle.saturating_mul(2);
+        let past = self.started.elapsed().saturating_sub(grace);
+        past > Duration::ZERO
+            && (self.received as f64) < past.as_secs_f64() * MIN_BODY_BYTES_PER_SEC as f64
+    }
 }
 
 impl http_body::Body for MeteredBody {
@@ -357,6 +377,9 @@ impl http_body::Body for MeteredBody {
                     if this.reservation.ensure(this.received).is_err() {
                         return Poll::Ready(Some(Err(Box::new(BodyStop::Budget))));
                     }
+                }
+                if this.too_slow() {
+                    return Poll::Ready(Some(Err(Box::new(BodyStop::Idle))));
                 }
                 let next = tokio::time::Instant::now() + this.idle;
                 this.deadline.as_mut().reset(next);
@@ -505,6 +528,7 @@ pub(crate) async fn body_admission_middleware(
         idle,
         deadline: Box::pin(tokio::time::sleep(idle)),
         total,
+        started: tokio::time::Instant::now(),
     };
     let body = Body::new(http_body_util::Limited::new(metered, cap));
     let response = next.run(Request::from_parts(parts, body)).await;
@@ -603,6 +627,76 @@ mod tests {
             "{} stale peer entries",
             budget.peers.lock().unwrap().len()
         );
+    }
+
+    /// A body that keeps arriving just often enough to beat the idle timer but
+    /// slower than the minimum rate is cut off once its grace period is over; a
+    /// body at a healthy rate is not.
+    #[tokio::test]
+    async fn a_slow_drip_that_beats_the_idle_timer_still_fails() {
+        use http_body_util::BodyExt;
+
+        /// `chunks` chunks of `size` bytes, one every `gap`.
+        struct Drip {
+            chunks: usize,
+            size: usize,
+            gap: Duration,
+            sleep: Pin<Box<tokio::time::Sleep>>,
+        }
+        impl http_body::Body for Drip {
+            type Data = axum::body::Bytes;
+            type Error = std::convert::Infallible;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+                if self.chunks == 0 {
+                    return Poll::Ready(None);
+                }
+                if self.sleep.as_mut().poll(cx).is_pending() {
+                    return Poll::Pending;
+                }
+                let next = tokio::time::Instant::now() + self.gap;
+                self.sleep.as_mut().reset(next);
+                self.chunks -= 1;
+                let data = axum::body::Bytes::from(vec![b'x'; self.size]);
+                Poll::Ready(Some(Ok(http_body::Frame::data(data))))
+            }
+        }
+        let run = |size: usize, chunks: usize| async move {
+            let budget = budget();
+            let reservation = budget.reservation(BodyClass::Large, None).unwrap();
+            let idle = Duration::from_millis(100);
+            let drip = Drip {
+                chunks,
+                size,
+                gap: Duration::from_millis(40),
+                sleep: Box::pin(tokio::time::sleep(Duration::ZERO)),
+            };
+            let body = Body::new(drip);
+            let metered = MeteredBody {
+                inner: body,
+                reservation,
+                received: 0,
+                idle,
+                deadline: Box::pin(tokio::time::sleep(idle)),
+                total: None,
+                started: tokio::time::Instant::now(),
+            };
+            metered
+                .collect()
+                .await
+                .map(|collected| collected.to_bytes().len())
+        };
+        // 1 byte every 40 ms is well inside the 100 ms idle timer, but far below
+        // 64 KiB/s: it fails once the 200 ms grace period is over.
+        let error = run(1, 50).await.expect_err("a 1 byte/40 ms drip must fail");
+        assert!(
+            matches!(error.downcast_ref::<BodyStop>(), Some(BodyStop::Idle)),
+            "{error}"
+        );
+        // 8 KiB every 40 ms is 200 KiB/s: fine.
+        assert_eq!(run(8 * 1024, 10).await.unwrap(), 80 * 1024);
     }
 
     /// While a body is in flight its peer has an entry; releasing it removes it.
