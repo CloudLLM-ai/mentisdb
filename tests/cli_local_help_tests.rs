@@ -86,3 +86,23 @@ fn test_overview_lists_every_local_command() {
         );
     }
 }
+
+/// The top-level help says MentisDB works with any agent, over MCP, REST or
+/// the CLI, instead of listing a fixed set of "supported" agents. The agents
+/// `mentisdb setup` can write a config for are listed only under
+/// `mentisdb setup --help`, where they are valid arguments.
+#[test]
+fn test_overview_says_any_agent_works_without_a_fixed_agent_list() {
+    let overview = mentisdb::cli::help_text();
+    assert!(
+        !overview.contains("Supported agents"),
+        "mentisdb --help must not present a closed list of supported agents"
+    );
+    assert!(overview.contains("MentisDB works with any agent that can reach it"));
+    for transport in ["MCP (HTTP or stdio)", "REST API", "CLI"] {
+        assert!(
+            overview.contains(transport),
+            "mentisdb --help does not name the {transport} transport"
+        );
+    }
+}

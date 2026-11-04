@@ -354,7 +354,10 @@ fn first_run_setup_notice_text_points_to_wizard_and_setup_commands() {
     assert!(dialog.contains("mentisdb wizard"));
     assert!(dialog.contains("mentisdb setup all --dry-run"));
     assert!(dialog.contains("mentisdb setup <agent>"));
-    assert!(dialog.contains("vscode-copilot"));
+    // Any agent works; the notice must not imply a closed list of agents.
+    assert!(dialog.contains("Any agent works"));
+    assert!(dialog.contains("MCP (HTTP or stdio), REST, or the CLI"));
+    assert!(!dialog.contains("Supported agents"));
 }
 
 #[test]
@@ -442,7 +445,8 @@ fn setup_help_uses_the_embedded_mentisdb_cli_surface() {
 
     let stdout = String::from_utf8(output).unwrap();
     assert!(stdout.contains("mentisdb setup <agent|all>"));
-    assert!(stdout.contains("Supported agents:"));
+    assert!(stdout.contains("Agents setup can configure:"));
+    assert!(stdout.contains("Any other agent works too"));
     assert!(!stdout.contains("mentisdb daemon"));
 }
 

@@ -320,20 +320,16 @@ Client transport (--mode):
   --mode both      Stdio MCP and the HTTP/TUI operator stack in one process.
   --stdio-mcp      Alias for --mode stdio
 
-Supported agents (setup/wizard):
-  codex
-  claude-code
-  claude-desktop
-  gemini
-  opencode
-  qwen
-  copilot
-  vscode-copilot
+Agents:
+  MentisDB works with any agent that can reach it: over MCP (HTTP or stdio),
+  over the REST API, or by running this CLI as a tool. `mentisdb setup` and
+  `mentisdb wizard` only save typing: they write a ready-made MCP config for
+  common agents (see 'mentisdb setup --help').
 
 Commands:
   setup
-    Write the canonical MentisDB MCP configuration for one supported agent,
-    or for every supported integration with `all`.
+    Write a ready-made MentisDB MCP configuration for one agent, or for every
+    agent setup knows with `all`.
 
     Examples:
       mentisdb setup codex
@@ -520,13 +516,16 @@ Options:
 /// Return the help text for the `setup` subcommand.
 pub fn setup_help_text() -> &'static str {
     "\
-mentisdb setup — Write the canonical MentisDB MCP configuration for one supported agent, or for every supported integration with `all`.
+mentisdb setup — Write a ready-made MentisDB MCP configuration for one agent, or for every agent setup knows with `all`.
 
 Usage:
   mentisdb setup <agent|all> [--url <url>] [--dry-run] [--yes]
 
-Supported agents:
+Agents setup can configure:
   codex, claude-code, claude-desktop, gemini, opencode, qwen, copilot, vscode-copilot
+
+  Any other agent works too: point it at the MCP endpoint (HTTP or stdio), the
+  REST API, or have it run the mentisdb CLI.
 
 Options:
   --url <url>     Override the default MentisDB MCP endpoint for the selected target(s)

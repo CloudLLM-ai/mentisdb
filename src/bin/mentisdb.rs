@@ -688,8 +688,8 @@ pub(crate) fn build_first_run_setup_lines() -> Vec<String> {
         "Or preview everything with: mentisdb setup all --dry-run".to_string(),
         "Then apply one target with: mentisdb setup <agent>".to_string(),
         String::new(),
-        "Supported agents: codex, claude-code, claude-desktop, gemini,".to_string(),
-        "opencode, qwen, copilot, vscode-copilot, grok.".to_string(),
+        "Any agent works: over MCP (HTTP or stdio), REST, or the CLI.".to_string(),
+        "setup only writes ready-made MCP configs for common agents.".to_string(),
     ]
 }
 
