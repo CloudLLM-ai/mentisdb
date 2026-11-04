@@ -95,18 +95,41 @@ class MentisDbClient:
         # The proof covers the body bytes, so serialize once and send exactly that.
         body = json.dumps(data or {}, separators=(",", ":")).encode("utf-8")
         headers = {"Content-Type": "application/json", **self._proof_headers("POST", url, body)}
-        response = self._session.post(url, data=body, headers=headers, timeout=30)
-        response.raise_for_status()
+        response = self._session.post(
+            url, data=body, headers=headers, timeout=30, allow_redirects=False
+        )
+        self._check(response)
         return response.json()
 
     def _get(self, endpoint: str) -> dict:
         """Make a GET request to the REST API."""
         url = f"{self.base_url}{endpoint}"
         response = self._session.get(
-            url, headers=self._proof_headers("GET", url, b""), timeout=30
+            url,
+            headers=self._proof_headers("GET", url, b""),
+            timeout=30,
+            allow_redirects=False,
         )
-        response.raise_for_status()
+        self._check(response)
         return response.json()
+
+    @staticmethod
+    def _check(response) -> None:
+        """Raise for an error status, and for a redirect.
+
+        Requests never follow redirects: they carry the read proof, a signature
+        bound to one URL, and a redirect would hand it (and any bearer header)
+        to whatever host the daemon address points at.
+        """
+        status = getattr(response, "status_code", 200)
+        if isinstance(status, int) and 300 <= status < 400:
+            raise requests.HTTPError(
+                f"{status} redirect from {response.url}: pymentisdb does not follow "
+                "redirects (the request carries your credentials); point base_url at "
+                "the final address",
+                response=response,
+            )
+        response.raise_for_status()
 
     def _serialize_scope(self, scope: Optional[MemoryScope | str]) -> Optional[str]:
         if scope is None:

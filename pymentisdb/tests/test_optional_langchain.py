@@ -84,7 +84,7 @@ class OptionalLangChainTests(unittest.TestCase):
             """
             import pymentisdb
             from pymentisdb import MentisDbClient, ReadSigner, Thought
-            assert pymentisdb.__version__ == "0.10.0", pymentisdb.__version__
+            assert pymentisdb.__version__ == "0.10.1", pymentisdb.__version__
             assert "langchain_core" not in sys.modules
             print("ok")
             """,

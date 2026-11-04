@@ -143,6 +143,30 @@ class ReadAuthTests(unittest.TestCase):
             PINNED_VECTOR,
         )
 
+    def test_requests_never_follow_redirects(self):
+        client = client_module.MentisDbClient("http://127.0.0.1:9472/", read_signer=self.signer())
+        client._session = MagicMock()
+        client._session.post.return_value = MagicMock()
+        client._session.get.return_value = MagicMock()
+        client._post("/v1/head", {})
+        client._get("/v1/chains")
+        self.assertIs(client._session.post.call_args.kwargs["allow_redirects"], False)
+        self.assertIs(client._session.get.call_args.kwargs["allow_redirects"], False)
+
+    def test_a_redirect_is_an_error_not_followed(self):
+        import requests
+
+        client = client_module.MentisDbClient("http://127.0.0.1:9472/", read_signer=self.signer())
+        redirect = MagicMock()
+        redirect.status_code = 302
+        redirect.url = "http://127.0.0.1:9472/v1/head"
+        client._session = MagicMock()
+        client._session.post.return_value = redirect
+        with self.assertRaises(requests.HTTPError) as caught:
+            client._post("/v1/head", {})
+        self.assertIn("redirect", str(caught.exception))
+        redirect.json.assert_not_called()
+
     def test_without_a_signer_no_header_is_sent(self):
         client = client_module.MentisDbClient()
         client._read_signer = None
