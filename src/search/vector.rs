@@ -655,6 +655,13 @@ pub struct VectorIndex {
     ids: Vec<String>,
     alive: Vec<bool>,
     by_id: HashMap<String, usize>,
+    /// Slots of removed documents, reused before the slot arrays grow, so
+    /// remove-and-add churn is bounded by the peak number of live documents.
+    free: Vec<usize>,
+    /// Rows in `store` that no slot references any more (replaced or removed
+    /// documents). The store is append-only, so these are reclaimed by copying
+    /// the live rows into a fresh store once they outnumber them.
+    wasted_private: usize,
 }
 
 impl VectorIndex {
@@ -669,6 +676,8 @@ impl VectorIndex {
             ids: Vec::new(),
             alive: Vec::new(),
             by_id: HashMap::new(),
+            free: Vec::new(),
+            wasted_private: 0,
         }
     }
 
@@ -775,27 +784,73 @@ impl VectorIndex {
     fn place(&mut self, document_id: String, row: VectorRow) {
         let norm = flat_norm(row.lines());
         if let Some(&slot) = self.by_id.get(&document_id) {
+            self.retire_row(slot);
             self.rows[slot] = row;
             self.norms[slot] = norm;
+        } else if let Some(slot) = self.free.pop() {
+            self.rows[slot] = row;
+            self.norms[slot] = norm;
+            self.ids[slot] = document_id.clone();
+            self.alive[slot] = true;
+            self.by_id.insert(document_id, slot);
+        } else {
+            let slot = self.rows.len();
+            self.rows.push(row);
+            self.norms.push(norm);
+            self.ids.push(document_id.clone());
+            self.alive.push(true);
+            self.by_id.insert(document_id, slot);
+        }
+        self.compact_store_if_wasteful();
+    }
+
+    /// Note that `slot`'s current row is about to stop being referenced.
+    fn retire_row(&mut self, slot: usize) {
+        if self.store.contains(&self.rows[slot]) {
+            self.wasted_private += 1;
+        }
+    }
+
+    /// Copy the live private rows into a fresh store when dead ones outnumber
+    /// them (and there are enough to matter), so replace-by-value and
+    /// remove/add churn cannot grow memory without bound.
+    fn compact_store_if_wasteful(&mut self) {
+        const SLACK: usize = 256;
+        if self.wasted_private <= SLACK.max(self.by_id.len()) {
             return;
         }
-        let slot = self.rows.len();
-        self.rows.push(row);
-        self.norms.push(norm);
-        self.ids.push(document_id.clone());
-        self.alive.push(true);
-        self.by_id.insert(document_id, slot);
+        let mut fresh = VectorStore::new(self.metadata.dimension);
+        let placeholder = VectorRow::standalone(&[]);
+        for slot in 0..self.rows.len() {
+            if !self.alive[slot] {
+                self.rows[slot] = placeholder.clone();
+            } else if self.store.contains(&self.rows[slot]) {
+                self.rows[slot] = fresh.push(&self.rows[slot]);
+            }
+        }
+        self.store = fresh;
+        self.wasted_private = 0;
     }
 
     /// Remove one document by id, returning `true` when it existed.
     pub fn remove_document(&mut self, document_id: &str) -> bool {
         match self.by_id.remove(document_id) {
             Some(slot) => {
+                self.retire_row(slot);
                 self.alive[slot] = false;
+                self.free.push(slot);
+                self.compact_store_if_wasteful();
                 true
             }
             None => false,
         }
+    }
+
+    /// `(slots, private store rows)`: how much room the index holds, so a test
+    /// can assert churn does not grow it.
+    #[doc(hidden)]
+    pub fn capacity_for_tests(&self) -> (usize, usize) {
+        (self.rows.len(), self.store.row_count())
     }
 
     /// The stored row for one document id, if present. Lets a test or a caller

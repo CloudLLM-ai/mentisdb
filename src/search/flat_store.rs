@@ -270,6 +270,14 @@ impl VectorStore {
         row
     }
 
+    /// Rows written into this store (live or not).
+    pub fn row_count(&self) -> usize {
+        match self.chunks.len() {
+            0 => 0,
+            n => (n - 1) * CHUNK_ROWS + self.tail_rows,
+        }
+    }
+
     /// Whether this store holds vectors of `dimension` values.
     pub fn has_dimension(&self, dimension: usize) -> bool {
         self.dimension == dimension
@@ -324,6 +332,7 @@ impl fmt::Debug for VectorStore {
 ///
 /// Sixteen independent lane accumulators, reduced pairwise in a fixed order.
 /// See the module docs for the precision contract ([`DOT_EPSILON`]).
+
 ///
 /// # Examples
 ///

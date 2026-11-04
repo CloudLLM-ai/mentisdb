@@ -239,3 +239,61 @@ fn test_rows_of_the_wrong_dimension_or_non_finite_are_rejected() {
         .is_err());
     assert_eq!(index.document_count(), 0);
 }
+
+/// Regression: remove-then-add churn used to push a new slot per re-added id
+/// (and by-value replacement left the old row in the append-only store), so the
+/// index grew without bound. Slots are reused and the store is compacted, and
+/// ranking stays correct through the churn.
+#[test]
+fn test_remove_and_readd_churn_does_not_grow_the_index() {
+    let dimension = 16;
+    let mut rng = Lcg(9);
+    let mut index = VectorIndex::new(EmbeddingMetadata::new("churn", dimension, "v1"));
+    let mut live: Vec<(String, Vec<f32>)> = Vec::new();
+    for i in 0..50 {
+        let v: Vec<f32> = (0..dimension).map(|_| rng.unit()).collect();
+        index
+            .upsert_document(VectorDocument::new(format!("doc-{i:03}"), v.clone()))
+            .unwrap();
+        live.push((format!("doc-{i:03}"), v));
+    }
+    let (slots_before, rows_before) = index.capacity_for_tests();
+    for round in 0..3000 {
+        let at = round % live.len();
+        let id = live[at].0.clone();
+        assert!(index.remove_document(&id));
+        let v: Vec<f32> = (0..dimension).map(|_| rng.unit()).collect();
+        index
+            .upsert_document(VectorDocument::new(id.clone(), v.clone()))
+            .unwrap();
+        live[at].1 = v;
+        // Replacing by value without removing also leaves old rows behind.
+        let r = (round * 7 + 3) % live.len();
+        let v: Vec<f32> = (0..dimension).map(|_| rng.unit()).collect();
+        index
+            .upsert_document(VectorDocument::new(live[r].0.clone(), v.clone()))
+            .unwrap();
+        live[r].1 = v;
+    }
+    let (slots_after, rows_after) = index.capacity_for_tests();
+    assert_eq!(slots_after, slots_before, "slots are reused");
+    assert!(
+        rows_after <= rows_before + 2 * 256 + live.len(),
+        "store rows grew without bound: {rows_before} -> {rows_after}"
+    );
+    assert_eq!(index.document_count(), live.len());
+    let query: Vec<f32> = (0..dimension).map(|_| rng.unit()).collect();
+    let hits = index
+        .search(&VectorQuery::new(query.clone()).with_limit(10))
+        .unwrap();
+    let expected = reference(&live, &query, 10, |_| true);
+    assert_eq!(
+        hits.iter()
+            .map(|h| h.document_id.clone())
+            .collect::<Vec<_>>(),
+        expected
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>()
+    );
+}
