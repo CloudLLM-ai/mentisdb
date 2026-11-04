@@ -555,8 +555,9 @@ and `cert` work on the data directory directly and do not need the daemon.
   `1048576` to `1073741824` (1 MiB to 1 GiB), otherwise the daemon refuses to start. Every other route
   takes at most 2 MiB; over the limit the answer is `413`. See [Large request bodies](#large-request-bodies).
 - `MENTISDB_MAX_INFLIGHT_BODY_BYTES`
-  Body bytes all requests in flight may hold together. Default: four times `MENTISDB_MAX_BODY_BYTES`
-  (one peer may hold twice the cap). Beyond it the answer is `503` with `Retry-After`.
+  Body bytes all *import* requests in flight may hold together. Default: four times `MENTISDB_MAX_BODY_BYTES`
+  (one peer may hold twice the cap and four bodies); a smaller value is raised to one cap. Beyond it the answer is
+  `503` with `Retry-After`. Ordinary requests have their own fixed 64 MiB pool and are never starved by imports.
 - `MENTISDB_BODY_IDLE_TIMEOUT_SECS`
   A request body that delivers no data for this long fails. Default: `30`; `1` to `3600`.
 - `MENTISDB_BEARER_TOKEN_ACCESS`
@@ -980,9 +981,13 @@ Request bodies are limited per route. Ordinary routes take at most **2 MiB**. Th
 (`/v1/import-markdown`, `/v1/skills/upload`, `/v1/extract-memories`) takes up to
 `MENTISDB_MAX_BODY_BYTES` (default 64 MiB), and with bearer-token access on only from a caller whose token
 is valid: the token is checked from the headers before any of the body is read, so a request without one is
-refused (`401`, or `413` for a declared length over 2 MiB) without the daemon pulling its body. The bytes held
-by requests in flight are budgeted (`MENTISDB_MAX_INFLIGHT_BODY_BYTES`; beyond it `503` with `Retry-After`) and
-a body that stops arriving fails after `MENTISDB_BODY_IDLE_TIMEOUT_SECS`. Two paths decide who is asking, and
+refused (`401`, or `413` for a declared length over 2 MiB) without the daemon pulling its body. Large
+imports draw on their own budget (`MENTISDB_MAX_INFLIGHT_BODY_BYTES`, reserved from the declared length; beyond it
+`503` with `Retry-After`); every other request is charged only for the bytes that actually arrive, from a separate
+pool, so imports never starve appends and searches, and an anonymous peer may hold only 8 MiB of it. A body that
+stops arriving fails with `408` after `MENTISDB_BODY_IDLE_TIMEOUT_SECS`, and small or anonymous bodies also get a
+total deadline of twice that. MCP request bodies (including the `mentisdb_import_memory_markdown` tool) are always
+limited to 2 MiB: send a large import to the REST route, or use the CLI. Two paths decide who is asking, and
 they treat a large body differently:
 
 - **Bearer token.** The daemon reads the body (up to the route's limit) to find the `chain_key` the token

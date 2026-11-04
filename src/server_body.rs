@@ -5,26 +5,48 @@
 //! one unauthenticated peer can pin the largest body the daemon accepts, and
 //! many peers (or one peer with many connections) can multiply that. Every REST
 //! and MCP request therefore passes through `body_admission_middleware`, the
-//! outermost layer, before any authentication step reads its body:
+//! outermost layer, before any authentication step reads its body.
 //!
-//! * **A per-route cap.** Ordinary routes accept at most
-//!   [`SMALL_BODY_BYTES`] (2 MiB). The routes in [`LARGE_BODY_ROUTES`] (the
-//!   `/v1/import-*` family, skill upload and memory extraction) accept up to
-//!   `MENTISDB_MAX_BODY_BYTES` (default 64 MiB), but only from a caller that is
-//!   authenticated when bearer-token access is on: a request with no valid
-//!   token keeps the small cap. A declared `Content-Length` over the cap is
-//!   refused with `413` at once; a body without one (chunked, HTTP/2) is cut off
-//!   with `413` when it crosses the cap.
-//! * **A global budget** (`MENTISDB_MAX_INFLIGHT_BODY_BYTES`, default four
-//!   times the body cap) of body bytes held by requests in flight at once, and
-//!   a **per-peer share** of it (twice the body cap, never more than the
-//!   global). A request is charged for its declared length when it arrives and
-//!   for each chunk as it streams; when the budget is gone it gets `503` with
-//!   `Retry-After`. The charge is returned when the request finishes, not when
-//!   its body is read: a handler that buffered the body still holds the memory.
-//! * **An idle timeout** (`MENTISDB_BODY_IDLE_TIMEOUT_SECS`, default 30): a body
-//!   that stops arriving for that long fails, so a slow-drip client cannot hold a
-//!   connection and its reservation indefinitely.
+//! # Caps
+//!
+//! Ordinary routes accept at most [`SMALL_BODY_BYTES`] (2 MiB). The routes in
+//! [`LARGE_BODY_ROUTES`] accept up to `MENTISDB_MAX_BODY_BYTES` (default 64
+//! MiB), but with bearer-token access on only from a caller with a valid token;
+//! a request with no valid token keeps the small cap. A declared `Content-Length`
+//! over the cap is refused with `413` at once; a body without one (chunked,
+//! HTTP/2) is cut off with `413` when it crosses the cap. MCP bodies
+//! (`tools/call` and the rest of the JSON-RPC traffic) are always small: a large
+//! import goes through the REST import routes (or the CLI, which uses them).
+//!
+//! # Budgets
+//!
+//! Three classes of request draw on separate pools, so imports can never starve
+//! ordinary traffic:
+//!
+//! * **Large** (an import route, from an allowed caller): the *large pool*
+//!   (`MENTISDB_MAX_INFLIGHT_BODY_BYTES`, default four times the body cap), of
+//!   which one peer may hold twice the cap and at most four bodies at a time.
+//!   Its declared length is reserved when it arrives, so an import that cannot
+//!   fit is refused at once with `503` and `Retry-After`.
+//! * **Small** (everything else, from a caller that is not anonymous): the *small
+//!   pool*, 64 MiB for all of them, charged only for the bytes that actually
+//!   arrive, never for a declared length. No per-peer limit: on a loopback bind
+//!   every local agent is the same peer.
+//! * **Anonymous** (bearer-token access on, no valid token): the same small
+//!   pool, but one peer may hold at most 8 MiB of it, charged as bytes arrive.
+//!
+//! A reservation is returned as soon as the body has been read to its end (or
+//! the request ends, whichever is first); a handler that goes on to hold the
+//! parsed body is bounded by its route cap, not by the budget.
+//!
+//! # Time
+//!
+//! A body that delivers nothing for `MENTISDB_BODY_IDLE_TIMEOUT_SECS` (default
+//! 30) fails. Because that timer restarts on every chunk, small and anonymous
+//! bodies also get a total deadline of twice the idle timeout: a client dripping
+//! one byte per chunk cannot keep a connection and its charge for longer.
+//! Failures are `408` (too slow) and `503` with `Retry-After` (budget), also
+//! when the failure surfaces in the bearer-token middleware.
 //!
 //! Who may use the large cap is decided from the request headers alone (a valid
 //! bearer token), never from the body. A read proof (`X-Mentis-Auth`) is checked
@@ -57,7 +79,9 @@ pub const SMALL_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 /// REST routes that may carry a body up to `MENTISDB_MAX_BODY_BYTES`: the memory
 /// import, skill upload and memory extraction endpoints, which take whole files.
-/// Every other route is held to [`SMALL_BODY_BYTES`].
+/// Every other route is held to [`SMALL_BODY_BYTES`]. MCP is not listed: its
+/// `tools/call` bodies (including `mentisdb_import_memory_markdown`) are capped at
+/// 2 MiB, so a large import goes through these REST routes.
 pub const LARGE_BODY_ROUTES: [&str; 3] = [
     "/v1/import-markdown",
     "/v1/skills/upload",
@@ -67,105 +91,194 @@ pub const LARGE_BODY_ROUTES: [&str; 3] = [
 /// Granularity of the budget: permits are KiB so a byte count always fits.
 const UNIT: usize = 1024;
 
+/// Bytes of body all small and anonymous requests may hold at once: 64 MiB.
+pub const SMALL_POOL_BYTES: usize = 64 * 1024 * 1024;
+
+/// Bytes of the small pool one anonymous peer may hold: 8 MiB.
+pub const ANONYMOUS_PEER_BYTES: usize = 8 * 1024 * 1024;
+
+/// Large bodies one peer may have in flight at once.
+pub const LARGE_BODIES_PER_PEER: usize = 4;
+
 /// Whether `path` may carry a large body, see [`LARGE_BODY_ROUTES`].
 pub fn is_large_body_route(path: &str) -> bool {
     LARGE_BODY_ROUTES.contains(&path)
 }
 
+/// Which pool a request draws on, see the [module documentation](crate::server_body).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BodyClass {
+    /// An import route from an allowed caller.
+    Large,
+    /// Anything else from a caller that is not anonymous.
+    Small,
+    /// Bearer-token access is on and the caller has no valid token.
+    Anonymous,
+}
+
+#[derive(Debug, Default)]
+struct PeerUse {
+    large_units: usize,
+    large_bodies: usize,
+    anonymous_units: usize,
+}
+
 /// The in-flight body budget shared by every request of one service.
 #[derive(Debug)]
 pub(crate) struct BodyBudget {
-    global: Arc<Semaphore>,
-    per_peer_units: usize,
-    peers: Mutex<HashMap<IpAddr, usize>>,
+    large: Arc<Semaphore>,
+    small: Arc<Semaphore>,
+    per_peer_large_units: usize,
+    peers: Mutex<HashMap<IpAddr, PeerUse>>,
+}
+
+fn units(bytes: usize) -> usize {
+    bytes.div_ceil(UNIT).min(u32::MAX as usize)
 }
 
 impl BodyBudget {
-    /// A budget of `global_bytes`, of which one peer may hold `per_peer_bytes`.
-    pub(crate) fn new(global_bytes: usize, per_peer_bytes: usize) -> Arc<Self> {
-        let units = |bytes: usize| bytes.div_ceil(UNIT).min(u32::MAX as usize);
+    /// A large pool of `large_bytes`, of which one peer may hold `per_peer_bytes`;
+    /// the small pool is fixed ([`SMALL_POOL_BYTES`]).
+    pub(crate) fn new(large_bytes: usize, per_peer_bytes: usize) -> Arc<Self> {
         Arc::new(Self {
-            global: Arc::new(Semaphore::new(units(global_bytes))),
-            per_peer_units: units(per_peer_bytes).min(units(global_bytes)),
+            large: Arc::new(Semaphore::new(units(large_bytes))),
+            small: Arc::new(Semaphore::new(units(SMALL_POOL_BYTES))),
+            per_peer_large_units: units(per_peer_bytes).min(units(large_bytes)),
             peers: Mutex::new(HashMap::new()),
         })
     }
 
-    /// Start an (empty) reservation for a request from `peer`.
-    fn reservation(self: &Arc<Self>, peer: Option<IpAddr>) -> Arc<Reservation> {
-        Arc::new(Reservation {
+    /// Start an (empty) reservation for a request of `class` from `peer`; `None`
+    /// when the peer already has [`LARGE_BODIES_PER_PEER`] large bodies in flight.
+    fn reservation(
+        self: &Arc<Self>,
+        class: BodyClass,
+        peer: Option<IpAddr>,
+    ) -> Option<Arc<Reservation>> {
+        if let (BodyClass::Large, Some(peer)) = (class, peer) {
+            let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+            let used = peers.entry(peer).or_default();
+            if used.large_bodies >= LARGE_BODIES_PER_PEER {
+                return None;
+            }
+            used.large_bodies += 1;
+        }
+        Some(Arc::new(Reservation {
             budget: Arc::clone(self),
+            class,
             peer,
             held_units: AtomicUsize::new(0),
-        })
+        }))
     }
 }
 
-/// The bytes one request has charged to the budget, returned when it is dropped.
+/// The bytes one request has charged to the budget, returned when it is dropped
+/// or [`released`](Reservation::release) after its body has been read.
 #[derive(Debug)]
 pub(crate) struct Reservation {
     budget: Arc<BodyBudget>,
+    class: BodyClass,
     peer: Option<IpAddr>,
     held_units: AtomicUsize,
 }
 
 impl Reservation {
-    /// Make sure at least `bytes` are charged. `Err` when the global budget or
-    /// this peer's share cannot cover it; nothing is charged then.
+    /// Make sure at least `bytes` are charged. `Err` when the pool or this
+    /// peer's share cannot cover it; nothing more is charged then.
     fn ensure(&self, bytes: usize) -> Result<(), ()> {
-        let want = bytes.div_ceil(UNIT);
+        let want = units(bytes);
         let held = self.held_units.load(Ordering::Acquire);
         if want <= held {
             return Ok(());
         }
         let extra = want - held;
-        if let Some(peer) = self.peer {
-            let mut peers = self.budget.peers.lock().unwrap_or_else(|e| e.into_inner());
-            let used = peers.entry(peer).or_insert(0);
-            if *used + extra > self.budget.per_peer_units {
-                return Err(());
-            }
-            *used += extra;
+        if !self.charge_peer(extra) {
+            return Err(());
         }
-        match self.budget.global.try_acquire_many(extra as u32) {
+        let pool = match self.class {
+            BodyClass::Large => &self.budget.large,
+            BodyClass::Small | BodyClass::Anonymous => &self.budget.small,
+        };
+        match pool.try_acquire_many(extra as u32) {
             Ok(permit) => {
                 permit.forget();
                 self.held_units.store(want, Ordering::Release);
                 Ok(())
             }
             Err(_) => {
-                self.release_peer(extra);
+                self.uncharge_peer(extra);
                 Err(())
             }
         }
     }
 
-    fn release_peer(&self, units: usize) {
+    fn charge_peer(&self, extra: usize) -> bool {
+        let Some(peer) = self.peer else { return true };
+        let mut peers = self.budget.peers.lock().unwrap_or_else(|e| e.into_inner());
+        let used = peers.entry(peer).or_default();
+        match self.class {
+            BodyClass::Large if used.large_units + extra > self.budget.per_peer_large_units => {
+                return false
+            }
+            BodyClass::Large => used.large_units += extra,
+            BodyClass::Anonymous if used.anonymous_units + extra > units(ANONYMOUS_PEER_BYTES) => {
+                return false
+            }
+            BodyClass::Anonymous => used.anonymous_units += extra,
+            BodyClass::Small => {}
+        }
+        true
+    }
+
+    fn uncharge_peer(&self, units: usize) {
         let Some(peer) = self.peer else { return };
         let mut peers = self.budget.peers.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(used) = peers.get_mut(&peer) {
-            *used = used.saturating_sub(units);
-            if *used == 0 {
-                peers.remove(&peer);
+            match self.class {
+                BodyClass::Large => used.large_units = used.large_units.saturating_sub(units),
+                BodyClass::Anonymous => {
+                    used.anonymous_units = used.anonymous_units.saturating_sub(units)
+                }
+                BodyClass::Small => {}
             }
         }
+    }
+
+    /// Give back everything charged so far (idempotent). The concurrent-body
+    /// count of a large body is returned when the reservation is dropped.
+    fn release(&self) {
+        let held = self.held_units.swap(0, Ordering::AcqRel);
+        if held == 0 {
+            return;
+        }
+        let pool = match self.class {
+            BodyClass::Large => &self.budget.large,
+            BodyClass::Small | BodyClass::Anonymous => &self.budget.small,
+        };
+        pool.add_permits(held);
+        self.uncharge_peer(held);
     }
 }
 
 impl Drop for Reservation {
     fn drop(&mut self) {
-        let held = *self.held_units.get_mut();
-        if held > 0 {
-            self.budget.global.add_permits(held);
-            self.release_peer(held);
+        self.release();
+        if let (BodyClass::Large, Some(peer)) = (self.class, self.peer) {
+            let mut peers = self.budget.peers.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(used) = peers.get_mut(&peer) {
+                used.large_bodies = used.large_bodies.saturating_sub(1);
+                if used.large_bodies == 0 && used.large_units == 0 && used.anonymous_units == 0 {
+                    peers.remove(&peer);
+                }
+            }
         }
     }
 }
 
 /// Why a body stopped.
 #[derive(Debug)]
-enum BodyStop {
-    /// No data for the idle timeout.
+pub(crate) enum BodyStop {
+    /// No data for the idle timeout, or the total deadline passed.
     Idle,
     /// The in-flight budget cannot cover the bytes received so far.
     Budget,
@@ -192,6 +305,8 @@ struct MeteredBody {
     received: usize,
     idle: Duration,
     deadline: Pin<Box<tokio::time::Sleep>>,
+    /// Absolute deadline for the whole body (small and anonymous requests).
+    total: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
 impl http_body::Body for MeteredBody {
@@ -216,11 +331,22 @@ impl http_body::Body for MeteredBody {
                 Poll::Ready(Some(Ok(frame)))
             }
             Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(Box::new(error)))),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => match this.deadline.as_mut().poll(cx) {
-                Poll::Ready(()) => Poll::Ready(Some(Err(Box::new(BodyStop::Idle)))),
-                Poll::Pending => Poll::Pending,
-            },
+            Poll::Ready(None) => {
+                // Read to its end: the charge is no longer needed.
+                this.reservation.release();
+                Poll::Ready(None)
+            }
+            Poll::Pending => {
+                let total_over = this
+                    .total
+                    .as_mut()
+                    .is_some_and(|total| total.as_mut().poll(cx).is_ready());
+                if total_over || this.deadline.as_mut().poll(cx).is_ready() {
+                    Poll::Ready(Some(Err(Box::new(BodyStop::Idle))))
+                } else {
+                    Poll::Pending
+                }
+            }
         }
     }
 
@@ -255,6 +381,25 @@ pub(crate) fn may_use_large_cap(service: &MentisDbService, request: &Request) ->
         .is_some_and(|token| service.bearer_token_valid(token))
 }
 
+/// The status a failure while reading a body maps to, when it was one of this
+/// module's: `408` for a body that stalled or dragged on, `503` with
+/// `Retry-After` for an exhausted budget. `None` for any other error.
+pub(crate) fn body_stop_response(error: &(dyn std::error::Error + 'static)) -> Option<Response> {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = current {
+        if let Some(stop) = error.downcast_ref::<BodyStop>() {
+            return Some(match stop {
+                BodyStop::Idle => refuse(StatusCode::REQUEST_TIMEOUT, &stop.to_string(), false),
+                BodyStop::Budget => {
+                    refuse(StatusCode::SERVICE_UNAVAILABLE, &stop.to_string(), true)
+                }
+            });
+        }
+        current = error.source();
+    }
+    None
+}
+
 fn refuse(status: StatusCode, message: &str, retry_after: bool) -> Response {
     let mut response = (status, Json(json!({ "error": message }))).into_response();
     if retry_after {
@@ -273,11 +418,16 @@ pub(crate) async fn body_admission_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    let cap = body_cap(
-        &service,
-        request.uri().path(),
-        may_use_large_cap(&service, &request),
-    );
+    let may_large = may_use_large_cap(&service, &request);
+    let path = request.uri().path().to_owned();
+    let cap = body_cap(&service, &path, may_large);
+    let class = if may_large && is_large_body_route(&path) {
+        BodyClass::Large
+    } else if service.bearer_access_enabled() && !may_large {
+        BodyClass::Anonymous
+    } else {
+        BodyClass::Small
+    };
     let declared = request
         .headers()
         .get(header::CONTENT_LENGTH)
@@ -295,8 +445,17 @@ pub(crate) async fn body_admission_middleware(
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map(|info| info.0.ip());
-    let reservation = service.body_budget().reservation(peer);
-    if reservation.ensure(declared.unwrap_or(0)).is_err() {
+    let Some(reservation) = service.body_budget().reservation(class, peer) else {
+        return refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too many large request bodies in flight from this address; retry shortly",
+            true,
+        );
+    };
+    // Only a large body is charged its declared length up front (so an import
+    // that cannot fit is refused at once); everything else is charged as bytes
+    // arrive, so a declared length costs nothing by itself.
+    if class == BodyClass::Large && reservation.ensure(declared.unwrap_or(0)).is_err() {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
             "too many request bodies in flight; retry shortly",
@@ -304,6 +463,8 @@ pub(crate) async fn body_admission_middleware(
         );
     }
     let idle = service.body_idle_timeout();
+    let total =
+        (class != BodyClass::Large).then(|| Box::pin(tokio::time::sleep(idle.saturating_mul(2))));
     let (parts, body) = request.into_parts();
     let metered = MeteredBody {
         inner: body,
@@ -311,10 +472,10 @@ pub(crate) async fn body_admission_middleware(
         received: 0,
         idle,
         deadline: Box::pin(tokio::time::sleep(idle)),
+        total,
     };
     let body = Body::new(http_body_util::Limited::new(metered, cap));
     let response = next.run(Request::from_parts(parts, body)).await;
-    // The reservation is held until the handler has finished with the body.
     drop(reservation);
     response
 }

@@ -248,6 +248,122 @@ async fn bodies_beyond_the_in_flight_budget_get_503() {
     );
 }
 
+/// A small request (an append) from the same peer is never starved by imports:
+/// two maximum-size imports are held open, a third is refused (the peer's share
+/// of the large pool), and an append from the same address still succeeds.
+#[tokio::test(flavor = "current_thread")]
+async fn imports_in_flight_never_starve_small_requests() {
+    let router = rest_router(config("nostarve").with_max_body_bytes(MIN_MAX_BODY_BYTES));
+    let declared = [("content-length", MIN_MAX_BODY_BYTES.to_string())];
+    let holders: Vec<_> = (0..2)
+        .map(|_| {
+            let router = router.clone();
+            let held = request(
+                "/v1/import-markdown",
+                stalled(b"{\"chain_key\":"),
+                &declared,
+            );
+            tokio::spawn(async move { router.oneshot(held).await.unwrap().status() })
+        })
+        .collect();
+    for _ in 0..30 {
+        tokio::task::yield_now().await;
+    }
+    let third = request("/v1/import-markdown", Body::empty(), &declared);
+    assert_eq!(
+        status(&router, third).await,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let append = json!({"chain_key": "adm", "agent_id": "a", "thought_type": "Insight", "content": "still works"});
+    let small = request("/v1/thoughts", Body::from(append.to_string()), &[]);
+    assert_eq!(status(&router, small).await, StatusCode::OK);
+    for holder in holders {
+        holder.abort();
+    }
+}
+
+/// Slow-drip bodies that merely *declare* a large length cost nothing: with
+/// bearer-token access on, anonymous requests declaring 1 MiB on an ordinary
+/// route are not charged for it, and a request with a valid token still goes
+/// through.
+#[tokio::test(flavor = "current_thread")]
+async fn declared_lengths_of_anonymous_requests_are_not_charged() {
+    let (router, token) = {
+        let config = config("anon_drip")
+            .with_bearer_token_access(true)
+            .with_max_body_bytes(MIN_MAX_BODY_BYTES);
+        let token = config
+            .bearer_token_store
+            .create("t", BearerTokenScope::Global)
+            .unwrap()
+            .token;
+        (rest_router(config), token)
+    };
+    let declared = [("content-length", (MIN_MAX_BODY_BYTES - 1).to_string())];
+    let drips: Vec<_> = (0..200)
+        .map(|_| {
+            let router = router.clone();
+            let drip = request("/v1/head", stalled(b"{"), &declared);
+            tokio::spawn(async move { router.oneshot(drip).await.unwrap().status() })
+        })
+        .collect();
+    for _ in 0..30 {
+        tokio::task::yield_now().await;
+    }
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let body = json!({"chain_key": "adm"}).to_string();
+    let ok = request("/v1/head", Body::from(body), &auth);
+    assert_eq!(status(&router, ok).await, StatusCode::OK);
+    for drip in drips {
+        drip.abort();
+    }
+}
+
+/// A body that stalls reaches the caller as `408`, and one that exhausts the
+/// in-flight budget as `503` with `Retry-After`, also through the bearer
+/// middleware (which used to report both as a generic `400`).
+#[tokio::test]
+async fn stalled_and_over_budget_bodies_get_408_and_503_with_a_bearer_token() {
+    let config = config("stops")
+        .with_bearer_token_access(true)
+        .with_max_body_bytes(MIN_MAX_BODY_BYTES)
+        .with_max_inflight_body_bytes(MIN_MAX_BODY_BYTES)
+        .with_body_idle_timeout(Duration::from_millis(200));
+    let token = config
+        .bearer_token_store
+        .create("t", BearerTokenScope::Global)
+        .unwrap()
+        .token;
+    let router = rest_router(config);
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let stall = request("/v1/head", stalled(b"{\"chain_key\":"), &auth);
+    assert_eq!(status(&router, stall).await, StatusCode::REQUEST_TIMEOUT);
+
+    // Two 600 KiB chunks on an import route: the pool holds one maximum body
+    // (1 MiB), so the second chunk exhausts it.
+    let chunks = tokio_stream::iter(
+        (0..2).map(|_| Ok::<_, std::io::Error>(Bytes::from(vec![b'x'; 600 * 1024]))),
+    );
+    let big = request("/v1/import-markdown", Body::from_stream(chunks), &auth);
+    let response = router.clone().oneshot(big).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(response.headers().contains_key("retry-after"));
+}
+
+/// A zero (or tiny) in-flight budget does not refuse every import: it is
+/// raised to one maximum body.
+#[tokio::test]
+async fn a_zero_in_flight_budget_is_raised_to_one_maximum_body() {
+    let router = rest_router(
+        config("zero")
+            .with_max_body_bytes(MIN_MAX_BODY_BYTES)
+            .with_max_inflight_body_bytes(0),
+    );
+    let body = json!({"chain_key": "adm", "markdown": "- [0] Insight: fits"}).to_string();
+    let import = request("/v1/import-markdown", Body::from(body), &[]);
+    assert_eq!(status(&router, import).await, StatusCode::OK);
+}
+
 /// The environment: a bad value is an error the daemon refuses to start on.
 #[test]
 fn invalid_body_limit_environment_is_rejected() {

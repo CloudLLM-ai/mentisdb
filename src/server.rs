@@ -381,9 +381,12 @@ pub struct MentisDbServiceConfig {
     /// the [`server_body`](crate::server_body) module for the full admission
     /// rules.
     pub max_body_bytes: usize,
-    /// Body bytes all requests in flight may hold together; `None` (the
-    /// default) is four times [`max_body_bytes`](Self::max_body_bytes). Over it a
-    /// request gets `503` with `Retry-After`. `MENTISDB_MAX_INFLIGHT_BODY_BYTES`.
+    /// Body bytes all large (import) requests in flight may hold together;
+    /// `None` (the default) is four times [`max_body_bytes`](Self::max_body_bytes),
+    /// and a smaller value is raised to `max_body_bytes` (a pool that cannot hold
+    /// one maximum body would refuse every import). Over it a request gets `503`
+    /// with `Retry-After`. Ordinary requests have their own fixed pool. See
+    /// [`server_body`](crate::server_body). `MENTISDB_MAX_INFLIGHT_BODY_BYTES`.
     pub max_inflight_body_bytes: Option<usize>,
     /// How long a request body may go without delivering data before it fails.
     /// Default 30 s. `MENTISDB_BODY_IDLE_TIMEOUT_SECS`.
@@ -3013,7 +3016,10 @@ async fn inject_single_chain_bearer_scope_middleware(
     let body_cap = crate::server_body::body_cap(&service, parts.uri.path(), false);
     let body_bytes = match axum::body::to_bytes(body, body_cap).await {
         Ok(bytes) => bytes,
-        Err(_) => {
+        Err(error) => {
+            if let Some(response) = crate::server_body::body_stop_response(&error) {
+                return response;
+            }
             return (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 Json(json!({ "error": "request body too large or unreadable" })),
@@ -3700,7 +3706,9 @@ impl MentisDbService {
             .clamp(MIN_MAX_BODY_BYTES, MAX_MAX_BODY_BYTES);
         let inflight = config
             .max_inflight_body_bytes
-            .unwrap_or_else(|| body_cap.saturating_mul(4));
+            .unwrap_or_else(|| body_cap.saturating_mul(4))
+            // A pool smaller than one maximum body would refuse every import.
+            .max(body_cap);
         let body_budget =
             crate::server_body::BodyBudget::new(inflight, body_cap.saturating_mul(2).min(inflight));
         Ok(Self {
@@ -8690,6 +8698,10 @@ pub(crate) async fn rest_bearer_auth_middleware(
     let body_bytes = match axum::body::to_bytes(body, body_cap).await {
         Ok(bytes) => bytes,
         Err(error) => {
+            // A body that stalled or hit the in-flight budget has its own status.
+            if let Some(response) = crate::server_body::body_stop_response(&error) {
+                return response;
+            }
             // `to_bytes` fails when the limit is exceeded or the stream breaks.
             // Surface that instead of authorizing against an empty body.
             let too_large = {

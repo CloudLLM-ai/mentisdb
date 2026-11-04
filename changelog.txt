@@ -1,4 +1,18 @@
 UNRELEASED
+  - security(server): the in-flight body budget could starve normal traffic. Large
+    imports and ordinary requests now draw on separate pools: only the three import
+    routes (from a caller allowed the large cap) use the large pool, reserved from their
+    declared length, with a per-peer share (2x the cap) and at most four large bodies
+    per peer; every other request is charged only for the bytes that actually arrive,
+    from a fixed 64 MiB pool with no per-peer limit (on a loopback bind every local agent
+    is one peer), and an anonymous peer (bearer on, no valid token) may hold 8 MiB of it.
+    A declared length costs nothing by itself, a reservation is returned as soon as the
+    body has been read, and small and anonymous bodies get a total deadline of twice the
+    idle timeout so one-byte-per-chunk drips cannot hold a charge. A stalled body is `408`
+    and an exhausted budget `503` with `Retry-After` even through the bearer middleware
+    (both were a generic `400`). `with_max_inflight_body_bytes` (and the env var) below
+    one maximum body is raised to it instead of refusing every import. MCP bodies stay
+    capped at 2 MiB: a large import goes through the REST import routes.
   - security(server): an anonymous peer could make a bearer-protected daemon
     buffer, and JSON-parse, a request body of up to 64 MiB before the token was
     checked, and many peers could multiply that. Introduced by the large-body
