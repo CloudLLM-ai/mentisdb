@@ -89,18 +89,37 @@
       mentischat included, need no update.
     </p>
     <p>
-      The overall cap for every request is now <code>MENTISDB_MAX_BODY_BYTES</code>
-      (default 64 MiB), bearer-token requests included. If a reverse proxy sits in front
-      of MentisDB, raise its body limit to match.
+      Accepting bigger bodies is only safe if the daemon decides who may send them before
+      it reads any of the body, so 0.12 adds a body-admission layer:
+    </p>
+    <ul>
+      <li>The bearer token is checked from the headers first. A caller without a valid token is refused without a byte of its body being read.</li>
+      <li>Ordinary routes, and every MCP request, take at most 2 MiB. Only the three import routes take up to <code>MENTISDB_MAX_BODY_BYTES</code> (64 MiB), and only from an authenticated caller.</li>
+      <li>Imports and ordinary requests draw on separate budgets, so a big import never starves appends and searches. Each peer has a share, and an anonymous caller gets only 8 MiB.</li>
+      <li>A body that stalls gets <code>408</code>; small and anonymous bodies also have a total deadline. An exhausted budget gets <code>503</code> with <code>Retry-After</code>.</li>
+    </ul>
+    <p>
+      If a reverse proxy sits in front of MentisDB, raise its body limit on the import
+      routes to match.
+    </p>
+
+    <h3>4. Verified</h3>
+    <p>
+      Recall did not move: five LoCoMo and LongMemEval runs on the final code matched
+      0.11.0.56 exactly (LoCoMo R@10 76.7, LongMemEval R@5 69.8), and the LoCoMo results
+      were byte-identical. The same verification measured 143 MiB less heap at 100,000
+      thoughts and exact vector search 4.3x faster (65 ms to 14 ms over 100,000 vectors).
     </p>
 
     <h3>Why 0.12</h3>
     <p>
-      To share vectors, <code>VectorSidecarEntry::vector</code> became
-      <code>Arc&lt;[f32]&gt;</code>. Code that embeds MentisDB and reads that field as a
-      <code>Vec</code> needs <code>.to_vec()</code>; the
+      Two library types changed. To share vectors, <code>VectorSidecarEntry::vector</code>
+      became <code>Arc&lt;[f32]&gt;</code>; code that reads it as a <code>Vec</code> needs
+      <code>.to_vec()</code>. <code>MentisDbServiceConfig</code> is now
+      <code>#[non_exhaustive]</code>, so build it with <code>new()</code> and the
+      <code>with_*</code> methods instead of a struct literal. The
       <a href="mentisdb-0.12.0.57-release-notes.md">release notes</a>
-      have a before-and-after snippet. The file format and the proof format are unchanged,
+      have before-and-after snippets for both. The file format and the proof format are unchanged,
       and no migration runs. <code>mentisdb --help</code> also stopped listing "supported
       agents": any agent works over MCP, REST or the CLI.
     </p>

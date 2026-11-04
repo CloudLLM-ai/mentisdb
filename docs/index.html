@@ -46,8 +46,10 @@
       The implicit-edge scanner shares the sidecar's vectors instead of copying them (heap
       growth at 100,000 thoughts 239 MiB &rarr; 56 MiB) and its queue no longer grows
       without bound; <code>GET /v1/chains</code> reports a per-chain
-      <code>derived_backlog</code>; signed requests are no longer capped at 1 MiB. Library
-      users: <code>VectorSidecarEntry::vector</code> is now <code>Arc&lt;[f32]&gt;</code>.
+      <code>derived_backlog</code>; large signed imports work behind a new body-admission
+      layer (token first, 2 MiB route cap, separate import budget). Library users:
+      <code>VectorSidecarEntry::vector</code> is now <code>Arc&lt;[f32]&gt;</code> and
+      <code>MentisDbServiceConfig</code> is <code>#[non_exhaustive]</code>.
     </p>
   </article>
 
