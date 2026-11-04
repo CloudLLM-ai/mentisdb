@@ -1005,7 +1005,7 @@ REST and MCP errors map to HTTP statuses as follows:
 | `401` | Missing/invalid bearer token, or a token whose scope does not cover the operation |
 | `403` | Permission denied: missing or invalid signature on a signed skill upload, inactive agent, a write the chain's access policy refused, a `Host` outside the allowlist, or an operator-only route (`/v1/agents/keys`, `/v1/agents/keys/revoke`, `/v1/agents/disable`, `/v1/access/policy/set`) |
 | `404` | Unknown chain (see above) or another missing resource |
-| `408` | A request body stopped arriving for `MENTISDB_BODY_IDLE_TIMEOUT_SECS`, or a small or anonymous body missed its total deadline (twice that) |
+| `408` | A request body stopped arriving for `MENTISDB_BODY_IDLE_TIMEOUT_SECS`, a small or anonymous body missed its total deadline (twice that), or any body fell below 64 KiB/s after its grace period (twice the idle timeout); on every route |
 | `409` | Conflict, e.g. `POST /v1/chains/branch` into a chain key that already exists |
 | `413` | Request body over the route's limit: 2 MiB, or `MENTISDB_MAX_BODY_BYTES` (default 64 MiB) on the import routes for an authenticated caller; over 1 MiB for a read proof (`X-Mentis-Auth`) that does not also send `X-Mentis-Content-Sha256` (see [Large request bodies](#large-request-bodies)). The `mentisdb` CLI and `pymentisdb` send it, so a large `memory import` works |
 | `500` | Server fault; the body says only `"internal server error"` and details go to the daemon log |
@@ -1021,10 +1021,10 @@ is valid: the token is checked from the headers before any of the body is read, 
 refused (`401`, or `413` for a declared length over 2 MiB) without the daemon pulling its body. Large
 imports draw on their own budget (`MENTISDB_MAX_INFLIGHT_BODY_BYTES`, reserved from the declared length; beyond it
 `503` with `Retry-After`); every other request is charged only for the bytes that actually arrive, from a separate
-pool, so imports never starve appends and searches, and an anonymous peer may hold only 8 MiB of it. A body that
+pool (64 MiB, at most 32 MiB per peer), so imports never starve appends and searches. A body that
 stops arriving fails with `408` after `MENTISDB_BODY_IDLE_TIMEOUT_SECS`, small or anonymous bodies also get a
 total deadline of twice that, and every body must sustain `MENTISDB_MIN_BODY_BYTES_PER_SEC` (64 KiB/s by default) in each window of one idle
-timeout once its grace period (twice the idle timeout) is over. Anonymous bodies have a 16 MiB pool of their own. MCP request bodies (including the `mentisdb_import_memory_markdown` tool) are always
+timeout once its grace period (twice the idle timeout) is over. Anonymous bodies have a 16 MiB pool of their own (8 MiB per peer). MCP request bodies (including the `mentisdb_import_memory_markdown` tool) are always
 limited to 2 MiB: send a large import to the REST route, or use the CLI. Two paths decide who is asking, and
 they treat a large body differently:
 
