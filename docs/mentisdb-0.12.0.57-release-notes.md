@@ -39,7 +39,8 @@ bench, run at background priority):
 | 20,000 thoughts | 2,700 | 46.4 MiB | 11.9 MiB |
 | 100,000 thoughts | 12,700 | 239.2 MiB | 56.3 MiB |
 
-Peak RSS at 100,000 thoughts went from about 1,120 MiB to 970 MiB. Lock hold is unchanged:
+Peak process RSS after the append phase at 100,000 × 384, measured with the same bench,
+went from about 1,120 MiB to 970 MiB. Lock hold is unchanged:
 the write-lock hold per append at 100,000 × 384 is 0.028 / 0.60 / 4.3 ms (p50 / p99 / max).
 
 The scan's sustainable rate is about 155 appends per second at 100,000 thoughts and about
@@ -147,4 +148,6 @@ let slice: &[f32] = &entry.vector; // reading as a slice is unchanged
 
 LoCoMo and LongMemEval were not re-run for this release: retrieval and scoring did not
 change since 0.11.0.56, so [its numbers](mentisdb-0.11.0.56-release-notes.md#benchmarks)
-stand.
+stand. With the harness's new configurable timeouts (see
+[Benchmark harness](#benchmark-harness)), LongMemEval can now also be run to completion on
+throttled or slow machines.
