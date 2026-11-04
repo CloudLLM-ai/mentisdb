@@ -47,7 +47,7 @@
 //! A body that delivers nothing for `MENTISDB_BODY_IDLE_TIMEOUT_SECS` (default
 //! 30) fails. Because that timer restarts on every chunk, small and anonymous
 //! bodies also get a total deadline of twice the idle timeout, and every body,
-//! large ones included, must reach at least [`MIN_BODY_BYTES_PER_SEC`] (64 KiB/s)
+//! large ones included, must reach at least `MENTISDB_MIN_BODY_BYTES_PER_SEC` (default 64 KiB/s, `0` = off)
 //! in every window of one idle timeout once its grace period (twice the idle
 //! timeout) is over. The rate is judged window by window, so credit cannot be
 //! banked: a client that sends nearly everything at once and then drips one byte
@@ -115,11 +115,6 @@ pub const ANONYMOUS_PEER_BYTES: usize = 8 * 1024 * 1024;
 /// Bytes of the small pool one peer may hold: 32 MiB, so that with bearer-token
 /// access off (where every caller is alike) one peer cannot take the whole pool.
 pub const SMALL_PEER_BYTES: usize = 32 * 1024 * 1024;
-
-/// Slowest average rate, in bytes per second, a body may arrive at once its grace
-/// period (twice the idle timeout) is over: 64 KiB/s. A body that goes on arriving
-/// just often enough to beat the idle timer, but slower than this, fails with `408`.
-pub const MIN_BODY_BYTES_PER_SEC: usize = 64 * 1024;
 
 /// Large bodies one peer may have in flight at once.
 pub const LARGE_BODIES_PER_PEER: usize = 4;
@@ -369,11 +364,13 @@ struct MeteredBody {
     /// Start of the rate window in progress and the bytes that arrived in it.
     window_start: Option<tokio::time::Instant>,
     window_bytes: usize,
+    /// Slowest acceptable bytes per second; `0` is off.
+    min_rate: usize,
 }
 
 impl MeteredBody {
     /// Count `added` bytes that just arrived and report whether the body has
-    /// fallen below [`MIN_BODY_BYTES_PER_SEC`] over the window they belong to.
+    /// fallen below the minimum rate over the window they belong to.
     ///
     /// The rate is measured over consecutive windows, each as long as the idle
     /// timeout, starting when the grace period (twice the idle timeout) ends, and
@@ -381,6 +378,9 @@ impl MeteredBody {
     /// sent most of its data at once and then trickles fails at the end of the
     /// next window, not after the whole transfer has averaged out.
     fn too_slow(&mut self, added: usize) -> bool {
+        if self.min_rate == 0 {
+            return false;
+        }
         let now = tokio::time::Instant::now();
         let grace_end = self.started + self.idle.saturating_mul(2);
         if now <= grace_end {
@@ -392,7 +392,7 @@ impl MeteredBody {
         if elapsed < self.idle {
             return false;
         }
-        let required = elapsed.as_secs_f64() * MIN_BODY_BYTES_PER_SEC as f64;
+        let required = elapsed.as_secs_f64() * self.min_rate as f64;
         if (self.window_bytes as f64) < required {
             return true;
         }
@@ -583,6 +583,7 @@ pub(crate) async fn body_admission_middleware(
         started: tokio::time::Instant::now(),
         window_start: None,
         window_bytes: 0,
+        min_rate: service.min_body_bytes_per_sec(),
     };
     let body = Body::new(http_body_util::Limited::new(metered, cap));
     let response = next.run(Request::from_parts(parts, body)).await;
@@ -744,6 +745,7 @@ mod tests {
                 started: tokio::time::Instant::now(),
                 window_start: None,
                 window_bytes: 0,
+                min_rate: 64 * 1024,
             };
             metered
                 .collect()
@@ -810,6 +812,7 @@ mod tests {
             started: tokio::time::Instant::now(),
             window_start: None,
             window_bytes: 0,
+            min_rate: 64 * 1024,
         };
         // 8 MiB already averages far above 64 KiB/s over the 16 s a whole-transfer
         // average would allow; the window rule fails the trickle after ~300 ms.

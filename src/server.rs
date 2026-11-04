@@ -391,6 +391,14 @@ pub struct MentisDbServiceConfig {
     /// How long a request body may go without delivering data before it fails.
     /// Default 30 s. `MENTISDB_BODY_IDLE_TIMEOUT_SECS`.
     pub body_idle_timeout: std::time::Duration,
+    /// Slowest rate, in bytes per second, a request body may sustain over each
+    /// window of one idle timeout once its grace period (twice the idle timeout)
+    /// is over; a body that falls below it fails with `408`. Default 64 KiB/s
+    /// ([`DEFAULT_MIN_BODY_BYTES_PER_SEC`]); `0` switches the rule off (the idle
+    /// timeout and the deadlines still apply). Lower it, or turn it off, for
+    /// imports over a slow link or a server that polls bodies late.
+    /// `MENTISDB_MIN_BODY_BYTES_PER_SEC`.
+    pub min_body_bytes_per_sec: usize,
 }
 
 /// Default of [`MentisDbServiceConfig::max_body_bytes`]: 64 MiB.
@@ -403,6 +411,9 @@ pub const MIN_MAX_BODY_BYTES: usize = 1024 * 1024;
 /// Ceiling of [`MentisDbServiceConfig::max_body_bytes`]: 1 GiB. A larger
 /// `MENTISDB_MAX_BODY_BYTES` stops the daemon from starting.
 pub const MAX_MAX_BODY_BYTES: usize = 1024 * 1024 * 1024;
+
+/// Default of [`MentisDbServiceConfig::min_body_bytes_per_sec`]: 64 KiB/s.
+pub const DEFAULT_MIN_BODY_BYTES_PER_SEC: usize = 64 * 1024;
 
 /// Default of [`MentisDbServiceConfig::body_idle_timeout`], in seconds.
 pub const DEFAULT_BODY_IDLE_TIMEOUT_SECS: u64 = 30;
@@ -434,6 +445,7 @@ impl std::fmt::Debug for MentisDbServiceConfig {
             .field("max_body_bytes", &self.max_body_bytes)
             .field("max_inflight_body_bytes", &self.max_inflight_body_bytes)
             .field("body_idle_timeout", &self.body_idle_timeout)
+            .field("min_body_bytes_per_sec", &self.min_body_bytes_per_sec)
             .finish()
     }
 }
@@ -487,6 +499,7 @@ impl MentisDbServiceConfig {
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             max_inflight_body_bytes: None,
             body_idle_timeout: std::time::Duration::from_secs(DEFAULT_BODY_IDLE_TIMEOUT_SECS),
+            min_body_bytes_per_sec: DEFAULT_MIN_BODY_BYTES_PER_SEC,
         }
     }
 
@@ -692,6 +705,7 @@ impl MentisDbServiceConfig {
         self.max_body_bytes = limits.max_body_bytes;
         self.max_inflight_body_bytes = limits.max_inflight_body_bytes;
         self.body_idle_timeout = limits.body_idle_timeout;
+        self.min_body_bytes_per_sec = limits.min_body_bytes_per_sec;
         self
     }
 
@@ -709,6 +723,25 @@ impl MentisDbServiceConfig {
         self
     }
 
+    /// Set the slowest sustained rate, in bytes per second, a request body may
+    /// have; `0` switches the rule off. See
+    /// [`MentisDbServiceConfig::min_body_bytes_per_sec`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::server::{MentisDbServiceConfig, DEFAULT_MIN_BODY_BYTES_PER_SEC};
+    /// use mentisdb::StorageAdapterKind;
+    ///
+    /// let config = MentisDbServiceConfig::new("/tmp/mentisdb".into(), "c", StorageAdapterKind::Binary);
+    /// assert_eq!(config.min_body_bytes_per_sec, DEFAULT_MIN_BODY_BYTES_PER_SEC);
+    /// assert_eq!(config.with_min_body_bytes_per_sec(0).min_body_bytes_per_sec, 0);
+    /// ```
+    pub fn with_min_body_bytes_per_sec(mut self, bytes_per_sec: usize) -> Self {
+        self.min_body_bytes_per_sec = bytes_per_sec;
+        self
+    }
+
     /// Enable or disable bearer-token enforcement for MCP HTTP endpoints.
     pub fn with_bearer_token_access(self, enabled: bool) -> Self {
         self.bearer_token_access.store(enabled, Ordering::Relaxed);
@@ -722,6 +755,7 @@ struct BodyLimits {
     max_body_bytes: usize,
     max_inflight_body_bytes: Option<usize>,
     body_idle_timeout: std::time::Duration,
+    min_body_bytes_per_sec: usize,
 }
 
 impl Default for BodyLimits {
@@ -730,12 +764,13 @@ impl Default for BodyLimits {
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             max_inflight_body_bytes: None,
             body_idle_timeout: std::time::Duration::from_secs(DEFAULT_BODY_IDLE_TIMEOUT_SECS),
+            min_body_bytes_per_sec: DEFAULT_MIN_BODY_BYTES_PER_SEC,
         }
     }
 }
 
-/// Read and validate `MENTISDB_MAX_BODY_BYTES`, `MENTISDB_MAX_INFLIGHT_BODY_BYTES`
-/// and `MENTISDB_BODY_IDLE_TIMEOUT_SECS`.
+/// Read and validate `MENTISDB_MAX_BODY_BYTES`, `MENTISDB_MAX_INFLIGHT_BODY_BYTES`,
+/// `MENTISDB_BODY_IDLE_TIMEOUT_SECS` and `MENTISDB_MIN_BODY_BYTES_PER_SEC`.
 ///
 /// Unset variables take their defaults. A set variable must be a whole number in
 /// range, otherwise the daemon refuses to start ([`validate_body_limits_env`])
@@ -766,6 +801,8 @@ fn body_limits_from_env() -> Result<BodyLimits, String> {
             .map(|v| v as usize),
         body_idle_timeout: number("MENTISDB_BODY_IDLE_TIMEOUT_SECS", 1, 3600)?
             .map_or(defaults.body_idle_timeout, std::time::Duration::from_secs),
+        min_body_bytes_per_sec: number("MENTISDB_MIN_BODY_BYTES_PER_SEC", 0, 1 << 30)?
+            .map_or(defaults.min_body_bytes_per_sec, |v| v as usize),
     })
 }
 
@@ -774,8 +811,9 @@ fn body_limits_from_env() -> Result<BodyLimits, String> {
 /// The daemon calls this before it binds anything and exits with the message on
 /// `Err`: a typo in `MENTISDB_MAX_BODY_BYTES` must not silently become the
 /// default. `MENTISDB_MAX_BODY_BYTES` must be `1048576..=1073741824`,
-/// `MENTISDB_MAX_INFLIGHT_BODY_BYTES` a positive number of bytes and
-/// `MENTISDB_BODY_IDLE_TIMEOUT_SECS` `1..=3600`.
+/// `MENTISDB_MAX_INFLIGHT_BODY_BYTES` a positive number of bytes,
+/// `MENTISDB_BODY_IDLE_TIMEOUT_SECS` `1..=3600` and
+/// `MENTISDB_MIN_BODY_BYTES_PER_SEC` `0..=1073741824` (`0` = off).
 ///
 /// # Errors
 ///
@@ -3751,6 +3789,10 @@ impl MentisDbService {
 
     pub(crate) fn body_idle_timeout(&self) -> std::time::Duration {
         self.config.body_idle_timeout
+    }
+
+    pub(crate) fn min_body_bytes_per_sec(&self) -> usize {
+        self.config.min_body_bytes_per_sec
     }
 
     /// Whether bearer-token access is currently enforced.

@@ -560,6 +560,11 @@ and `cert` work on the data directory directly and do not need the daemon.
   `503` with `Retry-After`. Ordinary requests have their own fixed 64 MiB pool and are never starved by imports.
 - `MENTISDB_BODY_IDLE_TIMEOUT_SECS`
   A request body that delivers no data for this long fails. Default: `30`; `1` to `3600`.
+- `MENTISDB_MIN_BODY_BYTES_PER_SEC`
+  Slowest rate a request body may sustain, measured over each window of one idle timeout once a grace
+  period (twice the idle timeout) is over; a slower body fails with `408`. Default: `65536` (64 KiB/s);
+  `0` switches the rule off (the idle timeout and deadlines still apply). Lower it for imports over a
+  slow link, or on a busy server that reads bodies late; `0` to `1073741824`.
 - `MENTISDB_BEARER_TOKEN_ACCESS`
   Require bearer tokens for MCP requests. Default: `false`. Set `true` for remote
   or multi-user MCP servers. This can also be toggled live from the dashboard Settings screen.
@@ -986,8 +991,8 @@ imports draw on their own budget (`MENTISDB_MAX_INFLIGHT_BODY_BYTES`, reserved f
 `503` with `Retry-After`); every other request is charged only for the bytes that actually arrive, from a separate
 pool, so imports never starve appends and searches, and an anonymous peer may hold only 8 MiB of it. A body that
 stops arriving fails with `408` after `MENTISDB_BODY_IDLE_TIMEOUT_SECS`, small or anonymous bodies also get a
-total deadline of twice that, and every body must average 64 KiB/s once its grace period (twice the idle timeout)
-is over. Anonymous bodies have a 16 MiB pool of their own. MCP request bodies (including the `mentisdb_import_memory_markdown` tool) are always
+total deadline of twice that, and every body must sustain `MENTISDB_MIN_BODY_BYTES_PER_SEC` (64 KiB/s by default) in each window of one idle
+timeout once its grace period (twice the idle timeout) is over. Anonymous bodies have a 16 MiB pool of their own. MCP request bodies (including the `mentisdb_import_memory_markdown` tool) are always
 limited to 2 MiB: send a large import to the REST route, or use the CLI. Two paths decide who is asking, and
 they treat a large body differently:
 

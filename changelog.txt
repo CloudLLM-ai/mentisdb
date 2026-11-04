@@ -1,4 +1,10 @@
 UNRELEASED
+  - feat(server): the minimum request-body rate is configurable.
+    `MENTISDB_MIN_BODY_BYTES_PER_SEC` (default 65536; `0` switches the rule off;
+    validated at startup like the other body limits) and
+    `MentisDbServiceConfig::with_min_body_bytes_per_sec`. The fixed 64 KiB/s rejected
+    imports over slow links, and a busy server that polls a body late could look slow
+    too.
   - security(server): the minimum transfer rate could be pre-paid. It compared the
     whole body's byte count with the time past the grace period, so a client that sent
     63 MiB at once could then trickle for about 16 minutes while holding a 64 MiB

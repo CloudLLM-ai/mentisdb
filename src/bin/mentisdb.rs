@@ -2455,6 +2455,18 @@ Important environment variables:
     proof without X-Mentis-Content-Sha256 is still limited to 1 MiB (the CLI and
     pymentisdb send the header).
 
+  MENTISDB_MAX_INFLIGHT_BODY_BYTES
+    Body bytes all import requests in flight may hold together. Default: 4x
+    MENTISDB_MAX_BODY_BYTES. Beyond it: 503 with Retry-After.
+
+  MENTISDB_BODY_IDLE_TIMEOUT_SECS
+    A request body that delivers no data for this long fails (408). Default: 30.
+
+  MENTISDB_MIN_BODY_BYTES_PER_SEC
+    Slowest rate a request body may sustain per window of one idle timeout once a
+    grace period (twice the idle timeout) is over; slower fails with 408. Default:
+    65536 (64 KiB/s); 0 turns the rule off. Lower it for imports over a slow link.
+
   MENTISDB_TLS_CERT
   MENTISDB_TLS_KEY
     TLS certificate and private-key paths

@@ -383,6 +383,38 @@ async fn a_zero_in_flight_budget_is_raised_to_one_maximum_body() {
     assert_eq!(status(&router, import).await, StatusCode::OK);
 }
 
+/// One byte every 40 ms for 20 chunks: inside a 100 ms idle timeout, far below
+/// 64 KiB/s. (The bytes are not valid JSON, so a request that is let through ends
+/// in the handler's `400`, which tells it apart from the rate rule's `408`.)
+fn trickle() -> Body {
+    use tokio_stream::StreamExt;
+    Body::from_stream(tokio_stream::iter(0..20).then(|_| async {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        Ok::<_, std::io::Error>(Bytes::from_static(b"x"))
+    }))
+}
+
+/// The minimum body rate is configurable: the default refuses a trickle, a
+/// lower floor admits it (it then fails as the invalid JSON it is), and `0`
+/// switches the rule off.
+#[tokio::test]
+async fn the_minimum_body_rate_is_configurable() {
+    let with = |rate: Option<usize>| {
+        let config = config("rate").with_body_idle_timeout(Duration::from_millis(100));
+        rest_router(match rate {
+            Some(rate) => config.with_min_body_bytes_per_sec(rate),
+            None => config,
+        })
+    };
+    let outcome = |router: axum::Router| async move {
+        let response = request("/v1/import-markdown", trickle(), &[]);
+        status(&router, response).await
+    };
+    assert_eq!(outcome(with(None)).await, StatusCode::REQUEST_TIMEOUT);
+    assert_eq!(outcome(with(Some(1))).await, StatusCode::BAD_REQUEST);
+    assert_eq!(outcome(with(Some(0))).await, StatusCode::BAD_REQUEST);
+}
+
 /// The environment: a bad value is an error the daemon refuses to start on.
 #[test]
 fn invalid_body_limit_environment_is_rejected() {
@@ -403,6 +435,9 @@ fn invalid_body_limit_environment_is_rejected() {
         ("MENTISDB_MAX_INFLIGHT_BODY_BYTES", "0"),
         ("MENTISDB_BODY_IDLE_TIMEOUT_SECS", "0"),
         ("MENTISDB_BODY_IDLE_TIMEOUT_SECS", "soon"),
+        ("MENTISDB_MIN_BODY_BYTES_PER_SEC", "fast"),
+        ("MENTISDB_MIN_BODY_BYTES_PER_SEC", "-1"),
+        ("MENTISDB_MIN_BODY_BYTES_PER_SEC", "1073741825"),
     ] {
         let error = check(name, bad).expect_err(&format!("{name}={bad:?}"));
         assert!(error.contains(name), "{error}");
@@ -412,6 +447,8 @@ fn invalid_body_limit_environment_is_rejected() {
         ("MENTISDB_MAX_BODY_BYTES", "1073741824"),
         ("MENTISDB_MAX_INFLIGHT_BODY_BYTES", "1"),
         ("MENTISDB_BODY_IDLE_TIMEOUT_SECS", "3600"),
+        ("MENTISDB_MIN_BODY_BYTES_PER_SEC", "0"),
+        ("MENTISDB_MIN_BODY_BYTES_PER_SEC", "65536"),
     ] {
         assert!(check(name, good).is_ok(), "{name}={good}");
     }
