@@ -114,7 +114,7 @@ chmod +x mentisdb && ./mentisdb --help
 
 Release images are published to GitHub Container Registry for `linux/amd64` and
 `linux/arm64` (first published with 0.10.10.55). Tags: the release tag (for example
-`0.11.0.56`), the crate version (`0.11.0`, moves with each release of that version)
+`0.12.0.57`), the crate version (`0.12.0`, moves with each release of that version)
 and `latest`. This is also the way to get full features, including local embeddings,
 on Linux distros older than glibc 2.39 (see [Prebuilt binaries](#prebuilt-binaries)).
 
