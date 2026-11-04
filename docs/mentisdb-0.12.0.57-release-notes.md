@@ -4,8 +4,9 @@
 
 A focused follow-up to 0.11.0.56. It removes the two memory trade-offs that release
 documented for large chains, shows operators how far derived state is behind, and
-lifts the 1 MiB limit on signed requests. The minor version changes because one public
-library type changed; the wire protocol and the on-disk format did not.
+lifts the 1 MiB limit on signed requests behind a body-admission layer that checks the
+caller before reading a byte. The minor version changes because two public library types
+changed; the proof format and the on-disk format did not.
 
 ## Highlights
 
@@ -15,11 +16,14 @@ library type changed; the wire protocol and the on-disk format did not.
   56.3 MiB.
 - **`derived_backlog` in the chain listing** shows embeddings in flight, parked or missing
   and the implicit-edge backlog for each chain.
-- **Large signed requests.** A read proof can declare its body digest in
-  `X-Mentis-Content-Sha256`, which lifts the 1 MiB limit. Large `mentisdb memory import`
-  with a read key works, and `MENTISDB_MAX_BODY_BYTES` (default 64 MiB) sets the
-  overall cap.
-- **BREAKING for library users:** `VectorSidecarEntry::vector` is now `Arc<[f32]>`.
+- **Large imports, admitted safely.** A read proof can declare its body digest in
+  `X-Mentis-Content-Sha256`, so a large `mentisdb memory import` with a read key works.
+  Bodies are admitted before they are read. The token is checked first, ordinary routes
+  take at most 2 MiB, and only the three import routes take up to `MENTISDB_MAX_BODY_BYTES`
+  (64 MiB), and only from an authenticated caller. Imports and ordinary requests draw on
+  separate budgets.
+- **BREAKING for library users:** `VectorSidecarEntry::vector` is now `Arc<[f32]>`, and
+  `MentisDbServiceConfig` is `#[non_exhaustive]`.
 
 ## Shared vectors and a bounded edge queue
 
@@ -45,6 +49,9 @@ bench, run at background priority):
 Peak process RSS after the append phase at 100,000 × 384, measured with the same bench,
 went from about 1,120 MiB to 970 MiB. Lock hold is unchanged:
 the write-lock hold per append at 100,000 × 384 is 0.028 / 0.60 / 4.3 ms (p50 / p99 / max).
+
+The release verification run on the final 0.12 code also measured 143 MiB less heap at
+100,000 thoughts, and exact vector search 4.3x faster (65 ms to 14 ms over 100,000 vectors).
 
 The scan's sustainable rate is about 155 appends per second at 100,000 thoughts and about
 720 per second at 20,000 (4 threads, 384 dimensions, a shared machine). If appends outrun
@@ -82,38 +89,77 @@ means appends are outrunning the edge scan. A chain that is not open, or whose p
 segments are hidden from the caller, reports zeros. Library: `MentisDb::derived_backlog`
 returns a `DerivedBacklog`.
 
-## Large signed requests
+## Large signed requests and body admission
 
 0.11.0.56 documented a limitation: requests signed with `X-Mentis-Auth`, and REST requests
 with a bearer token, were buffered up to 1 MiB, so a large `mentisdb memory import` with a
-read key got `413`. That limit is gone for clients that opt in, and the proof format did
-not change.
+read key got `413`. 0.12 lifts that limit for imports, and in the same step decides how
+much of a body the daemon will accept, from whom, before it reads any of it.
 
-- **Optional `X-Mentis-Content-Sha256`.** A read proof already signs the SHA-256 of the
-  body. A client that also sends that digest in `X-Mentis-Content-Sha256: <64 lowercase
-  hex>` lets the daemon verify the proof *before* reading the body and then hash the body
-  as it streams. The signed body goes through. Any other body fails at its end with `400`
-  before any handler has acted, so nothing is imported or changed, and memory use no
-  longer depends on the body's size.
-- **Without the header**, a read proof behaves exactly as before: the daemon reads up to
-  1 MiB to check the signature. Its `413` now says how to send more.
-- **`MENTISDB_MAX_BODY_BYTES`** (default 64 MiB, never below 1 MiB; library
-  `MentisDbServiceConfig::with_max_body_bytes`) is the overall cap for every REST and MCP
-  body. It also governs bearer-token requests, which still buffer the body up to the cap
-  because the token check reads `chain_key` from it. Over the cap: `413`.
-- **Clients.** The `mentisdb` CLI (`memory import` and every other command with a read
-  key) and pymentisdb 0.10.1 send the header with every proof, so large imports just work:
+### Read proofs that declare their digest
 
-  ```bash
-  mentisdb memory import MEMORY.md --chain vault \
-    --read-key-file builder.key --read-agent builder --read-key-id builder-1
-  ```
+A read proof already signs the SHA-256 of the body. A client that also sends that digest in
+`X-Mentis-Content-Sha256: <64 lowercase hex>` lets the daemon verify the proof *before* it
+reads the body, and then hash the body as it streams. The signed body goes through. Any
+other body fails at its end with `400` before any handler has acted, so nothing is
+imported or changed. Without the header, a read proof behaves exactly as before: the
+daemon reads up to 1 MiB to check the signature, and its `413` now says how to send more.
 
-- **Compatibility.** Existing proofs verify as before, so mentischat and older clients
-  need no change, and a daemon that predates the header ignores it. If you sign requests
-  yourself, add the header and hash exactly the bytes you send. Library:
-  `read_auth::{body_digest, parse_content_digest, verify_request_for_digest,
-  CONTENT_DIGEST_HEADER}`, plus a new `content_digest` fuzz target.
+The proof format is unchanged, so mentischat and older clients need no update, and a
+daemon that predates the header ignores it. The `mentisdb` CLI (`memory import` and every
+other command with a read key) and pymentisdb 0.10.1 send the header with every proof:
+
+```bash
+mentisdb memory import MEMORY.md --chain vault \
+  --read-key-file builder.key --read-agent builder --read-key-id builder-1
+```
+
+If you sign requests yourself, add the header and hash exactly the bytes you send.
+Library: `read_auth::{body_digest, content_digest_header_value, parse_content_digest,
+verify_request_for_digest, CONTENT_DIGEST_HEADER}`, plus a new `content_digest` fuzz
+target.
+
+### Body admission: who may send how much
+
+A new outermost layer decides whether to read a body at all:
+
+- **Token first.** With bearer tokens on, the token is checked from the headers. A
+  request without a valid token is refused with `401` (or `413` if it declares more than
+  2 MiB) without a byte of its body being read.
+- **Route caps.** Ordinary routes take at most **2 MiB**. Only the import routes
+  (`/v1/import-markdown`, `/v1/skills/upload`, `/v1/extract-memories`) take up to
+  `MENTISDB_MAX_BODY_BYTES` (default 64 MiB, allowed range 1 MiB to 1 GiB), and only from
+  an authenticated caller. The cap also holds for chunked and HTTP/2 bodies with no
+  declared length. Over the cap: `413`.
+- **MCP bodies are always capped at 2 MiB,** including the
+  `mentisdb_import_memory_markdown` tool. Send a large import to the REST route, or use the
+  CLI.
+- **Separate budgets.** Large imports draw on their own pool,
+  `MENTISDB_MAX_INFLIGHT_BODY_BYTES` (default 4 × the cap). Each import is reserved from
+  its declared length, and the reservation is returned as soon as the body has been read.
+  Every other request is charged only for the bytes that actually arrive, from a separate,
+  fixed 64 MiB pool, so imports never starve appends and searches.
+- **Per-peer limits.** One peer may hold at most twice the cap and four large bodies at
+  once. An anonymous caller (bearer on, no valid token) may hold at most **8 MiB** of the
+  ordinary pool. On a loopback bind every local agent counts as one peer, so the ordinary
+  pool has no per-peer limit.
+- **Deadlines.** A body that delivers nothing for `MENTISDB_BODY_IDLE_TIMEOUT_SECS`
+  (default 30, range 1 to 3600) fails with **`408`**. Small and anonymous bodies also get a
+  total deadline of twice that, so a body dripped one byte at a time cannot hold its
+  charge.
+- **Over budget** is **`503` with `Retry-After`**, also through the bearer-token path.
+  Before this, stalled and over-budget bodies were a generic `400`.
+- **Bad settings stop the daemon.** A non-numeric or out-of-range
+  `MENTISDB_MAX_BODY_BYTES`, `MENTISDB_MAX_INFLIGHT_BODY_BYTES` or
+  `MENTISDB_BODY_IDLE_TIMEOUT_SECS` stops the daemon at startup instead of silently
+  falling back to a default. An in-flight budget below one maximum body is raised to one
+  body.
+
+Read proofs are verified per chain, and the chain is named in the body, so a proof from an
+unregistered key cannot be told apart from a real one before the body is read. Proof
+requests are therefore bounded by the budgets above rather than by a smaller cap.
+Requests that carry a read proof never follow HTTP redirects, in the CLI and now in
+pymentisdb too.
 
 ## Benchmark harness
 
@@ -138,10 +184,17 @@ Or download a release binary, or `docker pull ghcr.io/cloudllm-ai/mentisdb:0.12.
 Python clients: `pip install -U 'pymentisdb[signing]'` (0.10.1). There is no data
 migration.
 
+- **Request bodies.** Ordinary REST and MCP routes take at most 2 MiB. Only the three import routes take
+  more, up to `MENTISDB_MAX_BODY_BYTES`, and only from an authenticated caller. Large imports
+  over MCP fail with `413`: use the REST route or the CLI.
+- **New statuses.** A stalled body gets `408`, and an exhausted body budget gets `503` with
+  `Retry-After`. Retry the `503`.
 - **Reverse proxies** in front of MentisDB must allow request bodies up to
-  `MENTISDB_MAX_BODY_BYTES` (default 64 MiB; nginx's `client_max_body_size` defaults to
-  1 MiB). Otherwise large imports fail at the proxy. To keep the old ceiling, set
-  `MENTISDB_MAX_BODY_BYTES=1048576`.
+  `MENTISDB_MAX_BODY_BYTES` on the import routes (nginx's `client_max_body_size` defaults to
+  1 MiB). Otherwise large imports fail at the proxy.
+- **Body settings are validated.** `MENTISDB_MAX_BODY_BYTES` must be 1048576 to
+  1073741824, and `MENTISDB_BODY_IDLE_TIMEOUT_SECS` 1 to 3600. Any other value stops the
+  daemon at startup.
 - **`derived_backlog`** is a new field in each `GET /v1/chains` chain summary.
 - **`mentisdb --help`** no longer lists "Supported agents": any agent works over MCP (HTTP
   or stdio), REST or the CLI. The agents `mentisdb setup` can configure are listed in
@@ -180,10 +233,52 @@ let slice: &[f32] = &entry.vector; // reading as a slice is unchanged
 `entry.vector.clone()` still compiles, but it now copies a pointer and returns an
 `Arc<[f32]>`, not a `Vec<f32>`.
 
+### Library users: `MentisDbServiceConfig` is `#[non_exhaustive]`
+
+It can no longer be built with a struct literal, so that body-admission settings could be
+added without another break. Build it with `MentisDbServiceConfig::new(..)` and the `with_*`
+builders. The fields stay readable and assignable.
+
+Before (0.11):
+
+```rust
+let config = MentisDbServiceConfig {
+    chain_dir: "/var/lib/mentisdb".into(),
+    default_chain_key: "project".into(),
+    default_storage_adapter: StorageAdapterKind::Binary,
+    verbose: true,
+    // ...every other field...
+};
+```
+
+After (0.12):
+
+```rust
+use mentisdb::server::MentisDbServiceConfig;
+use mentisdb::StorageAdapterKind;
+use std::time::Duration;
+
+let config = MentisDbServiceConfig::new("/var/lib/mentisdb".into(), "project", StorageAdapterKind::Binary)
+    .with_verbose(true)
+    .with_max_body_bytes(128 * 1024 * 1024)       // import routes; clamped to 1 MiB..1 GiB
+    .with_max_inflight_body_bytes(512 * 1024 * 1024)
+    .with_body_idle_timeout(Duration::from_secs(60));
+```
+
 ## Benchmarks
 
-LoCoMo and LongMemEval were not re-run for this release: retrieval and scoring did not
-change since 0.11.0.56, so [its numbers](mentisdb-0.11.0.56-release-notes.md#benchmarks)
-stand. With the harness's new configurable timeouts (see
-[Benchmark harness](#benchmark-harness)), LongMemEval can now also be run to completion on
-throttled or slow machines.
+Retrieval and scoring did not change since 0.11.0.56. The release verification checked
+that with five benchmark runs on the 0.12 code: recall was identical to
+[0.11.0.56](mentisdb-0.11.0.56-release-notes.md#benchmarks) on all five, and the LoCoMo
+result JSON was byte-identical.
+
+| Benchmark | Metric | 0.11.0.56 | 0.12.0.57 |
+|---|---|---|---|
+| LoCoMo-10P | default R@10 | 76.7 | 76.7 |
+| LoCoMo-10P | rerank R@10 | 76.9 | 76.9 |
+| LoCoMo-10P | default R@5 | 67.9 | 67.9 |
+| LongMemEval | rerank R@5 | 70.2 | 70.2 |
+| LongMemEval | default R@5 | 69.8 | 69.8 |
+
+With the harness's new configurable timeouts (see [Benchmark harness](#benchmark-harness)),
+LongMemEval can now also be run to completion on throttled or slow machines.
