@@ -1511,6 +1511,20 @@ public APIs and hybrid/ranked search results stay the same:
 End users see lower latency transparently. The HNSW backend is always compiled
 in since 0.10.4.49.
 
+#### How vectors are stored (0.12)
+
+Every vector of a managed sidecar lives once, in a flat store of 128-row chunks:
+one 64-byte-aligned allocation per chunk, rows padded to whole 64-byte lines. The
+sidecar entries, the exact index, the HNSW graph and the implicit-edge scanner all
+hold handles to those rows, so there is no second copy of the corpus (about 150 MB
+saved at 100,000 vectors of 384 dimensions per consumer). Exact search scores a
+row with a 16-lane dot product written so the compiler emits NEON (aarch64) or
+SSE2 (x86_64) instructions without `unsafe` intrinsics, a nightly toolchain or
+runtime CPU probing; every platform computes the same bits. Scores equal a
+sequential cosine within 1e-5. One limit: an HNSW graph loaded from disk keeps
+its own copy of the vectors in the graph (the `hnsw` crate owns them); a graph
+built in this process shares fully.
+
 ### REST Lexical Search
 
 The daemon also exposes the Phase 1 ranked lexical surface over REST at `POST /v1/lexical-search`.

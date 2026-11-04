@@ -48,25 +48,36 @@ UNRELEASED
     or the CLI, and the help now says so. The agents `mentisdb setup` can write a
     config for are listed only in `mentisdb setup --help`, as the targets it knows.
     The daemon's first-run notice says the same.
-  - BREAKING (public API; the next crate version must be 0.12.0, not 0.11.x):
-    `VectorSidecarEntry::vector` changes from `Vec<f32>` to `Arc<[f32]>`; use
-    `.to_vec()` where a `Vec` is needed.
-    perf(storage): the implicit-edge scanner no longer keeps its own copy of every
-    vector. It shares the sidecar's `Arc<[f32]>` vectors instead. The field
-    serializes exactly as the `Vec<f32>` did, so the sidecar file and its digest
-    are unchanged, and `VectorSidecarEntry::new` still takes a `Vec<f32>`. The scan
-    store clones those pointers (about 40 bytes per vector instead of 1536 at 384
-    dimensions) while a snapshot still clones only `entries / 128` chunk
-    pointers. Cloning a sidecar or an entry now copies pointers, not floats.
-    Live heap growth over a 2 700-append run at 20 000 thoughts: 46.4 MiB before,
-    11.9 MiB after; over a 12 700-append run at 100 000 thoughts: 239.2 MiB before
-    (the 150 MB copy plus queued vector copies), 56.3 MiB after
-    (counting allocator in `embed_commit_latency`; run at background priority).
-    Lock hold is unchanged: write hold p50 / p99 / max at 100 000 x 384 is
-    0.028 / 0.60 / 4.3 ms (1d4be8f: 0.030 / 0.72 / 16.3 ms), and under identical
-    background throttling 2.8 / 15.8 / 34.6 ms against 2.4 / 15.0 / 128.6 ms.
-    API note for embedders that build or read `VectorSidecarEntry.vector`
-    directly: use `.to_vec()` where a `Vec<f32>` is needed.
+  - BREAKING (public API; the next crate version must be 0.12.0, not 0.11.x). Every
+    signature change, because `cargo-semver-checks` does not see field and parameter
+    type changes (it reports only the first two items below, and `UnwindSafe`
+    stays intact):
+    * `VectorSidecarEntry::vector` is a `VectorRow` (a handle into a flat store that
+      dereferences to `&[f32]`), not a `Vec<f32>`. Use `.to_vec()` where a `Vec` is
+      needed, `VectorRow::standalone(&values)` to make one.
+    * `VectorSidecarEntry::new` takes `impl Into<VectorRow>` for the vector, not
+      `Vec<f32>`: `Vec<f32>` and `&[f32]` still convert, but an argument whose type is
+      only inferred (for example a bare `.collect()`) no longer compiles; annotate it.
+    * `VectorSidecar` has a new private field, so it can no longer be built with a
+      struct literal; use `VectorSidecar::build`.
+    * New public API: `search::flat_store` (`VectorStore`, `VectorRow`, `dot`,
+      `DOT_EPSILON`), `VectorIndex::{from_rows, upsert_row}`,
+      `VectorSearchBackend::upsert_row` (provided, so implementors keep compiling),
+      `HnswBackend::{from_rows, share_cached_rows}`.
+    * Behaviour: exact-search scores equal the old sequential cosine within `1e-5`
+      (float reassociation), so documents whose scores differed by less than that may
+      swap rank. Sidecar files, their integrity digest and persisted HNSW graphs are
+      byte-identical and load unchanged.
+    perf(search): exact vector search runs over a flat, aligned store with a
+    lane-parallel dot product (portable safe Rust that the compiler turns into NEON
+    on aarch64 and SSE2 on x86_64; no nightly, no runtime probing; same bits on
+    every platform): @SEARCH_NUMBERS@
+    perf(storage): every vector exists once in memory. The sidecar entries, the exact
+    index, the HNSW graph (items and exact-vector cache) and the implicit-edge scanner
+    hold handles to the same 128-row, 64-byte-aligned chunks instead of copies; a
+    snapshot still clones only `entries / 128` chunk pointers. An HNSW graph loaded
+    from disk keeps the graph's own copy (the `hnsw` crate owns its items); only its
+    cache is re-pointed. @MEMORY_NUMBERS@
   - perf(storage): the implicit-edge queue holds positions, not vectors, so it
     cannot grow without bound in memory. A backlog costs a few bytes per run of
     consecutive appends; it never blocks an append and never drops an edge (the
