@@ -75,6 +75,12 @@ pub(crate) struct Chunk {
 unsafe impl Sync for Chunk {}
 // SAFETY: the chunk owns plain `f32` data.
 unsafe impl Send for Chunk {}
+// `UnsafeCell` opts a type out of `RefUnwindSafe`, which would make every type
+// holding a vector (the index, the sidecar, the HNSW backend) stop being
+// `UnwindSafe` for callers that use `catch_unwind`. A panic cannot leave a
+// chunk half-updated where a reader can see it: published rows are never
+// written, and an unpublished row has no handle.
+impl std::panic::RefUnwindSafe for Chunk {}
 
 impl Chunk {
     fn new(dimension: usize, rows: usize) -> Arc<Self> {
