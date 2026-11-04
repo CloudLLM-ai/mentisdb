@@ -187,19 +187,22 @@ A new outermost layer decides whether to read a body at all:
   one peer from taking the whole pool.
 - **Time limits.** A body that delivers nothing for `MENTISDB_BODY_IDLE_TIMEOUT_SECS`
   (default 30, range 1 to 3600) fails. Small and anonymous bodies also have a total
-  deadline of twice that (60 s by default). Every body, large imports included, must keep
-  up at least **64 KiB/s** once its grace period (twice the idle timeout, 60 s by default)
-  is over. Without that floor, a client could declare 64 MiB and send one byte every 29 s,
-  holding an import slot indefinitely. A link slower than about 0.5 Mbit/s cannot upload
-  for longer than the grace period.
+  deadline of twice that (60 s by default). Every body, large imports included, must reach
+  `MENTISDB_MIN_BODY_BYTES_PER_SEC` (default **64 KiB/s**) once its grace period (twice the
+  idle timeout, 60 s by default) is over. The rate is judged per window, each one idle
+  timeout long, and each window counts only its own bytes. Without that floor, a client
+  could declare 64 MiB and send one byte every 29 s, holding an import slot indefinitely.
+  Because each window is judged on its own, sending most of a body at once does not buy
+  time to trickle the rest. Lower the floor for imports over slow links, or set `0` to turn
+  it off (the idle timeout and deadlines still apply).
 - **`408` and `503` everywhere.** A body that is too slow or stalls gets **`408`**. A body
   that does not fit its budget gets **`503` with `Retry-After`**. This holds on every
   route, with bearer tokens on or off. Before, handlers' own JSON parsing turned both into
   a generic `400`.
 - **Bad settings stop the daemon.** A non-numeric or out-of-range
-  `MENTISDB_MAX_BODY_BYTES`, `MENTISDB_MAX_INFLIGHT_BODY_BYTES` or
-  `MENTISDB_BODY_IDLE_TIMEOUT_SECS` stops the daemon at startup instead of silently
-  falling back to a default. An in-flight budget below one maximum body is raised to one
+  `MENTISDB_MAX_BODY_BYTES`, `MENTISDB_MAX_INFLIGHT_BODY_BYTES`,
+  `MENTISDB_BODY_IDLE_TIMEOUT_SECS` or `MENTISDB_MIN_BODY_BYTES_PER_SEC` stops the daemon at
+  startup instead of silently falling back to a default. An in-flight budget below one maximum body is raised to one
   body.
 
 Read proofs are verified per chain, and the chain is named in the body, so a proof from an
@@ -234,15 +237,17 @@ migration.
 - **Request bodies.** Ordinary REST and MCP routes take at most 2 MiB. Only the three import routes take
   more, up to `MENTISDB_MAX_BODY_BYTES`, and only from an authenticated caller. Large imports
   over MCP fail with `413`: use the REST route or the CLI.
-- **New statuses.** A stalled or too-slow body (under 64 KiB/s after the first 60 s) gets
-  `408`, and an exhausted body budget gets `503` with `Retry-After`, on every route. Retry
-  the `503`. Clients on very slow links should keep each upload short enough to finish
-  within the grace period.
+- **New statuses.** A stalled or too-slow body (under `MENTISDB_MIN_BODY_BYTES_PER_SEC`,
+  64 KiB/s by default, in any window after the first 60 s) gets `408`, and an exhausted
+  body budget gets `503` with `Retry-After`, on every route. Retry the `503`. If you import
+  over a link slower than about 0.5 Mbit/s, lower `MENTISDB_MIN_BODY_BYTES_PER_SEC` or set it
+  to `0`.
 - **Reverse proxies** in front of MentisDB must allow request bodies up to
   `MENTISDB_MAX_BODY_BYTES` on the import routes (nginx's `client_max_body_size` defaults to
   1 MiB). Otherwise large imports fail at the proxy.
 - **Body settings are validated.** `MENTISDB_MAX_BODY_BYTES` must be 1048576 to
-  1073741824, and `MENTISDB_BODY_IDLE_TIMEOUT_SECS` 1 to 3600. Any other value stops the
+  1073741824, `MENTISDB_BODY_IDLE_TIMEOUT_SECS` 1 to 3600, and
+  `MENTISDB_MIN_BODY_BYTES_PER_SEC` 0 to 1073741824 (`0` = off). Any other value stops the
   daemon at startup.
 - **`derived_backlog`** is a new field in each `GET /v1/chains` chain summary.
 - **`mentisdb --help`** no longer lists "Supported agents": any agent works over MCP (HTTP
@@ -327,7 +332,8 @@ let config = MentisDbServiceConfig::new("/var/lib/mentisdb".into(), "project", S
     .with_verbose(true)
     .with_max_body_bytes(128 * 1024 * 1024)       // import routes; clamped to 1 MiB..1 GiB
     .with_max_inflight_body_bytes(512 * 1024 * 1024)
-    .with_body_idle_timeout(Duration::from_secs(60));
+    .with_body_idle_timeout(Duration::from_secs(60))
+    .with_min_body_bytes_per_sec(16 * 1024);      // 0 turns the rate floor off
 ```
 
 ## Benchmarks

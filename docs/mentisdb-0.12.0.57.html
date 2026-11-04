@@ -97,7 +97,7 @@
       <li>The bearer token is checked from the headers first. A caller without a valid token is refused without a byte of its body being read.</li>
       <li>Ordinary routes, and every MCP request, take at most 2 MiB. Only the three import routes take up to <code>MENTISDB_MAX_BODY_BYTES</code> (64 MiB), and only from an authenticated caller.</li>
       <li>Imports, ordinary requests and anonymous requests draw on three separate budgets, so none can starve another. Each peer has a share: 32 MiB of the 64 MiB ordinary pool, and 8 MiB of a 16 MiB pool for anonymous callers.</li>
-      <li>Every body must keep up at least 64 KiB/s after a 60-second grace period, and small and anonymous bodies have a total deadline, so a slow drip cannot hold a slot. A body that is too slow gets <code>408</code>; an exhausted budget gets <code>503</code> with <code>Retry-After</code>, on every route.</li>
+      <li>Every body must keep up at least 64 KiB/s (<code>MENTISDB_MIN_BODY_BYTES_PER_SEC</code>, <code>0</code> turns it off), judged window by window after a 60-second grace period, and small and anonymous bodies have a total deadline, so a slow drip cannot hold a slot. A body that is too slow gets <code>408</code>; an exhausted budget gets <code>503</code> with <code>Retry-After</code>, on every route.</li>
     </ul>
     <p>
       If a reverse proxy sits in front of MentisDB, raise its body limit on the import
