@@ -2615,13 +2615,9 @@ fn parse_markdown_skill(content: &str) -> io::Result<SkillDocument> {
     if let Some(stripped) = body.strip_prefix("---\n") {
         if let Some((frontmatter, remainder)) = stripped.split_once("\n---\n") {
             body = remainder;
-            for line in frontmatter.lines() {
-                let Some((key, value)) = line.split_once(':') else {
-                    continue;
-                };
-                let key = key.trim();
-                let value = value.trim();
-                match key {
+            for entry in frontmatter_entries(frontmatter) {
+                let value = entry.inline.as_str();
+                match entry.key.as_str() {
                     "schema_version" => {
                         schema_version = value.parse::<u32>().map_err(|error| {
                             io::Error::new(
@@ -2630,13 +2626,11 @@ fn parse_markdown_skill(content: &str) -> io::Result<SkillDocument> {
                             )
                         })?;
                     }
-                    "name" => frontmatter_name = Some(trim_wrapped(value).to_string()),
-                    "description" => {
-                        frontmatter_description = Some(trim_wrapped(value).to_string())
-                    }
-                    "tags" => tags = parse_frontmatter_list(value),
-                    "triggers" => triggers = parse_frontmatter_list(value),
-                    "warnings" => warnings = parse_frontmatter_list(value),
+                    "name" => frontmatter_name = Some(frontmatter_scalar(&entry)),
+                    "description" => frontmatter_description = Some(frontmatter_scalar(&entry)),
+                    "tags" => tags = frontmatter_list(&entry),
+                    "triggers" => triggers = frontmatter_list(&entry),
+                    "warnings" => warnings = frontmatter_list(&entry),
                     _ => {}
                 }
             }
@@ -2722,7 +2716,14 @@ fn render_markdown_skill(skill: &SkillDocument) -> String {
     markdown.push_str("---\n");
     markdown.push_str(&format!("schema_version: {}\n", skill.schema_version));
     markdown.push_str(&format!("name: {}\n", skill.name));
-    markdown.push_str(&format!("description: {}\n", skill.description));
+    if skill.description.contains('\n') {
+        markdown.push_str("description: |\n");
+        for line in skill.description.lines() {
+            markdown.push_str(&format!("  {line}\n"));
+        }
+    } else {
+        markdown.push_str(&format!("description: {}\n", skill.description));
+    }
     if !skill.tags.is_empty() {
         markdown.push_str(&format!("tags: [{}]\n", skill.tags.join(", ")));
     }
@@ -2760,6 +2761,121 @@ fn parse_heading(line: &str) -> Option<(u8, String)> {
         return None;
     }
     Some((level as u8, heading.to_string()))
+}
+
+/// One top-level `key: value` frontmatter entry and the indented or `- item`
+/// lines that follow it before the next top-level key.
+struct FrontmatterEntry {
+    key: String,
+    inline: String,
+    continuation: Vec<String>,
+}
+
+/// Groups frontmatter lines into entries. A line that starts in column zero and
+/// contains `:` opens a new entry; indented lines, `- item` lines and blank lines
+/// belong to the entry above them.
+fn frontmatter_entries(frontmatter: &str) -> Vec<FrontmatterEntry> {
+    let mut entries: Vec<FrontmatterEntry> = Vec::new();
+    for line in frontmatter.lines() {
+        let line = line.trim_end_matches('\r');
+        let starts_entry = !line.starts_with([' ', '\t']) && !line.starts_with('-');
+        if starts_entry {
+            if let Some((key, value)) = line.split_once(':') {
+                entries.push(FrontmatterEntry {
+                    key: key.trim().to_string(),
+                    inline: value.trim().to_string(),
+                    continuation: Vec::new(),
+                });
+                continue;
+            }
+        }
+        if let Some(entry) = entries.last_mut() {
+            entry.continuation.push(line.to_string());
+        }
+    }
+    entries
+}
+
+/// Reads a scalar entry: a single-line value, a YAML block scalar (`>` folds
+/// lines into one paragraph, `|` keeps line breaks), or a plain value continued
+/// on indented lines.
+fn frontmatter_scalar(entry: &FrontmatterEntry) -> String {
+    let indicator = entry.inline.chars().next();
+    let lines: Vec<&str> = entry.continuation.iter().map(String::as_str).collect();
+    match indicator {
+        Some('|') => literal_block(&lines),
+        Some('>') => folded_block(&lines),
+        _ => {
+            let mut parts = vec![trim_wrapped(&entry.inline).to_string()];
+            parts.extend(
+                lines
+                    .iter()
+                    .map(|line| line.trim())
+                    .filter(|line| !line.is_empty())
+                    .map(ToOwned::to_owned),
+            );
+            parts
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+    }
+}
+
+/// Reads a list entry: an inline `[a, b]` or comma list, or a YAML block list of
+/// `- item` lines.
+fn frontmatter_list(entry: &FrontmatterEntry) -> Vec<String> {
+    let block_items: Vec<String> = entry
+        .continuation
+        .iter()
+        .filter_map(|line| line.trim().strip_prefix('-'))
+        .map(trim_wrapped)
+        .filter(|item| !item.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    if entry.inline.is_empty() && !block_items.is_empty() {
+        return block_items;
+    }
+    parse_frontmatter_list(&entry.inline)
+}
+
+/// YAML folded scalar: lines join with spaces; a blank line starts a new paragraph.
+fn folded_block(lines: &[&str]) -> String {
+    let mut paragraphs: Vec<String> = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(current.join(" "));
+                current.clear();
+            }
+        } else {
+            current.push(trimmed);
+        }
+    }
+    if !current.is_empty() {
+        paragraphs.push(current.join(" "));
+    }
+    paragraphs.join("\n")
+}
+
+/// YAML literal scalar: keeps line breaks and strips the common indentation.
+fn literal_block(lines: &[&str]) -> String {
+    let indent = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    lines
+        .iter()
+        .map(|line| line.get(indent..).unwrap_or("").trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end()
+        .to_string()
 }
 
 fn parse_frontmatter_list(value: &str) -> Vec<String> {
