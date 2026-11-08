@@ -62,6 +62,13 @@ UNRELEASED
     windows: 30 contested decisions paged by 5 returned 60 hits, 44 distinct. Emitted
     totals are now non-increasing in page order. Chains without lineage or contests are
     unaffected.
+  - fix(dashboard): the agent page's "Add Key" button never worked. It posted to the
+    agent keys API, which needs a registration timestamp and a proof of possession that a
+    pasted public key cannot give, so every click failed. It now registers through the
+    operator route `agent key add` uses (`register_key`; the PIN session vouches for the
+    key), and takes 64 hex characters, `0x` hex or 32 comma-separated bytes. On a dashboard
+    with no PIN the registration is refused with the reason, as for every operator action;
+    nothing is widened for a non-PIN session.
   - feat(dashboard): "Generate key pair" on the agent page's Public Keys card. It takes a Key
     ID, generates the Ed25519 pair in the browser with WebCrypto, signs the registration
     proof there and registers only the public key through the agent keys API, so the private

@@ -260,12 +260,16 @@ fn test_unsupported_webcrypto_is_reported_distinctly() {
 }
 
 fn dashboard(dir: &Path) -> axum::Router {
+    dashboard_with_pin(dir, Some(PIN))
+}
+
+fn dashboard_with_pin(dir: &Path, pin: Option<&str>) -> axum::Router {
     dashboard_impl::dashboard_router(dashboard_impl::DashboardState {
         chains: Arc::new(DashMap::new()),
         skills: Arc::new(RwLock::new(SkillRegistry::open(dir).unwrap())),
         mentisdb_dir: dir.to_path_buf(),
         default_chain_key: "default".to_string(),
-        dashboard_pin: Some(PIN.to_string()),
+        dashboard_pin: pin.map(str::to_string),
         sessions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         default_storage_adapter: StorageAdapterKind::Binary,
         auto_flush: Arc::new(AtomicBool::new(true)),
@@ -418,4 +422,123 @@ fn test_page_reveals_the_private_key_only_after_registration() {
     }
     // The page makes all requests through api(); the new flow added none.
     assert_eq!(INDEX_HTML.matches("fetch(").count(), 1);
+}
+
+/// Add Key accepts a pasted public key as bare hex, `0x` hex or 32 decimal
+/// bytes, and refuses anything that is not exactly 32 bytes of valid input.
+#[test]
+fn test_add_key_input_forms_normalize_to_64_hex() {
+    if !node_usable() {
+        return;
+    }
+    let result = run_node(
+        "inputs",
+        r#"
+        const bytes = Array.from({ length: 32 }, (_, i) => i * 8 + 1);
+        const hex = bytes.map(b => b.toString(16).padStart(2, '0')).join('');
+        const attempt = raw => { try { return publicKeyInputToHex(raw); } catch (e) { return 'error'; } };
+        console.log(JSON.stringify({
+          hex,
+          bare: attempt(hex.toUpperCase()),
+          prefixed: attempt('0x' + hex),
+          spaced: attempt('0x' + hex.replace(/(..)/g, '$1 ')),
+          decimal: attempt(bytes.join(', ')),
+          short: attempt(hex.slice(2)),
+          oddHex: attempt('0x' + hex.slice(1)),
+          notHex: attempt('0x' + 'zz'.repeat(32)),
+          big: attempt(bytes.slice(1).concat([256]).join(',')),
+          empty: attempt(''),
+        }));
+        "#,
+    );
+    let hex = result["hex"].clone();
+    for form in ["bare", "prefixed", "spaced", "decimal"] {
+        assert_eq!(result[form], hex, "{form}");
+    }
+    for bad in ["short", "oddHex", "notHex", "big", "empty"] {
+        assert_eq!(result[bad], "error", "{bad}");
+    }
+}
+
+async fn post_access(
+    router: &axum::Router,
+    chain: &str,
+    body: &Value,
+    pin: Option<&str>,
+) -> StatusCode {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(format!("/dashboard/api/chains/{chain}/access"))
+        .header("content-type", "application/json")
+        .header("x-mentisdb-dashboard", "1");
+    if let Some(pin) = pin {
+        request = request.header("authorization", format!("Bearer {pin}"));
+    }
+    router
+        .clone()
+        .oneshot(request.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap()
+        .status()
+}
+
+/// The request Add Key builds (the operator `register_key` operation, no
+/// proof) is accepted behind the PIN and registers the pasted key; it is not
+/// available without a session, nor on a dashboard that has no PIN.
+#[tokio::test]
+async fn test_add_key_body_is_accepted_only_for_the_pin_session() {
+    let dir = scratch("addkey");
+    let mut chain =
+        MentisDb::open_with_key_and_storage_kind(&dir, "reg", StorageAdapterKind::Binary).unwrap();
+    chain.append("bot", ThoughtType::Insight, "hello").unwrap();
+    chain.flush().unwrap();
+    drop(chain);
+    let public = to_hex(
+        &SigningKey::from_bytes(&[5u8; 32])
+            .verifying_key()
+            .to_bytes(),
+    );
+    let pasted = format!("0x{public}");
+    // The page's own normalization produces the body field.
+    let built = if node_usable() {
+        run_node(
+            "addkey_body",
+            &format!(
+                "console.log(JSON.stringify({{ public_key: publicKeyInputToHex({pasted:?}) }}));"
+            ),
+        )["public_key"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    } else {
+        public.clone()
+    };
+    assert_eq!(built, public);
+    let body =
+        json!({"op": "register_key", "agent_id": "bot", "key_id": "pasted-1", "public_key": built});
+
+    let router = dashboard(&dir);
+    assert!(
+        !post_access(&router, "reg", &body, None).await.is_success(),
+        "no session, no registration"
+    );
+    assert_eq!(
+        post_access(&router, "reg", &body, Some(PIN)).await,
+        StatusCode::OK
+    );
+    let registered =
+        MentisDb::open_with_key_and_storage_kind(&dir, "reg", StorageAdapterKind::Binary).unwrap();
+    let key = &registered.get_agent("bot").unwrap().public_keys[0];
+    assert_eq!(key.key_id, "pasted-1");
+    assert_eq!(to_hex(&key.public_key_bytes), public);
+
+    let no_pin = dashboard_with_pin(&dir, None);
+    let mut again = body.clone();
+    again["key_id"] = json!("pasted-2");
+    assert_eq!(
+        post_access(&no_pin, "reg", &again, None).await,
+        StatusCode::FORBIDDEN,
+        "a dashboard without a PIN cannot tell the operator apart"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

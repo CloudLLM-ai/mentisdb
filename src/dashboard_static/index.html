@@ -836,6 +836,27 @@
     return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
   }
 
+  // A pasted Ed25519 public key as 64 lowercase hex characters. Accepts bare
+  // hex, 0x-prefixed hex (whitespace ignored) or 32 comma-separated decimal
+  // bytes (the form Add Key took before it registered through the operator route).
+  function publicKeyInputToHex(raw) {
+    const text = String(raw).trim();
+    let bytes;
+    if (/^0x/i.test(text) || /^[0-9a-f\s]+$/i.test(text) && !text.includes(',')) {
+      const hex = text.replace(/^0x/i, '').replace(/\s/g, '');
+      if (!/^[0-9a-f]*$/i.test(hex) || hex.length % 2 !== 0) throw new Error('Public key is not valid hex');
+      bytes = Array.from({ length: hex.length / 2 }, (_, i) => parseInt(hex.substr(i * 2, 2), 16));
+    } else {
+      bytes = text.split(',').map(part => {
+        const piece = part.trim();
+        if (!/^\d+$/.test(piece) || Number(piece) > 255) throw new Error(`Invalid byte value: ${piece}`);
+        return Number(piece);
+      });
+    }
+    if (bytes.length !== 32) throw new Error(`An Ed25519 public key is 32 bytes (got ${bytes.length})`);
+    return bytesToHex(bytes);
+  }
+
   // The 32-byte seed of an Ed25519 PKCS#8 private key (WebCrypto exports the
   // fixed 16-byte prefix followed by the seed, 48 bytes in all).
   function ed25519SeedFromPkcs8(pkcs8) {
@@ -3102,8 +3123,8 @@
               <select id="nk-algo" title="Currently only Ed25519 is supported"><option value="ed25519">ed25519</option></select>
             </div>
             <div class="form-group">
-              <label title="The raw public key bytes for verification">Public Key Bytes <span style="color:#484f58;font-weight:400">(comma-separated integers or 0x hex)</span></label>
-              <textarea id="nk-bytes" placeholder="1,2,3,... or 0xABCD..." title="Enter the public key as comma-separated decimal bytes or hex string"></textarea>
+              <label title="The raw public key bytes for verification">Public Key <span style="color:#484f58;font-weight:400">(64 hex characters, 0x hex, or 32 comma-separated bytes)</span></label>
+              <textarea id="nk-bytes" placeholder="9f86d081... (64 hex characters)" title="Registered by the operator (dashboard PIN); no proof of possession needed"></textarea>
             </div>
             <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
               <button class="btn btn-primary btn-sm" id="nk-add" title="Register this public key for the agent">Add Key</button>
@@ -3189,28 +3210,17 @@
       const fb    = document.getElementById('nk-fb');
       const btn   = document.getElementById('nk-add');
       const keyId = document.getElementById('nk-id').value.trim();
-      const algo  = document.getElementById('nk-algo').value;
       const raw   = document.getElementById('nk-bytes').value.trim();
       if (!keyId || !raw) { showFeedback(fb, false, 'Key ID and bytes are required'); return; }
-      let bytes;
-      try {
-        if (/^0x/i.test(raw)) {
-          const hex = raw.slice(2).replace(/\s/g,'');
-          if (hex.length % 2 !== 0) throw new Error('Odd hex length');
-          bytes = Array.from({length: hex.length/2}, (_,i) => parseInt(hex.substr(i*2,2),16));
-        } else {
-          bytes = raw.split(',').map(s => {
-            const n = parseInt(s.trim());
-            if (isNaN(n) || n < 0 || n > 255) throw new Error(`Invalid byte value: ${s.trim()}`);
-            return n;
-          });
-        }
-      } catch(e) { showFeedback(fb, false, e.message); return; }
+      let publicKey;
+      try { publicKey = publicKeyInputToHex(raw); } catch (e) { showFeedback(fb, false, e.message); return; }
       btn.disabled = true;
-      api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}/keys`, {
+      // Operator registration: the PIN-authenticated session vouches for the
+      // key, so no proof of possession is needed (same as `agent key add`).
+      api(`/dashboard/api/chains/${encodeURIComponent(chainKey)}/access`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key_id: keyId, algorithm: algo, public_key_bytes: bytes })
+        body: JSON.stringify({ op: 'register_key', agent_id: agentId, key_id: keyId, public_key: publicKey })
       })
       .then(() => {
         showFeedback(fb, true, 'Key added');
