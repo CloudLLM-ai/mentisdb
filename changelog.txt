@@ -1,4 +1,8 @@
 UNRELEASED
+  - fix(mcp): a lean hit keeps the kind of the link it replaces. Dropping the relation that
+    `successor_of` names also dropped whether it was `Corrects` or `Invalidates`; that kind
+    now shows as `successor_kind` (absent means `Supersedes`). The skill also says that
+    `signature: valid` without a `verified_agent` means the key is not currently trusted.
   - docs(search): `successor_of` and `superseded_versions` are no longer described as the
     whole lineage. They list older versions that matched the query and were met before
     the page filled, so the count is a lower bound (rustdoc, the `compact` parameter

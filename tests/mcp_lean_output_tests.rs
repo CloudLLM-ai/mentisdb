@@ -461,3 +461,53 @@ async fn test_chain_key_is_kept_for_ancestor_and_cross_chain_hits() {
     // The replacement of the branch's decision lives on `base` too.
     assert_eq!(chain_of("Striped animals").as_deref(), Some("base"));
 }
+
+/// The kind of a dropped strong link survives: a `Corrects` link shows as
+/// `successor_kind`, a plain `Supersedes` link does not.
+#[tokio::test]
+async fn test_lean_hit_keeps_the_kind_of_a_corrects_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut chain =
+        MentisDb::open_with_key_and_storage_kind(dir.path(), CHAIN, StorageAdapterKind::Binary)
+            .unwrap();
+    let old = chain
+        .append_thought(
+            "a",
+            ThoughtInput::new(ThoughtType::Decision, "Zebra rule: cross at dawn."),
+        )
+        .unwrap()
+        .clone();
+    chain
+        .append_thought(
+            "a",
+            ThoughtInput::new(ThoughtType::Correction, "Giraffe rule: cross at dusk.")
+                .with_relations(vec![ThoughtRelation {
+                    kind: ThoughtRelationKind::Corrects,
+                    target_id: old.id,
+                    chain_key: None,
+                    valid_at: None,
+                    invalid_at: None,
+                }]),
+        )
+        .unwrap();
+    let result = rpc(
+        &dir,
+        "mentisdb_ranked_search",
+        json!({"text": "zebra rule", "limit": 5,
+               "df_cutoffs": {"content": 1.0, "tags": 1.0, "concepts": 1.0, "agent_id": 1.0, "agent_registry": 1.0}}),
+    )
+    .await;
+    let hits = parsed(&result)["results"].clone();
+    let correction = hits
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["thought"]["thought_type"] == json!("Correction"))
+        .expect("the correction stands in for the corrected decision");
+    assert_eq!(correction["thought"]["successor_kind"], json!("Corrects"));
+    assert_eq!(
+        correction["thought"]["successor_of"],
+        json!([old.id.to_string()])
+    );
+    assert!(correction["thought"].get("relations").is_none());
+}

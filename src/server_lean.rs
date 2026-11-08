@@ -38,6 +38,7 @@
 //! | `timestamp` | Whole seconds. |
 //! | `successor_of` | One id: the older version this hit replaces (the one its own link names, else the first that matched). `superseded_versions` counts the older versions that **matched the query** and stood behind it, when more than one. Both describe matches met before the page filled, not the whole lineage, so the count is a lower bound. |
 //! | `relations` | Without the link that `successor_of` already names, and without a `valid_at` equal to `timestamp`. |
+//! | `successor_kind` | The kind of the dropped link (`Corrects` or `Invalidates`); absent means `Supersedes`, so the kind of the link is never lost. |
 //! | `collapsed_duplicates` | `duplicates_collapsed`, a count. |
 //! | `chain_key` on a ranked hit | Only when the hit came from a chain other than the one searched. |
 //!
@@ -360,6 +361,14 @@ fn lean_lineage(fields: &mut Map<String, Value>, timestamp: Option<&str>) {
         if predecessors.len() > 1 {
             fields.insert("superseded_versions".into(), json!(predecessors.len()));
         }
+        // The relation that names the predecessor is dropped below, so keep
+        // its kind unless it is the default.
+        match strong_link_kind(fields, id) {
+            Some(kind) if kind != "Supersedes" => {
+                fields.insert("successor_kind".into(), json!(kind));
+            }
+            _ => {}
+        }
     }
     if let Some(Value::Array(relations)) = fields.get_mut("relations") {
         relations.retain_mut(|relation| {
@@ -387,6 +396,19 @@ fn lean_lineage(fields: &mut Map<String, Value>, timestamp: Option<&str>) {
     {
         fields.remove("relations");
     }
+}
+
+/// The kind (`Supersedes`, `Corrects` or `Invalidates`) of this thought's own
+/// strong relation to `target`, if it has one.
+fn strong_link_kind(fields: &Map<String, Value>, target: &str) -> Option<String> {
+    fields
+        .get("relations")?
+        .as_array()?
+        .iter()
+        .filter(|r| r.get("target_id").and_then(Value::as_str) == Some(target))
+        .filter_map(|r| r.get("kind").and_then(Value::as_str))
+        .find(|kind| matches!(*kind, "Supersedes" | "Corrects" | "Invalidates"))
+        .map(str::to_owned)
 }
 
 /// The predecessor this thought directly replaces: the target of its own
@@ -483,6 +505,25 @@ mod tests {
             lean["relations"],
             json!([{"kind": "References", "target_id": "other"}])
         );
+    }
+
+    /// The kind of the dropped link survives as `successor_kind` unless it is
+    /// the default `Supersedes`.
+    #[test]
+    fn test_lean_thought_keeps_the_link_kind() {
+        let link = |kind: &str| {
+            lean_thought(json!({
+                "successor_of": ["old"],
+                "relations": [{"kind": kind, "target_id": "old"}],
+            }))
+        };
+        assert_eq!(link("Corrects")["successor_kind"], json!("Corrects"));
+        assert_eq!(link("Invalidates")["successor_kind"], json!("Invalidates"));
+        assert!(link("Supersedes").get("successor_kind").is_none());
+        assert!(link("Corrects").get("relations").is_none());
+        // No link naming the predecessor: nothing to report.
+        let none = lean_thought(json!({"successor_of": ["old"]}));
+        assert!(none.get("successor_kind").is_none());
     }
 
     /// A lone predecessor needs no count, and without a linking relation the
