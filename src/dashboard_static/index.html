@@ -928,6 +928,38 @@
       }
     };
   }
+
+  // The public key of an agent registry record as 64 lowercase hex characters,
+  // the form `chain access allow` and the Access panel take. The agent API sends
+  // `public_key_bytes` as a JSON array of byte values; anything that is not 32
+  // bytes in 0..=255 yields '' so the page never offers a malformed key.
+  function agentKeyPublicHex(key) {
+    const bytes = key && key.public_key_bytes;
+    if (!Array.isArray(bytes) || bytes.length !== 32) return '';
+    if (!bytes.every(b => Number.isInteger(b) && b >= 0 && b <= 255)) return '';
+    return bytesToHex(bytes);
+  }
+
+  // What the "Allow on chain" picker says about one chain, from the body of
+  // GET /dashboard/api/chains/{chain}/access. Returns { allow, text }: allow is
+  // true only when an allow_key request would add this key. A public chain has
+  // no allowed set to join (make it private first); a key already in the set,
+  // or a different key under the same agent/key id, is reported as such.
+  function allowKeyVerdict(access, chainKey, agentId, keyId, publicHex) {
+    const policy = (access && access.policy) || {};
+    if ((policy.mode || 'open') === 'open') {
+      return { allow: false, text: `${chainKey} is public: anyone can already write to it. Make it private in its Access panel first.` };
+    }
+    const keys = Array.isArray(policy.keys) ? policy.keys : [];
+    const same = keys.find(k => k.agent_id === agentId && k.key_id === keyId);
+    if (same && same.public_key === publicHex) {
+      return { allow: false, text: `${agentId}/${keyId} is already allowed on ${chainKey}.` };
+    }
+    if (same) {
+      return { allow: true, text: `${chainKey} allows a different key under ${agentId}/${keyId}; allowing replaces it with this one.` };
+    }
+    return { allow: true, text: `${chainKey} is private. Allowing lets ${agentId}/${keyId} write to it and read its private thoughts.` };
+  }
   // END keygen-helpers
 
   // Delegated click dispatcher. All interactive markup uses data-act plus
@@ -3275,7 +3307,7 @@
       }
     });
 
-    wireKeyDelete(chainKey, agentId);
+    wireKeyActions(chainKey, agentId);
 
     // ── Export Memory dialog ──────────────────────────────────────────────
     document.getElementById('ad-export-btn').addEventListener('click', () => {
@@ -3647,18 +3679,112 @@
     if (!keys || !keys.length) return '<div class="empty-state" style="padding:12px 0">No public keys registered.</div>';
     return `
       <div class="table-wrap"><table>
-        <thead><tr><th>Key ID</th><th>Algorithm</th><th></th></tr></thead>
+        <thead><tr><th>Key ID</th><th>Algorithm</th><th>Public key</th><th></th></tr></thead>
         <tbody>
-          ${keys.map(k => `
+          ${keys.map(k => {
+            const hex = agentKeyPublicHex(k);
+            const revoked = Boolean(k.revoked_at);
+            return `
             <tr>
               <td class="mono" style="font-size:0.83rem">${esc(k.key_id)}</td>
-              <td><span class="badge badge-gray">${esc(k.algorithm)}</span></td>
-              <td><button class="btn btn-danger btn-sm del-key-btn" data-kid="${esc(k.key_id)}">Delete</button></td>
-            </tr>
-          `).join('')}
+              <td><span class="badge badge-gray">${esc(k.algorithm)}</span>${revoked ? ' <span class="badge badge-red">revoked</span>' : ''}</td>
+              <td class="mono" style="font-size:0.8rem;color:#8b949e" title="${esc(hex)}">${hex ? esc(hex.slice(0, 8) + '…' + hex.slice(-8)) : '—'}</td>
+              <td style="white-space:nowrap">
+                ${hex ? `<button class="btn btn-secondary btn-sm copy-key-btn" data-pub="${esc(hex)}" title="Copy the public key (64 hex characters) to paste into a chain's Access panel or mentisdb chain access allow">Copy</button>` : ''}
+                ${hex && !revoked ? `<button class="btn btn-secondary btn-sm allow-key-btn" data-kid="${esc(k.key_id)}" data-pub="${esc(hex)}" title="Let this key write to, and read, a private chain">Allow on chain…</button>` : ''}
+                <button class="btn btn-danger btn-sm del-key-btn" data-kid="${esc(k.key_id)}">Delete</button>
+              </td>
+            </tr>`;
+          }).join('')}
         </tbody>
       </table></div>
+      <div id="allow-key-panel"></div>
     `;
+  }
+
+  // Delete, Copy and "Allow on chain…" on every row of the keys table.
+  function wireKeyActions(chainKey, agentId) {
+    wireKeyDelete(chainKey, agentId);
+    document.querySelectorAll('.copy-key-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const markCopied = () => {
+          btn.textContent = 'Copied';
+          setTimeout(() => { btn.textContent = 'Copy'; }, 1400);
+        };
+        const hex = btn.getAttribute('data-pub');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(hex).then(markCopied).catch(() => copyBearerTokenSecretFallback(hex, markCopied));
+        } else {
+          copyBearerTokenSecretFallback(hex, markCopied);
+        }
+      });
+    });
+    document.querySelectorAll('.allow-key-btn').forEach(btn => {
+      btn.addEventListener('click', () => openAllowKeyPanel(chainKey, agentId, btn.getAttribute('data-kid'), btn.getAttribute('data-pub')));
+    });
+  }
+
+  // Inline picker under the keys table: choose a chain, see whether it is
+  // private and whether the key is already allowed, then allow it through the
+  // operator route (POST /dashboard/api/chains/{chain}/access, op allow_key;
+  // PIN required, the same as `mentisdb chain access allow`). The agent's own
+  // chain is preselected.
+  function openAllowKeyPanel(chainKey, agentId, keyId, publicHex) {
+    const panel = document.getElementById('allow-key-panel');
+    if (!panel) return;
+    panel.innerHTML = `
+      <div style="margin-top:12px;padding:12px;border:1px solid #30363d;border-radius:6px">
+        <div class="section-label">Allow ${esc(agentId)}/${esc(keyId)} on a private chain</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <select id="ak-chain" style="min-width:180px"><option>Loading chains…</option></select>
+          <button class="btn btn-primary btn-sm" id="ak-allow" disabled>Allow</button>
+          <button class="btn btn-secondary btn-sm" id="ak-cancel">Cancel</button>
+        </div>
+        <div id="ak-status" style="color:#8b949e;font-size:0.85rem;margin-top:8px"></div>
+        <span id="ak-fb" class="feedback"></span>
+      </div>`;
+    const select = document.getElementById('ak-chain');
+    const allow = document.getElementById('ak-allow');
+    const status = document.getElementById('ak-status');
+    const fb = document.getElementById('ak-fb');
+    document.getElementById('ak-cancel').addEventListener('click', () => { panel.innerHTML = ''; });
+    const accessUrl = target => `/dashboard/api/chains/${encodeURIComponent(target)}/access`;
+    // Only the answer for the chain selected last may update the panel.
+    let checking = 0;
+    const check = () => {
+      const target = select.value;
+      const ticket = ++checking;
+      allow.disabled = true;
+      status.textContent = `Checking ${target}…`;
+      api(accessUrl(target))
+        .then(access => {
+          if (ticket !== checking) return;
+          const verdict = allowKeyVerdict(access, target, agentId, keyId, publicHex);
+          status.textContent = verdict.text;
+          allow.disabled = !verdict.allow;
+        })
+        .catch(err => { if (ticket === checking) status.textContent = keyAdminErrorText(err.message); });
+    };
+    select.addEventListener('change', check);
+    allow.addEventListener('click', () => {
+      const target = select.value;
+      allow.disabled = true;
+      api(accessUrl(target), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ op: 'allow_key', agent_id: agentId, key_id: keyId, public_key: publicHex }),
+      })
+        .then(() => { showFeedback(fb, true, `Allowed on ${target}`); check(); })
+        .catch(err => { showFeedback(fb, false, keyAdminErrorText(err.message)); allow.disabled = false; });
+    });
+    api('/dashboard/api/chains')
+      .then(chains => {
+        const keys = (Array.isArray(chains) ? chains : []).map(c => c.chain_key).filter(Boolean);
+        if (!keys.includes(chainKey)) keys.unshift(chainKey);
+        select.innerHTML = keys.map(k => `<option value="${esc(k)}"${k === chainKey ? ' selected' : ''}>${esc(k)}</option>`).join('');
+        check();
+      })
+      .catch(err => { status.textContent = err.message; });
   }
 
   function wireKeyDelete(chainKey, agentId) {
@@ -3776,7 +3902,7 @@
     return api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}`)
       .then(a => {
         const wrap = document.getElementById('keys-wrap');
-        if (wrap) { wrap.innerHTML = buildKeysTable(a.public_keys || []); wireKeyDelete(chainKey, agentId); }
+        if (wrap) { wrap.innerHTML = buildKeysTable(a.public_keys || []); wireKeyActions(chainKey, agentId); }
       });
   }
 

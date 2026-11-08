@@ -373,7 +373,7 @@ fn test_page_reveals_the_private_key_only_after_registration() {
         .expect("generate handler");
     let handler = &INDEX_HTML[handler_start
         ..INDEX_HTML
-            .find("wireKeyDelete(chainKey, agentId);\n\n    // ── Export")
+            .find("wireKeyActions(chainKey, agentId);\n\n    // ── Export")
             .unwrap()];
     let registered = handler.find("await api(").expect("registers through api()");
     let revealed = handler
@@ -566,4 +566,293 @@ fn test_key_admin_errors_explain_a_missing_pin() {
         "{pin}"
     );
     assert_eq!(result["other"], "HTTP 400: key id is already bound");
+}
+
+// ── Copy public key / Allow on chain ─────────────────────────────────────────
+//
+// Each row of the agent page's Public Keys table offers Copy (the public key as
+// 64 hex characters) and "Allow on chain…", which picks a chain, says whether
+// the key can be allowed there, and posts `allow_key` to the operator route.
+// `agentKeyPublicHex` and `allowKeyVerdict` are in the keygen-helpers block.
+
+/// Send one dashboard API request with the PIN; returns the status and JSON.
+async fn dashboard_call(
+    router: &axum::Router,
+    method: &str,
+    uri: &str,
+    body: Option<&Value>,
+) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("x-mentisdb-dashboard", "1")
+        .header("authorization", format!("Bearer {PIN}"))
+        .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// The hex the Copy button holds is the registered public key, and malformed
+/// records (wrong length, out-of-range or non-integer bytes, missing field)
+/// give '' so no button is offered for them.
+#[test]
+fn test_agent_key_public_hex_accepts_only_32_byte_keys() {
+    if !node_usable() {
+        return;
+    }
+    let result = run_node(
+        "pubhex",
+        r#"
+        const good = Array.from({ length: 32 }, (_, i) => i * 8);
+        console.log(JSON.stringify({
+          good: agentKeyPublicHex({ public_key_bytes: good }),
+          short: agentKeyPublicHex({ public_key_bytes: good.slice(1) }),
+          big: agentKeyPublicHex({ public_key_bytes: [...good.slice(1), 256] }),
+          frac: agentKeyPublicHex({ public_key_bytes: [...good.slice(1), 1.5] }),
+          text: agentKeyPublicHex({ public_key_bytes: 'abcd' }),
+          none: agentKeyPublicHex({}),
+          nil: agentKeyPublicHex(null),
+        }));
+        "#,
+    );
+    let good: Vec<u8> = (0..32u8).map(|i| i * 8).collect();
+    assert_eq!(result["good"], to_hex(&good));
+    for malformed in ["short", "big", "frac", "text", "none", "nil"] {
+        assert_eq!(result[malformed], "", "{malformed}");
+    }
+}
+
+/// The picker's verdict: a public chain cannot take the key, a private chain
+/// can, a key already allowed is reported and not re-sent, and a different key
+/// under the same agent/key id is allowed with a warning that it replaces it.
+#[test]
+fn test_allow_key_verdict_covers_every_chain_state() {
+    if !node_usable() {
+        return;
+    }
+    let result = run_node(
+        "verdict",
+        r#"
+        const mine = 'ab'.repeat(32);
+        const allowed = keys => ({ policy: { mode: 'allowlist', seq: 1, keys } });
+        const v = access => allowKeyVerdict(access, 'team', 'bot', 'k1', mine);
+        console.log(JSON.stringify({
+          open: v({ policy: { mode: 'open', seq: null, keys: [] } }),
+          empty: v({}),
+          fresh: v(allowed([{ agent_id: 'op', key_id: 'o', public_key: 'cd'.repeat(32) }])),
+          already: v(allowed([{ agent_id: 'bot', key_id: 'k1', public_key: mine }])),
+          replaced: v(allowed([{ agent_id: 'bot', key_id: 'k1', public_key: 'ef'.repeat(32) }])),
+          legacy: v({ policy: { mode: 'signed', seq: 2, keys: [] } }),
+        }));
+        "#,
+    );
+    assert_eq!(result["open"]["allow"], false);
+    assert!(result["open"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Make it private"));
+    assert_eq!(result["empty"]["allow"], false, "no policy means public");
+    assert_eq!(result["fresh"]["allow"], true);
+    assert_eq!(result["already"]["allow"], false);
+    assert!(result["already"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("already allowed"));
+    assert_eq!(result["replaced"]["allow"], true);
+    assert!(result["replaced"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("replaces"));
+    assert_eq!(
+        result["legacy"]["allow"], true,
+        "signed mode is private too"
+    );
+}
+
+/// End to end against the real router, the way the page drives it: the hex
+/// taken from the agent API's `public_key_bytes` is accepted by `allow_key` on
+/// another, private chain; the access listing then holds exactly that key and
+/// the verdict turns to "already allowed". On a public chain the verdict
+/// refuses and the server refuses too, so the button's state matches the server.
+#[tokio::test]
+async fn test_allow_on_chain_flow_against_the_dashboard() {
+    let dir = scratch("allow_flow");
+    for key in ["reg", "team", "open"] {
+        let mut chain =
+            MentisDb::open_with_key_and_storage_kind(&dir, key, StorageAdapterKind::Binary)
+                .unwrap();
+        chain.append("bot", ThoughtType::Insight, "hello").unwrap();
+        chain.flush().unwrap();
+    }
+    let router = dashboard(&dir);
+
+    // Register a key for bot on "reg" through the operator route (Add Key).
+    let public = to_hex(
+        &SigningKey::from_bytes(&[5u8; 32])
+            .verifying_key()
+            .to_bytes(),
+    );
+    let (status, reply) = dashboard_call(
+        &router,
+        "POST",
+        "/dashboard/api/chains/reg/access",
+        Some(
+            &json!({"op": "register_key", "agent_id": "bot", "key_id": "k1", "public_key": public}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+
+    // What the page reads to render the row.
+    let (status, agent) =
+        dashboard_call(&router, "GET", "/dashboard/api/agents/reg/bot", None).await;
+    assert_eq!(status, StatusCode::OK, "{agent}");
+    let record = agent["public_keys"][0].clone();
+    let copied = if node_usable() {
+        run_node(
+            "allow_hex",
+            &format!("console.log(JSON.stringify(agentKeyPublicHex({record})));"),
+        )
+        .as_str()
+        .unwrap()
+        .to_string()
+    } else {
+        to_hex(
+            &record["public_key_bytes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| b.as_u64().unwrap() as u8)
+                .collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(copied, public, "Copy holds the registered public key");
+
+    let verdict = |access: &Value| {
+        if !node_usable() {
+            return None;
+        }
+        Some(run_node(
+            "allow_verdict",
+            &format!(
+                "console.log(JSON.stringify(allowKeyVerdict({access}, 'team', 'bot', 'k1', {copied:?})));"
+            ),
+        ))
+    };
+
+    // "team" goes private; the picker offers Allow, the server accepts it.
+    let (status, reply) = dashboard_call(
+        &router,
+        "POST",
+        "/dashboard/api/chains/team/access",
+        Some(&json!({"op": "set_mode", "mode": "private"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let (_, access) =
+        dashboard_call(&router, "GET", "/dashboard/api/chains/team/access", None).await;
+    if let Some(v) = verdict(&access) {
+        assert_eq!(v["allow"], true, "{v}");
+    }
+    let allow = json!({"op": "allow_key", "agent_id": "bot", "key_id": "k1", "public_key": copied});
+    let (status, reply) = dashboard_call(
+        &router,
+        "POST",
+        "/dashboard/api/chains/team/access",
+        Some(&allow),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let (_, access) =
+        dashboard_call(&router, "GET", "/dashboard/api/chains/team/access", None).await;
+    let keys = access["policy"]["keys"].as_array().unwrap();
+    assert!(
+        keys.iter()
+            .any(|k| k["agent_id"] == "bot" && k["key_id"] == "k1" && k["public_key"] == public),
+        "{access}"
+    );
+    if let Some(v) = verdict(&access) {
+        assert_eq!(v["allow"], false, "{v}");
+        assert!(v["text"].as_str().unwrap().contains("already allowed"));
+    }
+
+    // A public chain: the picker refuses, and so does the server.
+    let (_, access) =
+        dashboard_call(&router, "GET", "/dashboard/api/chains/open/access", None).await;
+    if let Some(v) = verdict(&access) {
+        assert_eq!(v["allow"], false, "{v}");
+    }
+    let (status, _) = dashboard_call(
+        &router,
+        "POST",
+        "/dashboard/api/chains/open/access",
+        Some(&allow),
+    )
+    .await;
+    assert!(
+        status.is_client_error(),
+        "allow_key on a public chain: {status}"
+    );
+
+    // Without the PIN the picker's request is refused.
+    let request = Request::builder()
+        .method("POST")
+        .uri("/dashboard/api/chains/team/access")
+        .header("content-type", "application/json")
+        .header("x-mentisdb-dashboard", "1")
+        .body(Body::from(allow.to_string()))
+        .unwrap();
+    let status = router.clone().oneshot(request).await.unwrap().status();
+    assert!(
+        status.is_client_error() || status.is_redirection(),
+        "no PIN: {status}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Static pins: Copy and Allow carry only the public key (from
+/// `agentKeyPublicHex`), revoked keys get no Allow button, the picker posts
+/// `allow_key` to the operator access route, and both table renders wire the
+/// new buttons.
+#[test]
+fn test_keys_table_offers_copy_and_allow_with_the_public_key_only() {
+    let table = &INDEX_HTML[INDEX_HTML.find("function buildKeysTable").unwrap()
+        ..INDEX_HTML.find("function wireKeyActions").unwrap()];
+    assert!(table.contains("const hex = agentKeyPublicHex(k);"));
+    assert!(table.contains(r#"copy-key-btn" data-pub="${esc(hex)}""#));
+    assert!(table
+        .contains("hex && !revoked ? `<button class=\"btn btn-secondary btn-sm allow-key-btn\""));
+    assert!(
+        !table.contains("seed"),
+        "the table never sees a private key"
+    );
+
+    let panel = &INDEX_HTML[INDEX_HTML.find("function openAllowKeyPanel").unwrap()
+        ..INDEX_HTML.find("function wireKeyDelete").unwrap()];
+    assert!(panel.contains("/dashboard/api/chains/${encodeURIComponent(target)}/access"));
+    assert!(
+        panel.contains("op: 'allow_key', agent_id: agentId, key_id: keyId, public_key: publicHex")
+    );
+    assert!(panel.contains("allowKeyVerdict(access, target, agentId, keyId, publicHex)"));
+    assert!(
+        !panel.contains("innerHTML = `${"),
+        "values reach innerHTML only through esc()"
+    );
+
+    assert_eq!(
+        INDEX_HTML
+            .matches("wireKeyActions(chainKey, agentId);")
+            .count(),
+        2,
+        "the first render and refreshKeys both wire Copy/Allow"
+    );
 }
