@@ -1,4 +1,4 @@
-UNRELEASED
+0.12.1.58 NOV/08/2026
   - fix(security): a registered agent key could be replaced or revived through the proof-based
     registration path (`add_agent_key`, used by the dashboard keys route and the library).
     The proof shows possession of the new key only, yet an existing key id was overwritten
