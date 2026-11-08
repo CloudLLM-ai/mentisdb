@@ -302,6 +302,7 @@ make clippy         # cargo fmt + clippy --all-targets -D warnings
 make test           # cargo test
 make bench          # Criterion benchmarks, output tee'd to /tmp/mentisdb_bench_results.txt
 make doc            # cargo doc --all-features
+make coverage       # tests under instrumentation: functions, branches, regions, lines (pinned nightly)
 make install        # cargo install --path . --locked --features local-embeddings
 make publish        # cargo publish
 make publish-dry-run
@@ -354,6 +355,77 @@ Run rustdoc tests:
 ```bash
 cargo test --doc
 ```
+
+---
+
+## Coverage
+
+`.github/workflows/coverage.yml`, `scripts/coverage_gate.py`, `make coverage`.
+
+Every CI run writes a coverage table into the run's job summary (the "Summary"
+page of the `Coverage` workflow run), with **functions, branches, regions and
+lines** as percentages with covered/total counts, a goal column (90%, with a
+check mark or a cross per dimension) and the gate result. The HTML report and
+`summary.json` are uploaded as the `coverage-report` artifact.
+
+Run it locally, identically to CI:
+
+```bash
+cargo install cargo-llvm-cov --version 0.9.1 --locked
+rustup toolchain install nightly-2026-10-01 --profile minimal --component llvm-tools-preview
+make coverage          # table on stdout and in target/coverage/summary.md
+make coverage-open     # same, then open target/coverage/html/index.html (macOS)
+```
+
+**One nightly run reports everything.** Branch coverage only exists on nightly
+(`cargo +nightly llvm-cov --branch`, the unstable `-Z coverage-options=branch`),
+and nightly's region and line numbers differ a little from stable's. Mixing a
+stable run with a nightly run in one table would put numbers from two different
+instrumentations side by side, so the whole suite runs once, on a nightly pinned
+by date (`COVERAGE_NIGHTLY` in the `Makefile`, the same date in `coverage.yml`),
+and all four dimensions come from that one profile. The table names the
+toolchain. Pinning means a nightly that changes the flag cannot break CI; bump
+the date deliberately, in its own commit, and re-measure. The run uses
+`--all-features`, like the `Tests` workflow, and covers integration and unit
+tests (not doctests). There is no `lcov.info`: this nightly's lcov exporter crashes on branch
+data, so the artifact is the HTML report and `summary.json`.
+
+**Nothing is excluded.** The measurement covers all of `src/`, including the
+terminal UI and the daemon binary. The numbers below are low partly because
+those are big and lightly tested; they are listed as gaps, not hidden.
+
+**Goal and floor.** The goal is 90% on every dimension. Measured on
+2026-11-08 (`nightly-2026-10-01`, `--all-features`), none meets it yet, so the
+gate is a floor at each measured value rounded down, so coverage cannot regress:
+
+| Dimension | Measured | Covered / total | Floor |
+|---|---:|---:|---:|
+| Functions | 73.54% | 3,689 / 5,016 | 73% |
+| Branches | 64.30% | 4,007 / 6,232 | 64% |
+| Regions | 72.07% | 33,505 / 46,490 | 72% |
+| Lines | 74.24% | 33,933 / 45,710 | 74% |
+
+The floors are `COVERAGE_FLOOR_*` in the `Makefile`. **They ratchet up toward
+90 and are never lowered to land a change**: when a change raises a dimension,
+raise its floor to the new value rounded down in the same commit; a dimension
+that reaches 90 is gated at 90. A change that adds untested code fails the job;
+the fix is a test, not a lower floor.
+
+**Biggest uncovered areas** (uncovered regions, the roadmap to 90%):
+
+| File | Uncovered regions | Regions covered |
+|---|---:|---:|
+| `src/dashboard.rs` | 2,524 | 9.5% |
+| `src/bin/mentisdb.rs` | 2,083 | 14.7% |
+| `src/lib.rs` | 1,878 | 78.8% |
+| `src/tui.rs` | 1,165 | 2.2% |
+| `src/server.rs` | 1,070 | 85.0% |
+| `src/search/lemmas.rs` | 291 | 52.2% |
+| `src/cli/mod.rs`, `src/cli/wizard.rs`, `src/cli/setup.rs`, `src/cli/args.rs` | 912 together | 35% to 65% |
+
+The first four files hold about 7,650 of the 12,985 uncovered regions
+(59%); testing the dashboard handlers, the daemon's `main` path as a process
+and the terminal views against a test buffer is most of the way to 90%.
 
 ---
 
