@@ -329,6 +329,8 @@ pub mod server;
 #[cfg(feature = "server")]
 pub mod server_body;
 #[cfg(feature = "server")]
+pub mod server_lean;
+#[cfg(feature = "server")]
 pub mod server_lens;
 pub mod signing;
 mod skills;

@@ -15,6 +15,8 @@
 //! cargo run --release --example token_diet
 //! ```
 //!
+//! Set `TOKEN_DIET_SHOW` to part of a row's label to print that call's text.
+//!
 //! The generator is deterministic (fixed seed), uses a temporary directory and
 //! binds no port.
 
@@ -234,8 +236,9 @@ fn seed_side(dir: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// One JSON-RPC `tools/call`; returns `(text_chars, body_chars)`.
-async fn call(router: &axum::Router, tool: &str, arguments: Value) -> (usize, usize) {
+/// One JSON-RPC `tools/call`; returns the text content the model would read
+/// and the length of the whole response body.
+async fn call(router: &axum::Router, tool: &str, arguments: Value) -> (String, usize) {
     let mut request = Request::builder()
         .method("POST")
         .uri("/")
@@ -265,22 +268,28 @@ async fn call(router: &axum::Router, tool: &str, arguments: Value) -> (usize, us
         "{tool} failed: {text}"
     );
     (
-        text.chars().count(),
+        text.to_owned(),
         String::from_utf8_lossy(&bytes).chars().count(),
     )
 }
 
-#[tokio::main]
-async fn main() -> std::io::Result<()> {
+/// The runtime is built by hand so it is dropped (and its background tasks
+/// stopped) before the temporary directory they read from is deleted.
+fn main() -> std::io::Result<()> {
+    // Lexical only, so the numbers do not depend on a cached embedding model;
+    // a background model load also crashes a process that exits while it runs.
+    std::env::set_var("MENTISDB_EMBEDDINGS", "off");
     let dir = tempfile::tempdir()?;
-    seed_main(dir.path())?;
-    seed_side(dir.path())?;
-    let config = MentisDbServiceConfig::new(
-        dir.path().to_path_buf(),
-        MAIN_CHAIN,
-        StorageAdapterKind::Binary,
-    )
-    .with_bearer_token_access(false);
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(run(dir.path()))
+}
+
+async fn run(dir: &std::path::Path) -> std::io::Result<()> {
+    seed_main(dir)?;
+    seed_side(dir)?;
+    let config =
+        MentisDbServiceConfig::new(dir.to_path_buf(), MAIN_CHAIN, StorageAdapterKind::Binary)
+            .with_bearer_token_access(false);
     let (router, _events) =
         standard_mcp_router(config, std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
 
@@ -335,7 +344,11 @@ async fn main() -> std::io::Result<()> {
     );
     for (label, tool, arguments) in cases {
         let (text, whole) = call(&router, tool, arguments).await;
-        println!("{label:<32} {text:>12} {whole:>14}");
+        println!("{label:<32} {:>12} {whole:>14}", text.chars().count());
+        // `TOKEN_DIET_SHOW=<part of a label>` prints that call's text.
+        if std::env::var("TOKEN_DIET_SHOW").is_ok_and(|part| label.contains(&part)) {
+            println!("{text}");
+        }
     }
     Ok(())
 }
