@@ -1,4 +1,12 @@
 UNRELEASED
+  - fix(mcp): a `compact` (or `include_entries`) that is not a boolean, such as `"false"` or
+    `0`, is refused with JSON-RPC `-32602` instead of being read as the default, which
+    turned an agent's opt-out into the opposite. `POST /tools/execute` and REST now honour
+    the `compact` they advertise on `mentisdb_lexical_search` (default `false` there;
+    compact drops `match_sources` and the thought's integrity fields), where it used to be
+    silently ignored. `/tools/list` no longer advertises `compact` on
+    `mentisdb_context_bundles`, which only takes effect over streamable MCP (REST still
+    accepts and ignores it).
   - fix(mcp): a lean hit keeps the kind of the link it replaces. Dropping the relation that
     `successor_of` names also dropped whether it was `Corrects` or `Invalidates`; that kind
     now shows as `successor_kind` (absent means `Supersedes`). The skill also says that

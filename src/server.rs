@@ -2592,6 +2592,10 @@ impl MentisDbMcpProtocol {
         self
     }
 
+    fn advertised(&self, tool: ToolMetadata) -> ToolMetadata {
+        advertised_tool(tool, self.lean)
+    }
+
     pub(crate) fn with_events(mut self, events: Option<SseBroadcaster>) -> Self {
         self.events = events;
         self
@@ -2604,10 +2608,18 @@ impl MentisDbMcpProtocol {
     ) -> Result<ToolResult, Box<dyn Error + Send + Sync>> {
         let tool = canonical_tool_name(tool_name);
         let mut parameters = parameters;
-        let lean = self.lean.then(|| {
+        let lean = if self.lean {
             let default_chain = self.service.resolve_chain_key(None);
-            crate::server_lean::LeanPlan::prepare(tool, &mut parameters, &default_chain)
-        });
+            Some(
+                crate::server_lean::LeanPlan::prepare(tool, &mut parameters, &default_chain)
+                    .map_err(|message| {
+                        Box::new(ToolError::InvalidParameters(message))
+                            as Box<dyn Error + Send + Sync>
+                    })?,
+            )
+        } else {
+            None
+        };
         let output = match tool {
             "mentisdb_bootstrap" => {
                 parse_and_call(parameters, |request| self.service.bootstrap(request)).await
@@ -3662,7 +3674,10 @@ impl ToolProtocol for MentisDbMcpProtocol {
     }
 
     async fn list_tools(&self) -> Result<Vec<ToolMetadata>, Box<dyn Error + Send + Sync>> {
-        Ok(mcp_tool_metadata())
+        Ok(mcp_tool_metadata()
+            .into_iter()
+            .map(|tool| self.advertised(tool))
+            .collect())
     }
 
     async fn get_tool_metadata(
@@ -3673,6 +3688,7 @@ impl ToolProtocol for MentisDbMcpProtocol {
         mcp_tool_metadata()
             .into_iter()
             .find(|tool| tool.name == tool_name)
+            .map(|tool| self.advertised(tool))
             .ok_or_else(|| Box::new(ToolError::NotFound(tool_name.to_string())) as _)
     }
 
@@ -4553,6 +4569,7 @@ impl MentisDbService {
         request: LexicalSearchRequest,
     ) -> Result<LexicalSearchResponse, Box<dyn Error + Send + Sync>> {
         ensure_result_window(request.offset, request.limit)?;
+        let compact = request.compact.unwrap_or(false);
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let chain = self.get_chain(Some(&chain_key), None).await?;
         let chain = chain.read().await;
@@ -4593,15 +4610,23 @@ impl MentisDbService {
             .into_iter()
             .skip(offset)
             .take(page_size)
-            .map(|hit| LexicalSearchResult {
-                thought: chain.hit_json_for(&hit, audience),
-                score: hit.score.lexical,
-                matched_terms: hit.matched_terms,
-                match_sources: hit
-                    .match_sources
-                    .into_iter()
-                    .map(|source| source.as_str().to_string())
-                    .collect(),
+            .map(|hit| {
+                let thought = chain.hit_json_for(&hit, audience);
+                LexicalSearchResult {
+                    thought: if compact {
+                        compact_thought_json(thought)
+                    } else {
+                        thought
+                    },
+                    score: hit.score.lexical,
+                    matched_terms: hit.matched_terms,
+                    match_sources: (!compact).then(|| {
+                        hit.match_sources
+                            .into_iter()
+                            .map(|source| source.as_str().to_string())
+                            .collect()
+                    }),
+                }
             })
             .collect();
         Ok(LexicalSearchResponse { results, total })
@@ -7064,6 +7089,11 @@ struct LexicalSearchRequest {
     offset: Option<usize>,
     agent_ids: Option<Vec<String>>,
     thought_types: Option<Vec<String>>,
+    /// When true, return compact hits: the thought without the fields in
+    /// `COMPACT_DROPPED_THOUGHT_FIELDS` or empty values, and no
+    /// `match_sources`. Defaults to false.
+    #[serde(default)]
+    compact: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -7071,7 +7101,9 @@ struct LexicalSearchResult {
     thought: Value,
     score: f32,
     matched_terms: Vec<String>,
-    match_sources: Vec<String>,
+    /// Left out of a compact hit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    match_sources: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -8526,7 +8558,12 @@ async fn mcp_list_tools_handler(
     }
     (
         StatusCode::OK,
-        Json(json!({ "tools": mcp_tool_metadata() })),
+        Json(json!({
+            "tools": mcp_tool_metadata()
+                .into_iter()
+                .map(|tool| advertised_tool(tool, false))
+                .collect::<Vec<_>>()
+        })),
     )
 }
 
@@ -9683,6 +9720,18 @@ fn service_call<T: Serialize>(
         }
         (status, Json(body))
     })
+}
+
+/// `tool` as a surface advertises it. `compact` on `mentisdb_context_bundles`
+/// only takes effect on the lean MCP surface (REST and `/tools/execute` accept
+/// and ignore it, a contract `server_compact_trust_tests` pins), so the legacy
+/// surface does not list it.
+fn advertised_tool(mut tool: ToolMetadata, lean: bool) -> ToolMetadata {
+    if !lean && tool.name == "mentisdb_context_bundles" {
+        tool.parameters
+            .retain(|parameter| parameter.name != "compact");
+    }
+    tool
 }
 
 fn mcp_tool_metadata() -> Vec<ToolMetadata> {

@@ -47,7 +47,8 @@ rejected with an error instead of silently falling back.
 `mentisdb_ranked_search` and `mentisdb_federated_search`) accept `compact`. It has no
 effect on `search bundles` (`context-bundles`): that REST route shares the
 ranked request type, so it accepts the field and ignores it, and `search
-bundles` therefore has no `--compact` flag.
+bundles` therefore has no `--compact` flag. `lexical-search` also accepts
+`compact` over REST and `/tools/execute` (default `false`).
 
 | REST / MCP field | CLI flag | Library | Default |
 |---|---|---|---|

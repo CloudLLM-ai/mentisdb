@@ -511,3 +511,108 @@ async fn test_lean_hit_keeps_the_kind_of_a_corrects_link() {
     );
     assert!(correction["thought"].get("relations").is_none());
 }
+
+/// A non-boolean `compact` is an error, not the default.
+#[tokio::test]
+async fn test_non_boolean_compact_is_rejected() {
+    let (dir, _) = seed();
+    let (router, _events) = standard_mcp_router(
+        config(&dir),
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+    );
+    for bad in [json!("false"), json!(0)] {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": "mentisdb_lexical_search",
+                                  "arguments": {"text": "nightly", "compact": bad}}})
+                .to_string(),
+            ))
+            .unwrap();
+        let response = router.clone().oneshot(with_peer(request)).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["error"]["code"], json!(-32602), "{value}");
+        let message = value["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("compact must be a boolean"), "{message}");
+    }
+}
+
+/// `/tools/execute` and REST honour the `compact` they advertise on lexical
+/// search (default off there) and do not advertise it on context bundles.
+#[tokio::test]
+async fn test_legacy_surfaces_honour_compact_on_lexical_and_bundles() {
+    let (dir, _) = seed();
+    let router = mcp_router(config(&dir));
+    let call = |tool: &str, compact: Option<bool>| {
+        let mut parameters = json!({"text": "nightly build server", "limit": 2});
+        if let Some(compact) = compact {
+            parameters["compact"] = json!(compact);
+        }
+        Request::builder()
+            .method("POST")
+            .uri("/tools/execute")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"tool": tool, "parameters": parameters}).to_string(),
+            ))
+            .unwrap()
+    };
+    let run = |request| {
+        let router = router.clone();
+        async move {
+            let response = router.oneshot(with_peer(request)).await.unwrap();
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 24)
+                .await
+                .unwrap();
+            let value: Value = serde_json::from_slice(&bytes).unwrap();
+            value["result"]["output"].clone()
+        }
+    };
+    let full = run(call("mentisdb_lexical_search", None)).await;
+    assert!(full["results"][0]["match_sources"].is_array());
+    assert!(full["results"][0]["thought"]["hash"].is_string());
+    let compact = run(call("mentisdb_lexical_search", Some(true))).await;
+    assert!(compact["results"][0].get("match_sources").is_none());
+    assert!(compact["results"][0]["thought"].get("hash").is_none());
+    assert!(compact["results"][0]["thought"]["id"].is_string());
+}
+
+/// The legacy surface does not list a `compact` parameter on context bundles
+/// (it only takes effect over streamable MCP); the lexical one stays.
+#[tokio::test]
+async fn test_tools_list_advertises_compact_only_where_it_works() {
+    let (dir, _) = seed();
+    let router = mcp_router(config(&dir));
+    let request = Request::builder()
+        .method("POST")
+        .uri("/tools/list")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let response = router.oneshot(with_peer(request)).await.unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 24)
+        .await
+        .unwrap();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    let tools = value["tools"]
+        .as_array()
+        .or(value["result"]["tools"].as_array())
+        .expect("tools");
+    let has_compact = |name: &str| {
+        let tool = tools.iter().find(|t| t["name"] == json!(name)).unwrap();
+        tool["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == json!("compact"))
+    };
+    assert!(has_compact("mentisdb_lexical_search"));
+    assert!(has_compact("mentisdb_ranked_search"));
+    assert!(!has_compact("mentisdb_context_bundles"));
+}

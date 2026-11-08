@@ -57,6 +57,8 @@
 //!
 //! # 4. Opting out
 //!
+//! A `compact` that is not a boolean is refused with an invalid-parameter
+//! error, so an agent's "false" is never read as the default "true".
 //! `compact: false` restores the full record (hashes, signatures, score
 //! components, match lists) for verification and debugging; it is still
 //! minified.
@@ -95,22 +97,29 @@ impl LeanPlan {
     /// understand it natively, so it is written back explicitly; lexical search
     /// and context bundles do not, so it is removed. `include_entries` is
     /// removed too. Other tools pass through untouched.
-    pub(crate) fn prepare(tool: &str, arguments: &mut Value, default_chain: &str) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// A `compact` or `include_entries` that is present but not a boolean
+    /// (`"false"` or `0`, say) is refused instead of read as the default, which
+    /// would turn an agent's intent to opt out into the opposite.
+    pub(crate) fn prepare(
+        tool: &str,
+        arguments: &mut Value,
+        default_chain: &str,
+    ) -> Result<Self, String> {
         let Some(map) = arguments.as_object_mut() else {
-            return Self::plain(default_chain);
+            return Ok(Self::plain(default_chain));
         };
-        let include_entries = map
-            .remove("include_entries")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let compact = LEAN_SEARCH_TOOLS.contains(&tool)
-            && map.get("compact").and_then(Value::as_bool).unwrap_or(true);
-        if matches!(tool, "mentisdb_ranked_search" | "mentisdb_federated_search") {
+        let include_entries = optional_bool(map, "include_entries")?.unwrap_or(false);
+        let requested = optional_bool(map, "compact")?;
+        let compact = LEAN_SEARCH_TOOLS.contains(&tool) && requested.unwrap_or(true);
+        if LEAN_SEARCH_TOOLS.contains(&tool) {
             map.insert("compact".into(), Value::Bool(compact));
         } else {
             map.remove("compact");
         }
-        Self {
+        Ok(Self {
             compact,
             include_entries,
             home_chain: map
@@ -120,7 +129,7 @@ impl LeanPlan {
                 .filter(|key| !key.is_empty())
                 .unwrap_or(default_chain)
                 .to_owned(),
-        }
+        })
     }
 
     fn plain(default_chain: &str) -> Self {
@@ -176,6 +185,18 @@ impl LeanPlan {
             }
         }
         output
+    }
+}
+
+/// Remove `key` from `map` and read it as a boolean. `Ok(None)` when absent or
+/// `null`; an error naming the key when it holds anything but a boolean.
+fn optional_bool(map: &mut Map<String, Value>, key: &str) -> Result<Option<bool>, String> {
+    match map.remove(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(value)),
+        Some(other) => Err(format!(
+            "{key} must be a boolean (true or false), got {other}"
+        )),
     }
 }
 
@@ -561,6 +582,25 @@ mod tests {
         assert!(lean_thought(json!({"id": "a"})).get("provenance").is_none());
     }
 
+    /// A `compact` that is not a boolean is refused, never read as the default.
+    #[test]
+    fn test_prepare_rejects_a_non_boolean_compact() {
+        for bad in [json!("false"), json!(0), json!([]), json!({"x": 1})] {
+            let mut args = json!({"text": "q", "compact": bad});
+            let err = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home").unwrap_err();
+            assert!(err.contains("compact must be a boolean"), "{err}");
+        }
+        let mut args = json!({"include_entries": "yes"});
+        assert!(LeanPlan::prepare("mentisdb_standing_context", &mut args, "home").is_err());
+        // null means "not given".
+        let mut args = json!({"compact": null});
+        assert!(
+            LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home")
+                .unwrap()
+                .compact
+        );
+    }
+
     /// Every lean search response carries the reminder once.
     #[test]
     fn test_lean_search_responses_carry_the_provenance_reminder() {
@@ -571,7 +611,7 @@ mod tests {
             "mentisdb_context_bundles",
         ] {
             let mut args = json!({});
-            let plan = LeanPlan::prepare(tool, &mut args, "home");
+            let plan = LeanPlan::prepare(tool, &mut args, "home").unwrap();
             let shaped = plan.shape(tool, json!({"results": [], "bundles": []}));
             let parsed: Value = serde_json::from_str(shaped.as_str().unwrap()).unwrap();
             assert_eq!(
@@ -581,7 +621,7 @@ mod tests {
             );
         }
         let mut args = json!({"compact": false});
-        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home");
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home").unwrap();
         let shaped = plan.shape("mentisdb_ranked_search", json!({"results": []}));
         assert!(!shaped.as_str().unwrap().contains("default_provenance"));
     }
@@ -593,27 +633,27 @@ mod tests {
         assert_eq!(lean_thought(json!("x")), json!("x"));
     }
 
-    /// `compact` defaults to true for searches, is forwarded to the services
-    /// that know it, removed for the ones that do not, and can be turned off.
+    /// `compact` defaults to true for searches, is forwarded to the search services
+    /// and can be turned off.
     #[test]
     fn test_prepare_defaults_compact_for_search_tools() {
         let mut args = json!({"text": "q"});
-        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home");
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home").unwrap();
         assert!(plan.compact);
         assert_eq!(args["compact"], json!(true));
 
         let mut args = json!({"text": "q", "compact": false});
-        let plan = LeanPlan::prepare("mentisdb_federated_search", &mut args, "home");
+        let plan = LeanPlan::prepare("mentisdb_federated_search", &mut args, "home").unwrap();
         assert!(!plan.compact);
         assert_eq!(args["compact"], json!(false));
 
         let mut args = json!({"text": "q", "compact": true});
-        let plan = LeanPlan::prepare("mentisdb_lexical_search", &mut args, "home");
+        let plan = LeanPlan::prepare("mentisdb_lexical_search", &mut args, "home").unwrap();
         assert!(plan.compact);
-        assert!(args.get("compact").is_none());
+        assert_eq!(args["compact"], json!(true));
 
         let mut args = json!({"chain_key": "c"});
-        let plan = LeanPlan::prepare("mentisdb_head", &mut args, "home");
+        let plan = LeanPlan::prepare("mentisdb_head", &mut args, "home").unwrap();
         assert!(!plan.compact);
         assert_eq!(args, json!({"chain_key": "c"}));
     }
@@ -625,12 +665,12 @@ mod tests {
         let output =
             json!({"entries": [{"content": "x"}], "prompt": "p", "duplicates_collapsed": 0});
         let mut args = json!({});
-        let plan = LeanPlan::prepare("mentisdb_standing_context", &mut args, "home");
+        let plan = LeanPlan::prepare("mentisdb_standing_context", &mut args, "home").unwrap();
         let text = plan.shape("mentisdb_standing_context", output.clone());
         assert_eq!(text, json!(r#"{"duplicates_collapsed":0,"prompt":"p"}"#));
 
         let mut args = json!({"include_entries": true});
-        let plan = LeanPlan::prepare("mentisdb_standing_context", &mut args, "home");
+        let plan = LeanPlan::prepare("mentisdb_standing_context", &mut args, "home").unwrap();
         assert!(args.get("include_entries").is_none());
         let text = plan.shape("mentisdb_standing_context", output);
         assert!(text.as_str().unwrap().contains("\"entries\""));
@@ -641,7 +681,7 @@ mod tests {
     #[test]
     fn test_ranked_hits_name_only_foreign_chains() {
         let mut args = json!({"chain_key": "home"});
-        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home");
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home").unwrap();
         let output = json!({"total": 2, "results": [
             {"chain_key": "home", "score": 24.917037963867188, "thought": {"content": "a"}},
             {"chain_key": "parent", "score": 3.0, "thought": {"content": "b"}}]});
@@ -663,7 +703,7 @@ mod tests {
                 {"chain_key": key, "score": 1.0, "thought": {}}]})
         };
         let mut args = json!({});
-        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home");
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home").unwrap();
         let shaped = plan.shape("mentisdb_ranked_search", from("home"));
         assert!(!shaped.as_str().unwrap().contains("\"chain_key\""));
         let shaped = plan.shape("mentisdb_ranked_search", from("ancestor"));
@@ -672,11 +712,11 @@ mod tests {
             .unwrap()
             .contains("\"chain_key\":\"ancestor\""));
         let mut args = json!({"chain_key": " "});
-        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home");
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home").unwrap();
         let shaped = plan.shape("mentisdb_ranked_search", from("home"));
         assert!(!shaped.as_str().unwrap().contains("\"chain_key\""));
         let mut args = json!({});
-        let plan = LeanPlan::prepare("mentisdb_federated_search", &mut args, "home");
+        let plan = LeanPlan::prepare("mentisdb_federated_search", &mut args, "home").unwrap();
         let shaped = plan.shape("mentisdb_federated_search", from("home"));
         assert!(shaped.as_str().unwrap().contains("\"chain_key\""));
     }
