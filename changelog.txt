@@ -1,4 +1,6 @@
 UNRELEASED
+  - fix(mcp): lean timestamps keep their full precision. They were cut to whole seconds,
+    so passing a hit's `timestamp` back as `as_of` or `since` excluded the thought itself.
   - fix(mcp): a `compact` (or `include_entries`) that is not a boolean, such as `"false"` or
     `0`, is refused with JSON-RPC `-32602` instead of being read as the default, which
     turned an agent's opt-out into the opposite. `POST /tools/execute` and REST now honour
@@ -55,8 +57,8 @@ UNRELEASED
     (`compact: false` opts out; REST defaults stay `false`) and a lean thought leaves
     out defaults: no `provenance` for a public unsigned thought (private segment,
     signature and `verified_agent` are still listed), no `role: Memory`, no
-    `importance: 0.5`, no `chain_key` for the searched chain, rounded floats, whole-second
-    timestamps, `successor_of` reduced to the immediate predecessor plus a
+    `importance: 0.5`, no `chain_key` for the searched chain, rounded floats,
+    `successor_of` reduced to the immediate predecessor plus a
     `superseded_versions` count, and the relation it names not repeated. Version status,
     successors and a verified writer are kept. `mentisdb_standing_context` returns the
     rendered `prompt` once; `entries` (a second copy of the same memories) needs

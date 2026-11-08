@@ -35,7 +35,7 @@
 //! | `role` | Absent when `Memory`. |
 //! | `importance` | Two decimals; absent when `0.5`. |
 //! | `confidence`, `score` | Two decimals (three below 1). |
-//! | `timestamp` | Whole seconds. |
+//! | `timestamp` | Kept at full precision: a cut timestamp would sit before the thought itself, so passing it back as `as_of` or `since` would exclude the thought it came from. |
 //! | `successor_of` | One id: the older version this hit replaces (the one its own link names, else the first that matched). `superseded_versions` counts the older versions that **matched the query** and stood behind it, when more than one. Both describe matches met before the page filled, not the whole lineage, so the count is a lower bound. |
 //! | `relations` | Without the link that `successor_of` already names, and without a `valid_at` equal to `timestamp`. |
 //! | `successor_kind` | The kind of the dropped link (`Corrects` or `Invalidates`); absent means `Supersedes`, so the kind of the link is never lost. |
@@ -312,15 +312,6 @@ fn lean_provenance(p: &Map<String, Value>) -> Map<String, Value> {
     out
 }
 
-/// `2026-11-08T00:46:34.624687Z` as `2026-11-08T00:46:34Z`; other shapes are
-/// returned unchanged.
-fn whole_seconds(timestamp: &str) -> String {
-    match (timestamp.find('.'), timestamp.strip_suffix('Z')) {
-        (Some(dot), Some(_)) if dot < timestamp.len() => format!("{}Z", &timestamp[..dot]),
-        _ => timestamp.to_owned(),
-    }
-}
-
 /// Reshape one (already compact) thought into its lean form. See the module
 /// documentation for the rules. A value that is not an object is returned
 /// unchanged.
@@ -343,9 +334,6 @@ pub(crate) fn lean_thought(thought: Value) -> Value {
         .and_then(Value::as_str)
         .map(str::to_owned);
     lean_lineage(&mut fields, timestamp.as_deref());
-    if let Some(ts) = timestamp {
-        fields.insert("timestamp".into(), Value::String(whole_seconds(&ts)));
-    }
     if let Some(Value::Array(ids)) = fields.remove("collapsed_duplicates") {
         fields.insert("duplicates_collapsed".into(), json!(ids.len()));
     }
@@ -465,7 +453,7 @@ mod tests {
 
     /// The plain public, unsigned provenance disappears; defaults go with it.
     #[test]
-    fn test_lean_thought_elides_plain_provenance_and_defaults() {
+    fn test_lean_thought_elides_plain_provenance_and_defaults_but_keeps_the_timestamp() {
         let lean = lean_thought(json!({
             "content": "x", "id": "a", "index": 3, "role": "Memory", "importance": 0.5,
             "provenance": plain_provenance(),
@@ -473,7 +461,7 @@ mod tests {
         }));
         assert_eq!(
             lean,
-            json!({"content": "x", "id": "a", "index": 3, "timestamp": "2026-11-08T00:46:34Z"})
+            json!({"content": "x", "id": "a", "index": 3, "timestamp": "2026-11-08T00:46:34.624687Z"})
         );
     }
 

@@ -616,3 +616,40 @@ async fn test_tools_list_advertises_compact_only_where_it_works() {
     assert!(has_compact("mentisdb_ranked_search"));
     assert!(!has_compact("mentisdb_context_bundles"));
 }
+
+/// A lean hit's timestamp round-trips through `as_of` and `since`: the thought
+/// it came from is still found.
+#[tokio::test]
+async fn test_lean_timestamp_round_trips_through_as_of_and_since() {
+    let (dir, ids) = seed();
+    let first = parsed(
+        &rpc(
+            &dir,
+            "mentisdb_ranked_search",
+            json!({"text": "nightly build server policy", "limit": 1}),
+        )
+        .await,
+    )["results"][0]["thought"]
+        .clone();
+    assert_eq!(first["id"], json!(ids[2]));
+    let timestamp = first["timestamp"].clone();
+    for bound in ["as_of", "since"] {
+        let again = parsed(
+            &rpc(
+                &dir,
+                "mentisdb_ranked_search",
+                json!({"text": "nightly build server policy", "limit": 10, bound: timestamp}),
+            )
+            .await,
+        );
+        let found = again["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["thought"]["id"] == json!(ids[2]));
+        assert!(
+            found,
+            "{bound} with the hit's own timestamp must include it"
+        );
+    }
+}
