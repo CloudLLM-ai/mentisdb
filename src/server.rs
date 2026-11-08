@@ -4998,14 +4998,13 @@ impl MentisDbService {
         let fetch_cap = ranked_limit
             .saturating_mul(REDIRECT_FETCH_FACTOR)
             .max(REDIRECT_FETCH_MIN);
+        let chains = chain_arcs.len();
         let mut fetch = ranked_limit;
         let (deduped, total_candidates, best_backend) = loop {
-            // Over-fetch per chain so cross-chain UUID dedup cannot shrink the page.
-            let query_for_task = ranked_query
-                .clone()
-                .with_limit(fetch.saturating_mul(chain_arcs.len()));
+            let (fetched_per_chain, at_cap) =
+                federated_chain_limit(fetch, ranked_limit, chains, fetch_cap);
+            let query_for_task = ranked_query.clone().with_limit(fetched_per_chain);
             let chain_arcs_for_task = chain_arcs_for_task.clone();
-            let fetched_per_chain = fetch.saturating_mul(chain_arcs.len());
 
             // Collect all hits with owned data while holding locks
             #[allow(clippy::type_complexity)]
@@ -5124,10 +5123,10 @@ impl MentisDbService {
                     }
                 }
             }
-            if deduped.len() >= ranked_limit || !saturated || fetch >= fetch_cap {
+            if deduped.len() >= ranked_limit || !saturated || at_cap {
                 break (deduped, total_candidates, best_backend);
             }
-            fetch = fetch.saturating_mul(2).min(fetch_cap);
+            fetch = fetch.saturating_mul(2);
         };
         let mut all_hits = deduped;
 
@@ -9538,6 +9537,26 @@ where
 /// doubles until the page is full, the matches are exhausted or this window is
 /// reached. A page whose live matches lie beyond it comes back short.
 const REDIRECT_FETCH_FACTOR: usize = 16;
+/// How many hits federated search asks each of `chains` searched chains for
+/// when its widening fetch is at `fetch` (see [`REDIRECT_FETCH_FACTOR`]), and
+/// whether that is the last widening step.
+///
+/// Every chain is asked for `fetch` hits per searched chain, so that ids
+/// duplicated across chains cannot shrink the page; that makes the limit grow
+/// with the chain count. The first pass is always `ranked_limit * chains`
+/// (unchanged), and no pass exceeds the larger of that and `fetch_cap`, so the
+/// work per chain does not grow with the number of chains on top of the cap.
+fn federated_chain_limit(
+    fetch: usize,
+    ranked_limit: usize,
+    chains: usize,
+    fetch_cap: usize,
+) -> (usize, bool) {
+    let cap = fetch_cap.max(ranked_limit.saturating_mul(chains));
+    let limit = fetch.saturating_mul(chains).min(cap);
+    (limit, limit >= cap)
+}
+
 /// Smallest widening window, see [`REDIRECT_FETCH_FACTOR`].
 const REDIRECT_FETCH_MIN: usize = 4096;
 
@@ -11468,6 +11487,42 @@ fn merge_chains_jaccard(src_chars: &std::collections::HashSet<char>, target: &st
         1.0
     } else {
         intersection as f64 / union as f64
+    }
+}
+
+#[cfg(test)]
+mod federated_limit_tests {
+    use super::{federated_chain_limit, REDIRECT_FETCH_MIN};
+
+    /// The first pass is `ranked_limit * chains`; widening never exceeds the
+    /// cap however many chains are searched, and the last step is reported.
+    #[test]
+    fn test_federated_widening_is_bounded_regardless_of_chain_count() {
+        for chains in [1usize, 2, 8, 64, 1000] {
+            let ranked_limit = 5;
+            let cap = ranked_limit * 16;
+            let cap = cap.max(REDIRECT_FETCH_MIN);
+            let (first, _) = federated_chain_limit(ranked_limit, ranked_limit, chains, cap);
+            assert_eq!(first, ranked_limit * chains, "chains {chains}");
+            let mut fetch = ranked_limit;
+            let mut steps = 0;
+            loop {
+                let (limit, at_cap) = federated_chain_limit(fetch, ranked_limit, chains, cap);
+                assert!(
+                    limit <= cap.max(ranked_limit * chains),
+                    "chains {chains}: {limit}"
+                );
+                if at_cap {
+                    break;
+                }
+                fetch *= 2;
+                steps += 1;
+                assert!(steps < 40, "must terminate");
+            }
+        }
+        // Saturating arithmetic: a huge limit cannot overflow.
+        let (limit, at_cap) = federated_chain_limit(usize::MAX, usize::MAX, 8, usize::MAX);
+        assert_eq!((limit, at_cap), (usize::MAX, true));
     }
 }
 

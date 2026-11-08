@@ -1,4 +1,8 @@
 UNRELEASED
+  - fix(search): federated widening is bounded per chain. The per-chain limit is
+    `fetch * chains`, but only `fetch` was capped, so with C chains each pass could build
+    about 4096*C hits per chain. The first pass is unchanged (`limit * chains`); later
+    passes never exceed the larger of that and `max(16 * (offset + limit), 4096)`.
   - fix(mcp): lean provenance no longer treats a malformed object as plain. Only exactly
     `segment: "public"` and `signature: "unsigned"` (both present, both strings) with no
     verifier is elided; a missing, non-string or unexpected value is rendered as it is,
