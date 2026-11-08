@@ -247,3 +247,68 @@ async fn test_dashboard_keys_route_refuses_to_rebind_an_id() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Registering or revoking an agent key through the dashboard needs a PIN: a
+/// dashboard started without one answers 403 and says why, and changes nothing;
+/// with a PIN the same requests work.
+#[tokio::test]
+async fn test_dashboard_key_routes_need_a_pin() {
+    let dir = chain_dir("nopin");
+    let key = signer(7);
+    let no_pin = dashboard(&dir, None);
+    let (status, reply) = call(&no_pin, "POST", KEYS, keys_body(&key, "k1"), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert!(
+        reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("needs a dashboard PIN"),
+        "{reply}"
+    );
+    assert!(
+        keys_of_or_empty(&dir).is_empty(),
+        "nothing registered without a PIN"
+    );
+
+    let with_pin = dashboard(&dir, Some(PIN));
+    let (status, _) = call(&with_pin, "POST", KEYS, keys_body(&key, "k1"), Some(PIN)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, reply) = call(&no_pin, "DELETE", &format!("{KEYS}/k1"), Value::Null, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert!(
+        reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("needs a dashboard PIN"),
+        "{reply}"
+    );
+    assert!(
+        !keys_of(&dir, "victim")[0].2,
+        "the key was not revoked without a PIN"
+    );
+    let (status, _) = call(
+        &with_pin,
+        "DELETE",
+        &format!("{KEYS}/k1"),
+        Value::Null,
+        Some(PIN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(keys_of(&dir, "victim")[0].2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn keys_of_or_empty(dir: &Path) -> Vec<(String, String, bool)> {
+    let chain =
+        MentisDb::open_with_key_and_storage_kind(dir, "reg", StorageAdapterKind::Binary).unwrap();
+    chain
+        .get_agent("victim")
+        .map(|a| {
+            a.public_keys
+                .iter()
+                .map(|k| (k.key_id.clone(), String::new(), false))
+                .collect()
+        })
+        .unwrap_or_default()
+}

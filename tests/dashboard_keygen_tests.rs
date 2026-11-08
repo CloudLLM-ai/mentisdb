@@ -543,3 +543,27 @@ async fn test_add_key_body_is_accepted_only_for_the_pin_session() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A refusal for a missing dashboard PIN is turned into an explanation that names
+/// the fix; any other error text passes through unchanged.
+#[test]
+fn test_key_admin_errors_explain_a_missing_pin() {
+    if !node_usable() {
+        return;
+    }
+    let result = run_node(
+        "adminerr",
+        r#"console.log(JSON.stringify({
+          pin: keyAdminErrorText('HTTP 403: {"error":"administering chain access needs a dashboard PIN: set MENTISDB_DASHBOARD_PIN"}'),
+          other: keyAdminErrorText('HTTP 400: key id is already bound'),
+        }));"#,
+    );
+    let pin = result["pin"].as_str().unwrap();
+    assert!(
+        pin.contains("has no PIN")
+            && pin.contains("MENTISDB_DASHBOARD_PIN")
+            && pin.contains("--offline"),
+        "{pin}"
+    );
+    assert_eq!(result["other"], "HTTP 400: key id is already bound");
+}

@@ -7,6 +7,13 @@ UNRELEASED
     as `agent key add` already behaved: registering a different key under an existing id
     is refused, the same active key again is a no-op. Deployments that rely on key ids as
     identities should check their registries for keys they did not register.
+  - fix(security): the dashboard routes that register and revoke an agent key
+    (`POST/DELETE /dashboard/api/agents/{chain}/{agent}/keys`) now need a dashboard PIN, like
+    `/chains/{chain}/access`. A dashboard started without one cannot tell the operator from
+    any other local process, yet it accepted these changes to who may sign. Such a dashboard
+    now answers 403 and says to set `MENTISDB_DASHBOARD_PIN`; the agent page's Generate key
+    pair, Add Key and Delete show that explanation, and the message stays visible long
+    enough to read. Run with a PIN (or use `agent key add|generate --offline`) to manage keys.
   - ci(coverage): every CI run now writes a coverage table (functions, branches, regions, lines,
     with covered/total counts, the 90% goal and the gate) into the job summary, from one run on
     a pinned nightly, and uploads the HTML report. `make coverage` runs the same thing locally.

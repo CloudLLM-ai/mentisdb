@@ -857,6 +857,15 @@
     return bytesToHex(bytes);
   }
 
+  // Text for a failed key registration or revocation. A dashboard started
+  // without a PIN refuses these (it cannot tell the operator from any other
+  // local process): say so and what to do, instead of a bare HTTP 403.
+  function keyAdminErrorText(message) {
+    return String(message).includes('needs a dashboard PIN')
+      ? 'This dashboard has no PIN, so it cannot register or revoke keys. Set MENTISDB_DASHBOARD_PIN and restart, or use `mentisdb agent key generate --offline` on the host.'
+      : String(message);
+  }
+
   // The 32-byte seed of an Ed25519 PKCS#8 private key (WebCrypto exports the
   // fixed 16-byte prefix followed by the seed, 48 bytes in all).
   function ed25519SeedFromPkcs8(pkcs8) {
@@ -1307,7 +1316,7 @@
     setTimeout(() => {
       el.classList.remove('show');
       setTimeout(() => { el.textContent = ''; }, 300);
-    }, 3000);
+    }, Math.max(3000, msg.length * 50));
   }
 
   function updateNav() {
@@ -3228,7 +3237,7 @@
         document.getElementById('nk-bytes').value = '';
         return refreshKeys(chainKey, agentId);
       })
-      .catch(err => showFeedback(fb, false, err.message))
+      .catch(err => showFeedback(fb, false, keyAdminErrorText(err.message)))
       .finally(() => { btn.disabled = false; });
     });
 
@@ -3260,7 +3269,7 @@
       } catch (err) {
         showFeedback(fb, false, err.keygenUnsupported
           ? 'This browser cannot generate Ed25519 keys. Run `mentisdb agent key generate` on the command line instead.'
-          : err.message);
+          : keyAdminErrorText(err.message));
       } finally {
         btn.disabled = false;
       }
@@ -3660,7 +3669,7 @@
         btn.disabled = true;
         api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}/keys/${encodeURIComponent(kid)}`, { method: 'DELETE' })
           .then(() => { showFeedback(fb, true, 'Key deleted'); return refreshKeys(chainKey, agentId); })
-          .catch(err => { showFeedback(fb, false, err.message); btn.disabled = false; });
+          .catch(err => { showFeedback(fb, false, keyAdminErrorText(err.message)); btn.disabled = false; });
       });
     });
   }

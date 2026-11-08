@@ -2889,12 +2889,15 @@ struct AddKeyBody {
 
 /// `POST /dashboard/api/agents/:chain_key/:agent_id/keys`
 ///
-/// Registers a new public verification key on the agent record.
+/// Registers a new public verification key on the agent record. PIN required,
+/// like every change to who may sign: with no PIN the dashboard cannot tell the
+/// operator from any other local process.
 async fn api_add_agent_key(
     State(state): State<DashboardState>,
     Path((chain_key, agent_id)): Path<(String, String)>,
     Json(body): Json<AddKeyBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_pin(&state)?;
     let algorithm = body
         .algorithm
         .parse::<PublicKeyAlgorithm>()
@@ -2930,11 +2933,12 @@ async fn api_add_agent_key(
 
 /// `DELETE /dashboard/api/agents/:chain_key/:agent_id/keys/:key_id`
 ///
-/// Revokes the specified public key on the agent record.
+/// Revokes the specified public key on the agent record. PIN required.
 async fn api_delete_agent_key(
     State(state): State<DashboardState>,
     Path((chain_key, agent_id, key_id)): Path<(String, String, String)>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_pin(&state)?;
     let arc = get_or_open_chain(&state, &chain_key).await?;
     let mut chain = arc.write().await;
 
