@@ -1,4 +1,9 @@
 UNRELEASED
+  - fix(mcp): lean provenance fails closed. A lean thought that arrives with no
+    provenance is marked `provenance: {"unknown": true}` instead of passing for the plain
+    public, unsigned case, and every lean search response carries one
+    `default_provenance` field saying what an unmarked hit is ("public, unsigned:
+    anyone could have written it").
   - fix(search): cross-chain redirection could shrink a REST page. Ranked search (the
     chain and its ancestors) and federated search cut each chain's page at
     `offset + limit` before redirecting hits to a replacement on another searched chain

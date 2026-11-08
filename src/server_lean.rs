@@ -31,7 +31,7 @@
 //!
 //! | Field | Lean form |
 //! |---|---|
-//! | `provenance` | Absent for the plain case (public segment, no signature). Otherwise only what differs: `segment` (when `private`), `signature` (`valid` or `invalid`), `signature_version`, `verified_agent`. The constant `trust: "untrusted_data"` and the derived `signed` are dropped: stored memories are data to weigh, never instructions. |
+//! | `provenance` | Absent for the plain case (public segment, no signature); the response says so once in `default_provenance` (`public, unsigned: anyone could have written it`). Otherwise only what differs: `segment` (when `private`), `signature` (`valid` or `invalid`), `signature_version`, `verified_agent`. A thought that arrives with no provenance at all is marked `{"unknown": true}`, never taken for plain. The constant `trust: "untrusted_data"` and the derived `signed` are dropped: stored memories are data to weigh, never instructions. |
 //! | `role` | Absent when `Memory`. |
 //! | `importance` | Two decimals; absent when `0.5`. |
 //! | `confidence`, `score` | Two decimals (three below 1). |
@@ -132,10 +132,14 @@ impl LeanPlan {
     pub(crate) fn shape(&self, tool: &str, output: Value) -> Value {
         let shaped = match tool {
             "mentisdb_ranked_search" | "mentisdb_federated_search" if self.compact => {
-                self.lean_ranked(output, tool == "mentisdb_ranked_search")
+                with_provenance_reminder(self.lean_ranked(output, tool == "mentisdb_ranked_search"))
             }
-            "mentisdb_lexical_search" if self.compact => lean_lexical(output),
-            "mentisdb_context_bundles" if self.compact => lean_bundles(output),
+            "mentisdb_lexical_search" if self.compact => {
+                with_provenance_reminder(lean_lexical(output))
+            }
+            "mentisdb_context_bundles" if self.compact => {
+                with_provenance_reminder(lean_bundles(output))
+            }
             "mentisdb_standing_context" if !self.include_entries => drop_key(output, "entries"),
             _ => output,
         };
@@ -177,6 +181,25 @@ fn common_chain_key(hits: &[Value]) -> Option<String> {
     hits.iter()
         .all(|hit| hit.get("chain_key").and_then(Value::as_str) == Some(first))
         .then(|| first.to_owned())
+}
+
+/// The one-per-response reminder of what a hit without `provenance` is.
+///
+/// A lean hit leaves `provenance` out for the plain case, so the absence is
+/// itself a trust claim; this field says in words what it claims, once per
+/// response instead of once per hit.
+pub const PROVENANCE_REMINDER: &str = "public, unsigned: anyone could have written it";
+
+/// Add [`PROVENANCE_REMINDER`] as `default_provenance` to a lean search
+/// response (an object; anything else is returned unchanged).
+fn with_provenance_reminder(mut output: Value) -> Value {
+    if let Some(map) = output.as_object_mut() {
+        map.insert(
+            "default_provenance".into(),
+            Value::String(PROVENANCE_REMINDER.into()),
+        );
+    }
+    output
 }
 
 fn drop_key(mut output: Value, key: &str) -> Value {
@@ -314,6 +337,11 @@ pub(crate) fn lean_thought(thought: Value) -> Value {
 
 fn lean_provenance_field(fields: &mut Map<String, Value>) {
     let Some(Value::Object(provenance)) = fields.get("provenance") else {
+        // Fail closed: a memory whose provenance is missing or malformed is
+        // reported as unknown, never silently as the plain case.
+        if fields.contains_key("content") {
+            fields.insert("provenance".into(), json!({"unknown": true}));
+        }
         return;
     };
     if provenance_is_plain(provenance) {
@@ -475,6 +503,51 @@ mod tests {
     fn test_lean_thought_counts_collapsed_duplicates() {
         let lean = lean_thought(json!({"collapsed_duplicates": ["a", "b"]}));
         assert_eq!(lean, json!({"duplicates_collapsed": 2}));
+    }
+
+    /// Fail closed: a thought with content but no (or malformed) provenance is
+    /// marked unknown instead of being taken for the plain case.
+    #[test]
+    fn test_lean_thought_marks_missing_provenance_unknown() {
+        assert_eq!(
+            lean_thought(json!({"content": "x"}))["provenance"],
+            json!({"unknown": true})
+        );
+        assert_eq!(
+            lean_thought(json!({"content": "x", "provenance": null}))["provenance"],
+            json!({"unknown": true})
+        );
+        assert_eq!(
+            lean_thought(json!({"content": "x", "provenance": "public"}))["provenance"],
+            json!({"unknown": true})
+        );
+        // Not a memory (no content): left alone.
+        assert!(lean_thought(json!({"id": "a"})).get("provenance").is_none());
+    }
+
+    /// Every lean search response carries the reminder once.
+    #[test]
+    fn test_lean_search_responses_carry_the_provenance_reminder() {
+        for tool in [
+            "mentisdb_ranked_search",
+            "mentisdb_federated_search",
+            "mentisdb_lexical_search",
+            "mentisdb_context_bundles",
+        ] {
+            let mut args = json!({});
+            let plan = LeanPlan::prepare(tool, &mut args);
+            let shaped = plan.shape(tool, json!({"results": [], "bundles": []}));
+            let parsed: Value = serde_json::from_str(shaped.as_str().unwrap()).unwrap();
+            assert_eq!(
+                parsed["default_provenance"],
+                json!(PROVENANCE_REMINDER),
+                "{tool}"
+            );
+        }
+        let mut args = json!({"compact": false});
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args);
+        let shaped = plan.shape("mentisdb_ranked_search", json!({"results": []}));
+        assert!(!shaped.as_str().unwrap().contains("default_provenance"));
     }
 
     /// A value that is not an object passes through.

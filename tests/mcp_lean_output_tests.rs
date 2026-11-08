@@ -201,6 +201,10 @@ async fn test_ranked_search_is_lean_by_default() {
         assert!(thought.get(gone).is_none(), "{gone} should be elided");
     }
     assert!(hit.get("chain_key").is_none(), "home chain is implied");
+    assert!(body["default_provenance"]
+        .as_str()
+        .unwrap()
+        .contains("unsigned"));
     assert_eq!(thought["successor_of"], json!([ids[1]]));
     assert!(
         thought.get("relations").is_none(),
