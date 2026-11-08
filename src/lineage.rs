@@ -1954,39 +1954,56 @@ impl MentisDb {
                 out.push(seed);
             }
         };
-        // Walk the whole ranking and stop once `limit` distinct live seeds are
-        // held, so superseded versions cannot crowd live matches out of a
-        // fixed-size window (see `query_ranked`).
-        for (position, score) in scan.top_scores(usize::MAX) {
-            if out.len() >= request.limit {
+        // Walk the ranking and stop once `limit` distinct live seeds are held,
+        // so superseded versions cannot crowd live matches out of a fixed-size
+        // window (see `query_ranked`). Ranks are read in blocks that double,
+        // each by a partial selection, so a short page never sorts the tail.
+        let mut successors: HashMap<Uuid, Option<&Thought>> = HashMap::new();
+        let mut contesters: HashMap<Uuid, Option<&Thought>> = HashMap::new();
+        let mut window = request.limit.saturating_mul(4).max(64);
+        let mut from = 0;
+        'walk: loop {
+            let ranked = scan.top_scores(window);
+            for &(position, score) in &ranked[from..] {
+                if out.len() >= request.limit {
+                    break 'walk;
+                }
+                let Some(thought) = self.thoughts.get(position) else {
+                    continue;
+                };
+                let id = thought.id;
+                if placed.contains(&id) {
+                    continue;
+                }
+                if self.invalidated_at(id, as_of, audience) {
+                    let successor = *successors.entry(id).or_insert_with(|| {
+                        self.live_successor(id, as_of, audience)
+                            .filter(|t| self.successor_allowed(t, request))
+                    });
+                    if let Some(succ) = successor {
+                        if let Some(seed) = self.bundle_seed_at(&scan, position, score) {
+                            push(&mut out, &mut placed, &seed, succ);
+                        }
+                    }
+                    continue;
+                }
+                let Some(seed) = self.bundle_seed_at(&scan, position, score) else {
+                    continue;
+                };
+                let contester = *contesters.entry(id).or_insert_with(|| {
+                    self.live_contester(id, as_of, audience)
+                        .filter(|t| self.successor_allowed(t, request))
+                });
+                if let Some(contester) = contester {
+                    push(&mut out, &mut placed, &seed, contester);
+                }
+                push(&mut out, &mut placed, &seed, thought);
+            }
+            if ranked.len() < window {
                 break;
             }
-            let Some(thought) = self.thoughts.get(position) else {
-                continue;
-            };
-            let id = thought.id;
-            if placed.contains(&id) {
-                continue;
-            }
-            let Some(seed) = self.bundle_seed_at(&scan, position, score) else {
-                continue;
-            };
-            if self.invalidated_at(id, as_of, audience) {
-                if let Some(succ) = self
-                    .live_successor(id, as_of, audience)
-                    .filter(|t| self.successor_allowed(t, request))
-                {
-                    push(&mut out, &mut placed, &seed, succ);
-                }
-                continue;
-            }
-            if let Some(contester) = self
-                .live_contester(id, as_of, audience)
-                .filter(|t| self.successor_allowed(t, request))
-            {
-                push(&mut out, &mut placed, &seed, contester);
-            }
-            push(&mut out, &mut placed, &seed, thought);
+            from = ranked.len();
+            window = window.saturating_mul(2);
         }
         out.truncate(request.limit);
         Some(out)

@@ -282,3 +282,107 @@ fn test_context_bundles_are_not_starved() {
     assert_eq!(seeds[0], Some(head));
     assert_eq!(seeds.iter().collect::<HashSet<_>>().len(), 5);
 }
+
+/// A caller-supplied `limit = usize::MAX` must neither overflow nor allocate
+/// for it: every live match comes back once, for ranked search and bundles.
+#[test]
+fn test_limit_usize_max_returns_every_live_match() {
+    let (_dir, chain, ids) = starved_chain();
+    let result = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text(QUERY)
+            .with_limit(usize::MAX),
+    );
+    let hit_ids: Vec<Uuid> = result.hits.iter().map(|h| h.thought.id).collect();
+    assert_eq!(hit_ids.len(), LIVE_FACTS + 1);
+    assert_eq!(distinct(&hit_ids), hit_ids.len());
+    assert_eq!(hit_ids[0], ids[VERSIONS - 1]);
+    let bundles = chain.query_context_bundles(
+        &RankedSearchQuery::new()
+            .with_text(QUERY)
+            .with_limit(usize::MAX),
+    );
+    assert_eq!(bundles.bundles.len(), LIVE_FACTS + 1);
+}
+
+/// Reranking keeps the page full of distinct live memories.
+#[test]
+fn test_reranking_with_lineage_fills_the_page() {
+    let (_dir, chain, ids) = starved_chain();
+    let result = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text(QUERY)
+            .with_limit(5)
+            .with_reranking(50),
+    );
+    let hit_ids: Vec<Uuid> = result.hits.iter().map(|h| h.thought.id).collect();
+    assert_eq!(hit_ids.len(), 5);
+    assert_eq!(distinct(&hit_ids), 5);
+    assert!(hit_ids.iter().all(|id| !ids[..VERSIONS - 1].contains(id)));
+}
+
+/// `as_of` reads the lineage as it stood: at the second version's timestamp the
+/// live version is v2, v1 is superseded and v3 onward do not exist yet.
+#[test]
+fn test_as_of_reads_the_lineage_as_it_stood() {
+    let (_dir, chain, ids) = starved_chain();
+    let v2 = chain.get_thought_by_id(ids[1]).unwrap().timestamp;
+    let result = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text(QUERY)
+            .with_limit(10)
+            .with_as_of(v2),
+    );
+    let hit_ids: Vec<Uuid> = result.hits.iter().map(|h| h.thought.id).collect();
+    assert!(
+        hit_ids.contains(&ids[1]),
+        "v2 is the live version at its own timestamp"
+    );
+    assert!(!hit_ids.contains(&ids[0]), "v1 is superseded by v2 by then");
+    assert!(
+        hit_ids.iter().all(|id| !ids[2..].contains(id)),
+        "later versions do not exist yet"
+    );
+}
+
+/// A successor the request's filters exclude does not stand in: neither the
+/// superseded version nor the filtered-out successor is returned.
+#[test]
+fn test_successor_excluded_by_the_filter_does_not_stand_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut chain = MentisDb::open_with_key_and_storage_kind(
+        dir.path(),
+        "filtered",
+        StorageAdapterKind::Binary,
+    )
+    .unwrap();
+    add_filler(&mut chain);
+    let old = chain
+        .append_thought(
+            "a",
+            ThoughtInput::new(
+                ThoughtType::Decision,
+                "Nightly build server status: runner A.",
+            ),
+        )
+        .unwrap()
+        .clone();
+    let successor = chain
+        .append_thought(
+            "a",
+            ThoughtInput::new(ThoughtType::Insight, "Switched to runner B.")
+                .with_relations(vec![rel(ThoughtRelationKind::Supersedes, &old)]),
+        )
+        .unwrap()
+        .clone();
+    let filter = mentisdb::ThoughtQuery::new().with_types(vec![ThoughtType::Decision]);
+    let result = chain.query_ranked(
+        &RankedSearchQuery::new()
+            .with_text(QUERY)
+            .with_filter(filter)
+            .with_limit(5),
+    );
+    let hit_ids: Vec<Uuid> = result.hits.iter().map(|h| h.thought.id).collect();
+    assert!(!hit_ids.contains(&old.id));
+    assert!(!hit_ids.contains(&successor.id));
+}

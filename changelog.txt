@@ -1,4 +1,9 @@
 UNRELEASED
+  - perf(search): context-bundle seeds read ranks in doubling blocks by partial selection
+    instead of sorting every match, memoize the successor and contester lookups, and build
+    a seed only for a thought that is actually placed. Tests added for `limit = usize::MAX`,
+    `as_of` with lineage, a successor excluded by the request's filter, and reranking with
+    lineage.
   - fix(mcp): lean timestamps keep their full precision. They were cut to whole seconds,
     so passing a hit's `timestamp` back as `as_of` or `since` excluded the thought itself.
   - fix(mcp): a `compact` (or `include_entries`) that is not a boolean, such as `"false"` or
