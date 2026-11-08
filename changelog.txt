@@ -1,4 +1,8 @@
 UNRELEASED
+  - docs(search): `successor_of` and `superseded_versions` are no longer described as the
+    whole lineage. They list older versions that matched the query and were met before
+    the page filled, so the count is a lower bound (rustdoc, the `compact` parameter
+    description, the skill and the README).
   - fix(mcp): lean ranked hits drop `chain_key` only for the chain that was searched
     (the requested one, or the server's default when none was given). A hit from a
     branch's ancestor, or a cross-chain replacement living on another chain, keeps its

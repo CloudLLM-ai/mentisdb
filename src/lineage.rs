@@ -353,8 +353,12 @@ pub struct VersionInfo {
     /// The newest live thought at the end of the supersession chain. Only
     /// set when `status` is [`VersionStatus::Superseded`] and a live end exists.
     pub current_version: Option<SuccessorNote>,
-    /// Ids of older thoughts this hit stands in for. Non-empty when the hit
-    /// was surfaced because it replaces or contests them.
+    /// Ids of older thoughts that **matched the query** and that this hit
+    /// stands in for. Non-empty when the hit was surfaced because it replaces
+    /// or contests them. It is not the hit's whole lineage: only the matches
+    /// the page walk met before the page filled are listed, so versions that
+    /// did not match, or ranked below the page cut, are absent and the length
+    /// is a lower bound on the number of older versions.
     pub successor_of: Vec<Uuid>,
     /// `true` when the replacement crosses agents: the hit stands in for a
     /// thought written by another agent (`successor_of`), or the thought's
@@ -817,8 +821,10 @@ impl MentisDb {
     /// (An earlier design ranked a fixed `2 * limit` window including
     /// superseded versions and collapsed it afterwards: thirty rewrites of one
     /// decision consumed the whole window and every other match vanished.)
-    /// `successor_of` lists the superseded versions met before the page filled,
-    /// so a lineage whose old versions rank below the cut reports fewer ids.
+    /// `successor_of` lists the superseded versions **that matched the query**
+    /// and were met before the page filled. It is not the whole lineage: a
+    /// version that did not match, or that ranks below the cut, is not listed,
+    /// so its length is a lower bound on the number of older versions.
     ///
     /// Near-duplicate collapsing ([`RankedSearchQuery::collapse_duplicates`])
     /// removes hits from a page after it is built. When it leaves fewer than

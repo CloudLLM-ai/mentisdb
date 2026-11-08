@@ -36,7 +36,7 @@
 //! | `importance` | Two decimals; absent when `0.5`. |
 //! | `confidence`, `score` | Two decimals (three below 1). |
 //! | `timestamp` | Whole seconds. |
-//! | `successor_of` | One id, the immediate predecessor; `superseded_versions` holds how many older versions stood behind it, when more than one. |
+//! | `successor_of` | One id: the older version this hit replaces (the one its own link names, else the first that matched). `superseded_versions` counts the older versions that **matched the query** and stood behind it, when more than one. Both describe matches met before the page filled, not the whole lineage, so the count is a lower bound. |
 //! | `relations` | Without the link that `successor_of` already names, and without a `valid_at` equal to `timestamp`. |
 //! | `collapsed_duplicates` | `duplicates_collapsed`, a count. |
 //! | `chain_key` on a ranked hit | Only when the hit came from a chain other than the one searched. |
