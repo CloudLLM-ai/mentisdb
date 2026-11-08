@@ -15,10 +15,18 @@
 - **Per-peer connection cap.** There is no limit on how many connections one peer may open; only the
   per-peer and pool byte budgets brake a many-connection flood. Add a per-peer connection (or
   in-flight request) cap.
+- **Test coverage to 90%.** CI reports functions, branches, regions and lines in every job summary
+  (about 74/64/72/74% on 2026-11-08) and gates on floors that only ratchet up. The biggest gaps
+  (uncovered regions, README Coverage section): `src/dashboard.rs` (2,524, 9.5% covered),
+  `src/bin/mentisdb.rs` (2,083, 14.7%), `src/lib.rs` (1,878, 78.8%), `src/tui.rs` (1,165, 2.2%),
+  `src/server.rs` (1,070, 85.0%), `src/search/lemmas.rs` (291, 52.2%), and `src/cli/{mod,wizard,setup,args}.rs`
+  (912 together). The first four hold about 59% of the uncovered regions: test the dashboard handlers,
+  the daemon's `main` path as a process, and the terminal views against a test buffer.
 
 ## Shipped (0.8.2 -> 0.12.1.58)
 
 ### 0.12.1.58 - Lean search, live memories, agent key pairs
+- **Security: agent key ids are never rebound** — the proof-based registration path (dashboard key route, library `add_agent_key`) could replace an existing key id or revive a revoked one; ids are now never reused or overwritten (6438e00), and the dashboard's agent-key add and delete routes need a PIN (d78eb7e). Operators whose dashboard was reachable by untrusted local processes or users should review registered keys.
 - **Superseded versions no longer starve live results** — `query_ranked` ranked a fixed `2 * limit` window that included superseded thoughts, so one decision rewritten 30 times made a `limit = 5` search return 1 hit; now only live memories compete, superseded matches nominate their live successor, and the walk stops at `limit` distinct live memories (acd3a1f). Same walk for context-bundle seeds and duplicate-collapse refill.
 - **Lean MCP output** — streamable-HTTP MCP (and stdio, which proxies to it) returns minified JSON with no `structuredContent` copy; ranked, federated and lexical search and context bundles compact by default (`compact: false` opts out, non-boolean refused with `-32602`); defaults elided with one `default_provenance` per response, provenance fails closed (`{"unknown": true}`), `chain_key` elided only for the searched chain, `successor_kind` kept, full-precision timestamps; `mentisdb_standing_context` sends `prompt` once (`include_entries: true` for `entries`). REST and the CLI unchanged; REST lexical search now honours `compact`. Builds on compact search (PR #25, Austin Faulkner-Pearce).
 - **`token_diet` example** — 3,500-thought chain, 10 hits: ranked 23,657 -> 5,948 chars, lexical 18,743 -> 6,341, federated 23,511 -> 6,025, context bundles 9,993 -> 3,562, standing context 36,191 -> 13,050.
@@ -27,6 +35,8 @@
 - **`mentisdb agent key generate`** — one operator command (PIN or `--offline`) creates an Ed25519 pair, saves the seed `0600` (`--out`, else `$MENTISDB_KEY_DIR`, default `~/.mentisdb/keys`; `--force` to overwrite) and registers the public key; never prints the seed; PIN, daemon and key id checked before writing; on a late registration failure the file is kept and the `agent key add --public-key-hex` recovery command printed (649d9af).
 - **Dashboard "Generate key pair"** — WebCrypto Ed25519 in the browser, proof of possession signed there, only the public key registered; the seed is shown once (Download key file, Copy, "I have saved this key" gate); no server-side fallback (cde0f23).
 - **Dashboard Add Key fixed** — registers through the operator route like `agent key add`; hex, `0x` hex or 32 comma-separated bytes (469babe).
+- **Key file hardening** — `--force` refuses a symlink at `--out` (535c469); on Windows the key file inherits the folder's permissions and is not called owner-only (b95f8ce); the dashboard's download link lives 10 s (3f995d5) and the key dialog shows a `chmod 600` hint (d85c585). Dashboard key generation and Add Key need a PIN.
+- **CI coverage table** — functions, branches, regions and lines in every job summary, floors at today's values that only ratchet up toward 90% (e6f87ff, 6c5b233).
 - **`full_bench.sh`** no longer runs `pkill -f mentisdb`; refuses when a daemon is up and stops only its own (56e8f48).
 
 ### 0.12.0.57 - One copy of every vector, derived-state backlog, large signed requests
