@@ -4632,145 +4632,160 @@ impl MentisDbService {
             .chain(ancestor_keys)
             .collect();
 
-        let mut all_hits: Vec<(String, RankedSearchHitOwned)> = Vec::new();
-        let mut seen_ids: BTreeSet<Uuid> = BTreeSet::new();
-        let mut best_backend = String::new();
-        let mut total_candidates = 0usize;
+        // A cross-chain replacement or a duplicate id can remove hits after the
+        // per-chain pages are cut, so widen the fetch until the page is full or
+        // the matches are exhausted (see `REDIRECT_FETCH_FACTOR`).
+        let fetch_cap = ranked_limit
+            .saturating_mul(REDIRECT_FETCH_FACTOR)
+            .max(REDIRECT_FETCH_MIN);
+        let mut fetch = ranked_limit;
+        let (mut all_hits, best_backend, total_candidates) = loop {
+            let mut all_hits: Vec<(String, RankedSearchHitOwned)> = Vec::new();
+            let mut seen_ids: BTreeSet<Uuid> = BTreeSet::new();
+            let mut best_backend = String::new();
+            let mut total_candidates = 0usize;
+            let mut saturated = false;
 
-        for search_key in &chain_keys_to_search {
-            let chain = match self.get_chain(Some(search_key), None).await {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            let chain = chain.read().await;
-            let audience = audience_for(&chain);
-            let filter =
-                build_ranked_filter_query(&request, search_key.clone())?.with_audience(audience);
-            let mut ranked_query = RankedSearchQuery::new()
-                .with_filter(filter)
-                .with_limit(ranked_limit);
-            if let Some(text) = request
-                .text
-                .as_deref()
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-            {
-                ranked_query = ranked_query.with_text(text.to_string());
-            }
-            ranked_query =
-                apply_thesaurus_if_text(ranked_query, request.text.as_deref(), &request.knobs);
-            if let Some(graph) = &request.graph {
-                ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
-            }
-            if let Some(as_of) = request.as_of {
-                ranked_query = ranked_query.with_as_of(as_of);
-            }
-            if let Some(scope_str) = &request.scope {
-                if let Some(scope) = parse_memory_scope(scope_str) {
-                    ranked_query = ranked_query.with_scope(scope);
+            for search_key in &chain_keys_to_search {
+                let chain = match self.get_chain(Some(search_key), None).await {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let chain = chain.read().await;
+                let audience = audience_for(&chain);
+                let filter = build_ranked_filter_query(&request, search_key.clone())?
+                    .with_audience(audience);
+                let mut ranked_query = RankedSearchQuery::new()
+                    .with_filter(filter)
+                    .with_limit(fetch);
+                if let Some(text) = request
+                    .text
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                {
+                    ranked_query = ranked_query.with_text(text.to_string());
                 }
-            }
-            if let Some(true) = request.enable_reranking {
-                let k = request.rerank_k.unwrap_or(50).max(1);
-                ranked_query = ranked_query.with_reranking(k);
-            }
-            ranked_query = apply_include_invalidated(ranked_query, request.include_invalidated);
-            ranked_query = apply_ranking_knobs(ranked_query, &request.knobs)?;
-
-            let ranked = chain.query_ranked(&ranked_query);
-            total_candidates += ranked.total_candidates;
-            if best_backend.is_empty() {
-                best_backend = ranked.backend.as_str().to_string();
-            }
-
-            for hit in ranked.hits {
-                if !seen_ids.insert(hit.thought.id) {
-                    continue;
+                ranked_query =
+                    apply_thesaurus_if_text(ranked_query, request.text.as_deref(), &request.knobs);
+                if let Some(graph) = &request.graph {
+                    ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
                 }
-                all_hits.push((
-                    search_key.clone(),
-                    RankedSearchHitOwned {
-                        thought: chain.hit_json_for(&hit, audience),
-                        score: RankedSearchScoreResponse {
-                            lexical: hit.score.lexical,
-                            vector: hit.score.vector,
-                            graph: hit.score.graph,
-                            relation: hit.score.relation,
-                            seed_support: hit.score.seed_support,
-                            importance: hit.score.importance,
-                            confidence: hit.score.confidence,
-                            recency: hit.score.recency,
-                            session_cohesion: hit.score.session_cohesion,
-                            rrf: hit.score.rrf,
-                            total: hit.score.total,
+                if let Some(as_of) = request.as_of {
+                    ranked_query = ranked_query.with_as_of(as_of);
+                }
+                if let Some(scope_str) = &request.scope {
+                    if let Some(scope) = parse_memory_scope(scope_str) {
+                        ranked_query = ranked_query.with_scope(scope);
+                    }
+                }
+                if let Some(true) = request.enable_reranking {
+                    let k = request.rerank_k.unwrap_or(50).max(1);
+                    ranked_query = ranked_query.with_reranking(k);
+                }
+                ranked_query = apply_include_invalidated(ranked_query, request.include_invalidated);
+                ranked_query = apply_ranking_knobs(ranked_query, &request.knobs)?;
+
+                let ranked = chain.query_ranked(&ranked_query);
+                total_candidates += ranked.total_candidates;
+                saturated |= ranked.hits.len() >= fetch;
+                if best_backend.is_empty() {
+                    best_backend = ranked.backend.as_str().to_string();
+                }
+
+                for hit in ranked.hits {
+                    if !seen_ids.insert(hit.thought.id) {
+                        continue;
+                    }
+                    all_hits.push((
+                        search_key.clone(),
+                        RankedSearchHitOwned {
+                            thought: chain.hit_json_for(&hit, audience),
+                            score: RankedSearchScoreResponse {
+                                lexical: hit.score.lexical,
+                                vector: hit.score.vector,
+                                graph: hit.score.graph,
+                                relation: hit.score.relation,
+                                seed_support: hit.score.seed_support,
+                                importance: hit.score.importance,
+                                confidence: hit.score.confidence,
+                                recency: hit.score.recency,
+                                session_cohesion: hit.score.session_cohesion,
+                                rrf: hit.score.rrf,
+                                total: hit.score.total,
+                            },
+                            matched_terms: hit.matched_terms,
+                            match_sources: hit
+                                .match_sources
+                                .into_iter()
+                                .map(|source| source.as_str().to_string())
+                                .collect(),
+                            graph_distance: hit.graph_distance,
+                            graph_seed_paths: hit.graph_seed_paths,
+                            graph_relation_kinds: hit
+                                .graph_relation_kinds
+                                .into_iter()
+                                .map(relation_kind_label)
+                                .map(str::to_string)
+                                .collect(),
+                            graph_path: hit
+                                .graph_path
+                                .as_ref()
+                                .map(transport_graph_path_from_core_path),
                         },
-                        matched_terms: hit.matched_terms,
-                        match_sources: hit
-                            .match_sources
-                            .into_iter()
-                            .map(|source| source.as_str().to_string())
-                            .collect(),
-                        graph_distance: hit.graph_distance,
-                        graph_seed_paths: hit.graph_seed_paths,
-                        graph_relation_kinds: hit
-                            .graph_relation_kinds
-                            .into_iter()
-                            .map(relation_kind_label)
-                            .map(str::to_string)
-                            .collect(),
-                        graph_path: hit
-                            .graph_path
-                            .as_ref()
-                            .map(transport_graph_path_from_core_path),
-                    },
-                ));
-            }
-        }
-
-        // Chains read together here (the branch and its ancestors) may hold
-        // a replacement for a thought on another of them.
-        let include_invalidated = request.include_invalidated.unwrap_or(false);
-        let keys: Vec<(String, Uuid, String)> = all_hits
-            .iter()
-            .filter_map(|(key, hit)| {
-                let id = hit.thought["id"].as_str()?.parse().ok()?;
-                let agent = hit.thought["agent_id"].as_str()?.to_owned();
-                Some((key.clone(), id, agent))
-            })
-            .collect();
-        let actions = self
-            .cross_lineage(&chain_keys_to_search, &keys, include_invalidated)
-            .await;
-        let mut present: BTreeSet<Uuid> = keys.iter().map(|(_, id, _)| *id).collect();
-        let mut resolved: Vec<(String, RankedSearchHitOwned)> = Vec::with_capacity(all_hits.len());
-        for ((key, mut hit), action) in all_hits.into_iter().zip(actions) {
-            match action {
-                CrossAction::Keep => resolved.push((key, hit)),
-                action @ (CrossAction::Annotate { .. } | CrossAction::Contest(_)) => {
-                    annotate_cross(&mut hit.thought, &action);
-                    resolved.push((key, hit));
+                    ));
                 }
-                CrossAction::Redirect {
-                    chain_key,
-                    id,
-                    thought,
-                    ..
-                } => {
-                    if present.insert(id) {
-                        hit.thought = thought;
-                        resolved.push((chain_key, hit));
-                    } else if let Some(existing) = resolved
-                        .iter_mut()
-                        .find(|(_, h)| h.thought["id"].as_str() == Some(&id.to_string()))
-                    {
-                        // The successor already ranked on its own: keep it at
-                        // least as high as the thought it replaces.
-                        existing.1.score.total = existing.1.score.total.max(hit.score.total);
+            }
+
+            // Chains read together here (the branch and its ancestors) may hold
+            // a replacement for a thought on another of them.
+            let include_invalidated = request.include_invalidated.unwrap_or(false);
+            let keys: Vec<(String, Uuid, String)> = all_hits
+                .iter()
+                .filter_map(|(key, hit)| {
+                    let id = hit.thought["id"].as_str()?.parse().ok()?;
+                    let agent = hit.thought["agent_id"].as_str()?.to_owned();
+                    Some((key.clone(), id, agent))
+                })
+                .collect();
+            let actions = self
+                .cross_lineage(&chain_keys_to_search, &keys, include_invalidated)
+                .await;
+            let mut present: BTreeSet<Uuid> = keys.iter().map(|(_, id, _)| *id).collect();
+            let mut resolved: Vec<(String, RankedSearchHitOwned)> =
+                Vec::with_capacity(all_hits.len());
+            for ((key, mut hit), action) in all_hits.into_iter().zip(actions) {
+                match action {
+                    CrossAction::Keep => resolved.push((key, hit)),
+                    action @ (CrossAction::Annotate { .. } | CrossAction::Contest(_)) => {
+                        annotate_cross(&mut hit.thought, &action);
+                        resolved.push((key, hit));
+                    }
+                    CrossAction::Redirect {
+                        chain_key,
+                        id,
+                        thought,
+                        ..
+                    } => {
+                        if present.insert(id) {
+                            hit.thought = thought;
+                            resolved.push((chain_key, hit));
+                        } else if let Some(existing) = resolved
+                            .iter_mut()
+                            .find(|(_, h)| h.thought["id"].as_str() == Some(&id.to_string()))
+                        {
+                            // The successor already ranked on its own: keep it at
+                            // least as high as the thought it replaces.
+                            existing.1.score.total = existing.1.score.total.max(hit.score.total);
+                        }
                     }
                 }
             }
-        }
-        let mut all_hits = resolved;
+            if resolved.len() >= ranked_limit || !saturated || fetch >= fetch_cap {
+                break (resolved, best_backend, total_candidates);
+            }
+            fetch = fetch.saturating_mul(2).min(fetch_cap);
+        };
 
         all_hits.sort_by(|a, b| {
             b.1.score
@@ -4951,126 +4966,143 @@ impl MentisDbService {
                 .collect();
             (Vec::new(), arcs)
         };
-        // Over-fetch per chain so cross-chain UUID dedup cannot shrink the page.
-        let query_for_task = ranked_query
-            .clone()
-            .with_limit(ranked_limit.saturating_mul(chain_arcs.len()));
+        // A cross-chain replacement or a duplicate id removes hits after the
+        // per-chain pages are cut, so widen the fetch until the page is full or
+        // the matches are exhausted (see `REDIRECT_FETCH_FACTOR`).
+        let fetch_cap = ranked_limit
+            .saturating_mul(REDIRECT_FETCH_FACTOR)
+            .max(REDIRECT_FETCH_MIN);
+        let mut fetch = ranked_limit;
+        let (deduped, total_candidates, best_backend) = loop {
+            // Over-fetch per chain so cross-chain UUID dedup cannot shrink the page.
+            let query_for_task = ranked_query
+                .clone()
+                .with_limit(fetch.saturating_mul(chain_arcs.len()));
+            let chain_arcs_for_task = chain_arcs_for_task.clone();
+            let fetched_per_chain = fetch.saturating_mul(chain_arcs.len());
 
-        // Collect all hits with owned data while holding locks
-        #[allow(clippy::type_complexity)]
-        #[allow(clippy::type_complexity)]
-        let collected = tokio::task::spawn_blocking(move || {
-            let mut all_hits: Vec<(
-                String,
-                Value,
-                RankedSearchScore,
-                Option<usize>,
-                usize,
-                Vec<ThoughtRelationKind>,
-                Option<crate::search::GraphExpansionPath>,
-                Vec<String>,
-                Vec<crate::search::lexical::LexicalMatchSource>,
-                Uuid,
-                u64,
-            )> = Vec::new();
-            let mut total_candidates = 0usize;
-            let mut best_backend = RankedSearchBackend::Heuristic;
+            // Collect all hits with owned data while holding locks
+            #[allow(clippy::type_complexity)]
+            #[allow(clippy::type_complexity)]
+            let collected = tokio::task::spawn_blocking(move || {
+                let mut all_hits: Vec<(
+                    String,
+                    Value,
+                    RankedSearchScore,
+                    Option<usize>,
+                    usize,
+                    Vec<ThoughtRelationKind>,
+                    Option<crate::search::GraphExpansionPath>,
+                    Vec<String>,
+                    Vec<crate::search::lexical::LexicalMatchSource>,
+                    Uuid,
+                    u64,
+                )> = Vec::new();
+                let mut total_candidates = 0usize;
+                let mut best_backend = RankedSearchBackend::Heuristic;
+                let mut saturated = false;
 
-            for (chain_key_str, arc, audience) in &chain_arcs_for_task {
-                let chain = arc.blocking_read();
-                let mut chain_query = query_for_task.clone();
-                chain_query.filter.audience = *audience;
-                let ranked_result = chain.query_ranked(&chain_query);
-                total_candidates += ranked_result.total_candidates;
-                if ranked_result.backend != RankedSearchBackend::Heuristic
-                    && best_backend == RankedSearchBackend::Heuristic
-                {
-                    best_backend = ranked_result.backend;
+                for (chain_key_str, arc, audience) in &chain_arcs_for_task {
+                    let chain = arc.blocking_read();
+                    let mut chain_query = query_for_task.clone();
+                    chain_query.filter.audience = *audience;
+                    let ranked_result = chain.query_ranked(&chain_query);
+                    total_candidates += ranked_result.total_candidates;
+                    saturated |= ranked_result.hits.len() >= fetched_per_chain;
+                    if ranked_result.backend != RankedSearchBackend::Heuristic
+                        && best_backend == RankedSearchBackend::Heuristic
+                    {
+                        best_backend = ranked_result.backend;
+                    }
+
+                    for hit in ranked_result.hits {
+                        all_hits.push((
+                            chain_key_str.clone(),
+                            chain.hit_json_for(&hit, *audience),
+                            hit.score,
+                            hit.graph_distance,
+                            hit.graph_seed_paths,
+                            hit.graph_relation_kinds.clone(),
+                            hit.graph_path.clone(),
+                            hit.matched_terms.clone(),
+                            hit.match_sources.clone(),
+                            hit.thought.id,
+                            hit.thought.index,
+                        ));
+                    }
                 }
 
-                for hit in ranked_result.hits {
-                    all_hits.push((
-                        chain_key_str.clone(),
-                        chain.hit_json_for(&hit, *audience),
-                        hit.score,
-                        hit.graph_distance,
-                        hit.graph_seed_paths,
-                        hit.graph_relation_kinds.clone(),
-                        hit.graph_path.clone(),
-                        hit.matched_terms.clone(),
-                        hit.match_sources.clone(),
-                        hit.thought.id,
-                        hit.thought.index,
-                    ));
+                (all_hits, total_candidates, best_backend, saturated)
+            })
+            .await
+            .map_err(|e| std::io::Error::other(format!("federated search task failed: {e}")))?;
+
+            let (all_hits, total_candidates, best_backend, saturated) = collected;
+
+            // A replacement written on another searched chain supersedes a hit
+            // here, so redirect (or annotate) before the cross-chain merge.
+            let searched: Vec<String> = chain_arcs.iter().map(|(key, _, _)| key.clone()).collect();
+            let keys: Vec<(String, Uuid, String)> = all_hits
+                .iter()
+                .map(|h| {
+                    let agent = h.1["agent_id"].as_str().unwrap_or_default().to_owned();
+                    (h.0.clone(), h.9, agent)
+                })
+                .collect();
+            let actions = self
+                .cross_lineage(
+                    &searched,
+                    &keys,
+                    request.include_invalidated.unwrap_or(false),
+                )
+                .await;
+            let all_hits: Vec<_> = all_hits
+                .into_iter()
+                .zip(actions)
+                .map(|(mut hit, action)| {
+                    match action {
+                        CrossAction::Keep => {}
+                        action @ (CrossAction::Annotate { .. } | CrossAction::Contest(_)) => {
+                            annotate_cross(&mut hit.1, &action)
+                        }
+                        CrossAction::Redirect {
+                            chain_key,
+                            id,
+                            index,
+                            thought,
+                        } => {
+                            hit.0 = chain_key;
+                            hit.1 = thought;
+                            hit.9 = id;
+                            hit.10 = index;
+                        }
+                    }
+                    hit
+                })
+                .collect();
+
+            // Deduplicate by UUID, keeping the higher-scoring occurrence, before
+            // any truncation to the requested page.
+            let mut positions: BTreeMap<Uuid, usize> = BTreeMap::new();
+            let mut deduped: Vec<FederatedHit> = Vec::with_capacity(all_hits.len());
+            for hit in all_hits {
+                match positions.get(&hit.9).copied() {
+                    Some(pos) => {
+                        if hit.2.total.total_cmp(&deduped[pos].2.total).is_gt() {
+                            deduped[pos] = hit;
+                        }
+                    }
+                    None => {
+                        positions.insert(hit.9, deduped.len());
+                        deduped.push(hit);
+                    }
                 }
             }
-
-            (all_hits, total_candidates, best_backend)
-        })
-        .await
-        .map_err(|e| std::io::Error::other(format!("federated search task failed: {e}")))?;
-
-        let (all_hits, total_candidates, best_backend) = collected;
-
-        // A replacement written on another searched chain supersedes a hit
-        // here, so redirect (or annotate) before the cross-chain merge.
-        let searched: Vec<String> = chain_arcs.iter().map(|(key, _, _)| key.clone()).collect();
-        let keys: Vec<(String, Uuid, String)> = all_hits
-            .iter()
-            .map(|h| {
-                let agent = h.1["agent_id"].as_str().unwrap_or_default().to_owned();
-                (h.0.clone(), h.9, agent)
-            })
-            .collect();
-        let actions = self
-            .cross_lineage(
-                &searched,
-                &keys,
-                request.include_invalidated.unwrap_or(false),
-            )
-            .await;
-        let all_hits: Vec<_> = all_hits
-            .into_iter()
-            .zip(actions)
-            .map(|(mut hit, action)| {
-                match action {
-                    CrossAction::Keep => {}
-                    action @ (CrossAction::Annotate { .. } | CrossAction::Contest(_)) => {
-                        annotate_cross(&mut hit.1, &action)
-                    }
-                    CrossAction::Redirect {
-                        chain_key,
-                        id,
-                        index,
-                        thought,
-                    } => {
-                        hit.0 = chain_key;
-                        hit.1 = thought;
-                        hit.9 = id;
-                        hit.10 = index;
-                    }
-                }
-                hit
-            })
-            .collect();
-
-        // Deduplicate by UUID, keeping the higher-scoring occurrence, before
-        // any truncation to the requested page.
-        let mut positions: BTreeMap<Uuid, usize> = BTreeMap::new();
-        let mut deduped: Vec<FederatedHit> = Vec::with_capacity(all_hits.len());
-        for hit in all_hits {
-            match positions.get(&hit.9).copied() {
-                Some(pos) => {
-                    if hit.2.total.total_cmp(&deduped[pos].2.total).is_gt() {
-                        deduped[pos] = hit;
-                    }
-                }
-                None => {
-                    positions.insert(hit.9, deduped.len());
-                    deduped.push(hit);
-                }
+            if deduped.len() >= ranked_limit || !saturated || fetch >= fetch_cap {
+                break (deduped, total_candidates, best_backend);
             }
-        }
+            fetch = fetch.saturating_mul(2).min(fetch_cap);
+        };
         let mut all_hits = deduped;
 
         // Deterministic order: score desc, then thought index, chain key, id.
@@ -9462,6 +9494,14 @@ where
     let request = serde_json::from_value::<T>(parameters)?;
     Ok(serde_json::to_value(f(request).await?)?)
 }
+
+/// How far past `offset + limit` per-chain pages are fetched, as a multiple,
+/// when cross-chain redirection or duplicate ids shrink a page: the fetch
+/// doubles until the page is full, the matches are exhausted or this window is
+/// reached. A page whose live matches lie beyond it comes back short.
+const REDIRECT_FETCH_FACTOR: usize = 16;
+/// Smallest widening window, see [`REDIRECT_FETCH_FACTOR`].
+const REDIRECT_FETCH_MIN: usize = 4096;
 
 /// Largest `offset + limit` a ranked, lexical, federated or context-bundle
 /// request may ask for.

@@ -1,4 +1,12 @@
 UNRELEASED
+  - fix(search): cross-chain redirection could shrink a REST page. Ranked search (the
+    chain and its ancestors) and federated search cut each chain's page at
+    `offset + limit` before redirecting hits to a replacement on another searched chain
+    and removing duplicate ids, so thirty ancestor facts replaced by one branch thought
+    left a page of one hit. The fetch now doubles until the page is full or the matches
+    are exhausted, up to `max(16 * (offset + limit), 4096)` per chain (a page whose live
+    matches lie beyond that comes back short). `query_federated` in the library still cuts
+    each chain at `limit`.
   - perf(search): refilling a page after near-duplicate collapsing is incremental and
     bounded. Each refill pass used to re-materialize and re-tokenize the whole window and
     the window had no limit; with 20% identical matches, collapse 0.9 and limit 10 a
