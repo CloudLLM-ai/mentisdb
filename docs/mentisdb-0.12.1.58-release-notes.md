@@ -14,11 +14,18 @@ a "Generate key pair" button on the dashboard's agent page create an Ed25519 key
 register its public key; MentisDB never keeps the private key. The dashboard's Add Key
 button, which always failed, now works.
 
+**Security notice:** this release fixes agent-key registration on the dashboard, which
+could replace an agent's existing key. Upgrade is recommended; see [Security](#security)
+for what to check.
+
 There is no data migration and no library break. MCP callers get lean output by default;
 see [Upgrading](#upgrading) for what changed on the wire.
 
 ## Highlights
 
+- **Security: agent key ids are never rebound,** and the dashboard's key routes need a
+  PIN. Review your agents' registered keys if your dashboard was reachable by untrusted
+  local processes or users.
 - **Superseded versions no longer starve live results.** A decision rewritten 30 times,
   each version superseding the last, used to fill ranked search's candidate window, so a
   `limit = 5` search returned 1 hit. It now returns 5 distinct live memories.
@@ -36,6 +43,32 @@ see [Upgrading](#upgrading) for what changed on the wire.
   pair" (dashboard) create the pair and register only the public key. The private key is
   saved to an owner-only file or shown once in the browser, and is never sent to the
   daemon.
+
+## Security
+
+**Impact.** Before 0.12.1.58, the proof-based agent-key registration path (the dashboard's
+agent-key route, and `add_agent_key` in the library) could replace an existing key filed
+under the same key id, and could revive a revoked one. Anyone able to reach the dashboard
+API could therefore register a key of their own that verifies as an existing agent, and
+sign thoughts or skills in that agent's name. The proof of possession that route checks
+proves only that the caller holds the new key. Registration through `mentisdb agent key
+add` was not affected.
+
+**Fixes.**
+
+- **Key ids are never reused or overwritten** (6438e00). Registering a different key under
+  an existing id, active or revoked, is refused; registering the same active key again
+  changes nothing. This matches what `agent key add` already did.
+- **The dashboard's agent-key routes need a PIN** (d78eb7e). Adding and deleting an agent
+  key on the dashboard now require `MENTISDB_DASHBOARD_PIN`, like the chain access routes.
+  A dashboard started without a PIN cannot tell the operator from any other local process,
+  so it refuses these changes and the agent page explains why and how to set a PIN. Without
+  a PIN, manage keys with `mentisdb agent key generate|add|revoke --offline`.
+
+**What to do.** Upgrade. If your dashboard was reachable by untrusted local processes or
+users, review each agent's registered keys (the agent page on the dashboard, or
+`mentisdb agent get <agent> --chain <chain>`) and revoke any key you did not register
+with `mentisdb agent key revoke`.
 
 ## Superseded versions no longer starve live results
 
@@ -169,7 +202,9 @@ hex characters, the format `--private-key-file` and `--read-key-file` read) to a
 mode `0600`, registers the public key, and prints the public key, the file path and a
 warning that the file is the only copy. Without `--out FILE` the file is
 `$MENTISDB_KEY_DIR/<public key prefix>.key` (default `~/.mentisdb/keys`, created `0700`).
-An existing file is not overwritten without `--force`.
+An existing file is not overwritten without `--force`, and `--force` refuses a symbolic
+link at `--out` (535c469). On Windows nothing sets an access list, so the file inherits the
+folder's permissions; restrict the folder (b95f8ce).
 
 - **The private key is never printed, logged or sent.** `--json` carries `registered`,
   `agent_id`, `key_id`, `chain_key`, `public_key_hex` and `key_file`, never the seed.
@@ -185,14 +220,16 @@ another machine, hand over only the key file, over a channel you trust.
 
 ### "Generate key pair" on the dashboard
 
-The Public Keys card on an agent's page has a **Generate key pair** button (cde0f23). The
+The Public Keys card on an agent's page has a **Generate key pair** button (cde0f23). Like
+every key change on the dashboard, it needs a dashboard PIN (see [Security](#security)). The
 page generates the pair with WebCrypto, signs the registration proof of possession in the
 browser, and registers only the public key, so the private key never crosses the network.
 After registration succeeds, a dialog shows the private key once, with the warning, a
 **Download key file** button (`<agent>-<key-id>.key`, in the `--private-key-file`
-format), **Copy**, and an **I have saved this key** box that must be ticked before the
-dialog can be closed. Closing removes the key from the page. The downloaded file gets your
-browser's default permissions, so run `chmod 600` on it. A browser without Ed25519 in
+format; the download link is valid for 10 seconds, 3f995d5), **Copy**, and an **I have
+saved this key** box that must be ticked before the dialog can be closed. Closing removes
+the key from the page. Browsers save downloads readable by other users of the computer, so
+the dialog tells you to run `chmod 600 <file>` on macOS or Linux (d85c585). A browser without Ed25519 in
 WebCrypto is told to use `mentisdb agent key generate`; there is no server-side fallback.
 
 ### Add Key works
@@ -201,8 +238,7 @@ The dashboard's **Add Key** button posted to an endpoint that requires a proof o
 possession, which a pasted public key cannot carry, so every click failed. It now
 registers through the operator route `agent key add` uses, with the PIN session vouching
 for the key, and accepts 64 hex characters, `0x`-prefixed hex or 32 comma-separated bytes
-(469babe). A dashboard without a PIN still refuses it, as it refuses every operator
-action.
+(469babe). Like Generate key pair and Delete, it needs a dashboard PIN.
 
 ### Benchmark script
 
@@ -210,6 +246,14 @@ action.
 on the machine, including an operator's running daemon. It now refuses to start when a
 daemon already answers on the REST port, stops only the daemon it started, and honours
 `MENTISDB_REST_PORT` (56e8f48).
+
+### Test coverage in CI
+
+Every CI run now shows a coverage table in its job summary: functions, branches, regions
+and lines, measured in one instrumented run (e6f87ff, 6c5b233). Today's numbers are about
+74% functions, 64% branches, 72% regions and 74% lines. The gate's floors sit at those
+values and only ratchet up, toward a 90% goal; `make coverage` runs the same measurement
+locally. The README's Coverage section lists the least-covered files.
 
 ## Upgrading
 
@@ -231,7 +275,14 @@ There is no data migration, and the library API only gained items.
   `compact` on lexical search (default `false`), which they used to ignore. `/tools/list`
   no longer advertises `compact` on `mentisdb_context_bundles`, which only takes effect over
   MCP (REST accepts and ignores it).
-- **Agent keys.** Nothing changes for existing keys. Prefer `mentisdb agent key generate`
+- **Dashboard key management needs a PIN.** Generate key pair, Add Key and Delete answer
+  `403` on a dashboard without `MENTISDB_DASHBOARD_PIN`. Set one, or use
+  `mentisdb agent key generate|add|revoke` with `--pin` or `--offline`.
+- **Key ids are never rebound.** Registering a different key under an existing id, even a
+  revoked one, is refused. Rotate by registering a new key id and revoking the old one.
+- **Review your agents' keys** if your dashboard was reachable by untrusted local processes
+  or users (see [Security](#security)).
+- **Agent keys.** Existing keys keep working. Prefer `mentisdb agent key generate`
   or the dashboard's "Generate key pair" over generating and registering by hand.
 - **`lme-benches/full_bench.sh`** exits with an error if a daemon is already running.
   Stop it first, or set free ports (`MENTISDB_REST_PORT=9592 MENTISDB_MCP_PORT=9591`).
