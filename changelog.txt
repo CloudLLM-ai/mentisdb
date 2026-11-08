@@ -76,7 +76,7 @@ UNRELEASED
     modal shows the key once, as the 64-hex seed `--private-key-file` reads, with a "Download
     key file" button (`<agent>-<key-id>.key`, Blob URL revoked right after), a "Copy" button
     and an "I have saved this key" box that must be ticked before Escape, the backdrop or the
-    Close button can dismiss it; closing removes the key from the DOM. A browser without
+    Close button can dismiss it; the modal also tells the user to `chmod 600` the downloaded file; closing removes the key from the DOM. A browser without
     WebCrypto Ed25519 is pointed at `mentisdb agent key generate`; there is no server-side
     fallback. The JavaScript helpers are tested under node against the Rust payload, proof
     and seed derivation, and the body is posted to the real endpoint.

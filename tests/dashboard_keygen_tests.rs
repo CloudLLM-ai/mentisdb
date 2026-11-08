@@ -410,6 +410,7 @@ fn test_page_reveals_the_private_key_only_after_registration() {
     for required in [
         "This is the only time this private key will be shown. MentisDB keeps only the public key and cannot recover it. Save it somewhere safe now. Never paste it into a chat or give it to an AI agent.",
         "Download key file",
+        "run `chmod 600 <file>` on macOS or Linux.",
         "I have saved this key",
         "URL.revokeObjectURL(url)",
         "e.key === 'Escape'",

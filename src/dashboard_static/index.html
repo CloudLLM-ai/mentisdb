@@ -3680,6 +3680,10 @@
       textContent: 'This is the only time this private key will be shown. MentisDB keeps only the public key and cannot recover it. Save it somewhere safe now. Never paste it into a chat or give it to an AI agent.'
     });
     warning.style.cssText = 'color:#f85149;font-weight:600;margin:0 0 14px';
+    const hint = el('p', {
+      textContent: 'Browsers save downloads readable by other users of this computer; run `chmod 600 <file>` on macOS or Linux.'
+    });
+    hint.style.cssText = 'color:#8b949e;font-size:0.8rem;margin:0 0 16px';
     const keyBox = el('pre', { textContent: secret });
     keyBox.style.cssText = 'user-select:all;margin:0 0 14px';
     const status = el('span', { className: 'feedback' });
@@ -3698,7 +3702,7 @@
       el('div', { className: 'modal-hdr' }, [heading]),
       el('div', { className: 'modal-body' }, [
         el('p', { textContent: `Public key: ${publicHex}` }),
-        warning, keyBox, actions, confirmRow
+        warning, keyBox, actions, hint, confirmRow
       ])
     ]);
     box.style.maxWidth = '620px';
