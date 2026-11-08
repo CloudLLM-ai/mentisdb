@@ -89,6 +89,9 @@ UNRELEASED
     key), and takes 64 hex characters, `0x` hex or 32 comma-separated bytes. On a dashboard
     with no PIN the registration is refused with the reason, as for every operator action;
     nothing is widened for a non-PIN session.
+  - fix(dashboard): the generated key's download revokes its Blob URL after 10 seconds, not
+    right after the click. Some browsers begin reading the blob after the click handler
+    returns, so the file could be empty while the page invited the user to tick "saved".
   - feat(dashboard): "Generate key pair" on the agent page's Public Keys card. It takes a Key
     ID, generates the Ed25519 pair in the browser with WebCrypto, signs the registration
     proof there and registers only the public key through the agent keys API, so the private

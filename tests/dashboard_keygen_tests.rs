@@ -412,7 +412,7 @@ fn test_page_reveals_the_private_key_only_after_registration() {
         "Download key file",
         "run `chmod 600 <file>` on macOS or Linux.",
         "I have saved this key",
-        "URL.revokeObjectURL(url)",
+        "setTimeout(() => URL.revokeObjectURL(url), 10000)",
         "e.key === 'Escape'",
         "if (saved.checked) close()",
         "secret = null",

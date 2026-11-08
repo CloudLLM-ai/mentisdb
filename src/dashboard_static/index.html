@@ -3749,7 +3749,9 @@
       document.body.append(link);
       link.click();
       link.remove();
-      URL.revokeObjectURL(url);
+      // Revoke later, not right after click(): some browsers start reading the
+      // blob after the click handler returns, and would save an empty file.
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
       say(true, 'Key file saved');
     });
     copy.addEventListener('click', async () => {
