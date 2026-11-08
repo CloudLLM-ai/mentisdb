@@ -988,6 +988,7 @@ impl MentisDb {
             placed.insert(id, out.len());
             out.push(pass.materialize(self, *candidate));
         }
+        monotone_scores(&mut out);
         self.annotate_hits(&mut out, as_of, audience);
         (out, exhausted)
     }
@@ -1309,6 +1310,29 @@ pub fn collapse_duplicates_from_env() -> Option<f32> {
 
 /// Built-in default of [`collapse_duplicates_from_env`].
 pub const DEFAULT_COLLAPSE_DUPLICATES: Option<f32> = Some(0.9);
+
+/// Make the totals of `hits` non-increasing in page order.
+///
+/// A stand-in inherits its predecessor's score (and a contester is bumped above
+/// the thought it contests), so the walk can emit a hit whose total exceeds an
+/// earlier hit's. Paged readers (REST ranked, lexical and federated search)
+/// fetch `offset + page` hits, re-sort them by score and skip `offset`; that is
+/// only the same page order for every window size when score order **is** page
+/// order. Without this clamp a contester that outscored the hit before it moved
+/// forward in the re-sort, so consecutive pages repeated some hits and skipped
+/// others. A clamped hit gets the next float below its predecessor's total, so
+/// even a sort that breaks ties differently (federated search breaks them by
+/// thought index) keeps the walk order. Hits that were already in order, which
+/// is every hit on a chain without lineage or contests, are not touched.
+fn monotone_scores(hits: &mut [RankedSearchHit<'_>]) {
+    let mut ceiling = f32::INFINITY;
+    for hit in hits {
+        if hit.score.total > ceiling {
+            hit.score.total = ceiling.next_down();
+        }
+        ceiling = hit.score.total;
+    }
+}
 
 /// Jaccard similarity of two sorted, duplicate-free token-id sets; `0.0` when
 /// either is empty.

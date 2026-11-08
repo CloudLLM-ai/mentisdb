@@ -1,4 +1,11 @@
 UNRELEASED
+  - fix(search): REST paging repeated and skipped hits around contested thoughts.
+    A contester stands in at its contested thought's score plus a bump, so page order was
+    not score order, and the REST ranked and federated handlers (which fetch
+    `offset + page`, re-sort by score and skip `offset`) moved contesters between
+    windows: 30 contested decisions paged by 5 returned 60 hits, 44 distinct. Emitted
+    totals are now non-increasing in page order. Chains without lineage or contests are
+    unaffected.
   - feat(mcp): lean output for agents. The streamable-HTTP MCP surface (JSON-RPC
     `tools/call`) returns minified JSON text and no second `structuredContent` copy
     (the MCP library pretty-printed the object and repeated it); `POST /tools/execute`
