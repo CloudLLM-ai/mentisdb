@@ -1,4 +1,4 @@
-# MentisDB 0.12.1.58 (Lean search for agents, superseded memories no longer starve results)
+# MentisDB 0.12.1.58 (Lean search, live memories, agent key pairs)
 
 **Date:** November 8, 2026
 
@@ -8,6 +8,11 @@ makes search results cost far fewer tokens, and fixes the bug that made them wor
 fact rewritten many times could take up a whole page of results. On a generated
 3,500-thought chain, a default 10-hit ranked search over MCP went from 23,657 to 5,948
 characters, and standing context from 36,191 to 13,050.
+
+It also makes giving an agent a signing key one step. `mentisdb agent key generate` and
+a "Generate key pair" button on the dashboard's agent page create an Ed25519 key pair and
+register its public key; MentisDB never keeps the private key. The dashboard's Add Key
+button, which always failed, now works.
 
 There is no data migration and no library break. MCP callers get lean output by default;
 see [Upgrading](#upgrading) for what changed on the wire.
@@ -27,6 +32,10 @@ see [Upgrading](#upgrading) for what changed on the wire.
   contested thoughts, a cross-chain replacement no longer shrinks a REST page, and the
   page refill after duplicate collapsing is bounded (worst case 32.5 ms down to 3.5 ms at
   100,000 thoughts).
+- **Agent key pairs in one step.** `mentisdb agent key generate` (CLI) and "Generate key
+  pair" (dashboard) create the pair and register only the public key. The private key is
+  saved to an owner-only file or shown once in the browser, and is never sent to the
+  daemon.
 
 ## Superseded versions no longer starve live results
 
@@ -139,6 +148,69 @@ the characters of the text the model reads (10 hits):
 A default ranked search is 75% smaller, and even `compact: false` is 29% smaller because
 it is minified. Recent context barely moves: it was already lean.
 
+## Agent key pairs
+
+Signing thoughts, or reading a private chain, needs an Ed25519 key registered to the
+agent. Until now that took two commands (`mentisdb key generate`, then
+`mentisdb agent key add --public-key-hex ...`), and the dashboard's Add Key button did not
+work at all.
+
+### `mentisdb agent key generate`
+
+```bash
+mentisdb agent key generate builder --key-id builder-1 --chain vault --pin 123456
+# or, with the daemon stopped, against the data directory:
+mentisdb agent key generate builder --key-id builder-1 --chain vault --offline
+```
+
+An operator command (the dashboard PIN, or `--offline`), like `agent key add` (649d9af).
+It creates an Ed25519 key pair on the machine you run it on, saves the private seed (64
+hex characters, the format `--private-key-file` and `--read-key-file` read) to a file with
+mode `0600`, registers the public key, and prints the public key, the file path and a
+warning that the file is the only copy. Without `--out FILE` the file is
+`$MENTISDB_KEY_DIR/<public key prefix>.key` (default `~/.mentisdb/keys`, created `0700`).
+An existing file is not overwritten without `--force`.
+
+- **The private key is never printed, logged or sent.** `--json` carries `registered`,
+  `agent_id`, `key_id`, `chain_key`, `public_key_hex` and `key_file`, never the seed.
+- **Checks come first.** A wrong PIN, an unreachable daemon or a key id the agent already
+  has is reported before anything is written.
+- **Nothing is lost on failure.** If the registration fails after the file was written,
+  the file is kept and the error names it and the
+  `mentisdb agent key add ... --public-key-hex HEX` command that registers it later.
+
+MentisDB keeps only the public key and cannot recover the private one. Back the file up,
+and never paste it into a chat or give it to an AI agent. To give a key to an agent on
+another machine, hand over only the key file, over a channel you trust.
+
+### "Generate key pair" on the dashboard
+
+The Public Keys card on an agent's page has a **Generate key pair** button (cde0f23). The
+page generates the pair with WebCrypto, signs the registration proof of possession in the
+browser, and registers only the public key, so the private key never crosses the network.
+After registration succeeds, a dialog shows the private key once, with the warning, a
+**Download key file** button (`<agent>-<key-id>.key`, in the `--private-key-file`
+format), **Copy**, and an **I have saved this key** box that must be ticked before the
+dialog can be closed. Closing removes the key from the page. The downloaded file gets your
+browser's default permissions, so run `chmod 600` on it. A browser without Ed25519 in
+WebCrypto is told to use `mentisdb agent key generate`; there is no server-side fallback.
+
+### Add Key works
+
+The dashboard's **Add Key** button posted to an endpoint that requires a proof of
+possession, which a pasted public key cannot carry, so every click failed. It now
+registers through the operator route `agent key add` uses, with the PIN session vouching
+for the key, and accepts 64 hex characters, `0x`-prefixed hex or 32 comma-separated bytes
+(469babe). A dashboard without a PIN still refuses it, as it refuses every operator
+action.
+
+### Benchmark script
+
+`lme-benches/full_bench.sh` ran `pkill -f mentisdb`, which stopped every MentisDB process
+on the machine, including an operator's running daemon. It now refuses to start when a
+daemon already answers on the REST port, stops only the daemon it started, and honours
+`MENTISDB_REST_PORT` (56e8f48).
+
 ## Upgrading
 
 ```bash
@@ -159,6 +231,10 @@ There is no data migration, and the library API only gained items.
   `compact` on lexical search (default `false`), which they used to ignore. `/tools/list`
   no longer advertises `compact` on `mentisdb_context_bundles`, which only takes effect over
   MCP (REST accepts and ignores it).
+- **Agent keys.** Nothing changes for existing keys. Prefer `mentisdb agent key generate`
+  or the dashboard's "Generate key pair" over generating and registering by hand.
+- **`lme-benches/full_bench.sh`** exits with an error if a daemon is already running.
+  Stop it first, or set free ports (`MENTISDB_REST_PORT=9592 MENTISDB_MCP_PORT=9591`).
 - **Score totals.** A ranked hit that used to outscore the hit before it (a contester, or a
   successor standing in) now reports a total just below that hit.
 
