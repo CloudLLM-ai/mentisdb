@@ -146,6 +146,18 @@ pub fn default_key_dir() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| format!("no home directory found; pass --out <file> or set {KEY_DIR_ENV}"))
 }
 
+/// Whether `error` is `open` refusing a symbolic link under `O_NOFOLLOW`.
+#[cfg(unix)]
+fn opened_symlink(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(libc::ELOOP)
+}
+
+/// Windows has no `O_NOFOLLOW`; the `symlink_metadata` check is all there is.
+#[cfg(not(unix))]
+fn opened_symlink(_error: &std::io::Error) -> bool {
+    false
+}
+
 fn write_seed(path: &str, seed: &[u8; 32], force: bool) -> Result<(), String> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true);
@@ -154,11 +166,25 @@ fn write_seed(path: &str, seed: &[u8; 32], force: bool) -> Result<(), String> {
     } else {
         options.create_new(true);
     }
+    // `--force` must not write the seed through a symlink: it would land in (and
+    // `set_permissions` below would change) whatever the link points at. The
+    // check gives the clear message; O_NOFOLLOW closes the window between it and
+    // the open.
+    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(format!(
+            "'{path}' is a symbolic link; refusing to write a private key through it (name the real file with --out)"
+        ));
+    }
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
     let mut file = options.open(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AlreadyExists {
             format!("'{path}' already exists; pass --force to overwrite it")
+        } else if opened_symlink(&e) {
+            format!("'{path}' is a symbolic link; refusing to write a private key through it (name the real file with --out)")
         } else {
             format!("cannot write '{path}': {e}")
         }
