@@ -57,6 +57,15 @@
       5,948 characters, and standing context from 36,191 to 13,050. Giving an agent a
       signing key also became one step, from the command line or the dashboard.
     </p>
+    <div class="callout">
+      <strong>Security notice.</strong> Before this release, the dashboard's agent-key
+      registration could replace an agent's existing key, including a revoked one, so
+      anyone able to reach the dashboard API could register a key that verifies as that
+      agent. Key ids are now never reused or overwritten, and adding or deleting an agent
+      key on the dashboard requires a dashboard PIN. If your dashboard was reachable by
+      untrusted local processes or users, review each agent's registered keys and revoke
+      any you did not register. Upgrade recommended.
+    </div>
 
     <h3>1. Superseded memories no longer starve results</h3>
     <p>
@@ -115,17 +124,18 @@
     </p>
     <pre><code>mentisdb agent key generate builder --key-id builder-1 --chain vault --pin 123456</code></pre>
     <p>
-      The private key goes to an owner-only file (by default under
+      The private key goes to an owner-only file on macOS and Linux (by default under
       <code>~/.mentisdb/keys</code>) and is never printed. A wrong PIN, a stopped daemon or
       a key id that is already taken is caught before anything is written, and if the
       registration fails afterwards the file is kept and the error tells you how to
       register it.
     </p>
     <p>
-      On the dashboard, an agent's page has a <strong>Generate key pair</strong> button.
-      Your browser makes the pair and registers only the public key, then shows the
+      On a dashboard protected by a PIN, an agent's page has a <strong>Generate key
+      pair</strong> button. Your browser makes the pair and registers only the public key, then shows the
       private key once, with a download button. It stays open until you tick
-      <em>I have saved this key</em>. Add Key now works too, for keys made elsewhere.
+      <em>I have saved this key</em>, and reminds you to <code>chmod 600</code> the
+      downloaded file. Add Key now works too, for keys made elsewhere.
     </p>
     <div class="callout">
       MentisDB keeps only the public key. The key file is the only copy of the private
@@ -149,7 +159,8 @@
       <code>structuredContent</code> or standing context's <code>entries</code>, switch to
       the text content or pass <code>include_entries: true</code>.
       <code>lme-benches/full_bench.sh</code> no longer kills every MentisDB process on the
-      machine; it refuses to run if a daemon is already up. The
+      machine; it refuses to run if a daemon is already up. Every CI run now reports test
+      coverage (about 74% of lines today), with floors that only go up, toward 90%. The
       <a href="mentisdb-0.12.1.58-release-notes.md">release notes</a> list every change.
     </p>
     <pre><code>cargo install mentisdb --locked --force
