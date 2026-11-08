@@ -1414,12 +1414,12 @@ Measured with `cargo run --release --example token_diet` (a generated 3,500-thou
 
 | Tool call | Before | After |
 |---|---:|---:|
-| `mentisdb_ranked_search` (default) | 23,657 | 5,808 |
-| `mentisdb_ranked_search` `compact: true` | 12,699 | 5,808 |
+| `mentisdb_ranked_search` (default) | 23,657 | 5,948 |
+| `mentisdb_ranked_search` `compact: true` | 12,699 | 5,948 |
 | `mentisdb_ranked_search` `compact: false` | 23,657 | 16,696 |
-| `mentisdb_lexical_search` | 18,743 | 6,201 |
-| `mentisdb_federated_search` | 23,511 | 5,885 |
-| `mentisdb_context_bundles` (5 bundles) | 9,993 | 3,457 |
+| `mentisdb_lexical_search` | 18,743 | 6,341 |
+| `mentisdb_federated_search` | 23,511 | 6,025 |
+| `mentisdb_context_bundles` (5 bundles) | 9,993 | 3,562 |
 | `mentisdb_standing_context` | 36,191 | 13,050 |
 | `mentisdb_recent_context` (20 thoughts) | 6,936 | 6,931 |
 
