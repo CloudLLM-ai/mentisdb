@@ -93,6 +93,10 @@ UNRELEASED
     symbolic link at `--out`. The seed was written into, and the mode changed on, whatever
     the link pointed at. A symlink target is now refused (checked, and opened with
     `O_NOFOLLOW` on Unix); name the real file instead.
+  - fix(cli): on Windows `key generate` and `agent key generate` no longer say the key file is
+    "owner-only". Nothing sets an ACL there, so the file inherits the folder's permissions;
+    the messages and help now say so and ask the user to restrict the folder. Unix output
+    is unchanged (0600).
   - fix(dashboard): the generated key's download revokes its Blob URL after 10 seconds, not
     right after the click. Some browsers begin reading the blob after the click handler
     returns, so the file could be empty while the page invited the user to tick "saved".

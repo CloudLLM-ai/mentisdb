@@ -343,6 +343,8 @@ async fn test_failed_registration_keeps_the_file_and_prints_the_recovery_command
     );
     assert!(!failed.err.contains(&seed) && !failed.out.contains(&seed));
     #[cfg(unix)]
+    assert!(failed.err.contains("(0600, owner-only)"), "{}", failed.err);
+    #[cfg(unix)]
     assert_eq!(mode(&file), 0o600);
     assert!(registered_keys(&d.dir).is_empty());
 

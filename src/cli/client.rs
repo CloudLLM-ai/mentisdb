@@ -157,7 +157,8 @@ fn run_generate_key(invocation: &RemoteInvocation, out: &mut dyn Write) -> Resul
         }
         (Ok(()), None) => Err("the key file was not written".to_string()),
         (Err(error), Some(path)) => Err(format!(
-            "{error}\nthe key was saved at {path} (owner-only) and can be registered later with:\n  mentisdb agent key add {} --key-id {} --chain {} --public-key-hex {public_hex}\n(add the --pin or --offline and connection flags you used here)",
+            "{error}\nthe key was saved at {path} ({}) and can be registered later with:\n  mentisdb agent key add {} --key-id {} --chain {} --public-key-hex {public_hex}\n(add the --pin or --offline and connection flags you used here)",
+            super::key::seed_file_protection(cfg!(unix)),
             shell_word(&agent),
             shell_word(&key_id),
             shell_word(&chain),
@@ -253,7 +254,11 @@ fn write_generated_key(
         });
         format!("{reply}\n")
     } else {
-        let mode = if cfg!(unix) { "0600" } else { "owner-only" };
+        let mode = if cfg!(unix) {
+            "0600"
+        } else {
+            super::key::seed_file_protection(false)
+        };
         format!(
             "Registered key {key_id} for agent {agent} on chain {chain}\npublic_key_hex: {public_hex}\nprivate key saved to {path} ({mode})\n\n!! This file is the only copy of the private key. MentisDB keeps only\n!! the public key and cannot recover it. Back it up somewhere safe now;\n!! never paste it into a chat or give it to an AI agent.\n"
         )

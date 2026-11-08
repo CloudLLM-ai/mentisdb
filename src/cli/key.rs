@@ -18,7 +18,9 @@ Usage:
 
 Commands:
   generate   Create a new key. The private seed is ALWAYS written to a file
-             with owner-only permissions (0600) and never printed: a private
+             with owner-only permissions (0600; on Windows the file inherits
+             the folder's permissions, so restrict that folder yourself) and
+             never printed: a private
              key on standard output ends up in terminal scrollback, shell logs
              and, worse, in the context of any AI agent that runs the command.
              Without --out the file is $MENTISDB_KEY_DIR/<public key prefix>.key
@@ -146,6 +148,30 @@ pub fn default_key_dir() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| format!("no home directory found; pass --out <file> or set {KEY_DIR_ENV}"))
 }
 
+/// How a saved seed file is protected, for the messages that name the file.
+///
+/// Unix files are created `0600`. Windows has no mode bits and nothing here sets
+/// an ACL, so the file inherits the folder's permissions: saying "owner-only"
+/// there would be false comfort.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::cli::key::seed_file_protection;
+///
+/// assert_eq!(seed_file_protection(true), "0600, owner-only");
+/// assert!(seed_file_protection(false).contains("inherits the folder's permissions"));
+/// assert!(!seed_file_protection(false).contains("owner-only"));
+/// ```
+#[must_use]
+pub fn seed_file_protection(unix: bool) -> &'static str {
+    if unix {
+        "0600, owner-only"
+    } else {
+        "inherits the folder's permissions; restrict access to it yourself"
+    }
+}
+
 /// Whether `error` is `open` refusing a symbolic link under `O_NOFOLLOW`.
 #[cfg(unix)]
 fn opened_symlink(error: &std::io::Error) -> bool {
@@ -251,7 +277,8 @@ pub fn run_key(command: &KeyCommand, out: &mut dyn Write) -> Result<(), String> 
             writeln!(out, "public_key_hex: {}", to_hex(&public)).map_err(io)?;
             writeln!(
                 out,
-                "private key saved to {target} (owner-only; keep it secret, never paste it into a chat or give it to an AI agent)"
+                "private key saved to {target} ({}; keep it secret, never paste it into a chat or give it to an AI agent)",
+                seed_file_protection(cfg!(unix))
             )
             .map_err(io)
         }
