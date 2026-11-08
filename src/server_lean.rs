@@ -287,21 +287,28 @@ fn round_score(x: f64) -> Value {
 
 /// Whether a provenance object is the plain public, unsigned case.
 fn provenance_is_plain(p: &Map<String, Value>) -> bool {
-    p.get("segment").and_then(Value::as_str).unwrap_or("public") == "public"
-        && p.get("signature")
-            .and_then(Value::as_str)
-            .unwrap_or("unsigned")
-            == "unsigned"
+    // Fail closed: only exactly `segment: "public"` and `signature: "unsigned"`
+    // (both present, both strings) with no verifier is plain. A missing,
+    // non-string or unexpected value is not, so it is rendered, not assumed.
+    p.get("segment").and_then(Value::as_str) == Some("public")
+        && p.get("signature").and_then(Value::as_str) == Some("unsigned")
         && p.get("verified_agent").is_none_or(Value::is_null)
         && p.get("signature_version").is_none_or(Value::is_null)
 }
 
-/// The provenance fields that differ from the plain case.
+/// The provenance fields that differ from the plain case, as they are. A
+/// `segment` or `signature` that is missing is reported as `unknown: true`.
 fn lean_provenance(p: &Map<String, Value>) -> Map<String, Value> {
     let mut out = Map::new();
     for (key, plain) in [("segment", "public"), ("signature", "unsigned")] {
-        if let Some(v) = p.get(key).filter(|v| v.as_str() != Some(plain)) {
-            out.insert(key.to_owned(), v.clone());
+        match p.get(key) {
+            Some(v) if v.as_str() == Some(plain) => {}
+            Some(v) => {
+                out.insert(key.to_owned(), v.clone());
+            }
+            None => {
+                out.insert("unknown".to_owned(), Value::Bool(true));
+            }
         }
     }
     for key in ["signature_version", "verified_agent"] {
@@ -463,6 +470,33 @@ mod tests {
             lean,
             json!({"content": "x", "id": "a", "index": 3, "timestamp": "2026-11-08T00:46:34.624687Z"})
         );
+    }
+
+    /// A malformed provenance object is never plain: a missing, non-string or
+    /// unexpected `segment`/`signature` is rendered (or flagged unknown).
+    #[test]
+    fn test_malformed_provenance_is_not_plain() {
+        let lean =
+            |p: Value| lean_thought(json!({"content": "x", "provenance": p}))["provenance"].clone();
+        assert_eq!(lean(json!({})), json!({"unknown": true}));
+        assert_eq!(lean(json!({"segment": "public"})), json!({"unknown": true}));
+        assert_eq!(
+            lean(json!({"segment": "public", "signature": 7})),
+            json!({"signature": 7})
+        );
+        assert_eq!(
+            lean(json!({"segment": "weird", "signature": "unsigned"})),
+            json!({"segment": "weird"})
+        );
+        assert_eq!(
+            lean(json!({"segment": null, "signature": "unsigned"})),
+            json!({"segment": null})
+        );
+        // Exactly the plain case still disappears.
+        let plain = lean_thought(
+            json!({"content": "x", "provenance": {"segment": "public", "signature": "unsigned"}}),
+        );
+        assert!(plain.get("provenance").is_none());
     }
 
     /// A private, signed or verified provenance keeps only what differs, and a
