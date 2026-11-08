@@ -26,6 +26,10 @@ Commands:
              the file's path are printed.
   show       Print the public key of a key file.
 
+To create a key AND register its public key for an agent in one step, use
+'mentisdb agent key generate <agent> --key-id ID --chain KEY' (same file, same
+protection; operator only). 'agent key add' registers a key made here.
+
 Options:
   --out <file>   Where to save the private seed (refuses to overwrite).
   --force        Overwrite an existing --out file. The file is made 0600 before
@@ -170,6 +174,39 @@ fn write_seed(path: &str, seed: &[u8; 32], force: bool) -> Result<(), String> {
     writeln!(file, "{}", to_hex(seed)).map_err(|e| format!("cannot write '{path}': {e}"))
 }
 
+/// Save a freshly generated `seed` owner-only and return the path it went to.
+///
+/// With `out` the file is exactly that path; without it the file is
+/// `<key dir>/<first 16 hex characters of the public key>.key` and the
+/// directory is created owner-only. An existing file is refused unless `force`.
+/// Shared by `mentisdb key generate` and `mentisdb agent key generate`, so both
+/// write the same format with the same permissions.
+///
+/// # Errors
+///
+/// A message when the directory or file cannot be created, or the file exists
+/// and `force` is not set. The seed is never part of the message.
+pub(crate) fn save_new_seed(
+    out: Option<&str>,
+    force: bool,
+    seed: &[u8; 32],
+    public: &[u8; 32],
+) -> Result<String, String> {
+    let target = match out {
+        Some(path) => path.to_string(),
+        None => {
+            let dir = default_key_dir()?;
+            crate::private_fs::create_dir_all(&dir)
+                .map_err(|e| format!("cannot create '{}': {e}", dir.display()))?;
+            dir.join(format!("{}.key", &to_hex(public)[..16]))
+                .to_string_lossy()
+                .into_owned()
+        }
+    };
+    write_seed(&target, seed, force)?;
+    Ok(target)
+}
+
 /// Execute a `key` command, printing to `out`.
 ///
 /// # Errors
@@ -184,18 +221,7 @@ pub fn run_key(command: &KeyCommand, out: &mut dyn Write) -> Result<(), String> 
             let public = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
             // The seed is never printed: stdout lands in terminal scrollback,
             // logs and the context of any agent that ran this command.
-            let target = match path {
-                Some(path) => path.clone(),
-                None => {
-                    let dir = default_key_dir()?;
-                    crate::private_fs::create_dir_all(&dir)
-                        .map_err(|e| format!("cannot create '{}': {e}", dir.display()))?;
-                    dir.join(format!("{}.key", &to_hex(&public)[..16]))
-                        .to_string_lossy()
-                        .into_owned()
-                }
-            };
-            write_seed(&target, &seed, *force)?;
+            let target = save_new_seed(path.as_deref(), *force, &seed, &public)?;
             writeln!(out, "public_key_hex: {}", to_hex(&public)).map_err(io)?;
             writeln!(
                 out,

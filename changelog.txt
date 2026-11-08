@@ -62,6 +62,16 @@ UNRELEASED
     windows: 30 contested decisions paged by 5 returned 60 hits, 44 distinct. Emitted
     totals are now non-increasing in page order. Chains without lineage or contests are
     unaffected.
+  - feat(cli): `mentisdb agent key generate <agent> --key-id ID --chain KEY [--out FILE]
+    [--force]` creates an Ed25519 key pair, saves the private seed to an owner-only (0600)
+    file and registers the public key, in one operator command (PIN or `--offline`, same
+    flags and catalog as `agent key add`). The private key is never printed, logged or
+    sent; the order is generate, refuse a taken key id, write the file (refusing to
+    overwrite without `--force`), register, print. A wrong PIN, an unreachable daemon or a
+    taken key id is found before anything is written; a registration that fails after
+    the file was written keeps the file and prints the `agent key add ... --public-key-hex`
+    command that registers it later. `--json` carries the public key, key id, agent, chain
+    and file path, never the seed. `key generate` and `agent key add` point at it.
   - feat(mcp): lean output for agents. The streamable-HTTP MCP surface (JSON-RPC
     `tools/call`) returns minified JSON text and no second `structuredContent` copy
     (the MCP library pretty-printed the object and repeated it); `POST /tools/execute`

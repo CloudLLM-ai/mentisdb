@@ -481,7 +481,7 @@ dashboard action to its command.
 | `webhook` | `list`, `register`, `delete` |
 | `vectors` | `enable`, `disable`, `sync`, `rebuild` |
 | `daemon` | `health`, `version`, `flush`, `restart`, `settings list`, `settings set` |
-| local | `setup`, `wizard`, `add`, `backup`, `restore`, `bearertoken`, `cert`, `key generate\|show` |
+| local | `setup`, `wizard`, `add`, `backup`, `restore`, `bearertoken`, `cert`, `key generate\|show` (plus operator `agent key generate`) |
 
 ```bash
 mentisdb chain bootstrap "Project Atlas memory" --chain atlas
@@ -1717,13 +1717,27 @@ unauthorized reader sees only the public segments, on every read surface
 ```bash
 # operator (dashboard PIN, or --offline on the host that holds the data directory)
 mentisdb chain access set private --chain vault --pin 123456
-mentisdb agent key add builder --key-id builder-1 --public-key-hex <64 hex> --chain vault --pin 123456
+mentisdb agent key generate builder --key-id builder-1 --chain vault --pin 123456   # makes the pair, registers the public key
+# (or register a key made elsewhere:)
+# mentisdb agent key add builder --key-id builder-1 --public-key-hex <64 hex> --chain vault --pin 123456
 mentisdb chain access allow builder builder-1 <64 hex> --chain vault --pin 123456
 
 # an authorized client signs every request locally; the key never leaves it
 mentisdb search "launch plan" --chain vault --read-key-file builder.key --read-agent builder --read-key-id builder-1
 MENTISDB_READ_KEY_FILE=builder.key MENTISDB_READ_AGENT_ID=builder MENTISDB_READ_KEY_ID=builder-1 mentisdb --mode stdio
 ```
+
+`agent key generate` creates the Ed25519 pair on the machine you run it on,
+saves the private seed (64 hex characters) to an owner-only file (`--out FILE`,
+else `$MENTISDB_KEY_DIR/<public key prefix>.key`, default `~/.mentisdb/keys`;
+`--force` to overwrite), and registers only the public key. The private key is
+never printed, logged or sent, and that file is its only copy: MentisDB cannot
+recover it, so back it up, and never paste it into a chat or give it to an AI
+agent. If the registration fails after the file was written the file is kept and
+the error prints the `agent key add ... --public-key-hex` command that registers
+it later. The dashboard offers the same on the agent page ("Generate key pair"),
+generated in the browser with WebCrypto, so the private key never reaches the
+server. Use the file with `--private-key-file` / `--read-key-file`.
 
 Only the operator can add or remove keys; REST and MCP cannot. Every
 returned thought carries a `provenance` object (segment, signature, verified
@@ -2297,7 +2311,9 @@ Agents without registered public keys may upload without signatures.
 
 Upload flow for signing agents:
 
-1. Ask the operator to register your public key:
+1. Ask the operator to register your public key (the operator can make the pair
+   with `mentisdb agent key generate AGENT --key-id KEY_ID --chain CHAIN` and hand
+   you only the key file, over a channel you trust):
    ```bash
    mentisdb agent key add AGENT --key-id KEY_ID --public-key-hex <64 hex> --chain CHAIN --pin <dashboard pin>
    ```

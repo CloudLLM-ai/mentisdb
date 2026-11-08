@@ -81,6 +81,7 @@ fn cmd(
         render: Render::Json,
         sign: None,
         fail_on_invalid: false,
+        generates_key: false,
     }
 }
 
@@ -171,6 +172,11 @@ impl Command {
 
     fn failing_on_invalid(mut self) -> Self {
         self.fail_on_invalid = true;
+        self
+    }
+
+    fn generating_key(mut self) -> Self {
+        self.generates_key = true;
         self
     }
 
@@ -1312,7 +1318,7 @@ fn agent_commands() -> Vec<Command> {
         operator_command(
             &["agent", "key", "add"],
             "Register a public key for an agent",
-            "Operator only. Registers an Ed25519 public key the agent can sign thoughts with (and, on a private chain once allowed, read with). The operator vouches for the key, so no proof of possession is needed; print the public key from a key file with 'mentisdb key show'. Use 'chain access allow' to let it into a private chain. Needs the dashboard PIN, or --offline.",
+            "Operator only. Registers an Ed25519 public key the agent can sign thoughts with (and, on a private chain once allowed, read with). The operator vouches for the key, so no proof of possession is needed; print the public key from a key file with 'mentisdb key show', or let 'mentisdb agent key generate' create the pair and register it in one step. Use 'chain access allow' to let it into a private chain. Needs the dashboard PIN, or --offline.",
             "register_key",
             vec![
                 agent_id(),
@@ -1321,6 +1327,21 @@ fn agent_commands() -> Vec<Command> {
             ],
         )
         .example("mentisdb agent key add builder --key-id builder-202610 --public-key-hex 9f86d081... --chain project --pin 123456"),
+        operator_command(
+            &["agent", "key", "generate"],
+            "Create a key pair and register its public key",
+            "Operator only. Creates a fresh Ed25519 key pair on this machine, saves the private seed to a file with owner-only permissions (0600), then registers the public key for the agent, so the whole setup is one command. The private key is NEVER printed, logged or sent: the file is the only copy, MentisDB keeps just the public key and cannot recover it. Back the file up now, and never paste it into a chat or hand it to an AI agent. Without --out the file is $MENTISDB_KEY_DIR/<public key prefix>.key (default ~/.mentisdb/keys). A wrong PIN, an unreachable daemon or a key id the agent already has is found before anything is written. The file is written before the registration and kept if the registration then fails; the error names the file and the 'agent key add' command that registers it later. Use --private-key-file with this file to sign thoughts or prove read access, and 'chain access allow' to let the key into a private chain. Needs the dashboard PIN, or --offline.",
+            "register_key",
+            vec![
+                agent_id(),
+                Flag::opt("key-id", "key_id", Kind::Text, "KEY_ID", "Identifier for the new key.").req(),
+                Flag::opt("out", "out", Kind::Text, "FILE", "Where to save the private seed (refuses to overwrite).").local(),
+                Flag::opt("force", "force", Kind::Switch, "", "Overwrite an existing --out file (made 0600 first).").local(),
+            ],
+        )
+        .generating_key()
+        .example("mentisdb agent key generate builder --key-id builder-202610 --chain project --pin 123456")
+        .example("mentisdb agent key generate builder --key-id builder-202610 --chain project --out ~/.mentisdb/builder.key --offline"),
         operator_command(
             &["agent", "key", "revoke"],
             "Revoke an agent's key",
