@@ -16,7 +16,14 @@
   per-peer and pool byte budgets brake a many-connection flood. Add a per-peer connection (or
   in-flight request) cap.
 
-## Shipped (0.8.2 -> 0.12.0.57)
+## Shipped (0.8.2 -> 0.12.1.58)
+
+### 0.12.1.58 - Lean search for agents, superseded memories no longer starve results
+- **Superseded versions no longer starve live results** — `query_ranked` ranked a fixed `2 * limit` window that included superseded thoughts, so one decision rewritten 30 times made a `limit = 5` search return 1 hit; now only live memories compete, superseded matches nominate their live successor, and the walk stops at `limit` distinct live memories (acd3a1f). Same walk for context-bundle seeds and duplicate-collapse refill.
+- **Lean MCP output** — streamable-HTTP MCP (and stdio, which proxies to it) returns minified JSON with no `structuredContent` copy; ranked, federated and lexical search and context bundles compact by default (`compact: false` opts out, non-boolean refused with `-32602`); defaults elided with one `default_provenance` per response, provenance fails closed (`{"unknown": true}`), `chain_key` elided only for the searched chain, `successor_kind` kept, full-precision timestamps; `mentisdb_standing_context` sends `prompt` once (`include_entries: true` for `entries`). REST and the CLI unchanged; REST lexical search now honours `compact`. Builds on compact search (PR #25, Austin Faulkner-Pearce).
+- **`token_diet` example** — 3,500-thought chain, 10 hits: ranked 23,657 -> 5,948 chars, lexical 18,743 -> 6,341, federated 23,511 -> 6,025, context bundles 9,993 -> 3,562, standing context 36,191 -> 13,050.
+- **Paging fixes** — REST pages tile the ranking around contested thoughts (scores non-increasing in page order, df61e58); cross-chain redirection no longer shrinks a REST page (fetch doubles up to `max(16 * (offset + limit), 4096)` per chain, c775ae8).
+- **Bounded collapse refill** — incremental walk, lazy partial sort, memoized lineage lookups, window capped at `max(16 * limit, 4096)`: 7.8 -> 1.2 ms at 20k, 32.5 -> 3.5 ms at 100k (067452f, f25b66c).
 
 ### 0.12.0.57 - One copy of every vector, derived-state backlog, large signed requests
 - **One copy of every vector** — sidecar, exact index, HNSW graph and implicit-edge scanner share one flat, 64-byte-aligned store (84313b5, e7a1c46); heap growth over the append phase 46.4 -> 11.9 MiB at 20k and 239.2 -> 56.3 MiB at 100k (scanner copy, 5b6ccc7), live heap at 100k x 384 475.2 -> 332.4 MiB (exact-index copy). BREAKING (library): `VectorSidecarEntry::vector` is a `VectorRow`, `VectorSidecar` needs `VectorSidecar::build`; files, digests and HNSW graphs byte-identical.
@@ -286,14 +293,19 @@ The next phase closes the remaining competitive gaps and ships what enterprise u
 
 **Go/No-Go Gate for Track B**: Library reaches ≥85% LoCoMo R@10, 3+ design partners committed, cookbook published, crates.io downloads >1k/mo.
 
-### Carried over from 0.11.0.56 (still open after 0.12.0.57)
+### Carried over from 0.11.0.56 (still open after 0.12.1.58)
 - **Faster open of governed chains** — persist the verified prefix so open-time verification is not O(n)
 - **Checkpoint re-issue** after a hash-changing migration (today the signed checkpoint is dropped)
 - **Thought schema 5** — hash `entity_type` and `source_episode` (schema 4 is a taken historical alias)
 - **General request rate limiting** (only the dashboard PIN is rate limited)
 - **Migration fixtures from real old releases**
-- **Compact context bundles** (bundles accept `compact` and ignore it)
+- **Compact context bundles over REST** (MCP returns lean bundles since 0.12.1.58; REST accepts `compact` and ignores it)
 - **Remove `llm_rerank` and `ppr`** at a breaking release (0.12.0 kept them)
+
+### Opened by 0.12.1.58
+- **Deep pages come back short** — the collapse refill window (`max(16 * limit, 4096)`) and the cross-chain fetch (`max(16 * (offset + limit), 4096)` per chain) are capped
+- **`MentisDb::query_federated`** (library) still cuts each chain at its query's `limit` before redirection and de-duplication
+- **onnxruntime segfault at exit** in the vector sidecar's rebuild thread, seen in tests
 
 ### Developer Experience
 - **Browser extension** — read/write memories from any webpage
