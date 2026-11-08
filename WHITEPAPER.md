@@ -1,8 +1,8 @@
 # MentisDB: Durable, Verifiable Memory for Software Agents
 
 **Author:** Angel Leon
-**Version:** 0.11.0.56
-**Date:** 2026-11-02
+**Version:** 0.12.1.58
+**Date:** 2026-11-07
 
 ---
 
@@ -281,6 +281,18 @@ derived from the stored chain at open time, so existing chains benefit without m
 Lineage follows cross-chain relations too, so a thought on a branch that supersedes one
 on its parent redirects results in branch and federated search, subject to the reader's
 audience. Context bundles redirect superseded seeds the same way.
+
+Redirection decides how a page is filled. Only live memories compete for it: every match
+is scored once, the ranking is walked from the top, a superseded match nominates its live
+successor, and the walk stops when the page holds `limit` distinct live memories. `total`
+counts live matches. (Before 0.12.1.58 a fixed window of `2 * limit` thoughts was ranked
+and collapsed afterwards, so one decision rewritten 30 times could leave a five-hit page
+with one hit.) A stand-in can outscore the hit before it, so emitted scores are clamped to
+be non-increasing in page order, which keeps offset paging from repeating or skipping
+hits. When redirection to another chain or duplicate ids shrink a page, the per-chain
+fetch doubles up to `max(16 * (offset + limit), 4096)`. `successor_of` lists the older
+versions that matched and were met before the page filled, so it is a lower bound on the
+lineage, not all of it.
 `with_resolve_successors(false)` on a library query restores plain hiding.
 
 A query with `as_of = T` sees the chain as it was at time `T`. It considers only thoughts
@@ -731,7 +743,7 @@ Two read paths exist. *Filter search* (`query`) returns thoughts that match inde
 fields and a case-insensitive substring, in append order. *Ranked search*
 (`query_ranked`) scores candidates with several signals and returns them best first.
 Agents use ranked search almost always. This section describes ranked search with its
-defaults as of 0.11.0.56.
+defaults as of 0.12.1.58.
 
 ### 6.1 Candidates
 
@@ -929,6 +941,11 @@ higher-ranked hit is dropped from the page, and its id is listed on the survivor
 can be turned off with `MENTISDB_COLLAPSE_DUPLICATES=off` or per request. It costs about
 0.3 ms per query on a 5000-thought chain.
 
+When collapse leaves a page short, the walk of Section 3.6 resumes where it stopped and
+compares only the new hits with the survivors. The refill window is capped at
+`max(16 * limit, 4096)` ranked slots; with 20% identical matches the worst case measured
+3.5 ms at 100,000 thoughts.
+
 ### 6.10 Standing Context and Recent Context
 
 Memory has two halves. The episodic half is what happened, in order. The semantic half is
@@ -1021,6 +1038,17 @@ search across chains, branches and merges, agent registry reads and descriptions
 policy reads and signature verification, entity types, import and export, vectors,
 webhooks, migration status and the skill registry. Key and policy administration is not
 among them.
+
+MCP results are read by a language model, so they are shaped for its context window
+(`src/server_lean.rs`); REST and the CLI keep the full records. Results are minified JSON
+sent once, without a `structuredContent` copy. Ranked, federated and lexical search and
+context bundles return compact hits by default and leave out default values, stating once
+per response what a thought without `provenance` is (public and unsigned). Signatures,
+private segments, verified writers and version status are always kept, and
+`compact: false` returns the full record. Standing context sends its prompt once. On a
+generated 3,500-thought chain this cut a 10-hit ranked search from 23,657 to 5,948
+characters and standing context from 36,191 to 13,050
+(`cargo run --release --example token_diet`).
 
 **REST.** A versioned API under `/v1/` mirrors the tools with about fifty routes and can be
 embedded in another server with `rest_router`.
@@ -1294,6 +1322,9 @@ default backend at 50,000 vectors, where an exact scan grows linearly. With
   owns, and network filesystems may ignore the lock.
 - **No general rate limiting.** Only dashboard logins and invalid read proofs are rate
   limited. A client that can reach the API can issue expensive queries freely.
+- **Deep pages can come back short.** The duplicate-collapse refill and the cross-chain
+  fetch stop at capped windows (Section 3.6), so a page whose live matches rank deeper
+  returns fewer than `limit` hits.
 - **Benchmarks measure retrieval, not answers.** Recall at *k* says whether the evidence
   was retrieved, not whether the agent used it well.
 

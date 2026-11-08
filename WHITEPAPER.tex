@@ -123,7 +123,7 @@
 
 \title{\textbf{MentisDB}\\[0.3em]\large Durable, Verifiable Memory for Software Agents}
 \author{Angel Leon}
-\date{0.11.0.56 --- 2026-11-02}
+\date{0.12.1.58 --- 2026-11-07}
 
 \begin{document}
 \maketitle
@@ -555,6 +555,23 @@ Lineage follows cross-chain relations too, so a thought on a branch that
 supersedes one on its parent redirects results in branch and federated
 search, subject to the reader's audience. Context bundles redirect
 superseded seeds the same way.
+
+Redirection decides how a page is filled. Only live memories compete for
+it: every match is scored once, the ranking is walked from the top, a
+superseded match nominates its live successor, and the walk stops when
+the page holds \passthrough{\lstinline!limit!} distinct live memories.
+\passthrough{\lstinline!total!} counts live matches. (Before 0.12.1.58 a
+fixed window of \passthrough{\lstinline!2 * limit!} thoughts was ranked
+and collapsed afterwards, so one decision rewritten 30 times could leave
+a five-hit page with one hit.) A stand-in can outscore the hit before
+it, so emitted scores are clamped to be non-increasing in page order,
+which keeps offset paging from repeating or skipping hits. When
+redirection to another chain or duplicate ids shrink a page, the
+per-chain fetch doubles up to
+\passthrough{\lstinline!max(16 * (offset + limit), 4096)!}.
+\passthrough{\lstinline!successor\_of!} lists the older versions that
+matched and were met before the page filled, so it is a lower bound on
+the lineage, not all of it.
 \passthrough{\lstinline!with\_resolve\_successors(false)!} on a library
 query restores plain hiding.
 
@@ -1238,7 +1255,7 @@ fields and a case-insensitive substring, in append order. \emph{Ranked
 search} (\passthrough{\lstinline!query\_ranked!}) scores candidates with
 several signals and returns them best first. Agents use ranked search
 almost always. This section describes ranked search with its defaults as
-of 0.11.0.56.
+of 0.12.1.58.
 
 \subsubsection{6.1 Candidates}
 
@@ -1528,6 +1545,12 @@ the chain. Collapse is on by default and can be turned off with
 \passthrough{\lstinline!MENTISDB\_COLLAPSE\_DUPLICATES=off!} or per
 request. It costs about 0.3 ms per query on a 5000-thought chain.
 
+When collapse leaves a page short, the walk of Section 3.6 resumes where
+it stopped and compares only the new hits with the survivors. The refill
+window is capped at \passthrough{\lstinline!max(16 * limit, 4096)!}
+ranked slots; with 20\% identical matches the worst case measured 3.5 ms
+at 100,000 thoughts.
+
 \subsubsection{6.10 Standing Context and Recent Context}
 
 Memory has two halves. The episodic half is what happened, in order. The
@@ -1663,6 +1686,20 @@ registry reads and descriptions, access policy reads and signature
 verification, entity types, import and export, vectors, webhooks,
 migration status and the skill registry. Key and policy administration
 is not among them.
+
+MCP results are read by a language model, so they are shaped for its
+context window (\passthrough{\lstinline!src/server\_lean.rs!}); REST and
+the CLI keep the full records. Results are minified JSON sent once,
+without a \passthrough{\lstinline!structuredContent!} copy. Ranked,
+federated and lexical search and context bundles return compact hits by
+default and leave out default values, stating once per response what a
+thought without \passthrough{\lstinline!provenance!} is (public and
+unsigned). Signatures, private segments, verified writers and version
+status are always kept, and \passthrough{\lstinline!compact: false!}
+returns the full record. Standing context sends its prompt once. On a
+generated 3,500-thought chain this cut a 10-hit ranked search from
+23,657 to 5,948 characters and standing context from 36,191 to 13,050
+(\passthrough{\lstinline!cargo run --release --example token\_diet!}).
 
 \textbf{REST.} A versioned API under \passthrough{\lstinline!/v1/!}
 mirrors the tools with about fifty routes and can be embedded in another
@@ -2114,6 +2151,11 @@ append cost.
   \textbf{No general rate limiting.} Only dashboard logins and invalid
   read proofs are rate limited. A client that can reach the API can
   issue expensive queries freely.
+\item
+  \textbf{Deep pages can come back short.} The duplicate-collapse refill
+  and the cross-chain fetch stop at capped windows (Section 3.6), so a
+  page whose live matches rank deeper returns fewer than
+  \passthrough{\lstinline!limit!} hits.
 \item
   \textbf{Benchmarks measure retrieval, not answers.} Recall at \emph{k}
   says whether the evidence was retrieved, not whether the agent used it
