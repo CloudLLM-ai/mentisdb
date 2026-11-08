@@ -1,4 +1,12 @@
 UNRELEASED
+  - fix(security): a registered agent key could be replaced or revived through the proof-based
+    registration path (`add_agent_key`, used by the dashboard keys route and the library).
+    The proof shows possession of the new key only, yet an existing key id was overwritten
+    and a revoked one un-revoked, so a caller who could reach the route could rebind another
+    agent's key id to a key of their own. A key id is now never rebound, active or revoked,
+    as `agent key add` already behaved: registering a different key under an existing id
+    is refused, the same active key again is a no-op. Deployments that rely on key ids as
+    identities should check their registries for keys they did not register.
   - ci(coverage): every CI run now writes a coverage table (functions, branches, regions, lines,
     with covered/total counts, the 90% goal and the gate) into the job summary, from one run on
     a pinned nightly, and uploads the HTML report. `make coverage` runs the same thing locally.

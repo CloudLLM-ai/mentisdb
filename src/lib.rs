@@ -1629,14 +1629,10 @@ impl AgentRecord {
         self.aliases.push(alias.to_string());
     }
 
+    /// File `key` unless its id is already taken: an id is never rebound here,
+    /// so a caller that forgot to check cannot replace or revive a key.
     fn add_public_key(&mut self, key: AgentPublicKey) {
-        if let Some(existing) = self
-            .public_keys
-            .iter_mut()
-            .find(|existing| existing.key_id == key.key_id)
-        {
-            *existing = key;
-        } else {
+        if !self.public_keys.iter().any(|k| k.key_id == key.key_id) {
             self.public_keys.push(key);
         }
     }
@@ -8165,7 +8161,10 @@ impl MentisDb {
     ///
     /// An [`access::AccessError`] wrapped in `io::Error` for a malformed key, a
     /// stale or invalid proof; `NotFound`/`InvalidInput` for an unknown agent or
-    /// empty key id.
+    /// empty key id; `InvalidInput` when the key id is already filed for the agent
+    /// under another key, or was revoked (registering the same active key again is
+    /// a no-op). A key id is never rebound: the proof shows possession of the new
+    /// key only.
     ///
     /// # Examples
     ///
@@ -8188,7 +8187,14 @@ impl MentisDb {
     ///
     /// // Without the private key the registration is refused.
     /// let forged = KeyRegistrationProof { registered_at_unix_secs: now, signature: vec![0; 64] };
-    /// assert!(chain.add_agent_key("alice", "alice-2", PublicKeyAlgorithm::Ed25519, public, &forged).is_err());
+    /// assert!(chain.add_agent_key("alice", "alice-2", PublicKeyAlgorithm::Ed25519, public.clone(), &forged).is_err());
+    ///
+    /// // A key id is never rebound: another key, even with a valid proof of its own, is refused.
+    /// let other = SigningKey::from_bytes(&[6u8; 32]);
+    /// let other_public = other.verifying_key().to_bytes().to_vec();
+    /// let payload = key_registration_payload("doc", "alice", "alice-1", &other_public, now);
+    /// let proof = KeyRegistrationProof { registered_at_unix_secs: now, signature: other.sign(&payload).to_bytes().to_vec() };
+    /// assert!(chain.add_agent_key("alice", "alice-1", PublicKeyAlgorithm::Ed25519, other_public, &proof).is_err());
     /// # let _ = std::fs::remove_dir_all(&dir);
     /// ```
     pub fn add_agent_key(
@@ -8211,6 +8217,19 @@ impl MentisDb {
             .map_err(access::AccessError::into_io)?;
 
         let record = self.agent_record_mut(agent_id)?;
+        // A proof shows the registrant holds the NEW key; it says nothing about
+        // the key already filed under this id. An id is never rebound, active or
+        // revoked, or anyone could replace a victim's key (or revive a revoked
+        // one) with a key of their own.
+        if let Some(existing) = record.public_keys.iter().find(|k| k.key_id == key_id) {
+            if existing.public_key_bytes == public_key_bytes && existing.revoked_at.is_none() {
+                return Ok(record.clone());
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("key id '{key_id}' is already bound to another key or was revoked; use a new key id"),
+            ));
+        }
         record.add_public_key(AgentPublicKey {
             key_id,
             algorithm,
