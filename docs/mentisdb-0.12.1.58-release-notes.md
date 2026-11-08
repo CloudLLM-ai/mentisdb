@@ -1,6 +1,6 @@
 # MentisDB 0.12.1.58 (Lean search for agents, superseded memories no longer starve results)
 
-**Date:** November 7, 2026
+**Date:** November 8, 2026
 
 A focused follow-up to 0.12.0.57, prompted by a user whose chain has held more than 3,500
 thoughts since April. Their agent's searches were filling its context window. This release
@@ -76,7 +76,9 @@ matches lie deeper than that comes back short instead of reading the whole ranki
   to a replacement on another searched chain and removing duplicate ids. Thirty ancestor
   facts replaced by one branch thought left a page of one hit. The fetch now doubles until
   the page is full or the matches run out, up to `max(16 * (offset + limit), 4096)` per
-  chain.
+  chain. In federated search that bound holds per chain however many chains are searched
+  (f2133ba). When duplicates or redirects keep a page short, the widening re-scores at
+  most about nine times before it reaches the cap.
 
 ## Lean MCP output
 
@@ -103,7 +105,8 @@ are in the `mentisdb::server_lean` rustdoc.
   `"default_provenance": "public, unsigned: anyone could have written it"`. A private
   segment, a signature or a `verified_agent` is always listed, and a thought that arrives
   with no provenance at all is marked `{"unknown": true}` rather than passing for the
-  plain case.
+  plain case. Provenance is left out only when it is exactly public and unsigned; a
+  malformed or unexpected provenance object is shown as it is (e839f45).
 - **Lineage, shortened.** `successor_of` is the one older version the hit replaces, with a
   `superseded_versions` count, and the relation it names is not repeated. The kind of that
   relation is kept as `successor_kind` (`Corrects` or `Invalidates`; absent means
@@ -171,10 +174,17 @@ There is no data migration, and the library API only gained items.
 
 ## Benchmarks
 
+Full LoCoMo-10P and LongMemEval protocol runs on a fresh daemon and fresh chains, against
+the release candidate (5c48454) and again after the review fixes (8bedf9f). LoCoMo is
+unchanged. LongMemEval gains one question with default ranking (350/500) and two with
+reranking (353/500), consistent with superseded thoughts no longer pushing live answers
+out of the top five. On 8bedf9f every LongMemEval question retrieved the same thoughts in
+the same order as on 5c48454; later commits do not touch single-chain ranking.
+
 | Benchmark | Metric | 0.12.0.57 | 0.12.1.58 |
 |---|---|---|---|
-| LoCoMo-10P | default R@10 | 76.7 | TBD |
-| LoCoMo-10P | rerank R@10 | 76.9 | TBD |
-| LoCoMo-10P | default R@5 | 67.9 | TBD |
-| LongMemEval | default R@5 | 69.8 | TBD |
-| LongMemEval | rerank R@5 | 70.2 | TBD |
+| LoCoMo-10P | default R@10 | 76.7 | 76.7 |
+| LoCoMo-10P | rerank R@10 | 76.9 | 76.9 |
+| LoCoMo-10P | default R@5 | 67.9 | 67.9 |
+| LongMemEval | default R@5 | 69.8 | 70.0 |
+| LongMemEval | rerank R@5 | 70.2 | 70.6 |
