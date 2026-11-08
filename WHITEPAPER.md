@@ -233,7 +233,11 @@ revoked, and agents disabled, only by the operator (Section 4.3), never through 
 MCP. Through the library API a key also needs a proof of possession: a signature by that
 key over a payload with domain `mentisdb/key-registration/v1` that names the chain, agent,
 key id, key and a timestamp within ten minutes (`KeyRegistrationProof::verify` in
-`src/access.rs`). When the operator registers a key, the operator vouches for it instead.
+`src/access.rs`). When the operator registers a key, the operator vouches for it instead. MentisDB stores only public keys. The operator can create the pair with
+`mentisdb agent key generate`, which writes the private seed to an owner-only (`0600`) file
+on the operator's machine, or with the dashboard, which generates it in the browser and
+registers the public key with a proof of possession. Neither sends the private key to the
+daemon, and neither can recover it.
 
 The registry is a sidecar file, not part of the hash chain. Section 4.3 explains what that
 means for trust.

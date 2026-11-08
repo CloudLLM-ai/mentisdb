@@ -123,7 +123,7 @@
 
 \title{\textbf{MentisDB}\\[0.3em]\large Durable, Verifiable Memory for Software Agents}
 \author{Angel Leon}
-\date{0.12.1.58 --- 2026-11-07}
+\date{0.12.1.58 --- 2026-11-08}
 
 \begin{document}
 \maketitle
@@ -474,7 +474,13 @@ with domain \passthrough{\lstinline!mentisdb/key-registration/v1!} that
 names the chain, agent, key id, key and a timestamp within ten minutes
 (\passthrough{\lstinline!KeyRegistrationProof::verify!} in
 \passthrough{\lstinline!src/access.rs!}). When the operator registers a
-key, the operator vouches for it instead.
+key, the operator vouches for it instead. MentisDB stores only public
+keys. The operator can create the pair with
+\passthrough{\lstinline!mentisdb agent key generate!}, which writes the
+private seed to an owner-only (\passthrough{\lstinline!0600!}) file on
+the operator's machine, or with the dashboard, which generates it in the
+browser and registers the public key with a proof of possession. Neither
+sends the private key to the daemon, and neither can recover it.
 
 The registry is a sidecar file, not part of the hash chain. Section 4.3
 explains what that means for trust.
