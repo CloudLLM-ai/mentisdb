@@ -1,3 +1,13 @@
+UNRELEASED
+  - fix(search): superseded versions starved live results. `MentisDb::query_ranked`
+    (ranked, lexical and federated search, and the seeds of context bundles) ranked a
+    fixed window of `2 * limit` thoughts that included superseded ones, then collapsed
+    them into their live successor, so one decision rewritten 30 times filled the window
+    and a `limit = 5` search returned a single hit while `total` counted 21. Only live
+    memories now compete for the page: every match is scored once, superseded ones
+    nominate their live successor, and the walk stops when the page holds `limit`
+    distinct live memories. `total` still counts live matches. Near-duplicate
+    collapsing refills its page the same way instead of guessing a window.
 0.12.0.57 NOV/04/2026
   - feat(server): the minimum request-body rate is configurable.
     `MENTISDB_MIN_BODY_BYTES_PER_SEC` (default 65536; `0` switches the rule off;

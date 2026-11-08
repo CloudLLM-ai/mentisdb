@@ -4395,6 +4395,7 @@ impl<E: std::error::Error + 'static> std::error::Error for VectorSearchError<E> 
 /// and a reference). Heavy hit data (matched terms, match sources, graph
 /// paths) is materialized only for the candidates that survive top-k
 /// selection.
+#[derive(Clone, Copy)]
 struct ScoredCandidate<'a> {
     thought: &'a Thought,
     lexical: f32,
@@ -4408,6 +4409,41 @@ struct ScoredCandidate<'a> {
     session_cohesion: f32,
     rrf: f32,
     total: f32,
+}
+
+/// Output of the score-only phase of ranked search (see
+/// [`MentisDb::score_pass`]): every matching candidate's score plus the lexical
+/// and graph state needed to materialize a hit later.
+struct ScoredPass<'a> {
+    /// Retrieval backend that produced the scores.
+    backend: RankedSearchBackend,
+    /// Number of scored candidates, before any page selection.
+    total_candidates: usize,
+    /// How many of `scored` are superseded, corrected or invalidated; only
+    /// computed when the caller asked for it (otherwise `0`).
+    invalidated: usize,
+    /// One record per matching thought, in no particular order until the
+    /// caller sorts it with [`compare_scored_candidates`].
+    scored: Vec<ScoredCandidate<'a>>,
+    /// Lexical scan the scores came from, for matched-term reporting.
+    lexical_scan: Option<crate::search::lexical::LexicalScan>,
+    /// Graph-expansion hits keyed by thought position.
+    graph_scores: HashMap<usize, RankedGraphHit>,
+}
+
+impl<'a> ScoredPass<'a> {
+    /// Build the full hit for one scored candidate.
+    fn materialize(&self, db: &MentisDb, candidate: ScoredCandidate<'a>) -> RankedSearchHit<'a> {
+        db.materialize_ranked_hit(candidate, self.lexical_scan.as_ref(), &self.graph_scores)
+    }
+
+    /// Build hits for every remaining candidate, in their current order.
+    fn materialize_all(&self, db: &MentisDb) -> Vec<RankedSearchHit<'a>> {
+        self.scored
+            .iter()
+            .map(|candidate| self.materialize(db, *candidate))
+            .collect()
+    }
 }
 
 /// Total order over scored candidates: best first.
@@ -9812,6 +9848,44 @@ impl MentisDb {
         request: &RankedSearchQuery,
         count_invalidated: bool,
     ) -> (RankedSearchResult<'_>, usize) {
+        let mut pass = self.score_pass(request, count_invalidated);
+        let limit = request.limit;
+        if limit == 0 {
+            pass.scored.clear();
+        } else if pass.scored.len() > limit {
+            pass.scored
+                .select_nth_unstable_by(limit - 1, compare_scored_candidates);
+            pass.scored.truncate(limit);
+        }
+        pass.scored.sort_by(compare_scored_candidates);
+        let invalidated = pass.invalidated;
+        let total_candidates = pass.total_candidates;
+        let backend = pass.backend;
+        let hits = pass.materialize_all(self);
+        (
+            RankedSearchResult {
+                backend,
+                total_candidates,
+                hits,
+            },
+            invalidated,
+        )
+    }
+
+    /// Phase 1 of ranked search: score every candidate that matches `request`
+    /// and return the unsorted scores together with what phase 2 needs to
+    /// build hit objects.
+    ///
+    /// This is the only `O(matches)` step. Callers choose how to select a page
+    /// from the result: [`Self::rank_raw`] keeps the best `limit`, and the
+    /// lineage-aware page selection in [`MentisDb::query_ranked`] walks the
+    /// ranking in order until it holds `limit` distinct live memories, so the
+    /// page size never has to be guessed up front.
+    pub(crate) fn score_pass(
+        &self,
+        request: &RankedSearchQuery,
+        count_invalidated: bool,
+    ) -> ScoredPass<'_> {
         let candidates = self.retrieval_candidates(
             &request.filter,
             request.as_of,
@@ -9926,31 +10000,14 @@ impl MentisDb {
         } else {
             0
         };
-        let limit = request.limit;
-        if limit == 0 {
-            scored.clear();
-        } else if scored.len() > limit {
-            scored.select_nth_unstable_by(limit - 1, compare_scored_candidates);
-            scored.truncate(limit);
-        }
-        scored.sort_by(compare_scored_candidates);
-
-        // Phase 2: materialize hit objects for the returned head only.
-        let hits = scored
-            .into_iter()
-            .map(|candidate| {
-                self.materialize_ranked_hit(candidate, lexical_scan.as_ref(), &graph_scores)
-            })
-            .collect();
-
-        (
-            RankedSearchResult {
-                backend,
-                total_candidates,
-                hits,
-            },
+        ScoredPass {
+            backend,
+            total_candidates,
             invalidated,
-        )
+            scored,
+            lexical_scan,
+            graph_scores,
+        }
     }
 
     /// Query the chain and return grouped context bundles anchored on lexical seeds.
@@ -12862,17 +12919,27 @@ impl MentisDb {
         lexical_scan
             .top_scores(limit.max(1))
             .into_iter()
-            .filter_map(|(position, score)| {
-                self.thoughts
-                    .get(position)
-                    .map(crate::search::ThoughtLocator::local)
-                    .map(|locator| {
-                        let hit = self.lexical_index.hit_from_scan(lexical_scan, position);
-                        crate::search::ContextBundleSeed::new(locator, score)
-                            .with_matched_terms(hit.matched_terms)
-                    })
-            })
+            .filter_map(|(position, score)| self.bundle_seed_at(lexical_scan, position, score))
             .collect()
+    }
+
+    /// The bundle seed for the thought at `position`, carrying its lexical
+    /// `score` and matched terms. `None` when `position` is not a thought.
+    pub(crate) fn bundle_seed_at(
+        &self,
+        lexical_scan: &crate::search::lexical::LexicalScan,
+        position: usize,
+        score: f32,
+    ) -> Option<crate::search::ContextBundleSeed> {
+        let thought = self.thoughts.get(position)?;
+        let hit = self.lexical_index.hit_from_scan(lexical_scan, position);
+        Some(
+            crate::search::ContextBundleSeed::new(
+                crate::search::ThoughtLocator::local(thought),
+                score,
+            )
+            .with_matched_terms(hit.matched_terms),
+        )
     }
 
     fn expand_ranked_candidates(

@@ -110,8 +110,9 @@
 use crate::audience::Audience;
 use crate::provenance::ProvenanceTrust;
 use crate::{
-    is_invalidating_relation_kind, MentisDb, RankedSearchHit, RankedSearchQuery,
-    RankedSearchResult, Thought, ThoughtRelationKind, ThoughtType,
+    compare_scored_candidates, is_invalidating_relation_kind, MentisDb, RankedSearchHit,
+    RankedSearchQuery, RankedSearchResult, ScoredCandidate, ScoredPass, Thought,
+    ThoughtRelationKind, ThoughtType,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -795,10 +796,46 @@ impl MentisDb {
     /// would have ranked is replaced by its live successor and a contested
     /// thought is preceded by the thought contesting it. Every returned hit
     /// carries a [`VersionInfo`].
+    ///
+    /// # How the page is filled
+    ///
+    /// Only **live memories** compete for the page. Every matching thought is
+    /// scored once (including superseded ones, so a successor whose wording
+    /// does not match the query can still be nominated), the scores are put in
+    /// rank order, and the page is built by walking that order:
+    ///
+    /// * a live thought takes a slot of its own (preceded by the live thought
+    ///   contesting it, if any);
+    /// * a superseded thought does **not** take a slot; it *nominates* its live
+    ///   successor, which takes the slot at the superseded thought's rank (or
+    ///   the one it already holds) and records the nominator in
+    ///   [`VersionInfo::successor_of`].
+    ///
+    /// The walk stops as soon as the page holds `limit` distinct live
+    /// memories, so a page holds `limit` hits whenever that many live memories
+    /// match, however many superseded versions of one fact outrank the rest.
+    /// (An earlier design ranked a fixed `2 * limit` window including
+    /// superseded versions and collapsed it afterwards: thirty rewrites of one
+    /// decision consumed the whole window and every other match vanished.)
+    /// `successor_of` lists the superseded versions met before the page filled,
+    /// so a lineage whose old versions rank below the cut reports fewer ids.
+    ///
+    /// Near-duplicate collapsing ([`RankedSearchQuery::collapse_duplicates`])
+    /// removes hits from a page after it is built. When it leaves fewer than
+    /// `limit` hits and ranked matches remain, the walk resumes with a doubled
+    /// target over the **same** scores (nothing is re-scored), so the number of
+    /// extra passes is at most `log2` of the match count.
+    ///
+    /// Cost: one scoring pass over the matches (as for any ranked search), one
+    /// sort of the scores, and lineage lookups for the thoughts the walk
+    /// visits, each bounded by [`MAX_LINEAGE_DEPTH`].
+    ///
+    /// `total_candidates` counts the **live** matches: the superseded ones that
+    /// the walk consults are not counted.
     pub fn query_ranked(&self, request: &RankedSearchQuery) -> RankedSearchResult<'_> {
         let explicit = request.include_invalidated || request.filter.include_invalidated;
         // A chain with no supersession or contest edge has nothing to redirect,
-        // so skip the wider ranking pass entirely.
+        // so skip the lineage walk entirely.
         let has_lineage =
             !self.invalidated_thought_ids().is_empty() || !self.lineage.by_target.is_empty();
         let redirect = request.resolve_successors && !explicit && request.limit > 0 && has_lineage;
@@ -818,34 +855,141 @@ impl MentisDb {
         }
         let mut wide = request.clone();
         if redirect {
+            // Superseded thoughts are scored too so they can nominate their
+            // successors; they are not matches of the query the caller asked.
             wide.include_invalidated = true;
             wide.filter.include_invalidated = true;
         }
-        // Redirecting and collapsing both remove or replace hits, so rank a
-        // wider page and trim it back to the caller's limit afterwards.
-        // Caller-supplied: saturate so `limit = usize::MAX` cannot overflow.
-        wide.limit = request
-            .limit
-            .saturating_mul(2)
-            .max(request.limit.saturating_add(8));
-        let (mut result, superseded) = self.rank_raw(&wide, redirect);
-        // The wide pass ranked superseded thoughts so their successors can take
-        // their place; they are not matches of the query the caller asked.
-        result.total_candidates = result.total_candidates.saturating_sub(superseded);
-        let raw = std::mem::take(&mut result.hits);
-        let mut hits = if redirect {
-            self.redirect_hits(raw, request)
-        } else {
-            let mut raw = raw;
-            self.annotate_hits(&mut raw, request.as_of, request.filter.audience);
-            raw
+        let mut pass = self.score_pass(&wide, redirect);
+        let total_candidates = pass.total_candidates.saturating_sub(pass.invalidated);
+        pass.scored.sort_unstable_by(compare_scored_candidates);
+        // Without collapsing the first target is exact. With it, start wider
+        // since collapsed hits free slots: caller-supplied, so saturate.
+        let mut target = match collapse {
+            Some(_) => request
+                .limit
+                .saturating_mul(2)
+                .max(request.limit.saturating_add(8)),
+            None => request.limit,
         };
-        if let Some(threshold) = collapse {
-            hits = collapse_duplicate_hits(hits, threshold);
+        let hits = loop {
+            let (mut hits, exhausted) = self.fill_page(&pass, request, redirect, target);
+            if let Some(threshold) = collapse {
+                hits = collapse_duplicate_hits(hits, threshold);
+            }
+            if hits.len() >= request.limit || exhausted {
+                hits.truncate(request.limit);
+                break hits;
+            }
+            target = target.saturating_mul(2);
+        };
+        RankedSearchResult {
+            backend: pass.backend,
+            total_candidates,
+            hits,
         }
-        hits.truncate(request.limit);
-        result.hits = hits;
-        result
+    }
+
+    /// Walk the ranked scores in `pass` and build a page of up to `target`
+    /// distinct live memories (see [`MentisDb::query_ranked`]). Returns the
+    /// hits and whether the walk reached the end of the ranking, i.e. a larger
+    /// `target` cannot produce more.
+    ///
+    /// With `redirect` off every scored thought is its own slot (the caller
+    /// only wants duplicate collapsing). Only slots that make the page are
+    /// materialized, so the cost of the matched terms and graph paths is
+    /// bounded by the page, not by the number of matches.
+    fn fill_page<'a>(
+        &'a self,
+        pass: &ScoredPass<'a>,
+        request: &RankedSearchQuery,
+        redirect: bool,
+        target: usize,
+    ) -> (Vec<RankedSearchHit<'a>>, bool) {
+        let as_of = request.as_of;
+        let audience = request.filter.audience;
+        let by_id: HashMap<Uuid, usize> = if redirect {
+            pass.scored
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (c.thought.id, i))
+                .collect()
+        } else {
+            HashMap::new()
+        };
+        // Sized from the scores we actually have, never from the
+        // caller-supplied limit, which may be `usize::MAX`.
+        let mut out: Vec<RankedSearchHit<'a>> =
+            Vec::with_capacity(target.min(pass.scored.len()).saturating_add(1));
+        let mut placed: HashMap<Uuid, usize> = HashMap::new();
+        let place = |out: &mut Vec<RankedSearchHit<'a>>,
+                     placed: &mut HashMap<Uuid, usize>,
+                     template: &ScoredCandidate<'a>,
+                     thought: &'a Thought,
+                     stands_in_for: Uuid,
+                     bump: f32| {
+            if let Some(&slot) = placed.get(&thought.id) {
+                let ids = &mut out[slot].version.successor_of;
+                if !ids.contains(&stands_in_for) {
+                    ids.push(stands_in_for);
+                }
+                return;
+            }
+            // The successor's own ranking, when it matched; otherwise the
+            // stand-in's, so matched terms and sub-scores stay meaningful.
+            let own = by_id.get(&thought.id).map(|&i| pass.scored[i]);
+            let mut hit = pass.materialize(self, own.unwrap_or(*template));
+            hit.thought = thought;
+            // Inherit the stand-in's score so later score-based re-sorting
+            // (cross-chain merges, REST paging) keeps the successor on top.
+            hit.score.total = hit.score.total.max(template.total + bump);
+            hit.version.successor_of = vec![stands_in_for];
+            placed.insert(thought.id, out.len());
+            out.push(hit);
+        };
+
+        let mut exhausted = true;
+        for candidate in &pass.scored {
+            let id = candidate.thought.id;
+            if placed.contains_key(&id) {
+                continue;
+            }
+            if out.len() >= target {
+                exhausted = false;
+                break;
+            }
+            if !redirect {
+                placed.insert(id, out.len());
+                out.push(pass.materialize(self, *candidate));
+                continue;
+            }
+            if self.invalidated_at(id, as_of, audience) {
+                if let Some(succ) = self
+                    .live_successor(id, as_of, audience)
+                    .filter(|t| self.successor_allowed(t, request))
+                {
+                    place(&mut out, &mut placed, candidate, succ, id, 0.0);
+                }
+                continue;
+            }
+            if let Some(contester) = self
+                .live_contester(id, as_of, audience)
+                .filter(|t| self.successor_allowed(t, request))
+            {
+                place(
+                    &mut out,
+                    &mut placed,
+                    candidate,
+                    contester,
+                    id,
+                    CONTEST_SCORE_BUMP,
+                );
+            }
+            placed.insert(id, out.len());
+            out.push(pass.materialize(self, *candidate));
+        }
+        self.annotate_hits(&mut out, as_of, audience);
+        (out, exhausted)
     }
 
     fn annotate_hits(
@@ -869,82 +1013,6 @@ impl MentisDb {
         // `query_matches_registry` repeats the audience check, so a successor in
         // a segment the reader may not see is never offered.
         request.filter.matches(thought) && self.query_matches_registry(thought, &request.filter)
-    }
-
-    fn redirect_hits<'a>(
-        &'a self,
-        raw: Vec<RankedSearchHit<'a>>,
-        request: &RankedSearchQuery,
-    ) -> Vec<RankedSearchHit<'a>> {
-        let as_of = request.as_of;
-        let audience = request.filter.audience;
-        let by_id: HashMap<Uuid, usize> = raw
-            .iter()
-            .enumerate()
-            .map(|(i, h)| (h.thought.id, i))
-            .collect();
-        // Sized from the hits we actually have, never from the caller-supplied
-        // limit, which may be `usize::MAX`.
-        let mut out: Vec<RankedSearchHit<'a>> =
-            Vec::with_capacity(request.limit.min(raw.len()).saturating_add(1));
-        let mut placed: HashMap<Uuid, usize> = HashMap::new();
-        let place = |out: &mut Vec<RankedSearchHit<'a>>,
-                     placed: &mut HashMap<Uuid, usize>,
-                     template: &RankedSearchHit<'a>,
-                     thought: &'a Thought,
-                     stands_in_for: Uuid,
-                     bump: f32| {
-            if let Some(&slot) = placed.get(&thought.id) {
-                let ids = &mut out[slot].version.successor_of;
-                if !ids.contains(&stands_in_for) {
-                    ids.push(stands_in_for);
-                }
-                return;
-            }
-            let mut hit = by_id
-                .get(&thought.id)
-                .map_or_else(|| template.clone(), |&i| raw[i].clone());
-            hit.thought = thought;
-            // Inherit the stand-in's score so later score-based re-sorting
-            // (cross-chain merges, REST paging) keeps the successor on top.
-            hit.score.total = hit.score.total.max(template.score.total + bump);
-            hit.version.successor_of = vec![stands_in_for];
-            placed.insert(thought.id, out.len());
-            out.push(hit);
-        };
-
-        for hit in &raw {
-            let id = hit.thought.id;
-            if placed.contains_key(&id) {
-                continue;
-            }
-            if self.invalidated_at(id, as_of, audience) {
-                if let Some(succ) = self
-                    .live_successor(id, as_of, audience)
-                    .filter(|t| self.successor_allowed(t, request))
-                {
-                    place(&mut out, &mut placed, hit, succ, id, 0.0);
-                }
-                continue;
-            }
-            if let Some(contester) = self
-                .live_contester(id, as_of, audience)
-                .filter(|t| self.successor_allowed(t, request))
-            {
-                place(
-                    &mut out,
-                    &mut placed,
-                    hit,
-                    contester,
-                    id,
-                    CONTEST_SCORE_BUMP,
-                );
-            }
-            placed.insert(id, out.len());
-            out.push(hit.clone());
-        }
-        self.annotate_hits(&mut out, as_of, audience);
-        out
     }
 
     /// Inspect a freshly appended thought and return guidance when it looks
@@ -1665,32 +1733,33 @@ impl MentisDb {
         let as_of = request.as_of;
         let wide = self.retrieval_candidates(&request.filter, as_of, true);
         let scan = self.rank_candidates_lexically(&wide, text, request);
-        let wide_limit = request
-            .limit
-            .saturating_mul(2)
-            .max(request.limit.saturating_add(8));
-        let raw = self.context_bundle_seeds(&scan, wide_limit);
-        let mut out: Vec<crate::search::ContextBundleSeed> = Vec::with_capacity(raw.len());
+        let mut out: Vec<crate::search::ContextBundleSeed> = Vec::new();
         let mut placed: HashSet<Uuid> = HashSet::new();
-        let mut push = |out: &mut Vec<crate::search::ContextBundleSeed>,
-                        template: &crate::search::ContextBundleSeed,
-                        thought: &Thought| {
+        let push = |out: &mut Vec<crate::search::ContextBundleSeed>,
+                    placed: &mut HashSet<Uuid>,
+                    template: &crate::search::ContextBundleSeed,
+                    thought: &Thought| {
             if placed.insert(thought.id) {
                 let mut seed = template.clone();
                 seed.locator = crate::search::ThoughtLocator::local(thought);
                 out.push(seed);
             }
         };
-        for seed in &raw {
-            let Some(id) = seed
-                .locator
-                .thought_index
-                .and_then(|i| self.get_thought_by_index(i))
-                .map(|t| t.id)
-            else {
+        // Walk the whole ranking and stop once `limit` distinct live seeds are
+        // held, so superseded versions cannot crowd live matches out of a
+        // fixed-size window (see `query_ranked`).
+        for (position, score) in scan.top_scores(usize::MAX) {
+            if out.len() >= request.limit {
+                break;
+            }
+            let Some(thought) = self.thoughts.get(position) else {
                 continue;
             };
-            let Some(thought) = self.get_thought_by_id(id) else {
+            let id = thought.id;
+            if placed.contains(&id) {
+                continue;
+            }
+            let Some(seed) = self.bundle_seed_at(&scan, position, score) else {
                 continue;
             };
             if self.invalidated_at(id, as_of, audience) {
@@ -1698,7 +1767,7 @@ impl MentisDb {
                     .live_successor(id, as_of, audience)
                     .filter(|t| self.successor_allowed(t, request))
                 {
-                    push(&mut out, seed, succ);
+                    push(&mut out, &mut placed, &seed, succ);
                 }
                 continue;
             }
@@ -1706,9 +1775,9 @@ impl MentisDb {
                 .live_contester(id, as_of, audience)
                 .filter(|t| self.successor_allowed(t, request))
             {
-                push(&mut out, seed, contester);
+                push(&mut out, &mut placed, &seed, contester);
             }
-            push(&mut out, seed, thought);
+            push(&mut out, &mut placed, &seed, thought);
         }
         out.truncate(request.limit);
         Some(out)
