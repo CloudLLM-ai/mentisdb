@@ -1,4 +1,12 @@
 UNRELEASED
+  - perf(search): refilling a page after near-duplicate collapsing is incremental and
+    bounded. Each refill pass used to re-materialize and re-tokenize the whole window and
+    the window had no limit; with 20% identical matches, collapse 0.9 and limit 10 a
+    search cost 7.8 ms at 20,000 thoughts and 32.5 ms at 100,000. The walk now resumes where it stopped, compares
+    only new hits with the survivors, merges same-text hits without tokenizing them, reads
+    ranks with a lazy partial sort and memoizes lineage lookups: 1.2 ms and 3.5 ms. The
+    window is capped at `max(16 * limit, 4096)` ranked slots, so a page whose distinct
+    matches lie beyond that comes back short (remaining limitation).
   - fix(search): REST paging repeated and skipped hits around contested thoughts.
     A contester stands in at its contested thought's score plus a bump, so page order was
     not score order, and the REST ranked and federated handlers (which fetch

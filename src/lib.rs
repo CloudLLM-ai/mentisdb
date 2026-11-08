@@ -9878,7 +9878,10 @@ impl MentisDb {
     /// and return the unsorted scores together with what phase 2 needs to
     /// build hit objects.
     ///
-    /// This is the only `O(matches)` step. Callers choose how to select a page
+    /// Scoring touches every match, so its cost is `O(matches)`; selecting a
+    /// page from the scores afterwards is the caller's choice and costs
+    /// `O(matches)` for a top-k select or `O(matches + n log n)` to read the best
+    /// `n` in order. Callers choose how to select a page
     /// from the result: [`Self::rank_raw`] keeps the best `limit`, and the
     /// lineage-aware page selection in [`MentisDb::query_ranked`] walks the
     /// ranking in order until it holds `limit` distinct live memories, so the
