@@ -59,6 +59,11 @@ A compact hit is `chain_key`, the total `score` and the thought without `hash`,
 the version fields and graph provenance are kept. See
 [Compact search results](../README.md#compact-search-results).
 
+Over streamable-HTTP MCP, `compact` defaults to `true` (REST, the CLI and
+`/tools/execute` keep `false`), also applies to `mentisdb_lexical_search` and
+`mentisdb_context_bundles`, and the lean form leaves out default values; see
+[Lean MCP output](../README.md#lean-mcp-output).
+
 ## MCP tools
 
 | MCP tool | REST route | CLI command |

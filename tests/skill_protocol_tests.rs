@@ -30,11 +30,12 @@ fn test_skill_stays_under_its_size_budget() {
     assert!(SKILL.len() < 19_000, "skill grew to {} bytes", SKILL.len());
 }
 
-/// The skill teaches the `compact` search flag: when to pass it (scanning many
-/// hits), what it keeps (provenance and version status, so an agent can still
-/// weigh a hit), when to leave it off, and where the full record is.
+/// The skill teaches that search hits are lean by default: what an absent field
+/// means (so an agent can still weigh a hit), how a contested or superseded
+/// memory still shows, when to opt out with `compact=false`, and where the full
+/// record is.
 #[test]
-fn test_skill_teaches_compact_search() {
+fn test_skill_teaches_lean_search() {
     let recall = SKILL
         .split("## 🧠 RECALL TRIGGERS")
         .nth(1)
@@ -42,17 +43,17 @@ fn test_skill_teaches_compact_search() {
         .expect("recall triggers section");
     let line = recall
         .lines()
-        .find(|line| line.contains("`compact=true`"))
-        .expect("recall triggers mention compact=true");
+        .find(|line| line.contains("`compact=false`"))
+        .expect("recall triggers mention compact=false");
     for needle in [
-        "ranked or federated",
+        "lean by default",
+        "absent field means its default",
         "provenance",
         "version_status",
-        "hashes, signatures",
-        "verify",
+        "verify a hash or signature",
         "mentisdb_get_thought",
     ] {
-        assert!(line.contains(needle), "compact guidance lacks {needle}");
+        assert!(line.contains(needle), "lean guidance lacks {needle}");
     }
-    assert!(SKILL.contains("(compact too) has `provenance`"));
+    assert!(SKILL.contains("A lean hit has `provenance` only when not plain"));
 }

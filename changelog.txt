@@ -1,4 +1,21 @@
 UNRELEASED
+  - feat(mcp): lean output for agents. The streamable-HTTP MCP surface (JSON-RPC
+    `tools/call`) returns minified JSON text and no second `structuredContent` copy
+    (the MCP library pretty-printed the object and repeated it); `POST /tools/execute`
+    and REST are unchanged. `mentisdb_ranked_search`, `_federated_search`,
+    `_lexical_search` and `_context_bundles` are compact by default over MCP
+    (`compact: false` opts out; REST defaults stay `false`) and a lean thought leaves
+    out defaults: no `provenance` for a public unsigned thought (private segment,
+    signature and `verified_agent` are still listed), no `role: Memory`, no
+    `importance: 0.5`, no `chain_key` for the searched chain, rounded floats, whole-second
+    timestamps, `successor_of` reduced to the immediate predecessor plus a
+    `superseded_versions` count, and the relation it names not repeated. Version status,
+    successors and a verified writer are kept. `mentisdb_standing_context` returns the
+    rendered `prompt` once; `entries` (a second copy of the same memories) needs
+    `include_entries: true`. On a generated 3,500-thought chain a 10-hit ranked search
+    went from 23,657 to 5,808 characters and standing context from 36,191 to 13,050.
+    `cargo run --release --example token_diet` reproduces the numbers; the rules are in
+    the `mentisdb::server_lean` rustdoc.
   - fix(search): superseded versions starved live results. `MentisDb::query_ranked`
     (ranked, lexical and federated search, and the seeds of context bundles) ranked a
     fixed window of `2 * limit` thoughts that included superseded ones, then collapsed

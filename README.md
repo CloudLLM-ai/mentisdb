@@ -1402,6 +1402,29 @@ When to use it: routine recall and scanning many hits, where the content, tags, 
 
 Measured on a copy of a working MentisDB with 11 chains (12 ranked, graph and federated searches, 10 hits each), responses were 23.7% smaller (353,071 B to 269,335 B); on a generated corpus of 66 queries they were 34.2% smaller. `cargo bench --bench search_compact` shows the same request time with and without `compact` (about 25% fewer bytes). Contributed by Austin Faulkner-Pearce.
 
+### Lean MCP output
+
+Agents read MCP tool results with their context window, so the streamable-HTTP MCP surface (JSON-RPC `tools/call`) is leaner than REST:
+
+- Results are **minified JSON text**, with no indentation and no second `structuredContent` copy of the same object. (No tool declares an `outputSchema`, so clients read the text.) REST and `POST /tools/execute` still return the object.
+- `mentisdb_ranked_search`, `mentisdb_federated_search`, `mentisdb_lexical_search` and `mentisdb_context_bundles` are **compact by default**; pass `"compact": false` for the full record. A lean thought leaves out what is default, so an absent field means its default: no `provenance` is a public, unsigned thought (a private segment, a signature or a `verified_agent` is always listed), no `role` is `Memory`, no `importance` is `0.5`, no `chain_key` is the chain you searched. Floats are rounded, timestamps are whole seconds, `successor_of` is the immediate predecessor with a `superseded_versions` count, and `version_status`, `successors` and `current_version` still say when a memory is contested or superseded.
+- `mentisdb_standing_context` returns the rendered `prompt` once. Its `entries` array repeats the same memories, so it needs `include_entries: true`.
+
+Measured with `cargo run --release --example token_diet` (a generated 3,500-thought chain with superseded lineages and weak-link corrections, 10 hits, characters of the text the model reads):
+
+| Tool call | Before | After |
+|---|---:|---:|
+| `mentisdb_ranked_search` (default) | 23,657 | 5,808 |
+| `mentisdb_ranked_search` `compact: true` | 12,699 | 5,808 |
+| `mentisdb_ranked_search` `compact: false` | 23,657 | 16,696 |
+| `mentisdb_lexical_search` | 18,743 | 6,201 |
+| `mentisdb_federated_search` | 23,511 | 5,885 |
+| `mentisdb_context_bundles` (5 bundles) | 9,993 | 3,457 |
+| `mentisdb_standing_context` | 36,191 | 13,050 |
+| `mentisdb_recent_context` (20 thoughts) | 6,936 | 6,931 |
+
+The rules are in the `mentisdb::server_lean` rustdoc.
+
 ### Search Scoring (0.8.1)
 
 Starting in 0.8.1, ranked search uses six key improvements:
