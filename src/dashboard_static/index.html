@@ -824,6 +824,82 @@
       .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
 
+  // BEGIN keygen-helpers
+  // Browser-side Ed25519 key generation for the agent page. Pure functions: no
+  // DOM, no network, WebCrypto is passed in, so tests/dashboard_keygen_tests.rs
+  // extracts this block and runs it under node. The private key lives only in
+  // the values these functions return; nothing here stores or sends it.
+  const ED25519_PKCS8_PREFIX = '302e020100300506032b657004220420';
+  const KEY_REGISTRATION_DOMAIN = 'mentisdb/key-registration/v1\u0000';
+
+  function bytesToHex(bytes) {
+    return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  // The 32-byte seed of an Ed25519 PKCS#8 private key (WebCrypto exports the
+  // fixed 16-byte prefix followed by the seed, 48 bytes in all).
+  function ed25519SeedFromPkcs8(pkcs8) {
+    const bytes = new Uint8Array(pkcs8);
+    if (bytes.length !== 48 || bytesToHex(bytes.subarray(0, 16)) !== ED25519_PKCS8_PREFIX) {
+      throw new Error('unexpected Ed25519 PKCS#8 layout');
+    }
+    return bytes.slice(16);
+  }
+
+  // The bytes the registration proof signs; mirrors
+  // mentisdb::signing::key_registration_payload (length-prefixed strings, the
+  // raw public key, then the time as a big-endian i64).
+  function keyRegistrationPayload(chainKey, agentId, keyId, publicKey, registeredAtSecs) {
+    const text = new TextEncoder();
+    const parts = [text.encode(KEY_REGISTRATION_DOMAIN)];
+    for (const value of [chainKey, agentId, keyId]) {
+      const encoded = text.encode(value);
+      const length = new Uint8Array(4);
+      new DataView(length.buffer).setUint32(0, encoded.length);
+      parts.push(length, encoded);
+    }
+    parts.push(publicKey);
+    const when = new Uint8Array(8);
+    new DataView(when.buffer).setBigInt64(0, BigInt(registeredAtSecs));
+    parts.push(when);
+    const out = new Uint8Array(parts.reduce((n, part) => n + part.length, 0));
+    let at = 0;
+    for (const part of parts) { out.set(part, at); at += part.length; }
+    return out;
+  }
+
+  // Generate an Ed25519 pair with `subtle` and build the request that registers
+  // only its public half (POST /dashboard/api/agents/{chain}/{agent}/keys).
+  // Resolves to { seedHex, publicHex, body }; seedHex is the 64-hex format
+  // `--private-key-file` reads. Rejects with err.keygenUnsupported = true when
+  // the browser cannot generate Ed25519 keys.
+  async function generateAgentKey(subtle, chainKey, agentId, keyId, nowSecs) {
+    let pair;
+    try {
+      pair = await subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+    } catch (cause) {
+      const err = new Error('this browser cannot generate Ed25519 keys');
+      err.keygenUnsupported = true;
+      throw err;
+    }
+    const publicKey = new Uint8Array(await subtle.exportKey('raw', pair.publicKey));
+    const seed = ed25519SeedFromPkcs8(await subtle.exportKey('pkcs8', pair.privateKey));
+    const payload = keyRegistrationPayload(chainKey, agentId, keyId, publicKey, nowSecs);
+    const signature = new Uint8Array(await subtle.sign({ name: 'Ed25519' }, pair.privateKey, payload));
+    return {
+      seedHex: bytesToHex(seed),
+      publicHex: bytesToHex(publicKey),
+      body: {
+        key_id: keyId,
+        algorithm: 'ed25519',
+        public_key_hex: bytesToHex(publicKey),
+        registered_at_unix_secs: nowSecs,
+        registration_signature_hex: bytesToHex(signature)
+      }
+    };
+  }
+  // END keygen-helpers
+
   // Delegated click dispatcher. All interactive markup uses data-act plus
   // data-* arguments (HTML-escaped values) instead of inline JS handlers, so
   // untrusted chain keys / ids can never be interpreted as script.
@@ -3034,6 +3110,15 @@
               <span id="nk-fb" class="feedback"></span>
             </div>
           </div>
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid #30363d">
+            <div class="section-label">Generate key pair</div>
+            <div style="color:#8b949e;font-size:0.8rem;margin-bottom:10px">Creates an Ed25519 key pair in this browser and registers only the public key. The private key is shown once and never reaches the server.</div>
+            <div class="form-group"><label title="Unique identifier for the new signing key">Key ID</label><input type="text" id="gk-id" placeholder="e.g. my-key-v1" title="A descriptive name like 'production-v1' or 'laptop-key'"></div>
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
+              <button class="btn btn-primary btn-sm" id="gk-generate" title="Generate an Ed25519 key pair here and register its public key">Generate key pair</button>
+              <span id="gk-fb" class="feedback"></span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -3135,6 +3220,40 @@
       })
       .catch(err => showFeedback(fb, false, err.message))
       .finally(() => { btn.disabled = false; });
+    });
+
+    // Generate key pair: generate in the browser, register only the public key,
+    // and only after that succeeded reveal the private key, once.
+    document.getElementById('gk-generate').addEventListener('click', async () => {
+      const fb    = document.getElementById('gk-fb');
+      const btn   = document.getElementById('gk-generate');
+      const keyId = document.getElementById('gk-id').value.trim();
+      if (!keyId) { showFeedback(fb, false, 'Key ID is required'); return; }
+      btn.disabled = true;
+      try {
+        if (!window.crypto || !window.crypto.subtle) {
+          const err = new Error('WebCrypto is not available');
+          err.keygenUnsupported = true;
+          throw err;
+        }
+        const generated = await generateAgentKey(
+          window.crypto.subtle, chainKey, agentId, keyId, Math.floor(Date.now() / 1000));
+        await api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}/keys`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(generated.body)
+        });
+        document.getElementById('gk-id').value = '';
+        showFeedback(fb, true, 'Key registered');
+        refreshKeys(chainKey, agentId).catch(() => {});
+        showPrivateKeyOnce(agentId, keyId, generated.publicHex, generated.seedHex);
+      } catch (err) {
+        showFeedback(fb, false, err.keygenUnsupported
+          ? 'This browser cannot generate Ed25519 keys. Run `mentisdb agent key generate` on the command line instead.'
+          : err.message);
+      } finally {
+        btn.disabled = false;
+      }
     });
 
     wireKeyDelete(chainKey, agentId);
@@ -3534,6 +3653,98 @@
           .catch(err => { showFeedback(fb, false, err.message); btn.disabled = false; });
       });
     });
+  }
+
+  // One-time reveal of a freshly generated private key. Built with DOM APIs and
+  // textContent only (the key never passes through innerHTML), it cannot be
+  // dismissed (Escape, backdrop, Tab out) until the box "I have saved this key"
+  // is ticked, and closing removes the key from the DOM and drops the reference.
+  function showPrivateKeyOnce(agentId, keyId, publicHex, seedHex) {
+    const el = (tag, props = {}, kids = []) => {
+      const node = Object.assign(document.createElement(tag), props);
+      kids.forEach(k => node.append(k));
+      return node;
+    };
+    let secret = seedHex;
+    const warning = el('p', {
+      textContent: 'This is the only time this private key will be shown. MentisDB keeps only the public key and cannot recover it. Save it somewhere safe now. Never paste it into a chat or give it to an AI agent.'
+    });
+    warning.style.cssText = 'color:#f85149;font-weight:600;margin:0 0 14px';
+    const keyBox = el('pre', { textContent: secret });
+    keyBox.style.cssText = 'user-select:all;margin:0 0 14px';
+    const status = el('span', { className: 'feedback' });
+    const download = el('button', { className: 'btn btn-primary btn-sm', type: 'button', textContent: 'Download key file' });
+    const copy = el('button', { className: 'btn btn-secondary btn-sm', type: 'button', textContent: 'Copy' });
+    const saved = el('input', { type: 'checkbox', id: 'pk-saved' });
+    const savedLabel = el('label', { htmlFor: 'pk-saved' }, [' I have saved this key']);
+    savedLabel.style.cssText = 'cursor:pointer';
+    const done = el('button', { className: 'btn btn-secondary btn-sm', type: 'button', textContent: 'Close', disabled: true });
+    const actions = el('div', {}, [download, copy, status]);
+    actions.style.cssText = 'display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:16px';
+    const confirmRow = el('div', {}, [el('span', {}, [saved, savedLabel]), done]);
+    confirmRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px';
+    const heading = el('h3', { id: 'pk-title', textContent: `Private key for ${agentId} / ${keyId}` });
+    const box = el('div', { className: 'modal' }, [
+      el('div', { className: 'modal-hdr' }, [heading]),
+      el('div', { className: 'modal-body' }, [
+        el('p', { textContent: `Public key: ${publicHex}` }),
+        warning, keyBox, actions, confirmRow
+      ])
+    ]);
+    box.style.maxWidth = '620px';
+    const overlay = el('div', { className: 'modal-overlay' }, [box]);
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-labelledby', 'pk-title');
+    overlay.style.zIndex = '2000';
+
+    const say = (ok, msg) => { status.textContent = msg; status.className = `feedback show ${ok ? 'feedback-ok' : 'feedback-err'}`; };
+    const close = () => {
+      document.removeEventListener('keydown', onKey, true);
+      keyBox.textContent = '';
+      secret = null;
+      overlay.remove();
+    };
+    const onKey = e => {
+      if (e.key === 'Escape') {
+        e.preventDefault(); e.stopImmediatePropagation();
+        if (saved.checked) close();
+      } else if (e.key === 'Tab') {
+        const stops = [download, copy, saved, done].filter(n => !n.disabled);
+        const at = stops.indexOf(document.activeElement);
+        const next = e.shiftKey ? (at <= 0 ? stops.length - 1 : at - 1) : (at + 1) % stops.length;
+        e.preventDefault();
+        stops[next].focus();
+      }
+    };
+    saved.addEventListener('change', () => { done.disabled = !saved.checked; });
+    done.addEventListener('click', () => { if (saved.checked) close(); });
+    overlay.addEventListener('click', e => { if (e.target === overlay && saved.checked) close(); });
+    download.addEventListener('click', () => {
+      const url = URL.createObjectURL(new Blob([secret + '\n'], { type: 'text/plain' }));
+      const link = el('a', { href: url, download: `${agentId}-${keyId}.key`.replace(/[^A-Za-z0-9._-]/g, '_') });
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      say(true, 'Key file saved');
+    });
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(secret);
+        say(true, 'Copied');
+      } catch (_) {
+        const range = document.createRange();
+        range.selectNodeContents(keyBox);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        say(false, 'Copy blocked: the key is selected, press Ctrl/Cmd+C');
+      }
+    });
+    document.addEventListener('keydown', onKey, true);
+    document.body.append(overlay);
+    download.focus();
   }
 
   function refreshKeys(chainKey, agentId) {

@@ -62,6 +62,17 @@ UNRELEASED
     windows: 30 contested decisions paged by 5 returned 60 hits, 44 distinct. Emitted
     totals are now non-increasing in page order. Chains without lineage or contests are
     unaffected.
+  - feat(dashboard): "Generate key pair" on the agent page's Public Keys card. It takes a Key
+    ID, generates the Ed25519 pair in the browser with WebCrypto, signs the registration
+    proof there and registers only the public key through the agent keys API, so the private
+    key never crosses the network or touches the server. Only after registration succeeded a
+    modal shows the key once, as the 64-hex seed `--private-key-file` reads, with a "Download
+    key file" button (`<agent>-<key-id>.key`, Blob URL revoked right after), a "Copy" button
+    and an "I have saved this key" box that must be ticked before Escape, the backdrop or the
+    Close button can dismiss it; closing removes the key from the DOM. A browser without
+    WebCrypto Ed25519 is pointed at `mentisdb agent key generate`; there is no server-side
+    fallback. The JavaScript helpers are tested under node against the Rust payload, proof
+    and seed derivation, and the body is posted to the real endpoint.
   - feat(cli): `mentisdb agent key generate <agent> --key-id ID --chain KEY [--out FILE]
     [--force]` creates an Ed25519 key pair, saves the private seed to an owner-only (0600)
     file and registers the public key, in one operator command (PIN or `--offline`, same
