@@ -2604,9 +2604,10 @@ impl MentisDbMcpProtocol {
     ) -> Result<ToolResult, Box<dyn Error + Send + Sync>> {
         let tool = canonical_tool_name(tool_name);
         let mut parameters = parameters;
-        let lean = self
-            .lean
-            .then(|| crate::server_lean::LeanPlan::prepare(tool, &mut parameters));
+        let lean = self.lean.then(|| {
+            let default_chain = self.service.resolve_chain_key(None);
+            crate::server_lean::LeanPlan::prepare(tool, &mut parameters, &default_chain)
+        });
         let output = match tool {
             "mentisdb_bootstrap" => {
                 parse_and_call(parameters, |request| self.service.bootstrap(request)).await

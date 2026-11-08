@@ -1,4 +1,8 @@
 UNRELEASED
+  - fix(mcp): lean ranked hits drop `chain_key` only for the chain that was searched
+    (the requested one, or the server's default when none was given). A hit from a
+    branch's ancestor, or a cross-chain replacement living on another chain, keeps its
+    key even when every hit shares it; the old rule elided any key all hits shared.
   - fix(mcp): lean provenance fails closed. A lean thought that arrives with no
     provenance is marked `provenance: {"unknown": true}` instead of passing for the plain
     public, unsigned case, and every lean search response carries one

@@ -361,3 +361,103 @@ async fn test_tools_execute_keeps_the_full_shape() {
     assert!(thought["hash"].is_string());
     assert!(thought["provenance"].is_object());
 }
+
+/// Chains `base` and `branch` (branched from `base`). `base` holds filler, an
+/// ancestor fact and a replacement for a branch fact (a cross-chain
+/// `Supersedes`); `branch` holds the replaced fact.
+fn seed_branch() -> tempfile::TempDir {
+    std::env::set_var("MENTISDB_EMBEDDINGS", "off");
+    let dir = tempfile::tempdir().unwrap();
+    let mut base =
+        MentisDb::open_with_key_and_storage_kind(dir.path(), "base", StorageAdapterKind::Binary)
+            .unwrap();
+    for i in 0..300 {
+        base.append_thought(
+            "n",
+            ThoughtInput::new(
+                ThoughtType::Finding,
+                format!("Gardening entry {i}: tomatoes."),
+            ),
+        )
+        .unwrap();
+    }
+    let ancestor = base
+        .append_thought(
+            "a",
+            ThoughtInput::new(ThoughtType::Insight, "Zebra crossing ancestor fact."),
+        )
+        .unwrap()
+        .clone();
+    let mut branch = base.branch_into(ancestor.id, "branch").unwrap();
+    let replaced = branch
+        .append_thought(
+            "a",
+            ThoughtInput::new(ThoughtType::Decision, "Zebra crossing branch decision."),
+        )
+        .unwrap()
+        .clone();
+    base.append_thought(
+        "a",
+        ThoughtInput::new(ThoughtType::Decision, "Striped animals policy.").with_relations(vec![
+            ThoughtRelation {
+                kind: ThoughtRelationKind::Supersedes,
+                target_id: replaced.id,
+                chain_key: Some("branch".into()),
+                valid_at: None,
+                invalid_at: None,
+            },
+        ]),
+    )
+    .unwrap();
+    dir
+}
+
+/// Over MCP, ranked search on the branch also reads its ancestor. A hit from
+/// the ancestor, and a cross-chain replacement that lives on the ancestor, keep
+/// their `chain_key`; a hit from the searched chain omits it.
+#[tokio::test]
+async fn test_chain_key_is_kept_for_ancestor_and_cross_chain_hits() {
+    let dir = seed_branch();
+    let router_config = MentisDbServiceConfig::new(
+        dir.path().to_path_buf(),
+        "branch",
+        StorageAdapterKind::Binary,
+    )
+    .with_bearer_token_access(false);
+    let (router, _events) = standard_mcp_router(
+        router_config,
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+    );
+    let request = Request::builder()
+        .method("POST")
+        .uri("/")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                   "params": {"name": "mentisdb_ranked_search",
+                              "arguments": {"text": "zebra crossing", "limit": 10}}})
+            .to_string(),
+        ))
+        .unwrap();
+    let response = router.oneshot(with_peer(request)).await.unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), 16 * 1024 * 1024)
+        .await
+        .unwrap();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    let body: Value =
+        serde_json::from_str(value["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let hits = body["results"].as_array().unwrap();
+    let chain_of = |content: &str| {
+        let hit = hits
+            .iter()
+            .find(|h| h["thought"]["content"].as_str().unwrap().contains(content))
+            .unwrap_or_else(|| panic!("no hit with {content:?} in {body}"));
+        hit.get("chain_key")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    // The ancestor fact lives on `base`, not on the searched chain.
+    assert_eq!(chain_of("ancestor fact").as_deref(), Some("base"));
+    // The replacement of the branch's decision lives on `base` too.
+    assert_eq!(chain_of("Striped animals").as_deref(), Some("base"));
+}

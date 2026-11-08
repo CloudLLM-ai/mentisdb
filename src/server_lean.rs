@@ -80,9 +80,11 @@ pub(crate) struct LeanPlan {
     compact: bool,
     /// Whether `mentisdb_standing_context` keeps its `entries` array.
     include_entries: bool,
-    /// The chain named by the call, if any: ranked hits from it omit
-    /// `chain_key`.
-    home_chain: Option<String>,
+    /// The chain the call searches: the requested `chain_key`, or the server's
+    /// default chain when none was given. Ranked hits from it omit `chain_key`;
+    /// a hit from any other chain (an ancestor, or a cross-chain replacement)
+    /// keeps it.
+    home_chain: String,
 }
 
 impl LeanPlan {
@@ -92,9 +94,9 @@ impl LeanPlan {
     /// understand it natively, so it is written back explicitly; lexical search
     /// and context bundles do not, so it is removed. `include_entries` is
     /// removed too. Other tools pass through untouched.
-    pub(crate) fn prepare(tool: &str, arguments: &mut Value) -> Self {
+    pub(crate) fn prepare(tool: &str, arguments: &mut Value, default_chain: &str) -> Self {
         let Some(map) = arguments.as_object_mut() else {
-            return Self::plain();
+            return Self::plain(default_chain);
         };
         let include_entries = map
             .remove("include_entries")
@@ -113,15 +115,18 @@ impl LeanPlan {
             home_chain: map
                 .get("chain_key")
                 .and_then(Value::as_str)
-                .map(str::to_owned),
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .unwrap_or(default_chain)
+                .to_owned(),
         }
     }
 
-    fn plain() -> Self {
+    fn plain(default_chain: &str) -> Self {
         Self {
             compact: false,
             include_entries: false,
-            home_chain: None,
+            home_chain: default_chain.to_owned(),
         }
     }
 
@@ -153,17 +158,15 @@ impl LeanPlan {
         let Some(hits) = output.get_mut("results").and_then(Value::as_array_mut) else {
             return output;
         };
-        // A ranked search may also read ancestor chains: a hit only names its
-        // chain when it is not the one the agent searched.
-        let home = single_chain
-            .then(|| self.home_chain.clone().or_else(|| common_chain_key(hits)))
-            .flatten();
+        // A ranked search also reads ancestor chains, and a cross-chain
+        // replacement may live on another chain: a hit names its chain unless
+        // it is the one the agent searched.
+        let home = single_chain.then_some(self.home_chain.as_str());
         for hit in hits {
             let Some(fields) = hit.as_object_mut() else {
                 continue;
             };
-            if home.is_some() && fields.get("chain_key").and_then(Value::as_str) == home.as_deref()
-            {
+            if home.is_some() && fields.get("chain_key").and_then(Value::as_str) == home {
                 fields.remove("chain_key");
             }
             round_field(fields, "score");
@@ -173,14 +176,6 @@ impl LeanPlan {
         }
         output
     }
-}
-
-/// The chain key every hit shares, if they all carry the same one.
-fn common_chain_key(hits: &[Value]) -> Option<String> {
-    let first = hits.first()?.get("chain_key")?.as_str()?;
-    hits.iter()
-        .all(|hit| hit.get("chain_key").and_then(Value::as_str) == Some(first))
-        .then(|| first.to_owned())
 }
 
 /// The one-per-response reminder of what a hit without `provenance` is.
@@ -535,7 +530,7 @@ mod tests {
             "mentisdb_context_bundles",
         ] {
             let mut args = json!({});
-            let plan = LeanPlan::prepare(tool, &mut args);
+            let plan = LeanPlan::prepare(tool, &mut args, "home");
             let shaped = plan.shape(tool, json!({"results": [], "bundles": []}));
             let parsed: Value = serde_json::from_str(shaped.as_str().unwrap()).unwrap();
             assert_eq!(
@@ -545,7 +540,7 @@ mod tests {
             );
         }
         let mut args = json!({"compact": false});
-        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args);
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home");
         let shaped = plan.shape("mentisdb_ranked_search", json!({"results": []}));
         assert!(!shaped.as_str().unwrap().contains("default_provenance"));
     }
@@ -562,22 +557,22 @@ mod tests {
     #[test]
     fn test_prepare_defaults_compact_for_search_tools() {
         let mut args = json!({"text": "q"});
-        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args);
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home");
         assert!(plan.compact);
         assert_eq!(args["compact"], json!(true));
 
         let mut args = json!({"text": "q", "compact": false});
-        let plan = LeanPlan::prepare("mentisdb_federated_search", &mut args);
+        let plan = LeanPlan::prepare("mentisdb_federated_search", &mut args, "home");
         assert!(!plan.compact);
         assert_eq!(args["compact"], json!(false));
 
         let mut args = json!({"text": "q", "compact": true});
-        let plan = LeanPlan::prepare("mentisdb_lexical_search", &mut args);
+        let plan = LeanPlan::prepare("mentisdb_lexical_search", &mut args, "home");
         assert!(plan.compact);
         assert!(args.get("compact").is_none());
 
         let mut args = json!({"chain_key": "c"});
-        let plan = LeanPlan::prepare("mentisdb_head", &mut args);
+        let plan = LeanPlan::prepare("mentisdb_head", &mut args, "home");
         assert!(!plan.compact);
         assert_eq!(args, json!({"chain_key": "c"}));
     }
@@ -589,12 +584,12 @@ mod tests {
         let output =
             json!({"entries": [{"content": "x"}], "prompt": "p", "duplicates_collapsed": 0});
         let mut args = json!({});
-        let plan = LeanPlan::prepare("mentisdb_standing_context", &mut args);
+        let plan = LeanPlan::prepare("mentisdb_standing_context", &mut args, "home");
         let text = plan.shape("mentisdb_standing_context", output.clone());
         assert_eq!(text, json!(r#"{"duplicates_collapsed":0,"prompt":"p"}"#));
 
         let mut args = json!({"include_entries": true});
-        let plan = LeanPlan::prepare("mentisdb_standing_context", &mut args);
+        let plan = LeanPlan::prepare("mentisdb_standing_context", &mut args, "home");
         assert!(args.get("include_entries").is_none());
         let text = plan.shape("mentisdb_standing_context", output);
         assert!(text.as_str().unwrap().contains("\"entries\""));
@@ -605,7 +600,7 @@ mod tests {
     #[test]
     fn test_ranked_hits_name_only_foreign_chains() {
         let mut args = json!({"chain_key": "home"});
-        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args);
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home");
         let output = json!({"total": 2, "results": [
             {"chain_key": "home", "score": 24.917037963867188, "thought": {"content": "a"}},
             {"chain_key": "parent", "score": 3.0, "thought": {"content": "b"}}]});
@@ -616,20 +611,32 @@ mod tests {
         assert_eq!(parsed["results"][1]["chain_key"], json!("parent"));
     }
 
-    /// With no chain named, hits that all share one chain drop the key, but
-    /// federated hits always keep it.
+    /// With no chain named, the server's default chain is the one searched:
+    /// its hits drop the key, a hit from anywhere else keeps it, even when
+    /// every hit shares one foreign key. Federated hits always keep it.
     #[test]
-    fn test_chain_key_elision_without_explicit_chain() {
-        let output = json!({"results": [
-            {"chain_key": "d", "score": 1.0, "thought": {}},
-            {"chain_key": "d", "score": 1.0, "thought": {}}]});
+    fn test_chain_key_elision_is_tied_to_the_searched_chain() {
+        let from = |key: &str| {
+            json!({"results": [
+                {"chain_key": key, "score": 1.0, "thought": {}},
+                {"chain_key": key, "score": 1.0, "thought": {}}]})
+        };
         let mut args = json!({});
-        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args);
-        let shaped = plan.shape("mentisdb_ranked_search", output.clone());
-        assert!(!shaped.as_str().unwrap().contains("chain_key"));
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home");
+        let shaped = plan.shape("mentisdb_ranked_search", from("home"));
+        assert!(!shaped.as_str().unwrap().contains("\"chain_key\""));
+        let shaped = plan.shape("mentisdb_ranked_search", from("ancestor"));
+        assert!(shaped
+            .as_str()
+            .unwrap()
+            .contains("\"chain_key\":\"ancestor\""));
+        let mut args = json!({"chain_key": " "});
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home");
+        let shaped = plan.shape("mentisdb_ranked_search", from("home"));
+        assert!(!shaped.as_str().unwrap().contains("\"chain_key\""));
         let mut args = json!({});
-        let plan = LeanPlan::prepare("mentisdb_federated_search", &mut args);
-        let shaped = plan.shape("mentisdb_federated_search", output);
-        assert!(shaped.as_str().unwrap().contains("chain_key"));
+        let plan = LeanPlan::prepare("mentisdb_federated_search", &mut args, "home");
+        let shaped = plan.shape("mentisdb_federated_search", from("home"));
+        assert!(shaped.as_str().unwrap().contains("\"chain_key\""));
     }
 }
