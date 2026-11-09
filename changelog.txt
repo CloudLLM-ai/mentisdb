@@ -8,6 +8,155 @@ UNRELEASED
     `[a, b]` lists and single-line values work as before. A multi-line description
     is exported as a literal block so it survives a Markdown round trip.
 
+0.12.1.58 NOV/08/2026
+  - fix(security): a registered agent key could be replaced or revived through the proof-based
+    registration path (`add_agent_key`, used by the dashboard keys route and the library).
+    The proof shows possession of the new key only, yet an existing key id was overwritten
+    and a revoked one un-revoked, so a caller who could reach the route could rebind another
+    agent's key id to a key of their own. A key id is now never rebound, active or revoked,
+    as `agent key add` already behaved: registering a different key under an existing id
+    is refused, the same active key again is a no-op. Deployments that rely on key ids as
+    identities should check their registries for keys they did not register.
+  - fix(security): the dashboard routes that register and revoke an agent key
+    (`POST/DELETE /dashboard/api/agents/{chain}/{agent}/keys`) now need a dashboard PIN, like
+    `/chains/{chain}/access`. A dashboard started without one cannot tell the operator from
+    any other local process, yet it accepted these changes to who may sign. Such a dashboard
+    now answers 403 and says to set `MENTISDB_DASHBOARD_PIN`; the agent page's Generate key
+    pair, Add Key and Delete show that explanation, and the message stays visible long
+    enough to read. Run with a PIN (or use `agent key add|generate --offline`) to manage keys.
+  - ci(coverage): every CI run now writes a coverage table (functions, branches, regions, lines,
+    with covered/total counts, the 90% goal and the gate) into the job summary, from one run on
+    a pinned nightly, and uploads the HTML report. `make coverage` runs the same thing locally.
+    The gate is a floor at today's measured values (73 / 64 / 72 / 74) that only ratchets up;
+    see README "Coverage".
+  - fix(search): federated widening is bounded per chain. The per-chain limit is
+    `fetch * chains`, but only `fetch` was capped, so with C chains each pass could build
+    about 4096*C hits per chain. The first pass is unchanged (`limit * chains`); later
+    passes never exceed the larger of that and `max(16 * (offset + limit), 4096)`.
+  - fix(mcp): lean provenance no longer treats a malformed object as plain. Only exactly
+    `segment: "public"` and `signature: "unsigned"` (both present, both strings) with no
+    verifier is elided; a missing, non-string or unexpected value is rendered as it is,
+    and a missing `segment` or `signature` is flagged `unknown: true`.
+  - perf(search): context-bundle seeds read ranks in doubling blocks by partial selection
+    instead of sorting every match, memoize the successor and contester lookups, and build
+    a seed only for a thought that is actually placed. Tests added for `limit = usize::MAX`,
+    `as_of` with lineage, a successor excluded by the request's filter, and reranking with
+    lineage.
+  - fix(mcp): lean timestamps keep their full precision. They were cut to whole seconds,
+    so passing a hit's `timestamp` back as `as_of` or `since` excluded the thought itself.
+  - fix(mcp): a `compact` (or `include_entries`) that is not a boolean, such as `"false"` or
+    `0`, is refused with JSON-RPC `-32602` instead of being read as the default, which
+    turned an agent's opt-out into the opposite. `POST /tools/execute` and REST now honour
+    the `compact` they advertise on `mentisdb_lexical_search` (default `false` there;
+    compact drops `match_sources` and the thought's integrity fields), where it used to be
+    silently ignored. `/tools/list` no longer advertises `compact` on
+    `mentisdb_context_bundles`, which only takes effect over streamable MCP (REST still
+    accepts and ignores it).
+  - fix(mcp): a lean hit keeps the kind of the link it replaces. Dropping the relation that
+    `successor_of` names also dropped whether it was `Corrects` or `Invalidates`; that kind
+    now shows as `successor_kind` (absent means `Supersedes`). The skill also says that
+    `signature: valid` without a `verified_agent` means the key is not currently trusted.
+  - docs(search): `successor_of` and `superseded_versions` are no longer described as the
+    whole lineage. They list older versions that matched the query and were met before
+    the page filled, so the count is a lower bound (rustdoc, the `compact` parameter
+    description, the skill and the README).
+  - fix(mcp): lean ranked hits drop `chain_key` only for the chain that was searched
+    (the requested one, or the server's default when none was given). A hit from a
+    branch's ancestor, or a cross-chain replacement living on another chain, keeps its
+    key even when every hit shares it; the old rule elided any key all hits shared.
+  - fix(mcp): lean provenance fails closed. A lean thought that arrives with no
+    provenance is marked `provenance: {"unknown": true}` instead of passing for the plain
+    public, unsigned case, and every lean search response carries one
+    `default_provenance` field saying what an unmarked hit is ("public, unsigned:
+    anyone could have written it").
+  - fix(search): cross-chain redirection could shrink a REST page. Ranked search (the
+    chain and its ancestors) and federated search cut each chain's page at
+    `offset + limit` before redirecting hits to a replacement on another searched chain
+    and removing duplicate ids, so thirty ancestor facts replaced by one branch thought
+    left a page of one hit. The fetch now doubles until the page is full or the matches
+    are exhausted, up to `max(16 * (offset + limit), 4096)` per chain (a page whose live
+    matches lie beyond that comes back short). `query_federated` in the library still cuts
+    each chain at `limit`.
+  - perf(search): refilling a page after near-duplicate collapsing is incremental and
+    bounded. Each refill pass used to re-materialize and re-tokenize the whole window and
+    the window had no limit; with 20% identical matches, collapse 0.9 and limit 10 a
+    search cost 7.8 ms at 20,000 thoughts and 32.5 ms at 100,000. The walk now resumes where it stopped, compares
+    only new hits with the survivors, merges same-text hits without tokenizing them, reads
+    ranks with a lazy partial sort and memoizes lineage lookups: 1.2 ms and 3.5 ms. The
+    window is capped at `max(16 * limit, 4096)` ranked slots, so a page whose distinct
+    matches lie beyond that comes back short (remaining limitation).
+  - fix(search): REST paging repeated and skipped hits around contested thoughts.
+    A contester stands in at its contested thought's score plus a bump, so page order was
+    not score order, and the REST ranked and federated handlers (which fetch
+    `offset + page`, re-sort by score and skip `offset`) moved contesters between
+    windows: 30 contested decisions paged by 5 returned 60 hits, 44 distinct. Emitted
+    totals are now non-increasing in page order. Chains without lineage or contests are
+    unaffected.
+  - fix(dashboard): the agent page's "Add Key" button never worked. It posted to the
+    agent keys API, which needs a registration timestamp and a proof of possession that a
+    pasted public key cannot give, so every click failed. It now registers through the
+    operator route `agent key add` uses (`register_key`; the PIN session vouches for the
+    key), and takes 64 hex characters, `0x` hex or 32 comma-separated bytes. On a dashboard
+    with no PIN the registration is refused with the reason, as for every operator action;
+    nothing is widened for a non-PIN session.
+  - fix(security): `key generate --force` and `agent key generate --force` no longer follow a
+    symbolic link at `--out`. The seed was written into, and the mode changed on, whatever
+    the link pointed at. A symlink target is now refused (checked, and opened with
+    `O_NOFOLLOW` on Unix); name the real file instead.
+  - fix(cli): on Windows `key generate` and `agent key generate` no longer say the key file is
+    "owner-only". Nothing sets an ACL there, so the file inherits the folder's permissions;
+    the messages and help now say so and ask the user to restrict the folder. Unix output
+    is unchanged (0600).
+  - fix(dashboard): the generated key's download revokes its Blob URL after 10 seconds, not
+    right after the click. Some browsers begin reading the blob after the click handler
+    returns, so the file could be empty while the page invited the user to tick "saved".
+  - feat(dashboard): "Generate key pair" on the agent page's Public Keys card. It takes a Key
+    ID, generates the Ed25519 pair in the browser with WebCrypto, signs the registration
+    proof there and registers only the public key through the agent keys API, so the private
+    key never crosses the network or touches the server. Only after registration succeeded a
+    modal shows the key once, as the 64-hex seed `--private-key-file` reads, with a "Download
+    key file" button (`<agent>-<key-id>.key`, Blob URL revoked right after), a "Copy" button
+    and an "I have saved this key" box that must be ticked before Escape, the backdrop or the
+    Close button can dismiss it; the modal also tells the user to `chmod 600` the downloaded file; closing removes the key from the DOM. A browser without
+    WebCrypto Ed25519 is pointed at `mentisdb agent key generate`; there is no server-side
+    fallback. The JavaScript helpers are tested under node against the Rust payload, proof
+    and seed derivation, and the body is posted to the real endpoint.
+  - feat(cli): `mentisdb agent key generate <agent> --key-id ID --chain KEY [--out FILE]
+    [--force]` creates an Ed25519 key pair, saves the private seed to an owner-only (0600)
+    file and registers the public key, in one operator command (PIN or `--offline`, same
+    flags and catalog as `agent key add`). The private key is never printed, logged or
+    sent; the order is generate, refuse a taken key id, write the file (refusing to
+    overwrite without `--force`), register, print. A wrong PIN, an unreachable daemon or a
+    taken key id is found before anything is written; a registration that fails after
+    the file was written keeps the file and prints the `agent key add ... --public-key-hex`
+    command that registers it later. `--json` carries the public key, key id, agent, chain
+    and file path, never the seed. `key generate` and `agent key add` point at it.
+  - feat(mcp): lean output for agents. The streamable-HTTP MCP surface (JSON-RPC
+    `tools/call`) returns minified JSON text and no second `structuredContent` copy
+    (the MCP library pretty-printed the object and repeated it); `POST /tools/execute`
+    and REST are unchanged. `mentisdb_ranked_search`, `_federated_search`,
+    `_lexical_search` and `_context_bundles` are compact by default over MCP
+    (`compact: false` opts out; REST defaults stay `false`) and a lean thought leaves
+    out defaults: no `provenance` for a public unsigned thought (private segment,
+    signature and `verified_agent` are still listed), no `role: Memory`, no
+    `importance: 0.5`, no `chain_key` for the searched chain, rounded floats,
+    `successor_of` reduced to the immediate predecessor plus a
+    `superseded_versions` count, and the relation it names not repeated. Version status,
+    successors and a verified writer are kept. `mentisdb_standing_context` returns the
+    rendered `prompt` once; `entries` (a second copy of the same memories) needs
+    `include_entries: true`. On a generated 3,500-thought chain a 10-hit ranked search
+    went from 23,657 to 5,948 characters and standing context from 36,191 to 13,050.
+    `cargo run --release --example token_diet` reproduces the numbers; the rules are in
+    the `mentisdb::server_lean` rustdoc.
+  - fix(search): superseded versions starved live results. `MentisDb::query_ranked`
+    (ranked, lexical and federated search, and the seeds of context bundles) ranked a
+    fixed window of `2 * limit` thoughts that included superseded ones, then collapsed
+    them into their live successor, so one decision rewritten 30 times filled the window
+    and a `limit = 5` search returned a single hit while `total` counted 21. Only live
+    memories now compete for the page: every match is scored once, superseded ones
+    nominate their live successor, and the walk stops when the page holds `limit`
+    distinct live memories. `total` still counts live matches. Near-duplicate
+    collapsing refills its page the same way instead of guessing a window.
 0.12.0.57 NOV/04/2026
   - feat(server): the minimum request-body rate is configurable.
     `MENTISDB_MIN_BODY_BYTES_PER_SEC` (default 65536; `0` switches the rule off;

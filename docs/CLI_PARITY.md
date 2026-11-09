@@ -47,7 +47,8 @@ rejected with an error instead of silently falling back.
 `mentisdb_ranked_search` and `mentisdb_federated_search`) accept `compact`. It has no
 effect on `search bundles` (`context-bundles`): that REST route shares the
 ranked request type, so it accepts the field and ignores it, and `search
-bundles` therefore has no `--compact` flag.
+bundles` therefore has no `--compact` flag. `lexical-search` also accepts
+`compact` over REST and `/tools/execute` (default `false`).
 
 | REST / MCP field | CLI flag | Library | Default |
 |---|---|---|---|
@@ -58,6 +59,11 @@ A compact hit is `chain_key`, the total `score` and the thought without `hash`,
 `agent_name`, `agent_owner` and top-level empty values. The `provenance` object,
 the version fields and graph provenance are kept. See
 [Compact search results](../README.md#compact-search-results).
+
+Over streamable-HTTP MCP, `compact` defaults to `true` (REST, the CLI and
+`/tools/execute` keep `false`), also applies to `mentisdb_lexical_search` and
+`mentisdb_context_bundles`, and the lean form leaves out default values; see
+[Lean MCP output](../README.md#lean-mcp-output).
 
 ## MCP tools
 
@@ -147,7 +153,7 @@ the version fields and graph provenance are kept. See
 ## CLI-only commands
 
 `setup`, `wizard` (agent integrations), `backup`, `restore`, `cert`,
-`bearertoken`, `key generate` (saves an Ed25519 seed to an owner-only file and never prints it) and `key show` (public key of a seed file), `add` (quick thought append), `agents` (alias of `agent list`).
+`bearertoken`, `key generate` (saves an Ed25519 seed to an owner-only file and never prints it; `agent key generate` does the same and registers the public key for an agent in one step) and `key show` (public key of a seed file), `add` (quick thought append), `agents` (alias of `agent list`).
 
 ## Operator commands (no MCP tool, REST answers 403)
 
@@ -165,6 +171,7 @@ an agent's status is the operator's alone (design:
 | Make a chain public or private | `chain access set public\|private\|signed` | `POST .../access` `{"op":"set_mode"}` |
 | Allow / remove a key | `chain access allow`, `chain access deny` | `{"op":"allow_key"}`, `{"op":"deny_key"}` |
 | Register / revoke an agent key | `agent key add`, `agent key revoke` | `{"op":"register_key"}`, `{"op":"revoke_key"}` |
+| Create a key pair and register its public key | `agent key generate` | `{"op":"register_key"}` (the CLI makes the key; only the public half is sent) |
 | Disable / activate an agent | `agent disable`, `agent activate` | `{"op":"disable_agent"}`, `{"op":"enable_agent"}` |
 
 They go through the dashboard behind its PIN (`--pin`, or
@@ -172,6 +179,20 @@ They go through the dashboard behind its PIN (`--pin`, or
 host with `--offline [--data-dir DIR]`, which refuses while a daemon holds the
 directory. The operator signs policy records with the key in
 `<data dir>/operator/operator.key`.
+
+`agent key generate AGENT --key-id ID --chain KEY [--out FILE] [--force]` is
+`key generate` plus `agent key add` in one command: it creates the key pair,
+writes the 64-hex seed to an owner-only (0600) file, then registers the public
+key. The private key is never printed, logged or sent; the file is its only
+copy. The order is generate, refuse a taken key id (nothing is written), write
+the file (refusing to overwrite without `--force`), register, print. When the
+registration fails after the file was written (the dashboard refuses, the daemon
+goes away) the file is kept and the error names it and the `agent key add ...
+--public-key-hex HEX` command that registers it later. A wrong PIN or an
+unreachable daemon is found before anything is written. `--json` prints
+`registered`, `agent_id`, `key_id`, `chain_key`, `public_key_hex` and
+`key_file`, never the seed. In the dashboard the agent page offers the same in
+the browser ("Generate key pair"); see the README.
 
 ## Reading private chains
 

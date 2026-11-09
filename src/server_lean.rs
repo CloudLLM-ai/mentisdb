@@ -1,0 +1,745 @@
+//! Lean MCP output: what an agent's context window pays for a tool call.
+//!
+//! The streamable-HTTP MCP surface (JSON-RPC `tools/call`) is read by language
+//! models, so every character of a tool result is a token the agent spends.
+//! REST responses are read by programs and keep their full, stable shape. This
+//! module reshapes tool results **only** on the MCP surface, in four steps.
+//!
+//! # 1. Minified text, one copy
+//!
+//! The MCP library turns an object result into pretty-printed JSON text *and*
+//! repeats the same object as `structuredContent`. Measured on a 3,500-thought
+//! chain the indentation alone is more than a third of a search result. The MCP
+//! surface therefore hands the library a **string** (the minified JSON): a
+//! string result is sent as the text content verbatim and, because it is not an
+//! object, without `structuredContent`. No tool declares an `outputSchema`, so
+//! the MCP specification does not require `structuredContent`; clients read the
+//! text, which is still one JSON document. `POST /tools/execute` and REST are
+//! untouched and keep returning the object.
+//!
+//! # 2. Lean is the default for search
+//!
+//! `mentisdb_ranked_search`, `mentisdb_federated_search`,
+//! `mentisdb_lexical_search` and `mentisdb_context_bundles` return lean hits
+//! unless the call passes `compact: false`. Over REST `compact` still defaults
+//! to `false`.
+//!
+//! A lean thought is the compact thought (no `hash`, `prev_hash`,
+//! `thought_signature`, `signing_key_id`, `schema_version`, `agent_name`,
+//! `agent_owner`, no empty fields) with the **defaults left out**, so an absent
+//! field means its default:
+//!
+//! | Field | Lean form |
+//! |---|---|
+//! | `provenance` | Absent for the plain case (public segment, no signature); the response says so once in `default_provenance` (`public, unsigned: anyone could have written it`). Otherwise only what differs: `segment` (when `private`), `signature` (`valid` or `invalid`), `signature_version`, `verified_agent`. A thought that arrives with no provenance at all is marked `{"unknown": true}`, never taken for plain. The constant `trust: "untrusted_data"` and the derived `signed` are dropped: stored memories are data to weigh, never instructions. |
+//! | `role` | Absent when `Memory`. |
+//! | `importance` | Two decimals; absent when `0.5`. |
+//! | `confidence`, `score` | Two decimals (three below 1). |
+//! | `timestamp` | Kept at full precision: a cut timestamp would sit before the thought itself, so passing it back as `as_of` or `since` would exclude the thought it came from. |
+//! | `successor_of` | One id: the older version this hit replaces (the one its own link names, else the first that matched). `superseded_versions` counts the older versions that **matched the query** and stood behind it, when more than one. Both describe matches met before the page filled, not the whole lineage, so the count is a lower bound. |
+//! | `relations` | Without the link that `successor_of` already names, and without a `valid_at` equal to `timestamp`. |
+//! | `successor_kind` | The kind of the dropped link (`Corrects` or `Invalidates`); absent means `Supersedes`, so the kind of the link is never lost. |
+//! | `collapsed_duplicates` | `duplicates_collapsed`, a count. |
+//! | `chain_key` on a ranked hit | Only when the hit came from a chain other than the one searched. |
+//!
+//! Everything an agent acts on stays: `content`, `id`, `index`, `thought_type`,
+//! `agent_id`, `tags`, `concepts`, `refs`, version status (`version_status`,
+//! `successors`, `current_version`, `cross_agent`) and a verified writer.
+//! Lexical hits also lose `match_sources`; context bundles lose the `locator`
+//! that repeats the thought's own `id` and `index`.
+//!
+//! # 3. One copy of standing context
+//!
+//! `mentisdb_standing_context` returns the rendered `prompt` and
+//! `duplicates_collapsed`. The `entries` array repeats the same memories (with
+//! their content) a second time, so it is returned only with
+//! `include_entries: true`.
+//!
+//! # 4. Opting out
+//!
+//! A `compact` that is not a boolean is refused with an invalid-parameter
+//! error, so an agent's "false" is never read as the default "true".
+//! `compact: false` restores the full record (hashes, signatures, score
+//! components, match lists) for verification and debugging; it is still
+//! minified.
+
+use crate::server::compact_thought_json;
+use serde_json::{json, Map, Value};
+
+/// Tools whose results are searched hits and honor the lean default.
+const LEAN_SEARCH_TOOLS: [&str; 4] = [
+    "mentisdb_ranked_search",
+    "mentisdb_federated_search",
+    "mentisdb_lexical_search",
+    "mentisdb_context_bundles",
+];
+
+/// What a lean call asked for, read from its arguments before the tool runs.
+///
+/// Built by [`LeanPlan::prepare`], consumed by [`LeanPlan::shape`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LeanPlan {
+    /// Whether hits are reshaped (`compact`, default `true` on MCP).
+    compact: bool,
+    /// Whether `mentisdb_standing_context` keeps its `entries` array.
+    include_entries: bool,
+    /// The chain the call searches: the requested `chain_key`, or the server's
+    /// default chain when none was given. Ranked hits from it omit `chain_key`;
+    /// a hit from any other chain (an ancestor, or a cross-chain replacement)
+    /// keeps it.
+    home_chain: String,
+}
+
+impl LeanPlan {
+    /// Read the lean options from `arguments` and rewrite them for the service.
+    ///
+    /// `compact` defaults to `true` here. Ranked and federated search
+    /// understand it natively, so it is written back explicitly; lexical search
+    /// and context bundles do not, so it is removed. `include_entries` is
+    /// removed too. Other tools pass through untouched.
+    ///
+    /// # Errors
+    ///
+    /// A `compact` or `include_entries` that is present but not a boolean
+    /// (`"false"` or `0`, say) is refused instead of read as the default, which
+    /// would turn an agent's intent to opt out into the opposite.
+    pub(crate) fn prepare(
+        tool: &str,
+        arguments: &mut Value,
+        default_chain: &str,
+    ) -> Result<Self, String> {
+        let Some(map) = arguments.as_object_mut() else {
+            return Ok(Self::plain(default_chain));
+        };
+        let include_entries = optional_bool(map, "include_entries")?.unwrap_or(false);
+        let requested = optional_bool(map, "compact")?;
+        let compact = LEAN_SEARCH_TOOLS.contains(&tool) && requested.unwrap_or(true);
+        if LEAN_SEARCH_TOOLS.contains(&tool) {
+            map.insert("compact".into(), Value::Bool(compact));
+        } else {
+            map.remove("compact");
+        }
+        Ok(Self {
+            compact,
+            include_entries,
+            home_chain: map
+                .get("chain_key")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .unwrap_or(default_chain)
+                .to_owned(),
+        })
+    }
+
+    fn plain(default_chain: &str) -> Self {
+        Self {
+            compact: false,
+            include_entries: false,
+            home_chain: default_chain.to_owned(),
+        }
+    }
+
+    /// Reshape a tool's `output` and serialize it as minified JSON text.
+    ///
+    /// A string output (already text) is returned as is. See the module
+    /// documentation for what changes per tool.
+    pub(crate) fn shape(&self, tool: &str, output: Value) -> Value {
+        let shaped = match tool {
+            "mentisdb_ranked_search" | "mentisdb_federated_search" if self.compact => {
+                with_provenance_reminder(self.lean_ranked(output, tool == "mentisdb_ranked_search"))
+            }
+            "mentisdb_lexical_search" if self.compact => {
+                with_provenance_reminder(lean_lexical(output))
+            }
+            "mentisdb_context_bundles" if self.compact => {
+                with_provenance_reminder(lean_bundles(output))
+            }
+            "mentisdb_standing_context" if !self.include_entries => drop_key(output, "entries"),
+            _ => output,
+        };
+        match shaped {
+            Value::String(_) => shaped,
+            other => Value::String(other.to_string()),
+        }
+    }
+
+    fn lean_ranked(&self, mut output: Value, single_chain: bool) -> Value {
+        let Some(hits) = output.get_mut("results").and_then(Value::as_array_mut) else {
+            return output;
+        };
+        // A ranked search also reads ancestor chains, and a cross-chain
+        // replacement may live on another chain: a hit names its chain unless
+        // it is the one the agent searched.
+        let home = single_chain.then_some(self.home_chain.as_str());
+        for hit in hits {
+            let Some(fields) = hit.as_object_mut() else {
+                continue;
+            };
+            if home.is_some() && fields.get("chain_key").and_then(Value::as_str) == home {
+                fields.remove("chain_key");
+            }
+            round_field(fields, "score");
+            if let Some(thought) = fields.get_mut("thought") {
+                *thought = lean_thought(std::mem::take(thought));
+            }
+        }
+        output
+    }
+}
+
+/// Remove `key` from `map` and read it as a boolean. `Ok(None)` when absent or
+/// `null`; an error naming the key when it holds anything but a boolean.
+fn optional_bool(map: &mut Map<String, Value>, key: &str) -> Result<Option<bool>, String> {
+    match map.remove(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(value)),
+        Some(other) => Err(format!(
+            "{key} must be a boolean (true or false), got {other}"
+        )),
+    }
+}
+
+/// The one-per-response reminder of what a hit without `provenance` is.
+///
+/// A lean hit leaves `provenance` out for the plain case, so the absence is
+/// itself a trust claim; this field says in words what it claims, once per
+/// response instead of once per hit.
+pub const PROVENANCE_REMINDER: &str = "public, unsigned: anyone could have written it";
+
+/// Add [`PROVENANCE_REMINDER`] as `default_provenance` to a lean search
+/// response (an object; anything else is returned unchanged).
+fn with_provenance_reminder(mut output: Value) -> Value {
+    if let Some(map) = output.as_object_mut() {
+        map.insert(
+            "default_provenance".into(),
+            Value::String(PROVENANCE_REMINDER.into()),
+        );
+    }
+    output
+}
+
+fn drop_key(mut output: Value, key: &str) -> Value {
+    if let Some(map) = output.as_object_mut() {
+        map.remove(key);
+    }
+    output
+}
+
+fn lean_lexical(mut output: Value) -> Value {
+    let Some(results) = output.get_mut("results").and_then(Value::as_array_mut) else {
+        return output;
+    };
+    for result in results {
+        let Some(fields) = result.as_object_mut() else {
+            continue;
+        };
+        fields.remove("match_sources");
+        round_field(fields, "score");
+        if let Some(thought) = fields.get_mut("thought") {
+            *thought = lean_thought(compact_thought_json(std::mem::take(thought)));
+        }
+    }
+    output
+}
+
+fn lean_bundles(mut output: Value) -> Value {
+    let Some(bundles) = output.get_mut("bundles").and_then(Value::as_array_mut) else {
+        return output;
+    };
+    for bundle in bundles {
+        if let Some(seed) = bundle.get_mut("seed").and_then(Value::as_object_mut) {
+            round_field(seed, "lexical_score");
+            lean_bundle_thought(seed);
+        }
+        let support = bundle.get_mut("support").and_then(Value::as_array_mut);
+        for item in support.into_iter().flatten() {
+            if let Some(fields) = item.as_object_mut() {
+                lean_bundle_thought(fields);
+            }
+        }
+    }
+    output
+}
+
+/// Lean the `thought` of a bundle seed or support hit and drop the `locator`
+/// that only repeats the thought's own `id` and `index`.
+fn lean_bundle_thought(fields: &mut Map<String, Value>) {
+    let Some(thought) = fields.get_mut("thought").filter(|t| t.is_object()) else {
+        return;
+    };
+    *thought = lean_thought(compact_thought_json(std::mem::take(thought)));
+    fields.remove("locator");
+}
+
+/// Round a numeric field to two decimals (three below 1), in place.
+fn round_field(fields: &mut Map<String, Value>, key: &str) {
+    if let Some(rounded) = fields.get(key).and_then(Value::as_f64).map(round_score) {
+        fields.insert(key.to_owned(), rounded);
+    }
+}
+
+/// `x` rounded to 2 decimals, or 3 when `|x| < 1`, as a JSON number.
+fn round_score(x: f64) -> Value {
+    let scale = if x.abs() < 1.0 { 1000.0 } else { 100.0 };
+    json!((x * scale).round() / scale)
+}
+
+/// Whether a provenance object is the plain public, unsigned case.
+fn provenance_is_plain(p: &Map<String, Value>) -> bool {
+    // Fail closed: only exactly `segment: "public"` and `signature: "unsigned"`
+    // (both present, both strings) with no verifier is plain. A missing,
+    // non-string or unexpected value is not, so it is rendered, not assumed.
+    p.get("segment").and_then(Value::as_str) == Some("public")
+        && p.get("signature").and_then(Value::as_str) == Some("unsigned")
+        && p.get("verified_agent").is_none_or(Value::is_null)
+        && p.get("signature_version").is_none_or(Value::is_null)
+}
+
+/// The provenance fields that differ from the plain case, as they are. A
+/// `segment` or `signature` that is missing is reported as `unknown: true`.
+fn lean_provenance(p: &Map<String, Value>) -> Map<String, Value> {
+    let mut out = Map::new();
+    for (key, plain) in [("segment", "public"), ("signature", "unsigned")] {
+        match p.get(key) {
+            Some(v) if v.as_str() == Some(plain) => {}
+            Some(v) => {
+                out.insert(key.to_owned(), v.clone());
+            }
+            None => {
+                out.insert("unknown".to_owned(), Value::Bool(true));
+            }
+        }
+    }
+    for key in ["signature_version", "verified_agent"] {
+        if let Some(v) = p.get(key).filter(|v| !v.is_null()) {
+            out.insert(key.to_owned(), v.clone());
+        }
+    }
+    out
+}
+
+/// Reshape one (already compact) thought into its lean form. See the module
+/// documentation for the rules. A value that is not an object is returned
+/// unchanged.
+pub(crate) fn lean_thought(thought: Value) -> Value {
+    let Value::Object(mut fields) = thought else {
+        return thought;
+    };
+    lean_provenance_field(&mut fields);
+    if fields.get("role").and_then(Value::as_str) == Some("Memory") {
+        fields.remove("role");
+    }
+    if fields.get("importance").and_then(Value::as_f64) == Some(0.5) {
+        fields.remove("importance");
+    } else {
+        round_field(&mut fields, "importance");
+    }
+    round_field(&mut fields, "confidence");
+    let timestamp = fields
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    lean_lineage(&mut fields, timestamp.as_deref());
+    if let Some(Value::Array(ids)) = fields.remove("collapsed_duplicates") {
+        fields.insert("duplicates_collapsed".into(), json!(ids.len()));
+    }
+    Value::Object(fields)
+}
+
+fn lean_provenance_field(fields: &mut Map<String, Value>) {
+    let Some(Value::Object(provenance)) = fields.get("provenance") else {
+        // Fail closed: a memory whose provenance is missing or malformed is
+        // reported as unknown, never silently as the plain case.
+        if fields.contains_key("content") {
+            fields.insert("provenance".into(), json!({"unknown": true}));
+        }
+        return;
+    };
+    if provenance_is_plain(provenance) {
+        fields.remove("provenance");
+    } else {
+        let lean = lean_provenance(provenance);
+        fields.insert("provenance".into(), Value::Object(lean));
+    }
+}
+
+/// Collapse `successor_of` to the immediate predecessor and drop what it makes
+/// redundant in `relations`.
+fn lean_lineage(fields: &mut Map<String, Value>, timestamp: Option<&str>) {
+    let predecessors: Vec<Value> = match fields.get("successor_of") {
+        Some(Value::Array(ids)) => ids.clone(),
+        _ => Vec::new(),
+    };
+    let immediate = immediate_predecessor(fields, &predecessors);
+    if let Some(id) = &immediate {
+        fields.insert("successor_of".into(), json!([id]));
+        if predecessors.len() > 1 {
+            fields.insert("superseded_versions".into(), json!(predecessors.len()));
+        }
+        // The relation that names the predecessor is dropped below, so keep
+        // its kind unless it is the default.
+        match strong_link_kind(fields, id) {
+            Some(kind) if kind != "Supersedes" => {
+                fields.insert("successor_kind".into(), json!(kind));
+            }
+            _ => {}
+        }
+    }
+    if let Some(Value::Array(relations)) = fields.get_mut("relations") {
+        relations.retain_mut(|relation| {
+            let Some(fields) = relation.as_object_mut() else {
+                return true;
+            };
+            let target = fields.get("target_id").and_then(Value::as_str);
+            let strong = matches!(
+                fields.get("kind").and_then(Value::as_str),
+                Some("Supersedes" | "Corrects" | "Invalidates")
+            );
+            if strong && target.is_some() && target == immediate.as_deref() {
+                return false;
+            }
+            if fields.get("valid_at").and_then(Value::as_str) == timestamp {
+                fields.remove("valid_at");
+            }
+            true
+        });
+    }
+    if fields
+        .get("relations")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty)
+    {
+        fields.remove("relations");
+    }
+}
+
+/// The kind (`Supersedes`, `Corrects` or `Invalidates`) of this thought's own
+/// strong relation to `target`, if it has one.
+fn strong_link_kind(fields: &Map<String, Value>, target: &str) -> Option<String> {
+    fields
+        .get("relations")?
+        .as_array()?
+        .iter()
+        .filter(|r| r.get("target_id").and_then(Value::as_str) == Some(target))
+        .filter_map(|r| r.get("kind").and_then(Value::as_str))
+        .find(|kind| matches!(*kind, "Supersedes" | "Corrects" | "Invalidates"))
+        .map(str::to_owned)
+}
+
+/// The predecessor this thought directly replaces: the target of its own
+/// strong relation when that is among `predecessors`, else the first one.
+fn immediate_predecessor(fields: &Map<String, Value>, predecessors: &[Value]) -> Option<String> {
+    let listed = |id: &str| predecessors.iter().any(|p| p.as_str() == Some(id));
+    let linked = fields
+        .get("relations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|r| {
+            matches!(
+                r.get("kind").and_then(Value::as_str),
+                Some("Supersedes" | "Corrects" | "Invalidates")
+            )
+        })
+        .filter_map(|r| r.get("target_id").and_then(Value::as_str))
+        .find(|id| listed(id));
+    linked
+        .or_else(|| predecessors.first().and_then(Value::as_str))
+        .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plain_provenance() -> Value {
+        json!({"segment": "public", "signature": "unsigned", "signature_version": null,
+               "signed": false, "trust": "untrusted_data", "verified_agent": null})
+    }
+
+    /// The plain public, unsigned provenance disappears; defaults go with it.
+    #[test]
+    fn test_lean_thought_elides_plain_provenance_and_defaults_but_keeps_the_timestamp() {
+        let lean = lean_thought(json!({
+            "content": "x", "id": "a", "index": 3, "role": "Memory", "importance": 0.5,
+            "provenance": plain_provenance(),
+            "timestamp": "2026-11-08T00:46:34.624687Z",
+        }));
+        assert_eq!(
+            lean,
+            json!({"content": "x", "id": "a", "index": 3, "timestamp": "2026-11-08T00:46:34.624687Z"})
+        );
+    }
+
+    /// A malformed provenance object is never plain: a missing, non-string or
+    /// unexpected `segment`/`signature` is rendered (or flagged unknown).
+    #[test]
+    fn test_malformed_provenance_is_not_plain() {
+        let lean =
+            |p: Value| lean_thought(json!({"content": "x", "provenance": p}))["provenance"].clone();
+        assert_eq!(lean(json!({})), json!({"unknown": true}));
+        assert_eq!(lean(json!({"segment": "public"})), json!({"unknown": true}));
+        assert_eq!(
+            lean(json!({"segment": "public", "signature": 7})),
+            json!({"signature": 7})
+        );
+        assert_eq!(
+            lean(json!({"segment": "weird", "signature": "unsigned"})),
+            json!({"segment": "weird"})
+        );
+        assert_eq!(
+            lean(json!({"segment": null, "signature": "unsigned"})),
+            json!({"segment": null})
+        );
+        // Exactly the plain case still disappears.
+        let plain = lean_thought(
+            json!({"content": "x", "provenance": {"segment": "public", "signature": "unsigned"}}),
+        );
+        assert!(plain.get("provenance").is_none());
+    }
+
+    /// A private, signed or verified provenance keeps only what differs, and a
+    /// verified writer stays visible.
+    #[test]
+    fn test_lean_thought_keeps_what_differs_in_provenance() {
+        let lean = lean_thought(json!({
+            "content": "x",
+            "provenance": {"segment": "private", "signed": true, "signature": "valid",
+                           "signature_version": 2, "verified_agent": "codex",
+                           "trust": "untrusted_data"},
+        }));
+        assert_eq!(
+            lean["provenance"],
+            json!({"segment": "private", "signature": "valid", "signature_version": 2,
+                   "verified_agent": "codex"})
+        );
+        let invalid = lean_thought(json!({"provenance": {"segment": "public", "signed": true,
+            "signature": "invalid", "signature_version": null, "verified_agent": null,
+            "trust": "untrusted_data"}}));
+        assert_eq!(invalid["provenance"], json!({"signature": "invalid"}));
+    }
+
+    /// Float noise from `f32` is rounded; non-default values stay.
+    #[test]
+    fn test_lean_thought_rounds_floats() {
+        let lean = lean_thought(json!({"importance": 0.800000011920929,
+                                       "confidence": 0.7000000476837158}));
+        assert_eq!(lean, json!({"importance": 0.8, "confidence": 0.7}));
+        assert_eq!(round_score(31.61272621154785), json!(31.61));
+        assert_eq!(round_score(0.034567), json!(0.035));
+    }
+
+    /// `successor_of` keeps the immediate predecessor and a count; the relation
+    /// that names it is dropped, an unrelated one stays.
+    #[test]
+    fn test_lean_thought_collapses_successor_of() {
+        let lean = lean_thought(json!({
+            "successor_of": ["old1", "old2", "old3"],
+            "relations": [
+                {"kind": "Supersedes", "target_id": "old2", "valid_at": "2026-01-01T00:00:00.5Z"},
+                {"kind": "References", "target_id": "other", "valid_at": "2026-01-01T00:00:00.5Z"}
+            ],
+            "timestamp": "2026-01-01T00:00:00.5Z",
+        }));
+        assert_eq!(lean["successor_of"], json!(["old2"]));
+        assert_eq!(lean["superseded_versions"], json!(3));
+        assert_eq!(
+            lean["relations"],
+            json!([{"kind": "References", "target_id": "other"}])
+        );
+    }
+
+    /// The kind of the dropped link survives as `successor_kind` unless it is
+    /// the default `Supersedes`.
+    #[test]
+    fn test_lean_thought_keeps_the_link_kind() {
+        let link = |kind: &str| {
+            lean_thought(json!({
+                "successor_of": ["old"],
+                "relations": [{"kind": kind, "target_id": "old"}],
+            }))
+        };
+        assert_eq!(link("Corrects")["successor_kind"], json!("Corrects"));
+        assert_eq!(link("Invalidates")["successor_kind"], json!("Invalidates"));
+        assert!(link("Supersedes").get("successor_kind").is_none());
+        assert!(link("Corrects").get("relations").is_none());
+        // No link naming the predecessor: nothing to report.
+        let none = lean_thought(json!({"successor_of": ["old"]}));
+        assert!(none.get("successor_kind").is_none());
+    }
+
+    /// A lone predecessor needs no count, and without a linking relation the
+    /// first listed id is kept.
+    #[test]
+    fn test_lean_thought_single_predecessor_has_no_count() {
+        let lean = lean_thought(json!({"successor_of": ["old"], "relations": []}));
+        assert_eq!(lean, json!({"successor_of": ["old"]}));
+    }
+
+    /// Duplicate ids collapse to a count.
+    #[test]
+    fn test_lean_thought_counts_collapsed_duplicates() {
+        let lean = lean_thought(json!({"collapsed_duplicates": ["a", "b"]}));
+        assert_eq!(lean, json!({"duplicates_collapsed": 2}));
+    }
+
+    /// Fail closed: a thought with content but no (or malformed) provenance is
+    /// marked unknown instead of being taken for the plain case.
+    #[test]
+    fn test_lean_thought_marks_missing_provenance_unknown() {
+        assert_eq!(
+            lean_thought(json!({"content": "x"}))["provenance"],
+            json!({"unknown": true})
+        );
+        assert_eq!(
+            lean_thought(json!({"content": "x", "provenance": null}))["provenance"],
+            json!({"unknown": true})
+        );
+        assert_eq!(
+            lean_thought(json!({"content": "x", "provenance": "public"}))["provenance"],
+            json!({"unknown": true})
+        );
+        // Not a memory (no content): left alone.
+        assert!(lean_thought(json!({"id": "a"})).get("provenance").is_none());
+    }
+
+    /// A `compact` that is not a boolean is refused, never read as the default.
+    #[test]
+    fn test_prepare_rejects_a_non_boolean_compact() {
+        for bad in [json!("false"), json!(0), json!([]), json!({"x": 1})] {
+            let mut args = json!({"text": "q", "compact": bad});
+            let err = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home").unwrap_err();
+            assert!(err.contains("compact must be a boolean"), "{err}");
+        }
+        let mut args = json!({"include_entries": "yes"});
+        assert!(LeanPlan::prepare("mentisdb_standing_context", &mut args, "home").is_err());
+        // null means "not given".
+        let mut args = json!({"compact": null});
+        assert!(
+            LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home")
+                .unwrap()
+                .compact
+        );
+    }
+
+    /// Every lean search response carries the reminder once.
+    #[test]
+    fn test_lean_search_responses_carry_the_provenance_reminder() {
+        for tool in [
+            "mentisdb_ranked_search",
+            "mentisdb_federated_search",
+            "mentisdb_lexical_search",
+            "mentisdb_context_bundles",
+        ] {
+            let mut args = json!({});
+            let plan = LeanPlan::prepare(tool, &mut args, "home").unwrap();
+            let shaped = plan.shape(tool, json!({"results": [], "bundles": []}));
+            let parsed: Value = serde_json::from_str(shaped.as_str().unwrap()).unwrap();
+            assert_eq!(
+                parsed["default_provenance"],
+                json!(PROVENANCE_REMINDER),
+                "{tool}"
+            );
+        }
+        let mut args = json!({"compact": false});
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home").unwrap();
+        let shaped = plan.shape("mentisdb_ranked_search", json!({"results": []}));
+        assert!(!shaped.as_str().unwrap().contains("default_provenance"));
+    }
+
+    /// A value that is not an object passes through.
+    #[test]
+    fn test_lean_thought_ignores_non_objects() {
+        assert_eq!(lean_thought(json!(null)), json!(null));
+        assert_eq!(lean_thought(json!("x")), json!("x"));
+    }
+
+    /// `compact` defaults to true for searches, is forwarded to the search services
+    /// and can be turned off.
+    #[test]
+    fn test_prepare_defaults_compact_for_search_tools() {
+        let mut args = json!({"text": "q"});
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home").unwrap();
+        assert!(plan.compact);
+        assert_eq!(args["compact"], json!(true));
+
+        let mut args = json!({"text": "q", "compact": false});
+        let plan = LeanPlan::prepare("mentisdb_federated_search", &mut args, "home").unwrap();
+        assert!(!plan.compact);
+        assert_eq!(args["compact"], json!(false));
+
+        let mut args = json!({"text": "q", "compact": true});
+        let plan = LeanPlan::prepare("mentisdb_lexical_search", &mut args, "home").unwrap();
+        assert!(plan.compact);
+        assert_eq!(args["compact"], json!(true));
+
+        let mut args = json!({"chain_key": "c"});
+        let plan = LeanPlan::prepare("mentisdb_head", &mut args, "home").unwrap();
+        assert!(!plan.compact);
+        assert_eq!(args, json!({"chain_key": "c"}));
+    }
+
+    /// Standing context drops `entries` unless asked, and the result is one
+    /// minified string.
+    #[test]
+    fn test_shape_standing_context_drops_entries_by_default() {
+        let output =
+            json!({"entries": [{"content": "x"}], "prompt": "p", "duplicates_collapsed": 0});
+        let mut args = json!({});
+        let plan = LeanPlan::prepare("mentisdb_standing_context", &mut args, "home").unwrap();
+        let text = plan.shape("mentisdb_standing_context", output.clone());
+        assert_eq!(text, json!(r#"{"duplicates_collapsed":0,"prompt":"p"}"#));
+
+        let mut args = json!({"include_entries": true});
+        let plan = LeanPlan::prepare("mentisdb_standing_context", &mut args, "home").unwrap();
+        assert!(args.get("include_entries").is_none());
+        let text = plan.shape("mentisdb_standing_context", output);
+        assert!(text.as_str().unwrap().contains("\"entries\""));
+    }
+
+    /// A ranked hit from the searched chain loses `chain_key`; one from another
+    /// chain keeps it.
+    #[test]
+    fn test_ranked_hits_name_only_foreign_chains() {
+        let mut args = json!({"chain_key": "home"});
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home").unwrap();
+        let output = json!({"total": 2, "results": [
+            {"chain_key": "home", "score": 24.917037963867188, "thought": {"content": "a"}},
+            {"chain_key": "parent", "score": 3.0, "thought": {"content": "b"}}]});
+        let shaped = plan.shape("mentisdb_ranked_search", output);
+        let parsed: Value = serde_json::from_str(shaped.as_str().unwrap()).unwrap();
+        assert!(parsed["results"][0].get("chain_key").is_none());
+        assert_eq!(parsed["results"][0]["score"], json!(24.92));
+        assert_eq!(parsed["results"][1]["chain_key"], json!("parent"));
+    }
+
+    /// With no chain named, the server's default chain is the one searched:
+    /// its hits drop the key, a hit from anywhere else keeps it, even when
+    /// every hit shares one foreign key. Federated hits always keep it.
+    #[test]
+    fn test_chain_key_elision_is_tied_to_the_searched_chain() {
+        let from = |key: &str| {
+            json!({"results": [
+                {"chain_key": key, "score": 1.0, "thought": {}},
+                {"chain_key": key, "score": 1.0, "thought": {}}]})
+        };
+        let mut args = json!({});
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home").unwrap();
+        let shaped = plan.shape("mentisdb_ranked_search", from("home"));
+        assert!(!shaped.as_str().unwrap().contains("\"chain_key\""));
+        let shaped = plan.shape("mentisdb_ranked_search", from("ancestor"));
+        assert!(shaped
+            .as_str()
+            .unwrap()
+            .contains("\"chain_key\":\"ancestor\""));
+        let mut args = json!({"chain_key": " "});
+        let plan = LeanPlan::prepare("mentisdb_ranked_search", &mut args, "home").unwrap();
+        let shaped = plan.shape("mentisdb_ranked_search", from("home"));
+        assert!(!shaped.as_str().unwrap().contains("\"chain_key\""));
+        let mut args = json!({});
+        let plan = LeanPlan::prepare("mentisdb_federated_search", &mut args, "home").unwrap();
+        let shaped = plan.shape("mentisdb_federated_search", from("home"));
+        assert!(shaped.as_str().unwrap().contains("\"chain_key\""));
+    }
+}

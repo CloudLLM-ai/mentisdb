@@ -110,8 +110,9 @@
 use crate::audience::Audience;
 use crate::provenance::ProvenanceTrust;
 use crate::{
-    is_invalidating_relation_kind, MentisDb, RankedSearchHit, RankedSearchQuery,
-    RankedSearchResult, Thought, ThoughtRelationKind, ThoughtType,
+    compare_scored_candidates, is_invalidating_relation_kind, MentisDb, RankedSearchHit,
+    RankedSearchQuery, RankedSearchResult, ScoredCandidate, ScoredPass, Thought,
+    ThoughtRelationKind, ThoughtType,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -352,8 +353,12 @@ pub struct VersionInfo {
     /// The newest live thought at the end of the supersession chain. Only
     /// set when `status` is [`VersionStatus::Superseded`] and a live end exists.
     pub current_version: Option<SuccessorNote>,
-    /// Ids of older thoughts this hit stands in for. Non-empty when the hit
-    /// was surfaced because it replaces or contests them.
+    /// Ids of older thoughts that **matched the query** and that this hit
+    /// stands in for. Non-empty when the hit was surfaced because it replaces
+    /// or contests them. It is not the hit's whole lineage: only the matches
+    /// the page walk met before the page filled are listed, so versions that
+    /// did not match, or ranked below the page cut, are absent and the length
+    /// is a lower bound on the number of older versions.
     pub successor_of: Vec<Uuid>,
     /// `true` when the replacement crosses agents: the hit stands in for a
     /// thought written by another agent (`successor_of`), or the thought's
@@ -795,10 +800,54 @@ impl MentisDb {
     /// would have ranked is replaced by its live successor and a contested
     /// thought is preceded by the thought contesting it. Every returned hit
     /// carries a [`VersionInfo`].
+    ///
+    /// # How the page is filled
+    ///
+    /// Only **live memories** compete for the page. Every matching thought is
+    /// scored once (including superseded ones, so a successor whose wording
+    /// does not match the query can still be nominated), the scores are put in
+    /// rank order, and the page is built by walking that order:
+    ///
+    /// * a live thought takes a slot of its own (preceded by the live thought
+    ///   contesting it, if any);
+    /// * a superseded thought does **not** take a slot; it *nominates* its live
+    ///   successor, which takes the slot at the superseded thought's rank (or
+    ///   the one it already holds) and records the nominator in
+    ///   [`VersionInfo::successor_of`].
+    ///
+    /// The walk stops as soon as the page holds `limit` distinct live
+    /// memories, so a page holds `limit` hits whenever that many live memories
+    /// match, however many superseded versions of one fact outrank the rest.
+    /// (An earlier design ranked a fixed `2 * limit` window including
+    /// superseded versions and collapsed it afterwards: thirty rewrites of one
+    /// decision consumed the whole window and every other match vanished.)
+    /// `successor_of` lists the superseded versions **that matched the query**
+    /// and were met before the page filled. It is not the whole lineage: a
+    /// version that did not match, or that ranks below the cut, is not listed,
+    /// so its length is a lower bound on the number of older versions.
+    ///
+    /// Near-duplicate collapsing ([`RankedSearchQuery::collapse_duplicates`])
+    /// removes hits from a page after it is built. When it leaves fewer than
+    /// `limit` hits and ranked matches remain, the walk **resumes** with a
+    /// doubled target over the same scores: nothing is re-scored,
+    /// re-materialized or re-tokenized (only the new hits are compared with the
+    /// survivors, and a hit with the same text as a survivor joins it without
+    /// being tokenized). The refill window is capped at
+    /// `max(16 * limit, 4096)` ranked slots, so a page whose distinct matches
+    /// lie deeper than that (more than the cap's worth of near-copies outrank
+    /// them) comes back short rather than reading the whole ranking.
+    ///
+    /// Cost: one scoring pass over the matches (as for any ranked search), a
+    /// lazy partial sort that orders only the ranks the walk reads, and lineage
+    /// lookups (memoized per call) for the thoughts it visits, each bounded by
+    /// [`MAX_LINEAGE_DEPTH`].
+    ///
+    /// `total_candidates` counts the **live** matches: the superseded ones that
+    /// the walk consults are not counted.
     pub fn query_ranked(&self, request: &RankedSearchQuery) -> RankedSearchResult<'_> {
         let explicit = request.include_invalidated || request.filter.include_invalidated;
         // A chain with no supersession or contest edge has nothing to redirect,
-        // so skip the wider ranking pass entirely.
+        // so skip the lineage walk entirely.
         let has_lineage =
             !self.invalidated_thought_ids().is_empty() || !self.lineage.by_target.is_empty();
         let redirect = request.resolve_successors && !explicit && request.limit > 0 && has_lineage;
@@ -818,34 +867,50 @@ impl MentisDb {
         }
         let mut wide = request.clone();
         if redirect {
+            // Superseded thoughts are scored too so they can nominate their
+            // successors; they are not matches of the query the caller asked.
             wide.include_invalidated = true;
             wide.filter.include_invalidated = true;
         }
-        // Redirecting and collapsing both remove or replace hits, so rank a
-        // wider page and trim it back to the caller's limit afterwards.
-        // Caller-supplied: saturate so `limit = usize::MAX` cannot overflow.
-        wide.limit = request
-            .limit
-            .saturating_mul(2)
-            .max(request.limit.saturating_add(8));
-        let (mut result, superseded) = self.rank_raw(&wide, redirect);
-        // The wide pass ranked superseded thoughts so their successors can take
-        // their place; they are not matches of the query the caller asked.
-        result.total_candidates = result.total_candidates.saturating_sub(superseded);
-        let raw = std::mem::take(&mut result.hits);
-        let mut hits = if redirect {
-            self.redirect_hits(raw, request)
-        } else {
-            let mut raw = raw;
-            self.annotate_hits(&mut raw, request.as_of, request.filter.audience);
-            raw
+        let mut pass = self.score_pass(&wide, redirect);
+        let total_candidates = pass.total_candidates.saturating_sub(pass.invalidated);
+        let scored = std::mem::take(&mut pass.scored);
+        let mut walk = PageWalk::new(self, &pass, scored, request, redirect);
+        let mut hits = match collapse {
+            None => {
+                walk.advance(request.limit);
+                walk.out
+            }
+            Some(threshold) => {
+                let mut collapser = Collapser::new(threshold);
+                // Collapsed hits free slots, so start wider than the page.
+                // Caller-supplied: saturate.
+                let mut target = request
+                    .limit
+                    .saturating_mul(2)
+                    .max(request.limit.saturating_add(8));
+                let cap = request
+                    .limit
+                    .saturating_mul(COLLAPSE_WINDOW_FACTOR)
+                    .max(COLLAPSE_WINDOW_MIN);
+                loop {
+                    let exhausted = walk.advance(target);
+                    collapser.absorb(&walk.out);
+                    if collapser.len() >= request.limit || exhausted || target >= cap {
+                        break;
+                    }
+                    target = target.saturating_mul(2).min(cap);
+                }
+                collapser.finish(&walk.out)
+            }
         };
-        if let Some(threshold) = collapse {
-            hits = collapse_duplicate_hits(hits, threshold);
-        }
         hits.truncate(request.limit);
-        result.hits = hits;
-        result
+        self.annotate_hits(&mut hits, request.as_of, request.filter.audience);
+        RankedSearchResult {
+            backend: pass.backend,
+            total_candidates,
+            hits,
+        }
     }
 
     fn annotate_hits(
@@ -869,82 +934,6 @@ impl MentisDb {
         // `query_matches_registry` repeats the audience check, so a successor in
         // a segment the reader may not see is never offered.
         request.filter.matches(thought) && self.query_matches_registry(thought, &request.filter)
-    }
-
-    fn redirect_hits<'a>(
-        &'a self,
-        raw: Vec<RankedSearchHit<'a>>,
-        request: &RankedSearchQuery,
-    ) -> Vec<RankedSearchHit<'a>> {
-        let as_of = request.as_of;
-        let audience = request.filter.audience;
-        let by_id: HashMap<Uuid, usize> = raw
-            .iter()
-            .enumerate()
-            .map(|(i, h)| (h.thought.id, i))
-            .collect();
-        // Sized from the hits we actually have, never from the caller-supplied
-        // limit, which may be `usize::MAX`.
-        let mut out: Vec<RankedSearchHit<'a>> =
-            Vec::with_capacity(request.limit.min(raw.len()).saturating_add(1));
-        let mut placed: HashMap<Uuid, usize> = HashMap::new();
-        let place = |out: &mut Vec<RankedSearchHit<'a>>,
-                     placed: &mut HashMap<Uuid, usize>,
-                     template: &RankedSearchHit<'a>,
-                     thought: &'a Thought,
-                     stands_in_for: Uuid,
-                     bump: f32| {
-            if let Some(&slot) = placed.get(&thought.id) {
-                let ids = &mut out[slot].version.successor_of;
-                if !ids.contains(&stands_in_for) {
-                    ids.push(stands_in_for);
-                }
-                return;
-            }
-            let mut hit = by_id
-                .get(&thought.id)
-                .map_or_else(|| template.clone(), |&i| raw[i].clone());
-            hit.thought = thought;
-            // Inherit the stand-in's score so later score-based re-sorting
-            // (cross-chain merges, REST paging) keeps the successor on top.
-            hit.score.total = hit.score.total.max(template.score.total + bump);
-            hit.version.successor_of = vec![stands_in_for];
-            placed.insert(thought.id, out.len());
-            out.push(hit);
-        };
-
-        for hit in &raw {
-            let id = hit.thought.id;
-            if placed.contains_key(&id) {
-                continue;
-            }
-            if self.invalidated_at(id, as_of, audience) {
-                if let Some(succ) = self
-                    .live_successor(id, as_of, audience)
-                    .filter(|t| self.successor_allowed(t, request))
-                {
-                    place(&mut out, &mut placed, hit, succ, id, 0.0);
-                }
-                continue;
-            }
-            if let Some(contester) = self
-                .live_contester(id, as_of, audience)
-                .filter(|t| self.successor_allowed(t, request))
-            {
-                place(
-                    &mut out,
-                    &mut placed,
-                    hit,
-                    contester,
-                    id,
-                    CONTEST_SCORE_BUMP,
-                );
-            }
-            placed.insert(id, out.len());
-            out.push(hit.clone());
-        }
-        self.annotate_hits(&mut out, as_of, audience);
-        out
     }
 
     /// Inspect a freshly appended thought and return guidance when it looks
@@ -1242,6 +1231,354 @@ pub fn collapse_duplicates_from_env() -> Option<f32> {
 /// Built-in default of [`collapse_duplicates_from_env`].
 pub const DEFAULT_COLLAPSE_DUPLICATES: Option<f32> = Some(0.9);
 
+/// Widest ranked window, as a multiple of the page `limit`, that near-duplicate
+/// collapsing may read while refilling a page (see [`MentisDb::query_ranked`]).
+const COLLAPSE_WINDOW_FACTOR: usize = 16;
+/// Smallest collapse window: a short page may still read this many ranked
+/// slots. Matches ranked below the window cannot refill a page.
+const COLLAPSE_WINDOW_MIN: usize = 4096;
+
+/// Ranked scores handed out best first, sorted lazily.
+///
+/// Reading the first `n` of `m` scores costs `O(m + n log n)`: each step
+/// selects the next block with a partial sort instead of sorting all `m`, so a
+/// short page over a large match set never pays for the tail. The order is the
+/// total order of [`compare_scored_candidates`] (it ends in a unique thought
+/// index), so it equals a full sort.
+struct RankCursor<'a> {
+    scored: Vec<ScoredCandidate<'a>>,
+    /// `scored[..sorted]` is the best `sorted` scores in order.
+    sorted: usize,
+}
+
+impl<'a> RankCursor<'a> {
+    /// Smallest block selected at once.
+    const MIN_BLOCK: usize = 64;
+
+    fn new(scored: Vec<ScoredCandidate<'a>>) -> Self {
+        Self { scored, sorted: 0 }
+    }
+
+    /// The `index`-th best score, or `None` past the end.
+    fn get(&mut self, index: usize) -> Option<ScoredCandidate<'a>> {
+        if index >= self.scored.len() {
+            return None;
+        }
+        if index >= self.sorted {
+            let want = (index + 1)
+                .max(self.sorted.saturating_mul(2))
+                .max(Self::MIN_BLOCK)
+                .min(self.scored.len());
+            let block = want - self.sorted;
+            let tail = &mut self.scored[self.sorted..];
+            if block < tail.len() {
+                tail.select_nth_unstable_by(block - 1, compare_scored_candidates);
+            }
+            tail[..block].sort_unstable_by(compare_scored_candidates);
+            self.sorted = want;
+        }
+        Some(self.scored[index])
+    }
+}
+
+/// The lineage-aware page walk behind [`MentisDb::query_ranked`]: reads ranked
+/// scores in order and builds hits for distinct live memories, resumable so a
+/// larger page continues where a smaller one stopped.
+///
+/// Each emitted hit's total is clamped to be non-increasing in page order. A
+/// stand-in inherits its predecessor's score (a contester is bumped above the
+/// thought it contests), so without the clamp a hit could outscore the one
+/// before it. Paged readers (REST ranked, lexical and federated search) fetch
+/// `offset + page` hits, re-sort by score and skip `offset`; that yields the
+/// same page order for every window size only when score order **is** page
+/// order. A clamped hit gets the next float below its predecessor's total, so a
+/// sort that breaks ties differently (federated search uses the thought index)
+/// still keeps the walk order. Hits already in order, which is every hit on a
+/// chain without lineage or contests, are not touched.
+///
+/// `live_successor` and `live_contester` answers are memoized per walk, and the
+/// map from id to the successor's own score is built only when a successor is
+/// first placed.
+struct PageWalk<'s, 'a> {
+    db: &'a MentisDb,
+    pass: &'s ScoredPass<'a>,
+    request: &'s RankedSearchQuery,
+    redirect: bool,
+    cursor: RankCursor<'a>,
+    /// Next rank to read.
+    next: usize,
+    own_scores: Option<HashMap<Uuid, ScoredCandidate<'a>>>,
+    successors: HashMap<Uuid, Option<&'a Thought>>,
+    contesters: HashMap<Uuid, Option<&'a Thought>>,
+    /// Thought id to its slot in `out`.
+    placed: HashMap<Uuid, usize>,
+    /// Hits in page order; never reordered or shrunk, so slots stay valid.
+    out: Vec<RankedSearchHit<'a>>,
+    ceiling: f32,
+}
+
+impl<'s, 'a> PageWalk<'s, 'a> {
+    fn new(
+        db: &'a MentisDb,
+        pass: &'s ScoredPass<'a>,
+        scored: Vec<ScoredCandidate<'a>>,
+        request: &'s RankedSearchQuery,
+        redirect: bool,
+    ) -> Self {
+        Self {
+            db,
+            pass,
+            request,
+            redirect,
+            cursor: RankCursor::new(scored),
+            next: 0,
+            own_scores: None,
+            successors: HashMap::new(),
+            contesters: HashMap::new(),
+            placed: HashMap::new(),
+            out: Vec::new(),
+            ceiling: f32::INFINITY,
+        }
+    }
+
+    /// Continue the walk until `out` holds `target` hits (it may overshoot by
+    /// one, a contester placed with its contested thought). Returns `true`
+    /// when the ranking is exhausted, i.e. a larger `target` cannot add more.
+    ///
+    /// With `redirect` off every scored thought is its own slot (the caller
+    /// only wants duplicate collapsing). Only slots that make the page are
+    /// materialized, so the cost of matched terms and graph paths is bounded
+    /// by the page, not by the number of matches.
+    fn advance(&mut self, target: usize) -> bool {
+        let (as_of, audience) = (self.request.as_of, self.request.filter.audience);
+        while let Some(candidate) = self.cursor.get(self.next) {
+            let id = candidate.thought.id;
+            if self.placed.contains_key(&id) {
+                self.next += 1;
+                continue;
+            }
+            if self.out.len() >= target {
+                return false;
+            }
+            self.next += 1;
+            if self.redirect && self.db.invalidated_at(id, as_of, audience) {
+                if let Some(successor) = self.live_successor(id) {
+                    self.place(&candidate, successor, id, 0.0);
+                }
+                continue;
+            }
+            if self.redirect {
+                if let Some(contester) = self.live_contester(id) {
+                    self.place(&candidate, contester, id, CONTEST_SCORE_BUMP);
+                }
+            }
+            let hit = self.pass.materialize(self.db, candidate);
+            self.push(id, hit);
+        }
+        true
+    }
+
+    fn live_successor(&mut self, id: Uuid) -> Option<&'a Thought> {
+        let (db, request) = (self.db, self.request);
+        *self.successors.entry(id).or_insert_with(|| {
+            db.live_successor(id, request.as_of, request.filter.audience)
+                .filter(|t| db.successor_allowed(t, request))
+        })
+    }
+
+    fn live_contester(&mut self, id: Uuid) -> Option<&'a Thought> {
+        let (db, request) = (self.db, self.request);
+        *self.contesters.entry(id).or_insert_with(|| {
+            db.live_contester(id, request.as_of, request.filter.audience)
+                .filter(|t| db.successor_allowed(t, request))
+        })
+    }
+
+    /// The score `thought` earned on its own, if it matched the query.
+    fn own_score(&mut self, id: Uuid) -> Option<ScoredCandidate<'a>> {
+        let scored = &self.cursor.scored;
+        self.own_scores
+            .get_or_insert_with(|| scored.iter().map(|c| (c.thought.id, *c)).collect())
+            .get(&id)
+            .copied()
+    }
+
+    /// Append `hit` as a new slot, keeping totals non-increasing.
+    fn push(&mut self, id: Uuid, mut hit: RankedSearchHit<'a>) {
+        if hit.score.total > self.ceiling {
+            hit.score.total = self.ceiling.next_down();
+        }
+        self.ceiling = hit.score.total;
+        self.placed.insert(id, self.out.len());
+        self.out.push(hit);
+    }
+
+    /// Place `thought` in the slot of `template`, which it stands in for.
+    fn place(
+        &mut self,
+        template: &ScoredCandidate<'a>,
+        thought: &'a Thought,
+        stands_in_for: Uuid,
+        bump: f32,
+    ) {
+        if let Some(&slot) = self.placed.get(&thought.id) {
+            let ids = &mut self.out[slot].version.successor_of;
+            if !ids.contains(&stands_in_for) {
+                ids.push(stands_in_for);
+            }
+            return;
+        }
+        // The successor's own ranking, when it matched; otherwise the
+        // stand-in's, so matched terms and sub-scores stay meaningful.
+        let own = self.own_score(thought.id);
+        let mut hit = self.pass.materialize(self.db, own.unwrap_or(*template));
+        hit.thought = thought;
+        // Inherit the stand-in's score so later score-based re-sorting
+        // (cross-chain merges, REST paging) keeps the successor on top.
+        hit.score.total = hit.score.total.max(template.total + bump);
+        hit.version.successor_of = vec![stands_in_for];
+        self.push(thought.id, hit);
+    }
+}
+
+/// Near-duplicate collapsing over a growing ranked window.
+///
+/// [`absorb`](Self::absorb) takes the hits added since the last call and
+/// compares them with the survivors so far, so a refill pass costs the new
+/// hits (plus the at most `limit` survivors), not the whole window again. The
+/// result equals collapsing the full window in one call.
+struct Collapser {
+    threshold: f32,
+    interned: HashMap<String, u32>,
+    /// Token-id sets of the survivors.
+    sets: Vec<Vec<u32>>,
+    /// Slot in the walk's `out` of each survivor.
+    survivors: Vec<usize>,
+    /// Ids folded into each survivor.
+    collapsed: Vec<Vec<Uuid>>,
+    /// Survivor slot by hash of its text, for the identical-text shortcut.
+    exact: HashMap<u64, usize>,
+    /// First slot of `out` not yet absorbed.
+    next: usize,
+}
+
+/// 64-bit hash of a thought's text, to find identical text without comparing
+/// every pair.
+fn content_hash(content: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut hasher);
+    hasher.finish()
+}
+
+impl Collapser {
+    fn new(threshold: f32) -> Self {
+        Self {
+            threshold,
+            interned: HashMap::new(),
+            sets: Vec::new(),
+            survivors: Vec::new(),
+            collapsed: Vec::new(),
+            exact: HashMap::new(),
+            next: 0,
+        }
+    }
+
+    /// Number of distinct hits so far.
+    fn len(&self) -> usize {
+        self.survivors.len()
+    }
+
+    fn absorb(&mut self, out: &[RankedSearchHit<'_>]) {
+        use crate::search::lexical::normalize_lexical_tokens;
+        let first = self.next;
+        let known = self.sets.len();
+        let mut sets = std::mem::take(&mut self.sets);
+        // Slots of `out` whose token sets were appended to `sets`, in order.
+        let mut judged: Vec<usize> = Vec::new();
+        let mut hashes: Vec<u64> = Vec::new();
+        for (at, hit) in out.iter().enumerate().skip(first) {
+            let hash = content_hash(&hit.thought.content);
+            hashes.push(hash);
+            // Identical text has similarity 1, so it joins the survivor with
+            // the same text without being tokenized. The survivors are
+            // mutually distinct, so that survivor is also the first one the
+            // full comparison would have picked.
+            if self.threshold <= 1.0 {
+                if let Some(&slot) = self.exact.get(&hash) {
+                    if out[self.survivors[slot]].thought.content == hit.thought.content {
+                        self.collapsed[slot].push(hit.thought.id);
+                        continue;
+                    }
+                }
+            }
+            let mut ids: Vec<u32> = normalize_lexical_tokens(&hit.thought.content, false)
+                .into_iter()
+                .map(|token| {
+                    let next = self.interned.len() as u32;
+                    *self.interned.entry(token).or_insert(next)
+                })
+                .collect();
+            ids.sort_unstable();
+            ids.dedup();
+            sets.push(ids);
+            judged.push(at);
+        }
+        self.next = out.len();
+        if judged.is_empty() {
+            self.sets = sets;
+            return;
+        }
+        // The survivors come first and are mutually distinct, so they keep
+        // their slots and each new hit is judged against them in rank order.
+        let slots = duplicate_slots_for(&sets, self.interned.len(), self.threshold);
+        for (&at, slot) in judged.iter().zip(&slots[known..]) {
+            match slot {
+                Some(slot) => self.collapsed[*slot].push(out[at].thought.id),
+                None => {
+                    self.exact.insert(hashes[at - first], self.survivors.len());
+                    self.survivors.push(at);
+                    self.collapsed.push(Vec::new());
+                }
+            }
+        }
+        self.sets = sets
+            .into_iter()
+            .zip(slots)
+            .enumerate()
+            .filter(|(i, (_, slot))| *i < known || slot.is_none())
+            .map(|(_, (set, _))| set)
+            .collect();
+    }
+
+    /// The survivors with the ids folded into each.
+    fn finish<'a>(&self, out: &[RankedSearchHit<'a>]) -> Vec<RankedSearchHit<'a>> {
+        self.survivors
+            .iter()
+            .zip(&self.collapsed)
+            .map(|(&slot, folded)| {
+                let mut hit = out[slot].clone();
+                hit.collapsed = folded.clone();
+                hit
+            })
+            .collect()
+    }
+}
+
+/// [`duplicate_slots`], or the plain scan for a threshold the prefix filter
+/// cannot use (zero, negative or NaN matches every pair).
+fn duplicate_slots_for(
+    sets: &[Vec<u32>],
+    token_count: usize,
+    threshold: f32,
+) -> Vec<Option<usize>> {
+    if threshold > 0.0 {
+        duplicate_slots(sets, token_count, threshold)
+    } else {
+        duplicate_slots_naive(sets, threshold)
+    }
+}
+
 /// Jaccard similarity of two sorted, duplicate-free token-id sets; `0.0` when
 /// either is empty.
 fn id_jaccard(a: &[u32], b: &[u32]) -> f32 {
@@ -1360,66 +1697,6 @@ fn duplicate_slots(sets: &[Vec<u32>], token_count: usize, threshold: f32) -> Vec
             first
         })
         .collect()
-}
-
-/// Drop every hit that is a near-duplicate (Jaccard of normalized tokens at
-/// least `threshold`) of a higher-ranked hit, recording the dropped ids on the
-/// survivor. Keeps rank order.
-///
-/// # Examples
-///
-/// ```
-/// use mentisdb::{MentisDb, RankedSearchQuery, StorageAdapterKind, ThoughtInput, ThoughtType};
-///
-/// # fn main() -> std::io::Result<()> {
-/// let dir = tempfile::tempdir()?;
-/// let mut chain = MentisDb::open_with_key_and_storage_kind(dir.path(), "dup", StorageAdapterKind::Binary)?;
-/// for _ in 0..3 {
-///     chain.append_thought("a", ThoughtInput::new(ThoughtType::Finding, "The build takes forty seconds on CI."))?;
-/// }
-/// let q = RankedSearchQuery::new().with_text("build seconds CI").with_collapse_duplicates(Some(0.9));
-/// let hits = chain.query_ranked(&q).hits;
-/// assert_eq!(hits.len(), 1);
-/// assert_eq!(hits[0].collapsed.len(), 2);
-/// # Ok(())
-/// # }
-/// ```
-pub(crate) fn collapse_duplicate_hits<'a>(
-    hits: Vec<RankedSearchHit<'a>>,
-    threshold: f32,
-) -> Vec<RankedSearchHit<'a>> {
-    use crate::search::lexical::normalize_lexical_tokens;
-    let mut interned: HashMap<String, u32> = HashMap::new();
-    let sets: Vec<Vec<u32>> = hits
-        .iter()
-        .map(|hit| {
-            let mut ids: Vec<u32> = normalize_lexical_tokens(&hit.thought.content, false)
-                .into_iter()
-                .map(|token| {
-                    let next = interned.len() as u32;
-                    *interned.entry(token).or_insert(next)
-                })
-                .collect();
-            ids.sort_unstable();
-            ids.dedup();
-            ids
-        })
-        .collect();
-    // A threshold that is zero, negative or NaN is not a similarity bound the
-    // prefix filter can use (zero matches every pair); keep the plain scan.
-    let slots = if threshold > 0.0 {
-        duplicate_slots(&sets, interned.len(), threshold)
-    } else {
-        duplicate_slots_naive(&sets, threshold)
-    };
-    let mut kept: Vec<RankedSearchHit<'a>> = Vec::new();
-    for (hit, slot) in hits.into_iter().zip(slots) {
-        match slot {
-            Some(slot) => kept[slot].collapsed.push(hit.thought.id),
-            None => kept.push(hit),
-        }
-    }
-    kept
 }
 
 /// The live thought on another chain that supersedes a target, found by
@@ -1665,50 +1942,68 @@ impl MentisDb {
         let as_of = request.as_of;
         let wide = self.retrieval_candidates(&request.filter, as_of, true);
         let scan = self.rank_candidates_lexically(&wide, text, request);
-        let wide_limit = request
-            .limit
-            .saturating_mul(2)
-            .max(request.limit.saturating_add(8));
-        let raw = self.context_bundle_seeds(&scan, wide_limit);
-        let mut out: Vec<crate::search::ContextBundleSeed> = Vec::with_capacity(raw.len());
+        let mut out: Vec<crate::search::ContextBundleSeed> = Vec::new();
         let mut placed: HashSet<Uuid> = HashSet::new();
-        let mut push = |out: &mut Vec<crate::search::ContextBundleSeed>,
-                        template: &crate::search::ContextBundleSeed,
-                        thought: &Thought| {
+        let push = |out: &mut Vec<crate::search::ContextBundleSeed>,
+                    placed: &mut HashSet<Uuid>,
+                    template: &crate::search::ContextBundleSeed,
+                    thought: &Thought| {
             if placed.insert(thought.id) {
                 let mut seed = template.clone();
                 seed.locator = crate::search::ThoughtLocator::local(thought);
                 out.push(seed);
             }
         };
-        for seed in &raw {
-            let Some(id) = seed
-                .locator
-                .thought_index
-                .and_then(|i| self.get_thought_by_index(i))
-                .map(|t| t.id)
-            else {
-                continue;
-            };
-            let Some(thought) = self.get_thought_by_id(id) else {
-                continue;
-            };
-            if self.invalidated_at(id, as_of, audience) {
-                if let Some(succ) = self
-                    .live_successor(id, as_of, audience)
-                    .filter(|t| self.successor_allowed(t, request))
-                {
-                    push(&mut out, seed, succ);
+        // Walk the ranking and stop once `limit` distinct live seeds are held,
+        // so superseded versions cannot crowd live matches out of a fixed-size
+        // window (see `query_ranked`). Ranks are read in blocks that double,
+        // each by a partial selection, so a short page never sorts the tail.
+        let mut successors: HashMap<Uuid, Option<&Thought>> = HashMap::new();
+        let mut contesters: HashMap<Uuid, Option<&Thought>> = HashMap::new();
+        let mut window = request.limit.saturating_mul(4).max(64);
+        let mut from = 0;
+        'walk: loop {
+            let ranked = scan.top_scores(window);
+            for &(position, score) in &ranked[from..] {
+                if out.len() >= request.limit {
+                    break 'walk;
                 }
-                continue;
+                let Some(thought) = self.thoughts.get(position) else {
+                    continue;
+                };
+                let id = thought.id;
+                if placed.contains(&id) {
+                    continue;
+                }
+                if self.invalidated_at(id, as_of, audience) {
+                    let successor = *successors.entry(id).or_insert_with(|| {
+                        self.live_successor(id, as_of, audience)
+                            .filter(|t| self.successor_allowed(t, request))
+                    });
+                    if let Some(succ) = successor {
+                        if let Some(seed) = self.bundle_seed_at(&scan, position, score) {
+                            push(&mut out, &mut placed, &seed, succ);
+                        }
+                    }
+                    continue;
+                }
+                let Some(seed) = self.bundle_seed_at(&scan, position, score) else {
+                    continue;
+                };
+                let contester = *contesters.entry(id).or_insert_with(|| {
+                    self.live_contester(id, as_of, audience)
+                        .filter(|t| self.successor_allowed(t, request))
+                });
+                if let Some(contester) = contester {
+                    push(&mut out, &mut placed, &seed, contester);
+                }
+                push(&mut out, &mut placed, &seed, thought);
             }
-            if let Some(contester) = self
-                .live_contester(id, as_of, audience)
-                .filter(|t| self.successor_allowed(t, request))
-            {
-                push(&mut out, seed, contester);
+            if ranked.len() < window {
+                break;
             }
-            push(&mut out, seed, thought);
+            from = ranked.len();
+            window = window.saturating_mul(2);
         }
         out.truncate(request.limit);
         Some(out)

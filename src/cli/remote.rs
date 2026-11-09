@@ -328,6 +328,10 @@ pub struct Command {
     pub sign: Option<SignWith>,
     /// Exit non-zero when the reply reports invalid signatures or rejected records.
     pub fail_on_invalid: bool,
+    /// The CLI creates a fresh Ed25519 key pair when it runs, saves the seed to
+    /// a file, and sends only the public key as the body's `public_key` field
+    /// (`agent key generate`). The seed is never part of the invocation.
+    pub generates_key: bool,
 }
 
 /// A fully parsed remote command, ready to execute.
@@ -371,6 +375,9 @@ pub struct RemoteInvocation {
     pub local: Map<String, Value>,
     /// Exit non-zero when the reply reports invalid signatures or rejected records.
     pub fail_on_invalid: bool,
+    /// Generate a key pair at run time and register its public key
+    /// (`agent key generate`); see [`Command::generates_key`].
+    pub generates_key: bool,
 }
 
 /// Result of resolving `argv` against the catalog.
@@ -563,6 +570,7 @@ fn build(command: &Command, rest: &[String]) -> Result<RemoteInvocation, String>
         sign: command.sign,
         local: collected.local,
         fail_on_invalid: command.fail_on_invalid,
+        generates_key: command.generates_key,
     };
     check_signing_inputs(command, &invocation)?;
     Ok(invocation)

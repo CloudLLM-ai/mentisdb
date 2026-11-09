@@ -824,6 +824,144 @@
       .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
 
+  // BEGIN keygen-helpers
+  // Browser-side Ed25519 key generation for the agent page. Pure functions: no
+  // DOM, no network, WebCrypto is passed in, so tests/dashboard_keygen_tests.rs
+  // extracts this block and runs it under node. The private key lives only in
+  // the values these functions return; nothing here stores or sends it.
+  const ED25519_PKCS8_PREFIX = '302e020100300506032b657004220420';
+  const KEY_REGISTRATION_DOMAIN = 'mentisdb/key-registration/v1\u0000';
+
+  function bytesToHex(bytes) {
+    return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  // A pasted Ed25519 public key as 64 lowercase hex characters. Accepts bare
+  // hex, 0x-prefixed hex (whitespace ignored) or 32 comma-separated decimal
+  // bytes (the form Add Key took before it registered through the operator route).
+  function publicKeyInputToHex(raw) {
+    const text = String(raw).trim();
+    let bytes;
+    if (/^0x/i.test(text) || /^[0-9a-f\s]+$/i.test(text) && !text.includes(',')) {
+      const hex = text.replace(/^0x/i, '').replace(/\s/g, '');
+      if (!/^[0-9a-f]*$/i.test(hex) || hex.length % 2 !== 0) throw new Error('Public key is not valid hex');
+      bytes = Array.from({ length: hex.length / 2 }, (_, i) => parseInt(hex.substr(i * 2, 2), 16));
+    } else {
+      bytes = text.split(',').map(part => {
+        const piece = part.trim();
+        if (!/^\d+$/.test(piece) || Number(piece) > 255) throw new Error(`Invalid byte value: ${piece}`);
+        return Number(piece);
+      });
+    }
+    if (bytes.length !== 32) throw new Error(`An Ed25519 public key is 32 bytes (got ${bytes.length})`);
+    return bytesToHex(bytes);
+  }
+
+  // Text for a failed key registration or revocation. A dashboard started
+  // without a PIN refuses these (it cannot tell the operator from any other
+  // local process): say so and what to do, instead of a bare HTTP 403.
+  function keyAdminErrorText(message) {
+    return String(message).includes('needs a dashboard PIN')
+      ? 'This dashboard has no PIN, so it cannot register or revoke keys. Set MENTISDB_DASHBOARD_PIN and restart, or use `mentisdb agent key generate --offline` on the host.'
+      : String(message);
+  }
+
+  // The 32-byte seed of an Ed25519 PKCS#8 private key (WebCrypto exports the
+  // fixed 16-byte prefix followed by the seed, 48 bytes in all).
+  function ed25519SeedFromPkcs8(pkcs8) {
+    const bytes = new Uint8Array(pkcs8);
+    if (bytes.length !== 48 || bytesToHex(bytes.subarray(0, 16)) !== ED25519_PKCS8_PREFIX) {
+      throw new Error('unexpected Ed25519 PKCS#8 layout');
+    }
+    return bytes.slice(16);
+  }
+
+  // The bytes the registration proof signs; mirrors
+  // mentisdb::signing::key_registration_payload (length-prefixed strings, the
+  // raw public key, then the time as a big-endian i64).
+  function keyRegistrationPayload(chainKey, agentId, keyId, publicKey, registeredAtSecs) {
+    const text = new TextEncoder();
+    const parts = [text.encode(KEY_REGISTRATION_DOMAIN)];
+    for (const value of [chainKey, agentId, keyId]) {
+      const encoded = text.encode(value);
+      const length = new Uint8Array(4);
+      new DataView(length.buffer).setUint32(0, encoded.length);
+      parts.push(length, encoded);
+    }
+    parts.push(publicKey);
+    const when = new Uint8Array(8);
+    new DataView(when.buffer).setBigInt64(0, BigInt(registeredAtSecs));
+    parts.push(when);
+    const out = new Uint8Array(parts.reduce((n, part) => n + part.length, 0));
+    let at = 0;
+    for (const part of parts) { out.set(part, at); at += part.length; }
+    return out;
+  }
+
+  // Generate an Ed25519 pair with `subtle` and build the request that registers
+  // only its public half (POST /dashboard/api/agents/{chain}/{agent}/keys).
+  // Resolves to { seedHex, publicHex, body }; seedHex is the 64-hex format
+  // `--private-key-file` reads. Rejects with err.keygenUnsupported = true when
+  // the browser cannot generate Ed25519 keys.
+  async function generateAgentKey(subtle, chainKey, agentId, keyId, nowSecs) {
+    let pair;
+    try {
+      pair = await subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+    } catch (cause) {
+      const err = new Error('this browser cannot generate Ed25519 keys');
+      err.keygenUnsupported = true;
+      throw err;
+    }
+    const publicKey = new Uint8Array(await subtle.exportKey('raw', pair.publicKey));
+    const seed = ed25519SeedFromPkcs8(await subtle.exportKey('pkcs8', pair.privateKey));
+    const payload = keyRegistrationPayload(chainKey, agentId, keyId, publicKey, nowSecs);
+    const signature = new Uint8Array(await subtle.sign({ name: 'Ed25519' }, pair.privateKey, payload));
+    return {
+      seedHex: bytesToHex(seed),
+      publicHex: bytesToHex(publicKey),
+      body: {
+        key_id: keyId,
+        algorithm: 'ed25519',
+        public_key_hex: bytesToHex(publicKey),
+        registered_at_unix_secs: nowSecs,
+        registration_signature_hex: bytesToHex(signature)
+      }
+    };
+  }
+
+  // The public key of an agent registry record as 64 lowercase hex characters,
+  // the form `chain access allow` and the Access panel take. The agent API sends
+  // `public_key_bytes` as a JSON array of byte values; anything that is not 32
+  // bytes in 0..=255 yields '' so the page never offers a malformed key.
+  function agentKeyPublicHex(key) {
+    const bytes = key && key.public_key_bytes;
+    if (!Array.isArray(bytes) || bytes.length !== 32) return '';
+    if (!bytes.every(b => Number.isInteger(b) && b >= 0 && b <= 255)) return '';
+    return bytesToHex(bytes);
+  }
+
+  // What the "Allow on chain" picker says about one chain, from the body of
+  // GET /dashboard/api/chains/{chain}/access. Returns { allow, text }: allow is
+  // true only when an allow_key request would add this key. A public chain has
+  // no allowed set to join (make it private first); a key already in the set,
+  // or a different key under the same agent/key id, is reported as such.
+  function allowKeyVerdict(access, chainKey, agentId, keyId, publicHex) {
+    const policy = (access && access.policy) || {};
+    if ((policy.mode || 'open') === 'open') {
+      return { allow: false, text: `${chainKey} is public: anyone can already write to it. Make it private in its Access panel first.` };
+    }
+    const keys = Array.isArray(policy.keys) ? policy.keys : [];
+    const same = keys.find(k => k.agent_id === agentId && k.key_id === keyId);
+    if (same && same.public_key === publicHex) {
+      return { allow: false, text: `${agentId}/${keyId} is already allowed on ${chainKey}.` };
+    }
+    if (same) {
+      return { allow: true, text: `${chainKey} allows a different key under ${agentId}/${keyId}; allowing replaces it with this one.` };
+    }
+    return { allow: true, text: `${chainKey} is private. Allowing lets ${agentId}/${keyId} write to it and read its private thoughts.` };
+  }
+  // END keygen-helpers
+
   // Delegated click dispatcher. All interactive markup uses data-act plus
   // data-* arguments (HTML-escaped values) instead of inline JS handlers, so
   // untrusted chain keys / ids can never be interpreted as script.
@@ -1210,7 +1348,7 @@
     setTimeout(() => {
       el.classList.remove('show');
       setTimeout(() => { el.textContent = ''; }, 300);
-    }, 3000);
+    }, Math.max(3000, msg.length * 50));
   }
 
   function updateNav() {
@@ -3026,12 +3164,21 @@
               <select id="nk-algo" title="Currently only Ed25519 is supported"><option value="ed25519">ed25519</option></select>
             </div>
             <div class="form-group">
-              <label title="The raw public key bytes for verification">Public Key Bytes <span style="color:#484f58;font-weight:400">(comma-separated integers or 0x hex)</span></label>
-              <textarea id="nk-bytes" placeholder="1,2,3,... or 0xABCD..." title="Enter the public key as comma-separated decimal bytes or hex string"></textarea>
+              <label title="The raw public key bytes for verification">Public Key <span style="color:#484f58;font-weight:400">(64 hex characters, 0x hex, or 32 comma-separated bytes)</span></label>
+              <textarea id="nk-bytes" placeholder="9f86d081... (64 hex characters)" title="Registered by the operator (dashboard PIN); no proof of possession needed"></textarea>
             </div>
             <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
               <button class="btn btn-primary btn-sm" id="nk-add" title="Register this public key for the agent">Add Key</button>
               <span id="nk-fb" class="feedback"></span>
+            </div>
+          </div>
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid #30363d">
+            <div class="section-label">Generate key pair</div>
+            <div style="color:#8b949e;font-size:0.8rem;margin-bottom:10px">Creates an Ed25519 key pair in this browser and registers only the public key. The private key is shown once and never reaches the server.</div>
+            <div class="form-group"><label title="Unique identifier for the new signing key">Key ID</label><input type="text" id="gk-id" placeholder="e.g. my-key-v1" title="A descriptive name like 'production-v1' or 'laptop-key'"></div>
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
+              <button class="btn btn-primary btn-sm" id="gk-generate" title="Generate an Ed25519 key pair here and register its public key">Generate key pair</button>
+              <span id="gk-fb" class="feedback"></span>
             </div>
           </div>
         </div>
@@ -3104,28 +3251,17 @@
       const fb    = document.getElementById('nk-fb');
       const btn   = document.getElementById('nk-add');
       const keyId = document.getElementById('nk-id').value.trim();
-      const algo  = document.getElementById('nk-algo').value;
       const raw   = document.getElementById('nk-bytes').value.trim();
       if (!keyId || !raw) { showFeedback(fb, false, 'Key ID and bytes are required'); return; }
-      let bytes;
-      try {
-        if (/^0x/i.test(raw)) {
-          const hex = raw.slice(2).replace(/\s/g,'');
-          if (hex.length % 2 !== 0) throw new Error('Odd hex length');
-          bytes = Array.from({length: hex.length/2}, (_,i) => parseInt(hex.substr(i*2,2),16));
-        } else {
-          bytes = raw.split(',').map(s => {
-            const n = parseInt(s.trim());
-            if (isNaN(n) || n < 0 || n > 255) throw new Error(`Invalid byte value: ${s.trim()}`);
-            return n;
-          });
-        }
-      } catch(e) { showFeedback(fb, false, e.message); return; }
+      let publicKey;
+      try { publicKey = publicKeyInputToHex(raw); } catch (e) { showFeedback(fb, false, e.message); return; }
       btn.disabled = true;
-      api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}/keys`, {
+      // Operator registration: the PIN-authenticated session vouches for the
+      // key, so no proof of possession is needed (same as `agent key add`).
+      api(`/dashboard/api/chains/${encodeURIComponent(chainKey)}/access`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key_id: keyId, algorithm: algo, public_key_bytes: bytes })
+        body: JSON.stringify({ op: 'register_key', agent_id: agentId, key_id: keyId, public_key: publicKey })
       })
       .then(() => {
         showFeedback(fb, true, 'Key added');
@@ -3133,11 +3269,45 @@
         document.getElementById('nk-bytes').value = '';
         return refreshKeys(chainKey, agentId);
       })
-      .catch(err => showFeedback(fb, false, err.message))
+      .catch(err => showFeedback(fb, false, keyAdminErrorText(err.message)))
       .finally(() => { btn.disabled = false; });
     });
 
-    wireKeyDelete(chainKey, agentId);
+    // Generate key pair: generate in the browser, register only the public key,
+    // and only after that succeeded reveal the private key, once.
+    document.getElementById('gk-generate').addEventListener('click', async () => {
+      const fb    = document.getElementById('gk-fb');
+      const btn   = document.getElementById('gk-generate');
+      const keyId = document.getElementById('gk-id').value.trim();
+      if (!keyId) { showFeedback(fb, false, 'Key ID is required'); return; }
+      btn.disabled = true;
+      try {
+        if (!window.crypto || !window.crypto.subtle) {
+          const err = new Error('WebCrypto is not available');
+          err.keygenUnsupported = true;
+          throw err;
+        }
+        const generated = await generateAgentKey(
+          window.crypto.subtle, chainKey, agentId, keyId, Math.floor(Date.now() / 1000));
+        await api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}/keys`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(generated.body)
+        });
+        document.getElementById('gk-id').value = '';
+        showFeedback(fb, true, 'Key registered');
+        refreshKeys(chainKey, agentId).catch(() => {});
+        showPrivateKeyOnce(agentId, keyId, generated.publicHex, generated.seedHex);
+      } catch (err) {
+        showFeedback(fb, false, err.keygenUnsupported
+          ? 'This browser cannot generate Ed25519 keys. Run `mentisdb agent key generate` on the command line instead.'
+          : keyAdminErrorText(err.message));
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    wireKeyActions(chainKey, agentId);
 
     // ── Export Memory dialog ──────────────────────────────────────────────
     document.getElementById('ad-export-btn').addEventListener('click', () => {
@@ -3509,18 +3679,112 @@
     if (!keys || !keys.length) return '<div class="empty-state" style="padding:12px 0">No public keys registered.</div>';
     return `
       <div class="table-wrap"><table>
-        <thead><tr><th>Key ID</th><th>Algorithm</th><th></th></tr></thead>
+        <thead><tr><th>Key ID</th><th>Algorithm</th><th>Public key</th><th></th></tr></thead>
         <tbody>
-          ${keys.map(k => `
+          ${keys.map(k => {
+            const hex = agentKeyPublicHex(k);
+            const revoked = Boolean(k.revoked_at);
+            return `
             <tr>
               <td class="mono" style="font-size:0.83rem">${esc(k.key_id)}</td>
-              <td><span class="badge badge-gray">${esc(k.algorithm)}</span></td>
-              <td><button class="btn btn-danger btn-sm del-key-btn" data-kid="${esc(k.key_id)}">Delete</button></td>
-            </tr>
-          `).join('')}
+              <td><span class="badge badge-gray">${esc(k.algorithm)}</span>${revoked ? ' <span class="badge badge-red">revoked</span>' : ''}</td>
+              <td class="mono" style="font-size:0.8rem;color:#8b949e" title="${esc(hex)}">${hex ? esc(hex.slice(0, 8) + '…' + hex.slice(-8)) : '—'}</td>
+              <td style="white-space:nowrap">
+                ${hex ? `<button class="btn btn-secondary btn-sm copy-key-btn" data-pub="${esc(hex)}" title="Copy the public key (64 hex characters) to paste into a chain's Access panel or mentisdb chain access allow">Copy</button>` : ''}
+                ${hex && !revoked ? `<button class="btn btn-secondary btn-sm allow-key-btn" data-kid="${esc(k.key_id)}" data-pub="${esc(hex)}" title="Let this key write to, and read, a private chain">Allow on chain…</button>` : ''}
+                <button class="btn btn-danger btn-sm del-key-btn" data-kid="${esc(k.key_id)}">Delete</button>
+              </td>
+            </tr>`;
+          }).join('')}
         </tbody>
       </table></div>
+      <div id="allow-key-panel"></div>
     `;
+  }
+
+  // Delete, Copy and "Allow on chain…" on every row of the keys table.
+  function wireKeyActions(chainKey, agentId) {
+    wireKeyDelete(chainKey, agentId);
+    document.querySelectorAll('.copy-key-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const markCopied = () => {
+          btn.textContent = 'Copied';
+          setTimeout(() => { btn.textContent = 'Copy'; }, 1400);
+        };
+        const hex = btn.getAttribute('data-pub');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(hex).then(markCopied).catch(() => copyBearerTokenSecretFallback(hex, markCopied));
+        } else {
+          copyBearerTokenSecretFallback(hex, markCopied);
+        }
+      });
+    });
+    document.querySelectorAll('.allow-key-btn').forEach(btn => {
+      btn.addEventListener('click', () => openAllowKeyPanel(chainKey, agentId, btn.getAttribute('data-kid'), btn.getAttribute('data-pub')));
+    });
+  }
+
+  // Inline picker under the keys table: choose a chain, see whether it is
+  // private and whether the key is already allowed, then allow it through the
+  // operator route (POST /dashboard/api/chains/{chain}/access, op allow_key;
+  // PIN required, the same as `mentisdb chain access allow`). The agent's own
+  // chain is preselected.
+  function openAllowKeyPanel(chainKey, agentId, keyId, publicHex) {
+    const panel = document.getElementById('allow-key-panel');
+    if (!panel) return;
+    panel.innerHTML = `
+      <div style="margin-top:12px;padding:12px;border:1px solid #30363d;border-radius:6px">
+        <div class="section-label">Allow ${esc(agentId)}/${esc(keyId)} on a private chain</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <select id="ak-chain" style="min-width:180px"><option>Loading chains…</option></select>
+          <button class="btn btn-primary btn-sm" id="ak-allow" disabled>Allow</button>
+          <button class="btn btn-secondary btn-sm" id="ak-cancel">Cancel</button>
+        </div>
+        <div id="ak-status" style="color:#8b949e;font-size:0.85rem;margin-top:8px"></div>
+        <span id="ak-fb" class="feedback"></span>
+      </div>`;
+    const select = document.getElementById('ak-chain');
+    const allow = document.getElementById('ak-allow');
+    const status = document.getElementById('ak-status');
+    const fb = document.getElementById('ak-fb');
+    document.getElementById('ak-cancel').addEventListener('click', () => { panel.innerHTML = ''; });
+    const accessUrl = target => `/dashboard/api/chains/${encodeURIComponent(target)}/access`;
+    // Only the answer for the chain selected last may update the panel.
+    let checking = 0;
+    const check = () => {
+      const target = select.value;
+      const ticket = ++checking;
+      allow.disabled = true;
+      status.textContent = `Checking ${target}…`;
+      api(accessUrl(target))
+        .then(access => {
+          if (ticket !== checking) return;
+          const verdict = allowKeyVerdict(access, target, agentId, keyId, publicHex);
+          status.textContent = verdict.text;
+          allow.disabled = !verdict.allow;
+        })
+        .catch(err => { if (ticket === checking) status.textContent = keyAdminErrorText(err.message); });
+    };
+    select.addEventListener('change', check);
+    allow.addEventListener('click', () => {
+      const target = select.value;
+      allow.disabled = true;
+      api(accessUrl(target), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ op: 'allow_key', agent_id: agentId, key_id: keyId, public_key: publicHex }),
+      })
+        .then(() => { showFeedback(fb, true, `Allowed on ${target}`); check(); })
+        .catch(err => { showFeedback(fb, false, keyAdminErrorText(err.message)); allow.disabled = false; });
+    });
+    api('/dashboard/api/chains')
+      .then(chains => {
+        const keys = (Array.isArray(chains) ? chains : []).map(c => c.chain_key).filter(Boolean);
+        if (!keys.includes(chainKey)) keys.unshift(chainKey);
+        select.innerHTML = keys.map(k => `<option value="${esc(k)}"${k === chainKey ? ' selected' : ''}>${esc(k)}</option>`).join('');
+        check();
+      })
+      .catch(err => { status.textContent = err.message; });
   }
 
   function wireKeyDelete(chainKey, agentId) {
@@ -3531,16 +3795,114 @@
         btn.disabled = true;
         api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}/keys/${encodeURIComponent(kid)}`, { method: 'DELETE' })
           .then(() => { showFeedback(fb, true, 'Key deleted'); return refreshKeys(chainKey, agentId); })
-          .catch(err => { showFeedback(fb, false, err.message); btn.disabled = false; });
+          .catch(err => { showFeedback(fb, false, keyAdminErrorText(err.message)); btn.disabled = false; });
       });
     });
+  }
+
+  // One-time reveal of a freshly generated private key. Built with DOM APIs and
+  // textContent only (the key never passes through innerHTML), it cannot be
+  // dismissed (Escape, backdrop, Tab out) until the box "I have saved this key"
+  // is ticked, and closing removes the key from the DOM and drops the reference.
+  function showPrivateKeyOnce(agentId, keyId, publicHex, seedHex) {
+    const el = (tag, props = {}, kids = []) => {
+      const node = Object.assign(document.createElement(tag), props);
+      kids.forEach(k => node.append(k));
+      return node;
+    };
+    let secret = seedHex;
+    const warning = el('p', {
+      textContent: 'This is the only time this private key will be shown. MentisDB keeps only the public key and cannot recover it. Save it somewhere safe now. Never paste it into a chat or give it to an AI agent.'
+    });
+    warning.style.cssText = 'color:#f85149;font-weight:600;margin:0 0 14px';
+    const hint = el('p', {
+      textContent: 'Browsers save downloads readable by other users of this computer; run `chmod 600 <file>` on macOS or Linux.'
+    });
+    hint.style.cssText = 'color:#8b949e;font-size:0.8rem;margin:0 0 16px';
+    const keyBox = el('pre', { textContent: secret });
+    keyBox.style.cssText = 'user-select:all;margin:0 0 14px';
+    const status = el('span', { className: 'feedback' });
+    const download = el('button', { className: 'btn btn-primary btn-sm', type: 'button', textContent: 'Download key file' });
+    const copy = el('button', { className: 'btn btn-secondary btn-sm', type: 'button', textContent: 'Copy' });
+    const saved = el('input', { type: 'checkbox', id: 'pk-saved' });
+    const savedLabel = el('label', { htmlFor: 'pk-saved' }, [' I have saved this key']);
+    savedLabel.style.cssText = 'cursor:pointer';
+    const done = el('button', { className: 'btn btn-secondary btn-sm', type: 'button', textContent: 'Close', disabled: true });
+    const actions = el('div', {}, [download, copy, status]);
+    actions.style.cssText = 'display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:16px';
+    const confirmRow = el('div', {}, [el('span', {}, [saved, savedLabel]), done]);
+    confirmRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px';
+    const heading = el('h3', { id: 'pk-title', textContent: `Private key for ${agentId} / ${keyId}` });
+    const box = el('div', { className: 'modal' }, [
+      el('div', { className: 'modal-hdr' }, [heading]),
+      el('div', { className: 'modal-body' }, [
+        el('p', { textContent: `Public key: ${publicHex}` }),
+        warning, keyBox, actions, hint, confirmRow
+      ])
+    ]);
+    box.style.maxWidth = '620px';
+    const overlay = el('div', { className: 'modal-overlay' }, [box]);
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-labelledby', 'pk-title');
+    overlay.style.zIndex = '2000';
+
+    const say = (ok, msg) => { status.textContent = msg; status.className = `feedback show ${ok ? 'feedback-ok' : 'feedback-err'}`; };
+    const close = () => {
+      document.removeEventListener('keydown', onKey, true);
+      keyBox.textContent = '';
+      secret = null;
+      overlay.remove();
+    };
+    const onKey = e => {
+      if (e.key === 'Escape') {
+        e.preventDefault(); e.stopImmediatePropagation();
+        if (saved.checked) close();
+      } else if (e.key === 'Tab') {
+        const stops = [download, copy, saved, done].filter(n => !n.disabled);
+        const at = stops.indexOf(document.activeElement);
+        const next = e.shiftKey ? (at <= 0 ? stops.length - 1 : at - 1) : (at + 1) % stops.length;
+        e.preventDefault();
+        stops[next].focus();
+      }
+    };
+    saved.addEventListener('change', () => { done.disabled = !saved.checked; });
+    done.addEventListener('click', () => { if (saved.checked) close(); });
+    overlay.addEventListener('click', e => { if (e.target === overlay && saved.checked) close(); });
+    download.addEventListener('click', () => {
+      const url = URL.createObjectURL(new Blob([secret + '\n'], { type: 'text/plain' }));
+      const link = el('a', { href: url, download: `${agentId}-${keyId}.key`.replace(/[^A-Za-z0-9._-]/g, '_') });
+      document.body.append(link);
+      link.click();
+      link.remove();
+      // Revoke later, not right after click(): some browsers start reading the
+      // blob after the click handler returns, and would save an empty file.
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      say(true, 'Key file saved');
+    });
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(secret);
+        say(true, 'Copied');
+      } catch (_) {
+        const range = document.createRange();
+        range.selectNodeContents(keyBox);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        say(false, 'Copy blocked: the key is selected, press Ctrl/Cmd+C');
+      }
+    });
+    document.addEventListener('keydown', onKey, true);
+    document.body.append(overlay);
+    download.focus();
   }
 
   function refreshKeys(chainKey, agentId) {
     return api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}`)
       .then(a => {
         const wrap = document.getElementById('keys-wrap');
-        if (wrap) { wrap.innerHTML = buildKeysTable(a.public_keys || []); wireKeyDelete(chainKey, agentId); }
+        if (wrap) { wrap.innerHTML = buildKeysTable(a.public_keys || []); wireKeyActions(chainKey, agentId); }
       });
   }
 

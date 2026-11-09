@@ -107,6 +107,57 @@ pub fn collapse_window_latency(c: &mut Criterion) {
     group.finish();
 }
 
+/// Worst case for refilling a collapsed page: a fifth of the thoughts are
+/// byte-identical matches, so they all collapse into one hit and the page
+/// (limit 10) can only fill from the few distinct matches deeper down. Measures
+/// 20,000 and 100,000 thoughts; the refill window is capped, so the cost must
+/// not grow with the number of identical matches.
+pub fn collapse_refill_latency(c: &mut Criterion) {
+    std::env::set_var("MENTISDB_EMBEDDINGS", "off");
+    let mut group = c.benchmark_group("search_ranked_collapse_refill");
+    group.sample_size(10);
+    for thoughts in [20_000usize, 100_000] {
+        let (mut chain, _dir) = temp_chain(&format!("collapse-refill-{thoughts}"));
+        for i in 0..thoughts {
+            let content = match i % 20 {
+                0..=3 => "quokka identical note".to_owned(),
+                4 => format!(
+                    "quokka survey entry{i} habitat{} diet{} range{}",
+                    i % 97,
+                    i % 89,
+                    i % 83
+                ),
+                _ => format!(
+                    "wombat survey entry{i} habitat{} diet{} range{}",
+                    i % 97,
+                    i % 89,
+                    i % 83
+                ),
+            };
+            chain
+                .append_thought("bench", ThoughtInput::new(ThoughtType::Finding, content))
+                .expect("failed to append refill benchmark thought");
+        }
+        group.bench_function(format!("limit10_{thoughts}"), |b| {
+            let query = RankedSearchQuery::new()
+                .with_text("quokka")
+                .with_limit(10)
+                .with_collapse_duplicates(Some(0.9));
+            // Up to 20,000 thoughts the page fills from the distinct matches.
+            // Beyond the refill window (4,096 slots here) it cannot, by design,
+            // and returns only what the window held.
+            let filled = chain.query_ranked(&query).hits.len();
+            assert!(if thoughts <= 20_000 {
+                filled == 10
+            } else {
+                filled >= 1
+            });
+            b.iter(|| black_box(chain.query_ranked(black_box(&query)).hits.len()));
+        });
+    }
+    group.finish();
+}
+
 pub fn ranked_search_latency(c: &mut Criterion) {
     let mut group = c.benchmark_group("search_ranked");
     group.measurement_time(std::time::Duration::from_secs(10));
@@ -192,6 +243,7 @@ pub fn ranked_search_latency(c: &mut Criterion) {
 criterion_group!(
     search_ranked_benches,
     ranked_search_latency,
-    collapse_window_latency
+    collapse_window_latency,
+    collapse_refill_latency
 );
 criterion_main!(search_ranked_benches);

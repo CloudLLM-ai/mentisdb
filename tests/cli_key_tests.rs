@@ -205,3 +205,51 @@ fn test_operator_keys_are_distinct_and_loading_a_readable_one_still_works() {
     let _ = std::fs::remove_dir_all(&a);
     let _ = std::fs::remove_dir_all(&b);
 }
+
+/// `--force` refuses a symbolic link at `--out` (for `key generate` and `agent
+/// key generate`'s shared writer): the seed must not be written through it, and
+/// the link's target keeps its content and mode. A dangling link is refused too.
+#[cfg(unix)]
+#[test]
+fn test_force_refuses_a_symlink_target() {
+    let dir = std::env::temp_dir().join(format!("mentisdb_key_symlink_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("victim.txt");
+    std::fs::write(&target, "precious\n").unwrap();
+    std::fs::set_permissions(&target, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+    let link = dir.join("link.key");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let dangling = dir.join("dangling.key");
+    std::os::unix::fs::symlink(dir.join("nowhere"), &dangling).unwrap();
+
+    for path in [&link, &dangling] {
+        for force in [false, true] {
+            let mut args = vec!["key", "generate", "--out", path.to_str().unwrap()];
+            if force {
+                args.push("--force");
+            }
+            let (ok, out, err) = cli(&args);
+            assert!(!ok, "{path:?} force={force}: {out}");
+            assert!(
+                err.contains("symbolic link") || err.contains("already exists"),
+                "{path:?} force={force}: {err}"
+            );
+        }
+    }
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "precious\n");
+    assert_eq!(mode(&target), 0o644, "the target's mode is untouched");
+    assert!(
+        !dir.join("nowhere").exists(),
+        "nothing created through the dangling link"
+    );
+    let (_, _, err) = cli(&[
+        "key",
+        "generate",
+        "--out",
+        link.to_str().unwrap(),
+        "--force",
+    ]);
+    assert!(err.contains("symbolic link"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

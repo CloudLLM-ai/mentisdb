@@ -18,13 +18,19 @@ Usage:
 
 Commands:
   generate   Create a new key. The private seed is ALWAYS written to a file
-             with owner-only permissions (0600) and never printed: a private
+             with owner-only permissions (0600; on Windows the file inherits
+             the folder's permissions, so restrict that folder yourself) and
+             never printed: a private
              key on standard output ends up in terminal scrollback, shell logs
              and, worse, in the context of any AI agent that runs the command.
              Without --out the file is $MENTISDB_KEY_DIR/<public key prefix>.key
              (default ~/.mentisdb/keys, created 0700). Only the public key and
              the file's path are printed.
   show       Print the public key of a key file.
+
+To create a key AND register its public key for an agent in one step, use
+'mentisdb agent key generate <agent> --key-id ID --chain KEY' (same file, same
+protection; operator only). 'agent key add' registers a key made here.
 
 Options:
   --out <file>   Where to save the private seed (refuses to overwrite).
@@ -142,6 +148,42 @@ pub fn default_key_dir() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| format!("no home directory found; pass --out <file> or set {KEY_DIR_ENV}"))
 }
 
+/// How a saved seed file is protected, for the messages that name the file.
+///
+/// Unix files are created `0600`. Windows has no mode bits and nothing here sets
+/// an ACL, so the file inherits the folder's permissions: saying "owner-only"
+/// there would be false comfort.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::cli::key::seed_file_protection;
+///
+/// assert_eq!(seed_file_protection(true), "0600, owner-only");
+/// assert!(seed_file_protection(false).contains("inherits the folder's permissions"));
+/// assert!(!seed_file_protection(false).contains("owner-only"));
+/// ```
+#[must_use]
+pub fn seed_file_protection(unix: bool) -> &'static str {
+    if unix {
+        "0600, owner-only"
+    } else {
+        "inherits the folder's permissions; restrict access to it yourself"
+    }
+}
+
+/// Whether `error` is `open` refusing a symbolic link under `O_NOFOLLOW`.
+#[cfg(unix)]
+fn opened_symlink(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(libc::ELOOP)
+}
+
+/// Windows has no `O_NOFOLLOW`; the `symlink_metadata` check is all there is.
+#[cfg(not(unix))]
+fn opened_symlink(_error: &std::io::Error) -> bool {
+    false
+}
+
 fn write_seed(path: &str, seed: &[u8; 32], force: bool) -> Result<(), String> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true);
@@ -150,11 +192,25 @@ fn write_seed(path: &str, seed: &[u8; 32], force: bool) -> Result<(), String> {
     } else {
         options.create_new(true);
     }
+    // `--force` must not write the seed through a symlink: it would land in (and
+    // `set_permissions` below would change) whatever the link points at. The
+    // check gives the clear message; O_NOFOLLOW closes the window between it and
+    // the open.
+    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(format!(
+            "'{path}' is a symbolic link; refusing to write a private key through it (name the real file with --out)"
+        ));
+    }
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
     let mut file = options.open(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AlreadyExists {
             format!("'{path}' already exists; pass --force to overwrite it")
+        } else if opened_symlink(&e) {
+            format!("'{path}' is a symbolic link; refusing to write a private key through it (name the real file with --out)")
         } else {
             format!("cannot write '{path}': {e}")
         }
@@ -168,6 +224,39 @@ fn write_seed(path: &str, seed: &[u8; 32], force: bool) -> Result<(), String> {
             .map_err(|e| format!("cannot restrict '{path}': {e}"))?;
     }
     writeln!(file, "{}", to_hex(seed)).map_err(|e| format!("cannot write '{path}': {e}"))
+}
+
+/// Save a freshly generated `seed` owner-only and return the path it went to.
+///
+/// With `out` the file is exactly that path; without it the file is
+/// `<key dir>/<first 16 hex characters of the public key>.key` and the
+/// directory is created owner-only. An existing file is refused unless `force`.
+/// Shared by `mentisdb key generate` and `mentisdb agent key generate`, so both
+/// write the same format with the same permissions.
+///
+/// # Errors
+///
+/// A message when the directory or file cannot be created, or the file exists
+/// and `force` is not set. The seed is never part of the message.
+pub(crate) fn save_new_seed(
+    out: Option<&str>,
+    force: bool,
+    seed: &[u8; 32],
+    public: &[u8; 32],
+) -> Result<String, String> {
+    let target = match out {
+        Some(path) => path.to_string(),
+        None => {
+            let dir = default_key_dir()?;
+            crate::private_fs::create_dir_all(&dir)
+                .map_err(|e| format!("cannot create '{}': {e}", dir.display()))?;
+            dir.join(format!("{}.key", &to_hex(public)[..16]))
+                .to_string_lossy()
+                .into_owned()
+        }
+    };
+    write_seed(&target, seed, force)?;
+    Ok(target)
 }
 
 /// Execute a `key` command, printing to `out`.
@@ -184,22 +273,12 @@ pub fn run_key(command: &KeyCommand, out: &mut dyn Write) -> Result<(), String> 
             let public = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
             // The seed is never printed: stdout lands in terminal scrollback,
             // logs and the context of any agent that ran this command.
-            let target = match path {
-                Some(path) => path.clone(),
-                None => {
-                    let dir = default_key_dir()?;
-                    crate::private_fs::create_dir_all(&dir)
-                        .map_err(|e| format!("cannot create '{}': {e}", dir.display()))?;
-                    dir.join(format!("{}.key", &to_hex(&public)[..16]))
-                        .to_string_lossy()
-                        .into_owned()
-                }
-            };
-            write_seed(&target, &seed, *force)?;
+            let target = save_new_seed(path.as_deref(), *force, &seed, &public)?;
             writeln!(out, "public_key_hex: {}", to_hex(&public)).map_err(io)?;
             writeln!(
                 out,
-                "private key saved to {target} (owner-only; keep it secret, never paste it into a chat or give it to an AI agent)"
+                "private key saved to {target} ({}; keep it secret, never paste it into a chat or give it to an AI agent)",
+                seed_file_protection(cfg!(unix))
             )
             .map_err(io)
         }

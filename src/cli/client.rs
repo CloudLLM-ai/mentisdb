@@ -19,6 +19,9 @@ pub fn run(
     input: &mut dyn BufRead,
     out: &mut dyn Write,
 ) -> Result<(), String> {
+    if invocation.generates_key {
+        return run_generate_key(invocation, out);
+    }
     let mut invocation = invocation.clone();
     if invocation.offline {
         return run_offline(&invocation, out);
@@ -37,10 +40,14 @@ pub fn run(
 /// record. It refuses while a daemon answers on the REST address, because two
 /// processes must not append to one chain.
 fn run_offline(invocation: &RemoteInvocation, out: &mut dyn Write) -> Result<(), String> {
-    use crate::operator::{apply, OperatorIdentity, OperatorOp};
+    let value = offline_apply(invocation, &mut |_| Ok(()))?;
+    write_reply(invocation, &Reply::Json(value), out)
+}
+
+/// The chain an operator command administers, taken from its route.
+fn operator_chain_key(invocation: &RemoteInvocation) -> Result<String, String> {
     let url = url::Url::parse(&invocation.url).map_err(|e| e.to_string())?;
-    let chain_key = url
-        .path_segments()
+    url.path_segments()
         .and_then(|mut segments| {
             segments
                 .by_ref()
@@ -49,13 +56,25 @@ fn run_offline(invocation: &RemoteInvocation, out: &mut dyn Write) -> Result<(),
                 .map(str::to_string)
         })
         .filter(|_| url.path().ends_with("/access"))
+        .map(|chain| percent_decode(&chain))
         .ok_or_else(|| {
             format!(
                 "'mentisdb {}' cannot run with --offline: only operator commands (chain access, agent key, agent disable/activate) can",
                 invocation.command
             )
-        })?;
-    let chain_key = percent_decode(&chain_key);
+        })
+}
+
+/// Apply the operator command of `invocation` offline and return the chain's
+/// state afterwards. `before_apply` runs once the data directory is locked and
+/// the chain is open, and can still refuse (`agent key generate` uses it to
+/// reject a taken key id and to save the key file before anything is changed).
+fn offline_apply(
+    invocation: &RemoteInvocation,
+    before_apply: &mut dyn FnMut(&crate::MentisDb) -> Result<(), String>,
+) -> Result<Value, String> {
+    use crate::operator::{apply, OperatorIdentity, OperatorOp};
+    let chain_key = operator_chain_key(invocation)?;
     let op: OperatorOp = match invocation.method {
         HttpMethod::Get => OperatorOp::Show,
         _ => serde_json::from_value(invocation.body.clone().unwrap_or(Value::Null))
@@ -77,9 +96,174 @@ fn run_offline(invocation: &RemoteInvocation, out: &mut dyn Write) -> Result<(),
     }
     let operator = OperatorIdentity::load_or_create(&dir).map_err(|e| e.to_string())?;
     let mut chain = crate::MentisDb::open_with_key(&dir, &chain_key).map_err(|e| e.to_string())?;
+    before_apply(&chain)?;
     let value = apply(&mut chain, &operator, &op).map_err(|e| e.to_string())?;
     chain.flush().map_err(|e| e.to_string())?;
-    write_reply(invocation, &Reply::Json(value), out)
+    Ok(value)
+}
+
+/// `agent key generate`: create a key pair, save the seed, register the public key.
+///
+/// The order is fixed: generate, refuse a taken key id, write the seed file
+/// (never over an existing file without `--force`), register the public key,
+/// print. Registration is the step that can fail for reasons outside the CLI
+/// (bad PIN, daemon down), so the file is written first and kept when it
+/// fails: the error then names the file and the `agent key add` command that
+/// registers it later. The seed is only ever written to that file; it is not
+/// printed, logged, sent or part of any error.
+fn run_generate_key(invocation: &RemoteInvocation, out: &mut dyn Write) -> Result<(), String> {
+    use ed25519_dalek::SigningKey;
+    let seed = crate::signing::fresh_seed().map_err(|e| format!("cannot generate a key: {e}"))?;
+    let public = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let public_hex = crate::signing::to_hex(&public);
+    let Some(Value::Object(mut body)) = invocation.body.clone() else {
+        return Err("invalid operator command".to_string());
+    };
+    let (agent, key_id) = (body_text(&body, "agent_id"), body_text(&body, "key_id"));
+    if agent.is_empty() || key_id.is_empty() {
+        return Err("an agent id and a --key-id are required".to_string());
+    }
+    let chain = operator_chain_key(invocation)?;
+    body.insert("public_key".into(), Value::String(public_hex.clone()));
+    let mut registration = invocation.clone();
+    registration.body = Some(Value::Object(body));
+
+    let out_path = invocation.local.get("out").and_then(Value::as_str);
+    let force = invocation.local.get("force") == Some(&Value::Bool(true));
+    let saved: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+    let save = || -> Result<(), String> {
+        let path = super::key::save_new_seed(out_path, force, &seed, &public)?;
+        *saved.borrow_mut() = Some(path);
+        Ok(())
+    };
+    let registered = if invocation.offline {
+        offline_apply(&registration, &mut |chain_db| {
+            let taken = chain_db
+                .get_agent(&agent)
+                .is_some_and(|record| record.public_keys.iter().any(|k| k.key_id == key_id));
+            refuse_taken_key(taken, &agent, &key_id, &chain)?;
+            save()
+        })
+        .map(|_| ())
+    } else {
+        let taken = online_key_taken(invocation, &chain, &agent, &key_id)?;
+        refuse_taken_key(taken, &agent, &key_id, &chain)?;
+        save().and_then(|()| send(&registration).map(|_| ()))
+    };
+    let path = saved.into_inner();
+    match (registered, path) {
+        (Ok(()), Some(path)) => {
+            write_generated_key(invocation, out, &chain, &agent, &key_id, &public_hex, &path)
+        }
+        (Ok(()), None) => Err("the key file was not written".to_string()),
+        (Err(error), Some(path)) => Err(format!(
+            "{error}\nthe key was saved at {path} ({}) and can be registered later with:\n  mentisdb agent key add {} --key-id {} --chain {} --public-key-hex {public_hex}\n(add the --pin or --offline and connection flags you used here)",
+            super::key::seed_file_protection(cfg!(unix)),
+            shell_word(&agent),
+            shell_word(&key_id),
+            shell_word(&chain),
+        )),
+        (Err(error), None) => Err(error),
+    }
+}
+
+fn refuse_taken_key(taken: bool, agent: &str, key_id: &str, chain: &str) -> Result<(), String> {
+    if taken {
+        Err(format!(
+            "agent '{agent}' already has a key '{key_id}' on chain '{chain}' (a key id is never reused, even after revoking); pick a new --key-id. No key file was written"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Whether the dashboard already lists `key_id` for `agent`. This also proves
+/// the PIN and the daemon address before a key file is written; an agent the
+/// registry has not seen yet has no keys.
+fn online_key_taken(
+    invocation: &RemoteInvocation,
+    chain: &str,
+    agent: &str,
+    key_id: &str,
+) -> Result<bool, String> {
+    let base = invocation
+        .url
+        .find("/dashboard/")
+        .map_or(invocation.url.as_str(), |at| &invocation.url[..at]);
+    let mut lookup = invocation.clone();
+    lookup.method = HttpMethod::Get;
+    lookup.body = None;
+    lookup.url = format!(
+        "{base}/dashboard/api/agents/{}/{}",
+        percent_encode_segment(chain),
+        percent_encode_segment(agent)
+    );
+    match send(&lookup) {
+        Ok(Reply::Json(record)) => Ok(record["public_keys"]
+            .as_array()
+            .is_some_and(|keys| keys.iter().any(|k| k["key_id"] == key_id))),
+        Ok(Reply::Text(_)) => Err("unexpected non-JSON reply from the agent lookup".to_string()),
+        Err(error) if error.starts_with("HTTP 404 ") && error.contains("agent '") => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn percent_encode_segment(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
+
+/// Quote `text` for a POSIX shell unless it is plainly safe.
+fn shell_word(text: &str) -> String {
+    let plain = !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-./:@%+=".contains(c));
+    if plain {
+        text.to_string()
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
+}
+
+/// Print the outcome of `agent key generate`: the public key and where the
+/// private one is, never the private key itself.
+fn write_generated_key(
+    invocation: &RemoteInvocation,
+    out: &mut dyn Write,
+    chain: &str,
+    agent: &str,
+    key_id: &str,
+    public_hex: &str,
+    path: &str,
+) -> Result<(), String> {
+    let text = if invocation.json {
+        let reply = serde_json::json!({
+            "registered": true,
+            "chain_key": chain,
+            "agent_id": agent,
+            "key_id": key_id,
+            "public_key_hex": public_hex,
+            "key_file": path,
+        });
+        format!("{reply}\n")
+    } else {
+        let mode = if cfg!(unix) {
+            "0600"
+        } else {
+            super::key::seed_file_protection(false)
+        };
+        format!(
+            "Registered key {key_id} for agent {agent} on chain {chain}\npublic_key_hex: {public_hex}\nprivate key saved to {path} ({mode})\n\n!! This file is the only copy of the private key. MentisDB keeps only\n!! the public key and cannot recover it. Back it up somewhere safe now;\n!! never paste it into a chat or give it to an AI agent.\n"
+        )
+    };
+    out.write_all(text.as_bytes()).map_err(|e| e.to_string())
 }
 
 fn percent_decode(text: &str) -> String {

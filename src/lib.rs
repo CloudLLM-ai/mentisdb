@@ -329,6 +329,8 @@ pub mod server;
 #[cfg(feature = "server")]
 pub mod server_body;
 #[cfg(feature = "server")]
+pub mod server_lean;
+#[cfg(feature = "server")]
 pub mod server_lens;
 pub mod signing;
 mod skills;
@@ -1627,14 +1629,10 @@ impl AgentRecord {
         self.aliases.push(alias.to_string());
     }
 
+    /// File `key` unless its id is already taken: an id is never rebound here,
+    /// so a caller that forgot to check cannot replace or revive a key.
     fn add_public_key(&mut self, key: AgentPublicKey) {
-        if let Some(existing) = self
-            .public_keys
-            .iter_mut()
-            .find(|existing| existing.key_id == key.key_id)
-        {
-            *existing = key;
-        } else {
+        if !self.public_keys.iter().any(|k| k.key_id == key.key_id) {
             self.public_keys.push(key);
         }
     }
@@ -4395,6 +4393,7 @@ impl<E: std::error::Error + 'static> std::error::Error for VectorSearchError<E> 
 /// and a reference). Heavy hit data (matched terms, match sources, graph
 /// paths) is materialized only for the candidates that survive top-k
 /// selection.
+#[derive(Clone, Copy)]
 struct ScoredCandidate<'a> {
     thought: &'a Thought,
     lexical: f32,
@@ -4408,6 +4407,41 @@ struct ScoredCandidate<'a> {
     session_cohesion: f32,
     rrf: f32,
     total: f32,
+}
+
+/// Output of the score-only phase of ranked search (see
+/// [`MentisDb::score_pass`]): every matching candidate's score plus the lexical
+/// and graph state needed to materialize a hit later.
+struct ScoredPass<'a> {
+    /// Retrieval backend that produced the scores.
+    backend: RankedSearchBackend,
+    /// Number of scored candidates, before any page selection.
+    total_candidates: usize,
+    /// How many of `scored` are superseded, corrected or invalidated; only
+    /// computed when the caller asked for it (otherwise `0`).
+    invalidated: usize,
+    /// One record per matching thought, in no particular order until the
+    /// caller sorts it with [`compare_scored_candidates`].
+    scored: Vec<ScoredCandidate<'a>>,
+    /// Lexical scan the scores came from, for matched-term reporting.
+    lexical_scan: Option<crate::search::lexical::LexicalScan>,
+    /// Graph-expansion hits keyed by thought position.
+    graph_scores: HashMap<usize, RankedGraphHit>,
+}
+
+impl<'a> ScoredPass<'a> {
+    /// Build the full hit for one scored candidate.
+    fn materialize(&self, db: &MentisDb, candidate: ScoredCandidate<'a>) -> RankedSearchHit<'a> {
+        db.materialize_ranked_hit(candidate, self.lexical_scan.as_ref(), &self.graph_scores)
+    }
+
+    /// Build hits for every remaining candidate, in their current order.
+    fn materialize_all(&self, db: &MentisDb) -> Vec<RankedSearchHit<'a>> {
+        self.scored
+            .iter()
+            .map(|candidate| self.materialize(db, *candidate))
+            .collect()
+    }
 }
 
 /// Total order over scored candidates: best first.
@@ -8127,7 +8161,10 @@ impl MentisDb {
     ///
     /// An [`access::AccessError`] wrapped in `io::Error` for a malformed key, a
     /// stale or invalid proof; `NotFound`/`InvalidInput` for an unknown agent or
-    /// empty key id.
+    /// empty key id; `InvalidInput` when the key id is already filed for the agent
+    /// under another key, or was revoked (registering the same active key again is
+    /// a no-op). A key id is never rebound: the proof shows possession of the new
+    /// key only.
     ///
     /// # Examples
     ///
@@ -8150,7 +8187,14 @@ impl MentisDb {
     ///
     /// // Without the private key the registration is refused.
     /// let forged = KeyRegistrationProof { registered_at_unix_secs: now, signature: vec![0; 64] };
-    /// assert!(chain.add_agent_key("alice", "alice-2", PublicKeyAlgorithm::Ed25519, public, &forged).is_err());
+    /// assert!(chain.add_agent_key("alice", "alice-2", PublicKeyAlgorithm::Ed25519, public.clone(), &forged).is_err());
+    ///
+    /// // A key id is never rebound: another key, even with a valid proof of its own, is refused.
+    /// let other = SigningKey::from_bytes(&[6u8; 32]);
+    /// let other_public = other.verifying_key().to_bytes().to_vec();
+    /// let payload = key_registration_payload("doc", "alice", "alice-1", &other_public, now);
+    /// let proof = KeyRegistrationProof { registered_at_unix_secs: now, signature: other.sign(&payload).to_bytes().to_vec() };
+    /// assert!(chain.add_agent_key("alice", "alice-1", PublicKeyAlgorithm::Ed25519, other_public, &proof).is_err());
     /// # let _ = std::fs::remove_dir_all(&dir);
     /// ```
     pub fn add_agent_key(
@@ -8173,6 +8217,19 @@ impl MentisDb {
             .map_err(access::AccessError::into_io)?;
 
         let record = self.agent_record_mut(agent_id)?;
+        // A proof shows the registrant holds the NEW key; it says nothing about
+        // the key already filed under this id. An id is never rebound, active or
+        // revoked, or anyone could replace a victim's key (or revive a revoked
+        // one) with a key of their own.
+        if let Some(existing) = record.public_keys.iter().find(|k| k.key_id == key_id) {
+            if existing.public_key_bytes == public_key_bytes && existing.revoked_at.is_none() {
+                return Ok(record.clone());
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("key id '{key_id}' is already bound to another key or was revoked; use a new key id"),
+            ));
+        }
         record.add_public_key(AgentPublicKey {
             key_id,
             algorithm,
@@ -9812,6 +9869,47 @@ impl MentisDb {
         request: &RankedSearchQuery,
         count_invalidated: bool,
     ) -> (RankedSearchResult<'_>, usize) {
+        let mut pass = self.score_pass(request, count_invalidated);
+        let limit = request.limit;
+        if limit == 0 {
+            pass.scored.clear();
+        } else if pass.scored.len() > limit {
+            pass.scored
+                .select_nth_unstable_by(limit - 1, compare_scored_candidates);
+            pass.scored.truncate(limit);
+        }
+        pass.scored.sort_by(compare_scored_candidates);
+        let invalidated = pass.invalidated;
+        let total_candidates = pass.total_candidates;
+        let backend = pass.backend;
+        let hits = pass.materialize_all(self);
+        (
+            RankedSearchResult {
+                backend,
+                total_candidates,
+                hits,
+            },
+            invalidated,
+        )
+    }
+
+    /// Phase 1 of ranked search: score every candidate that matches `request`
+    /// and return the unsorted scores together with what phase 2 needs to
+    /// build hit objects.
+    ///
+    /// Scoring touches every match, so its cost is `O(matches)`; selecting a
+    /// page from the scores afterwards is the caller's choice and costs
+    /// `O(matches)` for a top-k select or `O(matches + n log n)` to read the best
+    /// `n` in order. Callers choose how to select a page
+    /// from the result: [`Self::rank_raw`] keeps the best `limit`, and the
+    /// lineage-aware page selection in [`MentisDb::query_ranked`] walks the
+    /// ranking in order until it holds `limit` distinct live memories, so the
+    /// page size never has to be guessed up front.
+    pub(crate) fn score_pass(
+        &self,
+        request: &RankedSearchQuery,
+        count_invalidated: bool,
+    ) -> ScoredPass<'_> {
         let candidates = self.retrieval_candidates(
             &request.filter,
             request.as_of,
@@ -9926,31 +10024,14 @@ impl MentisDb {
         } else {
             0
         };
-        let limit = request.limit;
-        if limit == 0 {
-            scored.clear();
-        } else if scored.len() > limit {
-            scored.select_nth_unstable_by(limit - 1, compare_scored_candidates);
-            scored.truncate(limit);
-        }
-        scored.sort_by(compare_scored_candidates);
-
-        // Phase 2: materialize hit objects for the returned head only.
-        let hits = scored
-            .into_iter()
-            .map(|candidate| {
-                self.materialize_ranked_hit(candidate, lexical_scan.as_ref(), &graph_scores)
-            })
-            .collect();
-
-        (
-            RankedSearchResult {
-                backend,
-                total_candidates,
-                hits,
-            },
+        ScoredPass {
+            backend,
+            total_candidates,
             invalidated,
-        )
+            scored,
+            lexical_scan,
+            graph_scores,
+        }
     }
 
     /// Query the chain and return grouped context bundles anchored on lexical seeds.
@@ -12862,17 +12943,27 @@ impl MentisDb {
         lexical_scan
             .top_scores(limit.max(1))
             .into_iter()
-            .filter_map(|(position, score)| {
-                self.thoughts
-                    .get(position)
-                    .map(crate::search::ThoughtLocator::local)
-                    .map(|locator| {
-                        let hit = self.lexical_index.hit_from_scan(lexical_scan, position);
-                        crate::search::ContextBundleSeed::new(locator, score)
-                            .with_matched_terms(hit.matched_terms)
-                    })
-            })
+            .filter_map(|(position, score)| self.bundle_seed_at(lexical_scan, position, score))
             .collect()
+    }
+
+    /// The bundle seed for the thought at `position`, carrying its lexical
+    /// `score` and matched terms. `None` when `position` is not a thought.
+    pub(crate) fn bundle_seed_at(
+        &self,
+        lexical_scan: &crate::search::lexical::LexicalScan,
+        position: usize,
+        score: f32,
+    ) -> Option<crate::search::ContextBundleSeed> {
+        let thought = self.thoughts.get(position)?;
+        let hit = self.lexical_index.hit_from_scan(lexical_scan, position);
+        Some(
+            crate::search::ContextBundleSeed::new(
+                crate::search::ThoughtLocator::local(thought),
+                score,
+            )
+            .with_matched_terms(hit.matched_terms),
+        )
     }
 
     fn expand_ranked_candidates(

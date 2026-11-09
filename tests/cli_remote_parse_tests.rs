@@ -279,6 +279,117 @@ fn test_agent_key_add_is_an_operator_operation() {
     }
 }
 
+/// `agent key generate` is an operator command shaped like `agent key add`
+/// (same route, same `register_key` operation, same connection flags) that
+/// makes the public key itself: the body has no `public_key` yet, `--out` and
+/// `--force` stay inside the CLI, and `--key-id` and `--chain` are required.
+#[test]
+fn test_agent_key_generate_is_an_operator_command_that_creates_the_key() {
+    let inv = invocation(&[
+        "agent",
+        "key",
+        "generate",
+        "builder",
+        "--key-id",
+        "builder-2026",
+        "--chain",
+        "project",
+        "--out",
+        "/tmp/k.key",
+        "--force",
+        "--pin",
+        "123456",
+    ]);
+    assert!(inv.generates_key);
+    assert_eq!(inv.transport, Transport::Dashboard);
+    assert_eq!(
+        inv.url,
+        "https://127.0.0.1:9475/dashboard/api/chains/project/access"
+    );
+    assert_eq!(inv.credential.as_deref(), Some("123456"));
+    let b = inv.body.unwrap();
+    assert_eq!(b["op"], "register_key");
+    assert_eq!(b["agent_id"], "builder");
+    assert_eq!(b["key_id"], "builder-2026");
+    assert!(b.get("public_key").is_none(), "{b}");
+    assert!(b.get("out").is_none() && b.get("force").is_none(), "{b}");
+    assert_eq!(inv.local["out"], "/tmp/k.key");
+    assert_eq!(inv.local["force"], true);
+    assert!(
+        invocation(&[
+            "agent",
+            "key",
+            "generate",
+            "b",
+            "--key-id",
+            "k",
+            "--chain",
+            "c",
+            "--offline"
+        ])
+        .offline
+    );
+    assert!(
+        !invocation(&[
+            "agent",
+            "key",
+            "add",
+            "b",
+            "--key-id",
+            "k",
+            "--public-key-hex",
+            &"ab".repeat(32),
+            "--chain",
+            "c"
+        ])
+        .generates_key
+    );
+    for missing in [
+        &["agent", "key", "generate", "b", "--chain", "c"][..],
+        &["agent", "key", "generate", "b", "--key-id", "k"][..],
+        &["agent", "key", "generate", "--key-id", "k", "--chain", "c"][..],
+    ] {
+        assert!(rejection(missing).contains("missing"), "{missing:?}");
+    }
+    let unknown = rejection(&[
+        "agent",
+        "key",
+        "generate",
+        "b",
+        "--key-id",
+        "k",
+        "--chain",
+        "c",
+        "--public-key-hex",
+        "ab",
+    ]);
+    assert!(unknown.contains("Unknown flag"), "{unknown}");
+}
+
+/// The help of the new command, and the helps that point at it, say what it
+/// does with the private key.
+#[test]
+fn test_agent_key_generate_help_warns_about_the_private_key() {
+    let text = help(&["agent", "key", "generate", "--help"]);
+    for needle in [
+        "mentisdb agent key generate <agent-id>",
+        "--key-id",
+        "--out",
+        "--force",
+        "--pin",
+        "--offline",
+        "NEVER printed",
+        "only copy",
+        "never paste it into a chat",
+        "agent key add",
+    ] {
+        assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
+    }
+    assert!(help(&["agent", "key", "add", "--help"]).contains("mentisdb agent key generate"));
+    assert!(help(&["agent", "--help"]).contains("agent key generate"));
+    assert!(mentisdb::cli::key::KEY_HELP.contains("mentisdb agent key generate"));
+}
+
 /// Operator commands are offline-capable and PIN-gated, never REST-token commands.
 #[test]
 fn test_operator_commands_target_the_dashboard() {

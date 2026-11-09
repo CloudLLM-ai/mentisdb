@@ -79,6 +79,10 @@ Out of scope, documented limits:
   prints only the public key and the path, so a key is never copied into
   terminal scrollback, a shell log or the context of an AI agent that ran the
   command. Seeds come straight from the operating system's random generator.
+  `mentisdb agent key generate` does the same and registers the public key in one
+  step; the dashboard's "Generate key pair" makes the pair in the browser
+  (WebCrypto), registers only the public key with a proof of possession and shows
+  the seed once, so the server never holds it.
   Loading a seed file that group or other users can read (`--private-key-file`,
   `--read-key-file`, `MENTISDB_READ_KEY_FILE`, the operator key) works but
   prints a warning with the `chmod 600` fix; MentisDB never changes the mode of

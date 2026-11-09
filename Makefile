@@ -1,11 +1,24 @@
 # Makefile
-.PHONY: docker-build docker-run build release clean fmt check test doc bench help tasks clippy publish publish-dry-run build-mentisdb
+.PHONY: coverage coverage-open docker-build docker-run build release clean fmt check test doc bench help tasks clippy publish publish-dry-run build-mentisdb
 
 default: help
 CARGO_CMD=/usr/bin/env cargo
 # cargo-sweep (cargo install cargo-sweep), when installed, deletes whatever an older build
 # left in target/ that this build didn't use, so only fresh release artifacts remain.
 SWEEP := $(shell command -v cargo-sweep >/dev/null 2>&1 && echo cargo sweep)
+
+# Coverage (docs/ENGINEERING.md, "Coverage"). One run on a pinned nightly measures functions,
+# branches, regions and lines (branch coverage is nightly-only). No lcov export: llvm-cov's lcov
+# exporter crashes (SIGSEGV in CoverageExporterLcov) on branch data with this nightly. Keep the nightly in sync with
+# .github/workflows/coverage.yml. COVERAGE_GOAL is the target; the COVERAGE_FLOOR_* values are
+# what the gate enforces: the measured value rounded down. Floors only go up, never down.
+COVERAGE_NIGHTLY=nightly-2026-10-01
+COVERAGE_GOAL=90
+COVERAGE_FLOOR_FUNCTIONS=73
+COVERAGE_FLOOR_BRANCHES=64
+COVERAGE_FLOOR_REGIONS=72
+COVERAGE_FLOOR_LINES=74
+COVERAGE_DIR=target/coverage
 
 # ----------------------------------------------------------------------------------------------------------------------
 # Targets
@@ -49,6 +62,22 @@ clippy: ## Run clippy and fail on warnings
 # Run tests
 test: ## Run all tests using cargo test --release
 	${CARGO_CMD} test --release
+
+# Tests under instrumentation once, then every report from the same profile data (needs
+# cargo install cargo-llvm-cov and `rustup toolchain install $(COVERAGE_NIGHTLY) --component llvm-tools-preview`).
+coverage: ## Coverage table (functions, branches, regions, lines) + HTML + JSON; fails under the floors
+	mkdir -p $(COVERAGE_DIR)
+	${CARGO_CMD} +$(COVERAGE_NIGHTLY) llvm-cov clean --workspace
+	${CARGO_CMD} +$(COVERAGE_NIGHTLY) llvm-cov --no-report --branch --all-features --locked
+	${CARGO_CMD} +$(COVERAGE_NIGHTLY) llvm-cov report --branch --html --output-dir $(COVERAGE_DIR)
+	${CARGO_CMD} +$(COVERAGE_NIGHTLY) llvm-cov report --branch --json --summary-only --output-path $(COVERAGE_DIR)/summary.json
+	python3 scripts/coverage_gate.py $(COVERAGE_DIR)/summary.json --goal $(COVERAGE_GOAL) \
+		--floor functions=$(COVERAGE_FLOOR_FUNCTIONS) --floor branches=$(COVERAGE_FLOOR_BRANCHES) \
+		--floor regions=$(COVERAGE_FLOOR_REGIONS) --floor lines=$(COVERAGE_FLOOR_LINES) \
+		--toolchain "$(COVERAGE_NIGHTLY)" --markdown $(COVERAGE_DIR)/summary.md
+
+coverage-open: coverage ## Open the HTML coverage report (macOS)
+	open $(COVERAGE_DIR)/html/index.html
 
 # Run benchmarks
 bench: ## Run Criterion benchmarks (thought_chain, skill_registry, http_concurrency)

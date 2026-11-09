@@ -1,0 +1,68 @@
+name: Coverage
+
+# One instrumented test run on a pinned nightly measures functions, branches,
+# regions and lines; the table lands in the run's job summary and the HTML
+# report is an artifact. See docs/ENGINEERING.md, "Coverage".
+
+on:
+  push:
+    branches: ["master", "main"]
+  pull_request:
+    branches: ["master", "main"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  coverage:
+    name: coverage (nightly, all dimensions)
+    runs-on: ubuntu-latest
+    # The suite runs once under instrumentation, which is several times slower
+    # than `cargo test`; this leaves room for a cold cache.
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Keep NIGHTLY in sync with COVERAGE_NIGHTLY in the Makefile.
+      - name: Install pinned nightly with llvm-tools
+        run: rustup toolchain install nightly-2026-10-01 --profile minimal --component llvm-tools-preview
+
+      - name: Install Linux audio build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libasound2-dev
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: coverage-nightly-2026-10-01
+          workspaces: ". -> target/llvm-cov-target"
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
+
+      - name: Measure and gate
+        run: make coverage
+
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -f target/coverage/summary.md ]; then
+            cat target/coverage/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: |
+            target/coverage/html
+            target/coverage/summary.json
+            target/coverage/summary.md
+          if-no-files-found: ignore
