@@ -311,6 +311,9 @@ pub mod backup;
 pub mod cli;
 #[cfg(feature = "server")]
 pub(crate) mod dashboard;
+#[cfg(feature = "server")]
+#[cfg(test)]
+mod dashboard_settings_tests;
 pub(crate) mod decode_limits;
 pub mod integrations;
 pub mod lineage;

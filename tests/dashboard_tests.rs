@@ -1886,6 +1886,117 @@ async fn dashboard_bearer_token_access_uses_radio_group_with_status_pill() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The Settings screen lists every daemon setting, accepts edits to all of
+/// them, and says "restart required" for the ones the daemon only reads at
+/// startup. Regression: the dedup, auto-edge, body-limit, fsync and other
+/// settings were missing from the screen, the HTTPS ports were shown but
+/// rejected on save, and VERBOSE / UPDATE_* / THOUGHT_SOUNDS claimed hot
+/// reload although the daemon reads them once at startup. Values posted here
+/// equal the defaults so the shared test process is not disturbed.
+#[tokio::test]
+async fn dashboard_settings_screen_lists_and_applies_every_daemon_setting() {
+    let dir = unique_chain_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let router = dashboard_router_for_dir(&dir);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/settings")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let settings: Vec<Value> = serde_json::from_slice(&body).unwrap();
+    let row = |name: &str| {
+        settings
+            .iter()
+            .find(|s| s["name"] == name)
+            .unwrap_or_else(|| panic!("{name} missing from the Settings screen"))
+            .clone()
+    };
+    for name in [
+        "MENTISDB_DEDUP_THRESHOLD",
+        "MENTISDB_DEDUP_SCAN_WINDOW",
+        "MENTISDB_AUTO_EDGE_THRESHOLD",
+        "MENTISDB_AUTO_EDGE_K",
+        "MENTISDB_MAX_BODY_BYTES",
+        "MENTISDB_MAX_INFLIGHT_BODY_BYTES",
+        "MENTISDB_BODY_IDLE_TIMEOUT_SECS",
+        "MENTISDB_MIN_BODY_BYTES_PER_SEC",
+        "MENTISDB_FSYNC",
+        "MENTISDB_GROUP_COMMIT_MS",
+        "MENTISDB_EMBEDDINGS",
+        "MENTISDB_VECTOR_FUSION",
+        "MENTISDB_COLLAPSE_DUPLICATES",
+        "MENTISDB_DF_SCOPE",
+        "MENTISDB_MIGRATION_CONCURRENCY",
+        "MENTISDB_MIGRATION_BACKUP_RETENTION_DAYS",
+        "MENTISDB_DASHBOARD_ALLOWED_HOSTS",
+        "MENTISDB_WEBHOOK_ALLOWED_CIDRS",
+    ] {
+        row(name);
+    }
+    assert_eq!(row("MENTISDB_DEDUP_SCAN_WINDOW")["default_value"], "64");
+    assert_eq!(row("MENTISDB_VERBOSE")["hot_reload"], false);
+    assert_eq!(row("MENTISDB_DASHBOARD_PIN")["value"], "");
+    // Client-side variables are not daemon settings.
+    assert!(settings
+        .iter()
+        .all(|s| s["name"] != "MENTISDB_BEARER_TOKEN"));
+
+    let post = |name: &'static str, value: &'static str| {
+        let router = router.clone();
+        async move {
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/dashboard/api/settings")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::json!({ "settings": { name: value } }).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, serde_json::from_slice::<Value>(&body).unwrap())
+        }
+    };
+
+    // Shown before but rejected on save.
+    let (status, reply) = post("MENTISDB_HTTPS_MCP_PORT", "9473").await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["restart_required"], true);
+    // Claimed hot reload before; the daemon reads it once at startup.
+    let (status, reply) = post("MENTISDB_VERBOSE", "true").await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["restart_required"], true);
+    // Read on every use, so no restart.
+    let (status, reply) = post("MENTISDB_HNSW_EF_SEARCH", "128").await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["restart_required"], false);
+    // A client-side variable is refused.
+    let (status, _) = post("MENTISDB_BEARER_TOKEN", "x").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let saved = std::fs::read_to_string(dir.join(".env")).unwrap();
+    assert!(saved.contains("MENTISDB_HTTPS_MCP_PORT=9473"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ── Session-lifetime regression tests ────────────────────────────────────────
 
 fn dashboard_router_with_pin(dir: &PathBuf, pin: &str) -> axum::Router {

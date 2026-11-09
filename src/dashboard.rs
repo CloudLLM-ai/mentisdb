@@ -16,7 +16,6 @@
 //!
 //! If neither is present the request is redirected to `/dashboard/login`.
 
-use crate::search::DEFAULT_EXACT_TO_HNSW_THRESHOLD;
 use crate::{
     auth::{
         parse_bearer_token_access, BearerTokenError, BearerTokenRecord, BearerTokenScope,
@@ -3911,9 +3910,9 @@ fn dashboard_bearer_token_scope(
 
 /// Metadata for one dashboard-exposed setting.
 #[derive(Serialize)]
-struct DashboardSetting {
+pub(crate) struct DashboardSetting {
     name: String,
-    value: String,
+    pub(crate) value: String,
     default_value: String,
     description: String,
     kind: String,
@@ -3922,240 +3921,263 @@ struct DashboardSetting {
     set: bool,
 }
 
+/// How a value of a [`SettingSpec`] is edited on the Settings screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SettingKind {
+    /// Free text (paths, hosts, enum names, comma-separated lists).
+    Text,
+    /// A number, integer or decimal (the input accepts any step).
+    Number,
+    /// `true`/`false`; the daemon also accepts `1`, `0`, `yes`, `on`.
+    Boolean,
+}
+
+impl SettingKind {
+    /// The wire name the dashboard page switches on (`string`, `number`, `boolean`).
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "string",
+            Self::Number => "number",
+            Self::Boolean => "boolean",
+        }
+    }
+}
+
+/// One daemon environment variable as the Settings screen shows and edits it.
+///
+/// [`DAEMON_SETTINGS`] holds one of these per `MENTISDB_*` variable the daemon
+/// reads. It is the single list behind `GET /dashboard/api/settings` (what the
+/// screen shows), `POST /dashboard/api/settings` (which names it accepts, and
+/// whether a change needs a restart), so the three cannot drift apart. The
+/// `settings_catalog_covers_every_env_var_the_crate_reads` test fails when code
+/// starts reading a `MENTISDB_*` variable that is neither listed here nor in
+/// [`CLIENT_ONLY_ENV_VARS`].
+#[derive(Debug)]
+pub(crate) struct SettingSpec {
+    /// Environment variable name, always `MENTISDB_*`.
+    pub(crate) name: &'static str,
+    /// Older names the daemon still reads when `name` is unset, in order.
+    pub(crate) aliases: &'static [&'static str],
+    /// The value the daemon uses when the variable is unset, as the operator
+    /// would type it. Empty when "unset" itself is the default (a feature off,
+    /// or a value derived from another setting, as the description says).
+    pub(crate) default_value: &'static str,
+    /// What the setting controls, written for an operator.
+    pub(crate) description: &'static str,
+    pub(crate) kind: SettingKind,
+    /// `true` only when the running daemon picks up a new value without a
+    /// restart: the variable is read again on each use (or applied by
+    /// `api_update_settings`). Anything read once at startup, when a chain is
+    /// opened, or cached for the life of the process is `false`.
+    pub(crate) hot_reload: bool,
+    /// The value is a secret: it is never sent to the browser, only whether
+    /// one is set.
+    pub(crate) secret: bool,
+}
+
+impl SettingSpec {
+    /// A setting with no aliases that is not a secret.
+    const fn new(
+        name: &'static str,
+        default_value: &'static str,
+        kind: SettingKind,
+        hot_reload: bool,
+        description: &'static str,
+    ) -> Self {
+        Self {
+            name,
+            aliases: &[],
+            default_value,
+            description,
+            kind,
+            hot_reload,
+            secret: false,
+        }
+    }
+
+    /// The value the daemon would read now: `name`, then each alias.
+    fn current_value(&self) -> Option<String> {
+        std::iter::once(self.name)
+            .chain(self.aliases.iter().copied())
+            .find_map(|key| std::env::var(key).ok())
+    }
+
+    /// The row sent to the Settings screen. A secret's value is withheld and
+    /// only `set` says whether one is configured.
+    pub(crate) fn to_dashboard_setting(&self) -> DashboardSetting {
+        let current = self.current_value();
+        let set = self.secret && current.as_deref().is_some_and(|v| !v.is_empty());
+        DashboardSetting {
+            name: self.name.to_string(),
+            value: if self.secret {
+                String::new()
+            } else {
+                current.unwrap_or_default()
+            },
+            default_value: self.default_value.to_string(),
+            description: self.description.to_string(),
+            kind: self.kind.as_str().to_string(),
+            hot_reload: self.hot_reload,
+            set,
+        }
+    }
+}
+
+use SettingKind::{Boolean, Number, Text};
+
+/// Every `MENTISDB_*` variable the daemon reads, in the order the Settings
+/// screen lists them. See [`SettingSpec`] for what each field means and how
+/// the list is kept complete.
+pub(crate) const DAEMON_SETTINGS: &[SettingSpec] = &[
+    // ── Storage ────────────────────────────────────────────────────────────
+    SettingSpec::new("MENTISDB_DIR", "~/.cloudllm/mentisdb", Text, false,
+        "Directory where chain files and registry are stored."),
+    SettingSpec {
+        aliases: &["MENTISDB_DEFAULT_KEY"],
+        ..SettingSpec::new("MENTISDB_DEFAULT_CHAIN_KEY", "default", Text, false,
+            "Default chain key when none is specified. The older name MENTISDB_DEFAULT_KEY is still read when this is unset.")
+    },
+    SettingSpec::new("MENTISDB_STORAGE_ADAPTER", "binary", Text, false,
+        "Storage adapter: binary or jsonl."),
+    SettingSpec::new("MENTISDB_AUTO_FLUSH", "true", Boolean, true,
+        "Flush immediately on each append (true) or use buffered writes (false)."),
+    SettingSpec::new("MENTISDB_GROUP_COMMIT_MS", "2", Number, false,
+        "Group-commit window in milliseconds for the binary writer. A lone append never waits; 0 disables batching."),
+    SettingSpec::new("MENTISDB_FSYNC", "false", Boolean, false,
+        "fsync the chain file after every group commit, for power-loss durability. Off by default because it slows appends several times over."),
+    SettingSpec::new("MENTISDB_MIGRATION_CONCURRENCY", "2", Number, false,
+        "How many chains the background migration manager rewrites at once."),
+    SettingSpec::new("MENTISDB_MIGRATION_BACKUP_RETENTION_DAYS", "14", Number, false,
+        "Days to keep the original of a migrated chain under migrations/backup/. 0 keeps backups forever."),
+    // ── Logging ────────────────────────────────────────────────────────────
+    SettingSpec::new("MENTISDB_VERBOSE", "true", Boolean, false,
+        "Enable verbose logging."),
+    SettingSpec::new("MENTISDB_LOG_FILE", "", Text, false,
+        "Path to log file (optional)."),
+    // ── Network ────────────────────────────────────────────────────────────
+    SettingSpec::new("MENTISDB_BIND_HOST", "127.0.0.1", Text, false,
+        "Host address to bind servers to."),
+    SettingSpec::new("MENTISDB_MCP_PORT", "9471", Number, false,
+        "Port for the MCP server."),
+    SettingSpec::new("MENTISDB_REST_PORT", "9472", Number, false,
+        "Port for the REST server."),
+    SettingSpec::new("MENTISDB_HTTPS_MCP_PORT", "9473", Number, false,
+        "Port for the HTTPS MCP server (0 to disable)."),
+    SettingSpec::new("MENTISDB_HTTPS_REST_PORT", "9474", Number, false,
+        "Port for the HTTPS REST server (0 to disable)."),
+    SettingSpec::new("MENTISDB_TLS_CERT", "~/.cloudllm/mentisdb/tls/cert.pem", Text, false,
+        "Path to TLS certificate."),
+    SettingSpec::new("MENTISDB_TLS_KEY", "~/.cloudllm/mentisdb/tls/key.pem", Text, false,
+        "Path to TLS private key."),
+    SettingSpec::new("MENTISDB_MAX_BODY_BYTES", "67108864", Number, false,
+        "Largest request body accepted, in bytes (64 MiB). Allowed range 1 MiB to 1 GiB."),
+    SettingSpec::new("MENTISDB_MAX_INFLIGHT_BODY_BYTES", "", Number, false,
+        "Body bytes all large (import) requests in flight may hold together. Unset means four times MENTISDB_MAX_BODY_BYTES; over it a request gets 503 with Retry-After."),
+    SettingSpec::new("MENTISDB_BODY_IDLE_TIMEOUT_SECS", "30", Number, false,
+        "Seconds a request body may stall without sending a byte before the request is dropped (1 to 3600)."),
+    SettingSpec::new("MENTISDB_MIN_BODY_BYTES_PER_SEC", "65536", Number, false,
+        "Slowest average upload rate allowed for a request body, in bytes per second; 0 switches the rule off."),
+    // ── Dashboard and access ───────────────────────────────────────────────
+    SettingSpec::new("MENTISDB_DASHBOARD_PORT", "9475", Number, false,
+        "Port for the web dashboard (0 to disable)."),
+    SettingSpec {
+        secret: true,
+        ..SettingSpec::new("MENTISDB_DASHBOARD_PIN", "", Text, false,
+            "Optional PIN to protect dashboard access. Leave blank to keep the current value.")
+    },
+    SettingSpec::new("MENTISDB_DASHBOARD_ALLOWED_HOSTS", "", Text, false,
+        "Extra comma-separated hostnames or IPs accepted in the Host header (e.g. a reverse proxy or public DNS name). localhost and the bind address are always accepted."),
+    SettingSpec::new(MENTISDB_BEARER_TOKEN_ACCESS_ENV, "false", Boolean, true,
+        "Require bearer tokens for MCP HTTP and HTTPS access."),
+    SettingSpec::new("MENTISDB_WEBHOOK_ALLOWED_CIDRS", "", Text, false,
+        "Comma-separated CIDR ranges webhooks may target even though they are internal (private, loopback, link-local). Unset blocks them all. Nothing broader than /8 is accepted."),
+    // ── Memory quality ─────────────────────────────────────────────────────
+    SettingSpec::new("MENTISDB_DEDUP_THRESHOLD", "", Number, false,
+        "Auto-dedup on append: a new thought whose word overlap (Jaccard) with a recent one reaches this value (0.0 to 1.0) automatically Supersedes it. Unset means off; 0.85 is recommended for long-lived chains."),
+    SettingSpec::new("MENTISDB_DEDUP_SCAN_WINDOW", "64", Number, false,
+        "How many recent thoughts auto-dedup compares a new thought against."),
+    SettingSpec::new("MENTISDB_AUTO_EDGE_THRESHOLD", "0.85", Number, false,
+        "Vector similarity (0.0 to 1.0) at or above which an appended thought is linked to an earlier one by an implicit edge. Applies to chains opened after a restart."),
+    SettingSpec::new("MENTISDB_AUTO_EDGE_K", "5", Number, false,
+        "Most implicit edges added per appended thought."),
+    // ── Search ─────────────────────────────────────────────────────────────
+    SettingSpec::new("MENTISDB_EMBEDDINGS", "", Text, false,
+        "Embeddings for managed vector sidecars: off (lexical and graph only), local-text (built-in, never loads ONNX) or fastembed. Unset means fastembed when compiled in, local-text otherwise."),
+    SettingSpec::new("MENTISDB_VECTOR_FUSION", "relative", Text, true,
+        "How vector similarity is blended with the lexical score: relative (keeps the vector channel for paraphrased questions) or absolute (the older raw-BM25 decay)."),
+    SettingSpec::new("MENTISDB_COLLAPSE_DUPLICATES", "0.9", Text, true,
+        "Collapse exact and near-duplicate search hits at this Jaccard threshold (0 to 1), or off. Requests can override it."),
+    SettingSpec::new("MENTISDB_DF_SCOPE", "global", Text, false,
+        "How the lexical stop-word gate counts a term's document frequency: global (any field) or field (each field's own count). Experimental."),
+    SettingSpec::new("MENTISDB_HNSW_THRESHOLD", "50000", Number, true,
+        "Minimum number of vectors before the HNSW approximate backend is selected."),
+    SettingSpec::new("MENTISDB_HNSW_EF_CONSTRUCTION", "400", Number, true,
+        "Search width during HNSW graph construction (higher = better recall, slower build)."),
+    SettingSpec::new("MENTISDB_HNSW_EF_SEARCH", "128", Number, true,
+        "Search width during HNSW queries (higher = better recall, slower search)."),
+    SettingSpec::new("MENTISDB_HNSW_BACKGROUND_BUILD", "true", Boolean, true,
+        "Build large HNSW graphs in a background thread so the daemon stays responsive."),
+    // ── Updates and sounds ─────────────────────────────────────────────────
+    SettingSpec::new("MENTISDB_UPDATE_CHECK", "true", Boolean, false,
+        "Enable background GitHub release checks."),
+    SettingSpec::new("MENTISDB_UPDATE_REPO", "CloudLLM-ai/mentisdb", Text, false,
+        "GitHub repository for update checks."),
+    SettingSpec::new("MENTISDB_STARTUP_SOUND", "true", Boolean, false,
+        "Play a sound on daemon startup."),
+    SettingSpec::new("MENTISDB_THOUGHT_SOUNDS", "false", Boolean, false,
+        "Play sounds on thought append and read."),
+];
+
+/// `MENTISDB_*` variables the crate reads that are not daemon settings, with
+/// why each stays off the Settings screen. They belong to the `mentisdb` CLI
+/// acting as a client of some daemon, or are an alias listed on a
+/// [`SettingSpec`].
+// Only the library's parity tests read this list; it also documents why
+// these variables are not on the Settings screen.
+#[allow(dead_code)]
+pub(crate) const CLIENT_ONLY_ENV_VARS: &[(&str, &str)] = &[
+    (
+        "MENTISDB_BEARER_TOKEN",
+        "the token the CLI sends to a daemon, not one the daemon checks",
+    ),
+    ("MENTISDB_KEY_DIR", "where the CLI keeps agent signing keys"),
+    (
+        "MENTISDB_READ_KEY_FILE",
+        "seed file a client signs read requests with",
+    ),
+    (
+        "MENTISDB_READ_AGENT_ID",
+        "agent a client signs read requests as",
+    ),
+    (
+        "MENTISDB_READ_KEY_ID",
+        "key id a client signs read requests with",
+    ),
+    (
+        "MENTISDB_DEFAULT_KEY",
+        "older alias of MENTISDB_DEFAULT_CHAIN_KEY",
+    ),
+];
+
+/// The catalog entry for `name`, if the Settings screen manages it.
+pub(crate) fn setting_spec(name: &str) -> Option<&'static SettingSpec> {
+    DAEMON_SETTINGS.iter().find(|spec| spec.name == name)
+}
+
 /// `GET /dashboard/api/settings`
 ///
-/// Returns all MENTISDB_ environment variables with their current values,
-/// defaults, types, and descriptions.
+/// Returns every daemon setting in [`DAEMON_SETTINGS`] with its current
+/// value, default, kind, description and whether a change applies without a
+/// restart. Secret values are withheld.
 async fn api_settings(
     State(_state): State<DashboardState>,
 ) -> Result<Json<Vec<DashboardSetting>>, (StatusCode, Json<Value>)> {
-    let settings = vec![
-        DashboardSetting {
-            name: "MENTISDB_DIR".to_string(),
-            value: std::env::var("MENTISDB_DIR").unwrap_or_default(),
-            default_value: "~/.cloudllm/mentisdb".to_string(),
-            description: "Directory where chain files and registry are stored.".to_string(),
-            kind: "string".to_string(),
-            hot_reload: false,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_DEFAULT_CHAIN_KEY".to_string(),
-            value: std::env::var("MENTISDB_DEFAULT_CHAIN_KEY")
-                .or_else(|_| std::env::var("MENTISDB_DEFAULT_KEY"))
-                .unwrap_or_default(),
-            default_value: "default".to_string(),
-            description: "Default chain key when none is specified.".to_string(),
-            kind: "string".to_string(),
-            hot_reload: false,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_STORAGE_ADAPTER".to_string(),
-            value: std::env::var("MENTISDB_STORAGE_ADAPTER").unwrap_or_default(),
-            default_value: "binary".to_string(),
-            description: "Storage adapter: binary or jsonl.".to_string(),
-            kind: "string".to_string(),
-            hot_reload: false,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_AUTO_FLUSH".to_string(),
-            value: std::env::var("MENTISDB_AUTO_FLUSH").unwrap_or_else(|_| "true".to_string()),
-            default_value: "true".to_string(),
-            description: "Flush immediately on each append (true) or use buffered writes (false)."
-                .to_string(),
-            kind: "boolean".to_string(),
-            hot_reload: true,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_VERBOSE".to_string(),
-            value: std::env::var("MENTISDB_VERBOSE").unwrap_or_else(|_| "true".to_string()),
-            default_value: "true".to_string(),
-            description: "Enable verbose logging.".to_string(),
-            kind: "boolean".to_string(),
-            hot_reload: true,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_LOG_FILE".to_string(),
-            value: std::env::var("MENTISDB_LOG_FILE").unwrap_or_default(),
-            default_value: "".to_string(),
-            description: "Path to log file (optional).".to_string(),
-            kind: "string".to_string(),
-            hot_reload: false,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_BIND_HOST".to_string(),
-            value: std::env::var("MENTISDB_BIND_HOST").unwrap_or_default(),
-            default_value: "127.0.0.1".to_string(),
-            description: "Host address to bind servers to.".to_string(),
-            kind: "string".to_string(),
-            hot_reload: false,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_MCP_PORT".to_string(),
-            value: std::env::var("MENTISDB_MCP_PORT").unwrap_or_default(),
-            default_value: "9471".to_string(),
-            description: "Port for the MCP server.".to_string(),
-            kind: "number".to_string(),
-            hot_reload: false,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_REST_PORT".to_string(),
-            value: std::env::var("MENTISDB_REST_PORT").unwrap_or_default(),
-            default_value: "9472".to_string(),
-            description: "Port for the REST server.".to_string(),
-            kind: "number".to_string(),
-            hot_reload: false,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_HTTPS_MCP_PORT".to_string(),
-            value: std::env::var("MENTISDB_HTTPS_MCP_PORT").unwrap_or_default(),
-            default_value: "9473".to_string(),
-            description: "Port for the HTTPS MCP server (0 to disable).".to_string(),
-            kind: "number".to_string(),
-            hot_reload: false,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_HTTPS_REST_PORT".to_string(),
-            value: std::env::var("MENTISDB_HTTPS_REST_PORT").unwrap_or_default(),
-            default_value: "9474".to_string(),
-            description: "Port for the HTTPS REST server (0 to disable).".to_string(),
-            kind: "number".to_string(),
-            hot_reload: false,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_TLS_CERT".to_string(),
-            value: std::env::var("MENTISDB_TLS_CERT").unwrap_or_default(),
-            default_value: "~/.cloudllm/mentisdb/tls/cert.pem".to_string(),
-            description: "Path to TLS certificate.".to_string(),
-            kind: "string".to_string(),
-            hot_reload: false,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_TLS_KEY".to_string(),
-            value: std::env::var("MENTISDB_TLS_KEY").unwrap_or_default(),
-            default_value: "~/.cloudllm/mentisdb/tls/key.pem".to_string(),
-            description: "Path to TLS private key.".to_string(),
-            kind: "string".to_string(),
-            hot_reload: false,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_DASHBOARD_PORT".to_string(),
-            value: std::env::var("MENTISDB_DASHBOARD_PORT").unwrap_or_default(),
-            default_value: "9475".to_string(),
-            description: "Port for the web dashboard (0 to disable).".to_string(),
-            kind: "number".to_string(),
-            hot_reload: false,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_DASHBOARD_PIN".to_string(),
-            // The PIN is a secret: never echo it back to the browser.
-            value: String::new(),
-            default_value: "".to_string(),
-            description: "Optional PIN to protect dashboard access. Leave blank to keep the current value."
-                .to_string(),
-            kind: "string".to_string(),
-            hot_reload: false,
-            set: std::env::var("MENTISDB_DASHBOARD_PIN").is_ok_and(|v| !v.is_empty()),
-        },
-        DashboardSetting {
-            name: MENTISDB_BEARER_TOKEN_ACCESS_ENV.to_string(),
-            value: std::env::var(MENTISDB_BEARER_TOKEN_ACCESS_ENV)
-                .unwrap_or_else(|_| "false".to_string()),
-            default_value: "false".to_string(),
-            description: "Require bearer tokens for MCP HTTP and HTTPS access.".to_string(),
-            kind: "boolean".to_string(),
-            hot_reload: true,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_UPDATE_CHECK".to_string(),
-            value: std::env::var("MENTISDB_UPDATE_CHECK").unwrap_or_else(|_| "true".to_string()),
-            default_value: "true".to_string(),
-            description: "Enable background GitHub release checks.".to_string(),
-            kind: "boolean".to_string(),
-            hot_reload: true,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_UPDATE_REPO".to_string(),
-            value: std::env::var("MENTISDB_UPDATE_REPO")
-                .unwrap_or_else(|_| "CloudLLM-ai/mentisdb".to_string()),
-            default_value: "CloudLLM-ai/mentisdb".to_string(),
-            description: "GitHub repository for update checks.".to_string(),
-            kind: "string".to_string(),
-            hot_reload: true,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_STARTUP_SOUND".to_string(),
-            value: std::env::var("MENTISDB_STARTUP_SOUND").unwrap_or_else(|_| "true".to_string()),
-            default_value: "true".to_string(),
-            description: "Play a sound on daemon startup.".to_string(),
-            kind: "boolean".to_string(),
-            hot_reload: true,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_THOUGHT_SOUNDS".to_string(),
-            value: std::env::var("MENTISDB_THOUGHT_SOUNDS").unwrap_or_else(|_| "false".to_string()),
-            default_value: "false".to_string(),
-            description: "Play sounds on thought append and read.".to_string(),
-            kind: "boolean".to_string(),
-            hot_reload: true,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_HNSW_THRESHOLD".to_string(),
-            value: std::env::var("MENTISDB_HNSW_THRESHOLD")
-                .unwrap_or_else(|_| DEFAULT_EXACT_TO_HNSW_THRESHOLD.to_string()),
-            default_value: DEFAULT_EXACT_TO_HNSW_THRESHOLD.to_string(),
-            description: "Minimum number of vectors before the HNSW approximate backend is selected.".to_string(),
-            kind: "number".to_string(),
-            hot_reload: true,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_HNSW_EF_CONSTRUCTION".to_string(),
-            value: std::env::var("MENTISDB_HNSW_EF_CONSTRUCTION").unwrap_or_else(|_| "400".to_string()),
-            default_value: "400".to_string(),
-            description: "Search width during HNSW graph construction (higher = better recall, slower build).".to_string(),
-            kind: "number".to_string(),
-            hot_reload: true,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_HNSW_EF_SEARCH".to_string(),
-            value: std::env::var("MENTISDB_HNSW_EF_SEARCH").unwrap_or_else(|_| "128".to_string()),
-            default_value: "128".to_string(),
-            description: "Search width during HNSW queries (higher = better recall, slower search).".to_string(),
-            kind: "number".to_string(),
-            hot_reload: true,
-            set: false,
-        },
-        DashboardSetting {
-            name: "MENTISDB_HNSW_BACKGROUND_BUILD".to_string(),
-            value: std::env::var("MENTISDB_HNSW_BACKGROUND_BUILD").unwrap_or_else(|_| "true".to_string()),
-            default_value: "true".to_string(),
-            description: "Build large HNSW graphs in a background thread so the daemon stays responsive.".to_string(),
-            kind: "boolean".to_string(),
-            hot_reload: true,
-            set: false,
-        },
-    ];
-    Ok(Json(settings))
+    Ok(Json(
+        DAEMON_SETTINGS
+            .iter()
+            .map(SettingSpec::to_dashboard_setting)
+            .collect(),
+    ))
 }
 
 /// Request body for updating settings.
@@ -4179,46 +4201,10 @@ struct RestartDaemonResponse {
     message: String,
 }
 
-/// `POST /dashboard/api/settings`
-///
-/// Accepts changed setting values, updates the environment, hot-reloads
-/// applicable fields in DashboardState, and persists the changes to a
-/// `.env` file in the mentisdb directory.
-/// Whitelist of environment variables that the dashboard settings API is
-/// allowed to modify. Any key not in this list is rejected with HTTP 400.
-const ALLOWED_SETTING_KEYS: &[&str] = &[
-    "MENTISDB_DIR",
-    "MENTISDB_BIND_HOST",
-    "MENTISDB_MCP_PORT",
-    "MENTISDB_REST_PORT",
-    "MENTISDB_DASHBOARD_PORT",
-    "MENTISDB_TLS_CERT",
-    "MENTISDB_TLS_KEY",
-    "MENTISDB_BEARER_TOKEN_ACCESS",
-    "MENTISDB_DASHBOARD_PIN",
-    "MENTISDB_AUTO_FLUSH",
-    "MENTISDB_VERBOSE",
-    "MENTISDB_LOG_FILE",
-    "MENTISDB_DEFAULT_CHAIN_KEY",
-    "MENTISDB_STORAGE_ADAPTER",
-    "MENTISDB_STARTUP_SOUND",
-    "MENTISDB_THOUGHT_SOUNDS",
-    "MENTISDB_UPDATE_CHECK",
-    "MENTISDB_UPDATE_REPO",
-    "MENTISDB_HNSW_THRESHOLD",
-    "MENTISDB_HNSW_EF_CONSTRUCTION",
-    "MENTISDB_HNSW_EF_SEARCH",
-    "MENTISDB_HNSW_BACKGROUND_BUILD",
-    "MENTISDB_DEDUP_THRESHOLD",
-    "MENTISDB_DEDUP_SCAN_WINDOW",
-    "MENTISDB_AUTO_EDGE_THRESHOLD",
-    "MENTISDB_AUTO_EDGE_K",
-];
-
-/// Validate that a setting name is in the whitelist and the value does not
-/// contain newline characters (which would allow `.env` injection).
+/// Validate that a setting name is in [`DAEMON_SETTINGS`] and the value does
+/// not contain newline characters (which would allow `.env` injection).
 fn validate_setting(name: &str, value: &str) -> Result<(), String> {
-    if !ALLOWED_SETTING_KEYS.contains(&name) {
+    if setting_spec(name).is_none() {
         return Err(format!(
             "Unknown setting '{name}'. Allowed settings are limited to MENTISDB_* variables."
         ));
@@ -4231,6 +4217,11 @@ fn validate_setting(name: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `POST /dashboard/api/settings`
+///
+/// Accepts changed setting values, updates the environment, hot-reloads
+/// applicable fields in DashboardState, and persists the changes to a
+/// `.env` file in the mentisdb directory.
 async fn api_update_settings(
     State(state): State<DashboardState>,
     Json(body): Json<SettingsUpdateRequest>,
@@ -4276,17 +4267,9 @@ async fn api_update_settings(
                     .bearer_token_access
                     .store(parse_bearer_token_access(value), Ordering::Relaxed);
             }
-            "MENTISDB_VERBOSE"
-            | "MENTISDB_UPDATE_CHECK"
-            | "MENTISDB_UPDATE_REPO"
-            | "MENTISDB_STARTUP_SOUND"
-            | "MENTISDB_THOUGHT_SOUNDS"
-            | "MENTISDB_HNSW_THRESHOLD"
-            | "MENTISDB_HNSW_EF_CONSTRUCTION"
-            | "MENTISDB_HNSW_EF_SEARCH"
-            | "MENTISDB_HNSW_BACKGROUND_BUILD" => {
-                // These are read from env on demand
-            }
+            // Every other hot-reload setting is read from the environment on
+            // each use, so `set_var` above is all it needs.
+            _ if setting_spec(name).is_some_and(|spec| spec.hot_reload) => {}
             _ => {
                 restart_required = true;
             }

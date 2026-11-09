@@ -1532,7 +1532,7 @@
                   const isChecked = ['1','true','yes','on'].includes(checked);
                   control = `<input type="checkbox" id="${inputId}" data-idx="${idx}" ${isChecked ? 'checked' : ''} style="width:auto;margin:0;accent-color:#58a6ff" title="Toggle this boolean setting">`;
                 } else if (s.kind === 'number') {
-                  control = `<input type="number" id="${inputId}" data-idx="${idx}" value="${esc(s.value || s.default_value)}" placeholder="${esc(s.default_value)}" title="Enter a numeric value">`;
+                  control = `<input type="number" step="any" id="${inputId}" data-idx="${idx}" value="${esc(s.value || s.default_value)}" placeholder="${esc(s.default_value)}" title="Enter a numeric value">`;
                 } else {
                   const ph = s.set && !s.value ? '(set \u2014 type to replace)' : s.default_value;
                   control = `<input type="text" id="${inputId}" data-idx="${idx}" value="${esc(s.value)}" placeholder="${esc(ph)}" title="Enter a text value">`;
