@@ -140,6 +140,54 @@ fn markdown_plain_multiline_description_ignores_colons_in_continuation() {
     assert_eq!(document.triggers, vec!["plain"]);
 }
 
+/// A one-line value that only begins with `|` or `>` is a plain value, not a
+/// block scalar header, and is kept as written; a description that is exactly
+/// a header token still round-trips through export and import.
+#[test]
+fn markdown_one_line_description_starting_with_block_indicator_is_kept() {
+    for (line, expected) in [
+        (
+            "| separates columns in the table output",
+            "| separates columns in the table output",
+        ),
+        (
+            "> 90% recall on the benchmark",
+            "> 90% recall on the benchmark",
+        ),
+        ("|-", "|-"),
+    ] {
+        let markdown = format!("---\nname: pipes\ndescription: {line}\n---\n\n# Pipes\n");
+        let document = import_skill(&markdown, SkillFormat::Markdown).unwrap();
+        if line != "|-" {
+            assert_eq!(document.description, expected, "import of {line:?}");
+        }
+
+        let mut exported = document.clone();
+        exported.description = expected.to_string();
+        let rendered = export_skill(&exported, SkillFormat::Markdown).unwrap();
+        let reparsed = import_skill(&rendered, SkillFormat::Markdown).unwrap();
+        assert_eq!(reparsed.description, expected, "round trip of {line:?}");
+    }
+}
+
+/// Block headers with chomping and indentation indicators, and a trailing
+/// comment, still read the indented lines below them.
+#[test]
+fn markdown_block_headers_with_modifiers_read_the_block() {
+    for header in ["|-", "|+", ">2", "|2-", ">-1", "> # folded"] {
+        let markdown = format!(
+            "---\nname: modifiers\ndescription: {header}\n  first line\n  second line\n---\n\n# Modifiers\n"
+        );
+        let document = import_skill(&markdown, SkillFormat::Markdown).unwrap();
+        let expected = if header.starts_with('|') {
+            "first line\nsecond line"
+        } else {
+            "first line second line"
+        };
+        assert_eq!(document.description, expected, "header {header:?}");
+    }
+}
+
 #[test]
 fn markdown_import_extracts_frontmatter_and_sections() {
     let markdown = r#"---

@@ -2716,7 +2716,9 @@ fn render_markdown_skill(skill: &SkillDocument) -> String {
     markdown.push_str("---\n");
     markdown.push_str(&format!("schema_version: {}\n", skill.schema_version));
     markdown.push_str(&format!("name: {}\n", skill.name));
-    if skill.description.contains('\n') {
+    // A one-line description that reads as a block header (`|`, `>-`) would come
+    // back empty on import, so it is written as a literal block too.
+    if skill.description.contains('\n') || block_scalar_header(&skill.description).is_some() {
         markdown.push_str("description: |\n");
         for line in skill.description.lines() {
             markdown.push_str(&format!("  {line}\n"));
@@ -2799,10 +2801,14 @@ fn frontmatter_entries(frontmatter: &str) -> Vec<FrontmatterEntry> {
 /// Reads a scalar entry: a single-line value, a YAML block scalar (`>` folds
 /// lines into one paragraph, `|` keeps line breaks), or a plain value continued
 /// on indented lines.
+///
+/// `|` and `>` start a block scalar only when the inline value is a whole YAML
+/// block header (see [`block_scalar_header`]). A one-line value that merely
+/// begins with one, such as `description: | separates columns`, is a plain
+/// value and is kept as written.
 fn frontmatter_scalar(entry: &FrontmatterEntry) -> String {
-    let indicator = entry.inline.chars().next();
     let lines: Vec<&str> = entry.continuation.iter().map(String::as_str).collect();
-    match indicator {
+    match block_scalar_header(&entry.inline) {
         Some('|') => literal_block(&lines),
         Some('>') => folded_block(&lines),
         _ => {
@@ -2821,6 +2827,28 @@ fn frontmatter_scalar(entry: &FrontmatterEntry) -> String {
                 .join(" ")
         }
     }
+}
+
+/// Returns the style (`'|'` literal or `'>'` folded) when `value` is a YAML
+/// block scalar header and nothing else: the indicator, an optional chomping
+/// indicator (`+` or `-`) and indentation digit (`1`-`9`) in either order, and
+/// an optional ` # comment`. Anything else, such as `| separates columns`, is
+/// not a header and returns `None`.
+fn block_scalar_header(value: &str) -> Option<char> {
+    let mut chars = value.chars();
+    let style = chars.next().filter(|c| matches!(c, '|' | '>'))?;
+    let rest = chars.as_str();
+    let (modifiers, comment) = match rest.find(|c: char| c.is_whitespace()) {
+        Some(split) => rest.split_at(split),
+        None => (rest, ""),
+    };
+    let comment = comment.trim_start();
+    if !comment.is_empty() && !comment.starts_with('#') {
+        return None;
+    }
+    let chomps = modifiers.chars().filter(|c| matches!(c, '+' | '-')).count();
+    let digits = modifiers.chars().filter(|c| matches!(c, '1'..='9')).count();
+    (modifiers.len() == chomps + digits && chomps <= 1 && digits <= 1).then_some(style)
 }
 
 /// Reads a list entry: an inline `[a, b]` or comma list, or a YAML block list of
