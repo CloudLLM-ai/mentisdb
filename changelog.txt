@@ -1,4 +1,16 @@
 UNRELEASED
+  - fix(dashboard): the Settings screen lists every daemon setting. 18 variables the daemon
+    reads were missing, among them `MENTISDB_DEDUP_THRESHOLD` / `_SCAN_WINDOW`,
+    `MENTISDB_AUTO_EDGE_*`, the request-body limits, `MENTISDB_FSYNC`,
+    `MENTISDB_GROUP_COMMIT_MS`, `MENTISDB_EMBEDDINGS`, the search defaults
+    (`VECTOR_FUSION`, `COLLAPSE_DUPLICATES`, `DF_SCOPE`), the migration settings,
+    `MENTISDB_DASHBOARD_ALLOWED_HOSTS` and `MENTISDB_WEBHOOK_ALLOWED_CIDRS`. The HTTPS
+    ports were shown but refused on save. `MENTISDB_VERBOSE`, `MENTISDB_UPDATE_CHECK`,
+    `MENTISDB_UPDATE_REPO`, `MENTISDB_STARTUP_SOUND` and `MENTISDB_THOUGHT_SOUNDS` were
+    labelled hot-reload although the daemon reads them once at startup; they now say
+    restart required. One catalog now drives what the screen shows, which names it
+    accepts and whether a change needs a restart, and a test fails when the crate reads
+    a `MENTISDB_*` variable the catalog does not list. Number inputs accept decimals.
   - fix(skills): Markdown skill import reads standard YAML frontmatter. A folded
     `description: >` or literal `description: |` spanning several lines was stored as
     just `>` or `|`, and `- item` block lists for `triggers`, `tags` and `warnings`
