@@ -55,6 +55,139 @@ Use tags and UTC time windows.
     assert!(rendered_markdown.contains("## Usage"));
 }
 
+/// Skill files written for agent harnesses use standard YAML frontmatter: a
+/// folded `description: >` over several lines and `- item` block lists.
+#[test]
+fn markdown_import_reads_folded_description_and_block_lists() {
+    let markdown = r#"---
+name: engineer
+description: >
+  TypeScript engineering standards for writing, reviewing and fixing
+  code: types first, immutability, one mechanism.
+tags:
+  - typescript
+  - review
+triggers:
+  - typescript engineer
+  - "fix bug"
+  - /engineer
+---
+
+# Engineer
+
+## Non-negotiables
+
+Run the gate.
+"#;
+
+    let document = import_skill(markdown, SkillFormat::Markdown).unwrap();
+    assert_eq!(document.name, "engineer");
+    assert_eq!(
+        document.description,
+        "TypeScript engineering standards for writing, reviewing and fixing code: types first, immutability, one mechanism."
+    );
+    assert_eq!(document.tags, vec!["typescript", "review"]);
+    assert_eq!(
+        document.triggers,
+        vec!["typescript engineer", "fix bug", "/engineer"]
+    );
+    assert_eq!(document.sections[1].heading, "Non-negotiables");
+}
+
+/// A literal `description: |` keeps its line breaks, and a multi-line
+/// description survives a Markdown export and re-import unchanged.
+#[test]
+fn markdown_literal_description_keeps_lines_and_roundtrips() {
+    let markdown = r#"---
+name: release
+description: |
+  Line one of the description.
+  Line two keeps its break.
+triggers: [release, ship]
+---
+
+# Release
+
+## Steps
+
+Tag, then publish.
+"#;
+
+    let document = import_skill(markdown, SkillFormat::Markdown).unwrap();
+    assert_eq!(
+        document.description,
+        "Line one of the description.\nLine two keeps its break."
+    );
+    assert_eq!(document.triggers, vec!["release", "ship"]);
+
+    let rendered = export_skill(&document, SkillFormat::Markdown).unwrap();
+    let reparsed = import_skill(&rendered, SkillFormat::Markdown).unwrap();
+    assert_eq!(reparsed.description, document.description);
+    assert_eq!(reparsed.triggers, document.triggers);
+}
+
+/// A plain description continued on indented lines joins with spaces, and a
+/// continuation line containing a colon is not mistaken for a new key.
+#[test]
+fn markdown_plain_multiline_description_ignores_colons_in_continuation() {
+    let markdown = "---\nname: plain\ndescription: First part\n  second part: still description\ntriggers: [plain]\n---\n\n# Plain\n";
+
+    let document = import_skill(markdown, SkillFormat::Markdown).unwrap();
+    assert_eq!(
+        document.description,
+        "First part second part: still description"
+    );
+    assert_eq!(document.triggers, vec!["plain"]);
+}
+
+/// A one-line value that only begins with `|` or `>` is a plain value, not a
+/// block scalar header, and is kept as written; a description that is exactly
+/// a header token still round-trips through export and import.
+#[test]
+fn markdown_one_line_description_starting_with_block_indicator_is_kept() {
+    for (line, expected) in [
+        (
+            "| separates columns in the table output",
+            "| separates columns in the table output",
+        ),
+        (
+            "> 90% recall on the benchmark",
+            "> 90% recall on the benchmark",
+        ),
+        ("|-", "|-"),
+    ] {
+        let markdown = format!("---\nname: pipes\ndescription: {line}\n---\n\n# Pipes\n");
+        let document = import_skill(&markdown, SkillFormat::Markdown).unwrap();
+        if line != "|-" {
+            assert_eq!(document.description, expected, "import of {line:?}");
+        }
+
+        let mut exported = document.clone();
+        exported.description = expected.to_string();
+        let rendered = export_skill(&exported, SkillFormat::Markdown).unwrap();
+        let reparsed = import_skill(&rendered, SkillFormat::Markdown).unwrap();
+        assert_eq!(reparsed.description, expected, "round trip of {line:?}");
+    }
+}
+
+/// Block headers with chomping and indentation indicators, and a trailing
+/// comment, still read the indented lines below them.
+#[test]
+fn markdown_block_headers_with_modifiers_read_the_block() {
+    for header in ["|-", "|+", ">2", "|2-", ">-1", "> # folded"] {
+        let markdown = format!(
+            "---\nname: modifiers\ndescription: {header}\n  first line\n  second line\n---\n\n# Modifiers\n"
+        );
+        let document = import_skill(&markdown, SkillFormat::Markdown).unwrap();
+        let expected = if header.starts_with('|') {
+            "first line\nsecond line"
+        } else {
+            "first line second line"
+        };
+        assert_eq!(document.description, expected, "header {header:?}");
+    }
+}
+
 #[test]
 fn markdown_import_extracts_frontmatter_and_sections() {
     let markdown = r#"---

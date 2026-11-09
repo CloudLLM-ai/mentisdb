@@ -1,3 +1,15 @@
+UNRELEASED
+  - fix(skills): Markdown skill import reads standard YAML frontmatter. A folded
+    `description: >` or literal `description: |` spanning several lines was stored as
+    just `>` or `|`, and `- item` block lists for `triggers`, `tags` and `warnings`
+    were dropped, so skills written for agent harnesses (Claude Code, OpenCode, Grok)
+    uploaded with no description and no triggers to search on. Block scalars, block
+    lists and plain values continued on indented lines are now read; inline
+    `[a, b]` lists and single-line values work as before. A multi-line description
+    is exported as a literal block so it survives a Markdown round trip.
+    `|` and `>` start a block only as a whole YAML block header (`|-`, `>2`, `> # note`);
+    a one-line value that merely begins with one, such as `| separates columns`, is kept.
+
 0.12.1.58 NOV/08/2026
   - fix(security): a registered agent key could be replaced or revived through the proof-based
     registration path (`add_agent_key`, used by the dashboard keys route and the library).
