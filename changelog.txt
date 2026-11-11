@@ -1,4 +1,12 @@
 UNRELEASED
+  - fix(rest, mcp): `source_episode` is stored, returned and filterable. `POST /v1/thoughts`
+    and the MCP `mentisdb_append` tool accepted the field but dropped it without any error, so
+    the thought came back with `source_episode: null` although the README documents it. The
+    append request now stores it, and `source_episode` is also accepted as an exact-match
+    filter on `/v1/search`, `/v1/ranked-search`, `/v1/federated-search`,
+    `/v1/context-bundles` and their MCP tools. Clients that omit the field are unaffected.
+    `/v1/lexical-search`, thought traversal, summary candidates and the MEMORY.md export do
+    not take the filter yet.
   - fix(dashboard): the Settings screen lists every daemon setting. 18 variables the daemon
     reads were missing, among them `MENTISDB_DEDUP_THRESHOLD` / `_SCAN_WINDOW`,
     `MENTISDB_AUTO_EDGE_*`, the request-body limits, `MENTISDB_FSYNC`,
