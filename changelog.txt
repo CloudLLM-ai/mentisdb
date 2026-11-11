@@ -1,4 +1,16 @@
 UNRELEASED
+  - fix(storage): a thought too large to load is refused at append. The 10 MiB cap on one
+    thought record was enforced only when a chain was opened, so an append over it was
+    written, and the next open failed (`binary thought payload length ... exceeds maximum
+    10485760`): one oversized thought made the whole chain unreadable. Ordinary REST and MCP
+    bodies are capped at 2 MiB, so the way in was the library and the large-body import
+    routes (`/v1/import-markdown`, `/v1/extract-memories`, `/v1/skills/upload`, for a token
+    holder). The append now fails with `InvalidInput` (400) before anything is written.
+  - feat(cli): `--source-episode` on `thought append` (stored) and on `search`, `search
+    filter`, `search federated` and `search bundles` (exact-match filter), matching the REST
+    and MCP fields of #27. Commands whose route does not apply it (`thought traverse`,
+    `thought candidates`, `memory export`, `search lexical`) refuse the flag instead of
+    sending a field the server would drop.
   - fix(rest, mcp): `source_episode` is stored, returned and filterable. `POST /v1/thoughts`
     and the MCP `mentisdb_append` tool accepted the field but dropped it without any error, so
     the thought came back with `source_episode: null` although the README documents it. The
