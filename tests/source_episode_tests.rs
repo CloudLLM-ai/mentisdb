@@ -11,7 +11,7 @@ use axum::http::{Request, StatusCode};
 use mentisdb::server::{mcp_router, rest_router, MentisDbServiceConfig};
 use mentisdb::StorageAdapterKind;
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tower::util::ServiceExt;
 
 const CHAIN: &str = "source-episode-chain";
@@ -24,8 +24,8 @@ fn temp_dir(tag: &str) -> PathBuf {
     ))
 }
 
-fn config(dir: &PathBuf) -> MentisDbServiceConfig {
-    MentisDbServiceConfig::new(dir.clone(), CHAIN, StorageAdapterKind::Binary)
+fn config(dir: &Path) -> MentisDbServiceConfig {
+    MentisDbServiceConfig::new(dir.to_path_buf(), CHAIN, StorageAdapterKind::Binary)
 }
 
 async fn post(router: &axum::Router, uri: &str, body: Value) -> Value {
