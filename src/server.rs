@@ -4433,6 +4433,9 @@ impl MentisDbService {
         if let Some(entity_type) = &request.entity_type {
             input = input.with_entity_type(entity_type);
         }
+        if let Some(source_episode) = &request.source_episode {
+            input = input.with_source_episode(source_episode);
+        }
 
         let thought = Self::append_for_caller(&chain, &agent_id, input).await?;
         // Snapshot what the response and log need, then release the chain lock
@@ -4590,6 +4593,7 @@ impl MentisDbService {
             until: None,
             limit: None,
             entity_type: None,
+            source_episode: None,
             include_invalidated: None,
         })?
         .with_audience(audience);
@@ -4923,6 +4927,7 @@ impl MentisDbService {
             enable_reranking: request.enable_reranking,
             rerank_k: request.rerank_k,
             entity_type: request.entity_type.clone(),
+            source_episode: request.source_episode.clone(),
             include_invalidated: request.include_invalidated,
             knobs: request.knobs.clone(),
             compact: None,
@@ -7015,6 +7020,8 @@ struct AppendThoughtRequest {
     /// Optional memory scope (e.g. "user", "session", "agent").
     scope: Option<String>,
     entity_type: Option<String>,
+    /// Optional free-form provenance string, e.g. a conversation or batch id.
+    source_episode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -7070,6 +7077,8 @@ struct SearchRequest {
     until: Option<DateTime<Utc>>,
     limit: Option<usize>,
     entity_type: Option<String>,
+    /// Only thoughts appended with exactly this `source_episode`.
+    source_episode: Option<String>,
     /// When true, include superseded/corrected/invalidated thoughts.
     #[serde(default)]
     include_invalidated: Option<bool>,
@@ -7134,6 +7143,8 @@ struct RankedSearchRequest {
     enable_reranking: Option<bool>,
     rerank_k: Option<usize>,
     entity_type: Option<String>,
+    /// Only thoughts appended with exactly this `source_episode`.
+    source_episode: Option<String>,
     /// When true, include superseded/corrected/invalidated thoughts.
     #[serde(default)]
     include_invalidated: Option<bool>,
@@ -7420,6 +7431,8 @@ struct FederatedSearchRequest {
     rerank_k: Option<usize>,
     /// Optional entity type label filter.
     entity_type: Option<String>,
+    /// Only thoughts appended with exactly this `source_episode`.
+    source_episode: Option<String>,
     /// When true, include superseded/corrected/invalidated thoughts.
     #[serde(default)]
     include_invalidated: Option<bool>,
@@ -9820,7 +9833,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("signing_key_id", ToolParameterType::String).with_description("Key id of the agent's registered key that signed the thought. Required when a signature is given; signatures are verified and bad ones are refused. Chains with a signed or allowlist policy require it."))
         .with_parameter(ToolParameter::new("thought_signature", ToolParameterType::Array).with_description("Optional detached signature bytes. 64 bytes is a legacy v1 signature; 65 bytes (0x02 then 64) is a v2 signature over the mentisdb/thought/v2 payload, which binds chain, agent, head hash and every field. Give this or thought_signature_hex.").with_items(ToolParameterType::Integer))
         .with_parameter(ToolParameter::new("thought_signature_hex", ToolParameterType::String).with_description("Same as thought_signature, as hex."))
-        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label for categorizing the thought.")),
+        .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label for categorizing the thought."))
+        .with_parameter(ToolParameter::new("source_episode", ToolParameterType::String).with_description("Optional free-form provenance string stored with the thought, e.g. a conversation, ticket or batch id.")),
         ToolMetadata::new(
             "mentisdb_append_retrospective",
             "Append a guided retrospective memory after a hard failure, repeated snag, or non-obvious fix. Prefer this over mentisdb_append when you want future agents to avoid repeating the same struggle. This tool defaults to ThoughtType LessonLearned and always records the thought with role Retrospective. \
@@ -9859,6 +9873,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
             .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Optional maximum number of results."))
             .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by."))
+        .with_parameter(ToolParameter::new("source_episode", ToolParameterType::String).with_description("Optional exact `source_episode` to filter by."))
             .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include thoughts superseded/corrected/invalidated by later memory. Default false.")),
         ToolMetadata::new(
             "mentisdb_lexical_search",
@@ -9892,6 +9907,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
         .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by."))
+        .with_parameter(ToolParameter::new("source_episode", ToolParameterType::String).with_description("Optional exact `source_episode` to filter by."))
         .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include thoughts superseded/corrected/invalidated by later memory. Default false: superseded thoughts are replaced by their live successor (field successor_of). Audit only; hits still carry version_status and current_version."))
         .with_parameter(ToolParameter::new("collapse_duplicates", ToolParameterType::Number).with_description("Near-duplicate collapse threshold in (0,1] (Jaccard of normalized tokens); hits that copy a higher-ranked hit are folded into it and listed in collapsed_duplicates. 0 disables. Default 0.9."))
         .with_parameter(ToolParameter::new("df_scope", ToolParameterType::String).with_description("Lexical stop-word gate document-frequency scope: global (default) or field."))
@@ -9925,6 +9941,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("enable_reranking", ToolParameterType::Boolean).with_description("Enable RRF reranking."))
         .with_parameter(ToolParameter::new("rerank_k", ToolParameterType::Integer).with_description("RRF candidates window size."))
         .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by."))
+        .with_parameter(ToolParameter::new("source_episode", ToolParameterType::String).with_description("Optional exact `source_episode` to filter by."))
         .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include thoughts superseded/corrected/invalidated by later memory. Default false."))
         .with_parameter(ToolParameter::new("collapse_duplicates", ToolParameterType::Number).with_description("Near-duplicate collapse threshold in (0,1] (Jaccard of normalized tokens); hits that copy a higher-ranked hit are folded into it and listed in collapsed_duplicates. 0 disables. Default 0.9."))
         .with_parameter(ToolParameter::new("df_scope", ToolParameterType::String).with_description("Lexical stop-word gate document-frequency scope: global (default) or field."))
@@ -9954,6 +9971,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
         .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound."))
         .with_parameter(ToolParameter::new("entity_type", ToolParameterType::String).with_description("Optional entity type label to filter by."))
+        .with_parameter(ToolParameter::new("source_episode", ToolParameterType::String).with_description("Optional exact `source_episode` to filter by."))
         .with_parameter(ToolParameter::new("include_invalidated", ToolParameterType::Boolean).with_description("When true, include superseded/corrected/invalidated thoughts as seeds or support. Default false."))
         .with_parameter(ToolParameter::new("collapse_duplicates", ToolParameterType::Number).with_description("Near-duplicate collapse threshold in (0,1] (Jaccard of normalized tokens); hits that copy a higher-ranked hit are folded into it and listed in collapsed_duplicates. 0 disables. Default 0.9."))
         .with_parameter(ToolParameter::new("df_scope", ToolParameterType::String).with_description("Lexical stop-word gate document-frequency scope: global (default) or field."))
@@ -10310,6 +10328,9 @@ trait HasOptionalQueryFields {
     fn entity_type(&self) -> Option<String> {
         None
     }
+    fn source_episode(&self) -> Option<String> {
+        None
+    }
 }
 
 impl HasOptionalQueryFields for SearchRequest {
@@ -10375,6 +10396,9 @@ impl HasOptionalQueryFields for SearchRequest {
     fn entity_type(&self) -> Option<String> {
         self.entity_type.clone()
     }
+    fn source_episode(&self) -> Option<String> {
+        self.source_episode.clone()
+    }
 }
 
 impl HasOptionalQueryFields for RankedSearchRequest {
@@ -10439,6 +10463,9 @@ impl HasOptionalQueryFields for RankedSearchRequest {
     }
     fn entity_type(&self) -> Option<String> {
         self.entity_type.clone()
+    }
+    fn source_episode(&self) -> Option<String> {
+        self.source_episode.clone()
     }
 }
 
@@ -10617,6 +10644,9 @@ fn apply_optional_query_fields<T: HasOptionalQueryFields>(
     }
     if let Some(entity_type) = request.entity_type() {
         query = query.with_entity_type(entity_type);
+    }
+    if let Some(source_episode) = request.source_episode() {
+        query = query.with_source_episode(source_episode);
     }
     Ok(query)
 }
@@ -10873,6 +10903,7 @@ fn build_ranked_filter_query(
         until: request.until,
         limit: None,
         entity_type: request.entity_type.clone(),
+        source_episode: request.source_episode.clone(),
         include_invalidated: request.include_invalidated,
     })
 }
@@ -11177,6 +11208,7 @@ fn query_is_empty(query: &ThoughtQuery) -> bool {
         && query.until.is_none()
         && query.limit.is_none()
         && query.entity_type.is_none()
+        && query.source_episode.is_none()
 }
 
 fn parse_thought_type(input: &str) -> Result<ThoughtType, Box<dyn Error + Send + Sync>> {
