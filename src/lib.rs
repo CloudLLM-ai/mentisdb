@@ -1325,6 +1325,21 @@ impl StorageAdapter for BinaryStorageAdapter {
         bincode::serde::encode_into_std_write(thought, &mut record, bincode::config::standard())
             .map_err(|e| io::Error::other(format!("Failed to serialize thought: {e}")))?;
         let payload_len = (record.len() - 8) as u64;
+        // The loader refuses a record over the cap (DoS protection), and one
+        // such record makes the whole chain fail to open. So the cap is
+        // enforced here too, before anything is written: the append fails
+        // with `InvalidInput` (400 over REST/MCP) and the chain, on disk and
+        // in memory, is untouched (the caller pushes only after this
+        // succeeds).
+        if payload_len > MAX_THOUGHT_PAYLOAD_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "thought is too large: its record is {payload_len} bytes, the limit is \
+                     {MAX_THOUGHT_PAYLOAD_BYTES} (content, tags, concepts and the other fields together)"
+                ),
+            ));
+        }
         record[..8].copy_from_slice(&payload_len.to_le_bytes());
 
         let mut state = self
