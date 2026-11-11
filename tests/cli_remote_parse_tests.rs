@@ -718,3 +718,47 @@ fn test_connection_urls_must_be_absolute_http_urls() {
         "https://h:1/base/v1/chains"
     );
 }
+
+/// `--source-episode` is on the commands whose server route applies it, and
+/// lands on the `source_episode` REST field: stored by `thought append`, and an
+/// exact-match filter for ranked, filter and federated search and context
+/// bundles (CLI parity with the REST and MCP fields added in #27).
+#[test]
+fn test_source_episode_reaches_every_route_that_takes_it() {
+    let appended = body(&["thought", "append", "x", "--source-episode", "EP-7"]);
+    assert_eq!(appended["source_episode"], "EP-7");
+    for args in [
+        &["search", "q", "--source-episode", "EP-7"][..],
+        &["search", "filter", "q", "--source-episode", "EP-7"],
+        &[
+            "search",
+            "federated",
+            "q",
+            "--chain",
+            "a",
+            "--source-episode",
+            "EP-7",
+        ],
+        &["search", "bundles", "q", "--source-episode", "EP-7"],
+    ] {
+        assert_eq!(body(args)["source_episode"], "EP-7", "{args:?}");
+    }
+    assert!(help(&["thought", "append", "--help"]).contains("--source-episode"));
+}
+
+/// Commands whose route does not apply the filter refuse the flag, rather
+/// than sending a field the server would drop without a word.
+#[test]
+fn test_source_episode_is_refused_where_the_server_would_ignore_it() {
+    for args in [
+        &["thought", "traverse", "--source-episode", "EP-7"][..],
+        &["thought", "candidates", "--source-episode", "EP-7"],
+        &["memory", "export", "--source-episode", "EP-7"],
+        &["search", "lexical", "q", "--source-episode", "EP-7"],
+    ] {
+        assert!(
+            rejection(args).contains("Unknown flag '--source-episode'"),
+            "{args:?}"
+        );
+    }
+}

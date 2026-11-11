@@ -468,10 +468,25 @@ fn graph_flags() -> Vec<Flag> {
     ]
 }
 
+/// `--source-episode`: only thoughts appended with exactly this
+/// `source_episode`. Offered only on the commands whose server route applies
+/// it (ranked, filter and federated search, and context bundles); a flag the
+/// server ignores would drop the filter silently.
+fn source_episode_filter() -> Flag {
+    Flag::opt(
+        "source-episode",
+        "source_episode",
+        Kind::Text,
+        "ID",
+        "Only thoughts appended with exactly this source episode (conversation, ticket or batch id).",
+    )
+}
+
 fn ranked_flags() -> Vec<Flag> {
     let mut flags = windowed_limit_offset();
     flags.extend(graph_flags());
     flags.extend(thought_filters());
+    flags.push(source_episode_filter());
     flags.push(include_invalidated());
     flags.extend(ranking_flags());
     flags.extend([
@@ -685,6 +700,13 @@ fn thought_commands() -> Vec<Command> {
             Kind::Text,
             "NAME",
             "Entity type the thought is about.",
+        ),
+        Flag::opt(
+            "source-episode",
+            "source_episode",
+            Kind::Text,
+            "ID",
+            "Free-form provenance stored with the thought: the conversation, ticket or batch it came from.",
         ),
     ]);
     append_params.extend(signature_flags(
@@ -987,6 +1009,7 @@ fn search_commands() -> Vec<Command> {
         "Maximum number of results.",
     ));
     filter.extend(thought_filters());
+    filter.push(source_episode_filter());
     filter.push(include_invalidated());
 
     let mut lexical = vec![
@@ -1032,6 +1055,7 @@ fn search_commands() -> Vec<Command> {
     bundles.extend(windowed_limit_offset());
     bundles.extend(graph_flags());
     bundles.extend(thought_filters());
+    bundles.push(source_episode_filter());
     bundles.push(include_invalidated());
     bundles.extend(ranking_flags());
 
