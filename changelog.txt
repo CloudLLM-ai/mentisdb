@@ -1,4 +1,4 @@
-UNRELEASED
+0.12.2.59 NOV/12/2026
   - fix(mcp): the MCP event stream (`GET /` on the MCP port) no longer goes silent. It wrote
     no bytes until a tool call was broadcast, so MCP clients with an idle-body timeout,
     Claude Code's HTTP client among them, dropped it and reconnected over and over
