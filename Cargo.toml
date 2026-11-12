@@ -11,7 +11,7 @@ documentation = "https://docs.rs/mentisdb/latest/mentisdb/"
 readme = "README.md"
 keywords = ["agents", "memory", "event-sourcing", "llm", "orchestration"]
 categories = ["data-structures", "development-tools", "asynchronous"]
-exclude = ["fuzz/", "data/", "docs/", "lme-benches/", ".fastembed_cache/", ".github/", "start_mentisdb"]
+exclude = ["fuzz/", "data/", "docs/", "lme-benches/", ".fastembed_cache/", ".github/", "start_mentisdb", "promo/", "*~"]
 
 [features]
 default = ["server", "startup-sound", "llm-extraction", "local-embeddings"]
