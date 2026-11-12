@@ -39,7 +39,7 @@ toml_edit = "0.25"
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
 # Operating-system CSPRNG for signing-key seeds. Already in the tree through uuid.
 getrandom = "0.4"
-mcp = { package = "cloudllm_mcp", version = "0.4.0" }
+mcp = { package = "cloudllm_mcp", version = "0.4.1" }
 axum = { version = "0.8.8", optional = true }
 http-body = { version = "1", optional = true }
 http-body-util = { version = "0.1", optional = true }
@@ -103,6 +103,8 @@ rand_distr = "0.6"
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.11"
 tempfile = "3"
+# `test-util` pauses the clock so timer tests (the MCP SSE keepalive) run instantly.
+tokio = { version = "1.50.0", features = ["full", "test-util"] }
 tower = { version = "0.5.3", features = ["util"] }
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
 x509-parser = "0.18"

@@ -737,9 +737,9 @@ dependencies = [
 
 [[package]]
 name = "cloudllm_mcp"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c6b4b0703646008c759c5df24b26a06bdd182ac07bbca499d6287af83102f6f"
+checksum = "a5f1044900119c770c7d443241e8203893bc5d63e384a08c41c950ea8f511fe7"
 dependencies = [
  "async-trait",
  "axum",

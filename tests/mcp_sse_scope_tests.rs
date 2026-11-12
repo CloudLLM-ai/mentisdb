@@ -217,3 +217,50 @@ async fn the_event_reports_only_a_tool_shaped_name() {
     let event = tool_called_event(&"a".repeat(5000), json!({})).await;
     assert_eq!(event["tool"], "unknown", "{event}");
 }
+
+/// Regression (cloudllm#57): an idle event stream wrote no bytes, so MCP
+/// clients with an idle-body timeout (Claude Code's HTTP client among them)
+/// dropped `GET /` and reconnected over and over. Since `cloudllm_mcp` 0.4.1
+/// the stream sends an SSE comment frame after
+/// [`mcp::streamable_http::DEFAULT_SSE_KEEPALIVE`] with nothing else to send. The clock is
+/// paused, so the wait costs no wall time.
+#[tokio::test(start_paused = true)]
+async fn an_idle_event_stream_sends_keepalive_comments() {
+    use http_body_util::BodyExt;
+
+    let config = config("keepalive");
+    let global = config
+        .bearer_token_store
+        .create("global", BearerTokenScope::Global)
+        .unwrap()
+        .token;
+    let (router, _broadcaster) = standard_mcp_router(config, LOOPBACK);
+
+    let mut request = Request::get("/")
+        .header("accept", "text/event-stream")
+        .header("authorization", format!("Bearer {global}"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(SocketAddr::from((
+            [127, 0, 0, 1],
+            44102,
+        ))));
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mut body = response.into_body();
+    for _ in 0..2 {
+        let frame = body
+            .frame()
+            .await
+            .expect("the stream stays open")
+            .expect("the stream does not fail");
+        let bytes = frame.into_data().expect("a data frame");
+        assert_eq!(
+            bytes.as_ref(),
+            mcp::streamable_http::SSE_KEEPALIVE_FRAME.as_bytes()
+        );
+    }
+}
