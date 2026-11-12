@@ -269,11 +269,16 @@ fn the_backup_command_prints_the_operator_key_reminder() {
 
     for command in ["backup", "restore"] {
         let (mut help, mut err) = (Vec::new(), Vec::new());
-        run_with_io(
+        let code = run_with_io(
             ["mentisdb", command, "--help"],
             &mut std::io::Cursor::new(""),
             &mut help,
             &mut err,
+        );
+        assert_eq!(
+            format!("{code:?}"),
+            format!("{:?}", std::process::ExitCode::SUCCESS),
+            "{command} --help"
         );
         let help = String::from_utf8(help).unwrap();
         assert!(help.contains("operator/operator.key"), "{command}: {help}");

@@ -19,7 +19,9 @@ fn run(args: &[&str]) -> String {
     let mut argv = vec!["mentisdb"];
     argv.extend_from_slice(args);
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    mentisdb::cli::run_with_io(argv, &mut std::io::empty(), &mut out, &mut err);
+    // Some commands here fail on purpose (a damaged chain); the tests read
+    // the hint printed to stdout, not the exit code.
+    let _exit = mentisdb::cli::run_with_io(argv, &mut std::io::empty(), &mut out, &mut err);
     String::from_utf8(out).unwrap()
 }
 
