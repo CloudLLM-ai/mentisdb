@@ -1,4 +1,11 @@
 UNRELEASED
+  - fix(mcp): the MCP event stream (`GET /` on the MCP port) no longer goes silent. It wrote
+    no bytes until a tool call was broadcast, so MCP clients with an idle-body timeout,
+    Claude Code's HTTP client among them, dropped it and reconnected over and over
+    (cloudllm#57: hundreds of `SSE stream disconnected: TimeoutError` lines per session),
+    and a reconnect that met a brief network stall could leave the server disconnected.
+    MentisDB now builds on `cloudllm_mcp` 0.4.1, which sends an SSE comment
+    (`: keepalive`) after 15 s with nothing else to send; clients ignore comment lines.
   - fix(storage): a thought too large to load is refused at append. The 10 MiB cap on one
     thought record was enforced only when a chain was opened, so an append over it was
     written, and the next open failed (`binary thought payload length ... exceeds maximum
