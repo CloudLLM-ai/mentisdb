@@ -245,12 +245,12 @@ pub(crate) fn scan_snapshot(
     let per_thread = chunk_count.div_ceil(threads).max(1);
     let scan_range = |first: usize, last: usize| -> Vec<Vec<ImplicitNeighbor>> {
         let mut found: Vec<Vec<ImplicitNeighbor>> = items.iter().map(|_| Vec::new()).collect();
-        for chunk_number in first..last {
-            let base = chunk_number * SCAN_CHUNK_ENTRIES;
+        for (chunk_number, chunk) in snapshot.chunks[first..last].iter().enumerate() {
+            let base = (first + chunk_number) * SCAN_CHUNK_ENTRIES;
             for (item, out) in items.iter().zip(&mut found) {
                 if item.prefix_len > base {
                     let end = (item.prefix_len - base).min(SCAN_CHUNK_ENTRIES);
-                    scan_chunk(&snapshot.chunks[chunk_number], 0..end, &item.query, out);
+                    scan_chunk(chunk, 0..end, &item.query, out);
                 }
             }
         }

@@ -5013,7 +5013,6 @@ impl MentisDbService {
 
             // Collect all hits with owned data while holding locks
             #[allow(clippy::type_complexity)]
-            #[allow(clippy::type_complexity)]
             let collected = tokio::task::spawn_blocking(move || {
                 let mut all_hits: Vec<(
                     String,

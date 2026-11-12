@@ -2530,8 +2530,8 @@ fn reconstruct_raw_content(entry: &SkillEntry, version_index: usize) -> io::Resu
         }
     };
     let mut current = base;
-    for i in 1..=version_index {
-        match &entry.versions[i].content {
+    for (i, version) in entry.versions[..=version_index].iter().enumerate().skip(1) {
+        match &version.content {
             SkillVersionContent::Full { raw } => {
                 current = raw.clone();
             }
