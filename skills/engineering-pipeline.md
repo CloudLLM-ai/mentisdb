@@ -39,6 +39,10 @@ completion claims. For a same-day small fix use `hotfix-release.md` instead.
 
 ## Phase 2 — Build, lint, test, CI
 
+CI installs the newest stable Rust on every run, and each release adds lints.
+Run `rustup update stable` first so the local gate matches CI (0.12.2.59: Rust
+1.100 failed CI on code the local 1.99 clippy passed).
+
 ```bash
 cargo fmt -- --check
 cargo clippy --all-targets --all-features -- -D warnings
@@ -142,6 +146,11 @@ the changelog drives the live mentisdb.com version badge.
 - Never proceed past failed gates, failed CI, missing assets, a missing or
   private image, or an ambiguous publish state.
 - Never move, hide or delete the owner's untracked files to satisfy tooling.
+- A release built on a dependency release (e.g. a `cloudllm_mcp` fix) still runs
+  every phase here; publishing the dependency is not the MentisDB release.
+- Check `cargo package --list` for anything that should not ship. The crate's
+  `exclude` covers `promo/` and `*~` since 0.12.2.59, when `--allow-dirty`
+  would have packed 82 MB of untracked video.
 - If a release check finds a pipeline gap, fix the artifact first, then update
   this skill (repo copy and the MentisDB skill registry) so it cannot repeat.
 
