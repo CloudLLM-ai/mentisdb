@@ -4228,6 +4228,8 @@ fn validate_setting(name: &str, value: &str) -> Result<(), String> {
 /// the value itself, except for a secret (see [`SettingSpec::secret`]), which
 /// is replaced by `<hidden>` so a PIN saved from the dashboard never lands on
 /// the operator's terminal, in a screen share or in a scrollback.
+// Called only from the `cfg(not(test))` TUI push in `api_update_settings`.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn tui_display_value<'a>(name: &str, value: &'a str) -> &'a str {
     if setting_spec(name).is_some_and(|spec| spec.secret) {
         "<hidden>"
@@ -4240,6 +4242,8 @@ pub(crate) fn tui_display_value<'a>(name: &str, value: &'a str) -> &'a str {
 /// `value`. `previous` is the line being replaced, if any: its trailing
 /// `(default: ...)` hint is kept so the pane stays readable. The value goes
 /// through [`tui_display_value`].
+// Called only from the `cfg(not(test))` TUI push in `api_update_settings`.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn tui_config_line(name: &str, value: &str, previous: Option<&str>) -> String {
     let shown = tui_display_value(name, value);
     let hint = previous
