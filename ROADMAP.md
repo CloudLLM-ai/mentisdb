@@ -23,7 +23,16 @@
   (912 together). The first four hold about 59% of the uncovered regions: test the dashboard handlers,
   the daemon's `main` path as a process, and the terminal views against a test buffer.
 
-## Shipped (0.8.2 -> 0.12.1.58)
+## Shipped (0.8.2 -> 0.12.2.59)
+
+### 0.12.2.59 - Steady MCP stream, safe appends, source episodes
+- **MCP event stream keepalive** — the streamable-HTTP `GET /` stream wrote nothing until a tool call was broadcast, so clients with an idle-body timeout (Claude Code's HTTP MCP client) dropped and reconnected in a loop (cloudllm#57). Built on `cloudllm_mcp` 0.4.1, which sends `: keepalive` after 15 s idle; MentisDB test opens its own stream on a paused clock (78f80ff).
+- **Oversized thoughts refused at append** — the 10 MiB record cap was enforced only at open, so one oversized append made the chain unreadable; the append now fails with `InvalidInput` (400) before writing (59c4198).
+- **`source_episode` stored and filterable** — REST and MCP appends dropped it; now stored, returned and an exact-match filter on search, ranked, federated and context-bundle search (PR #27, cgcardona, 55a11c0); CLI `--source-episode` on append and the search commands, refused where the route cannot apply it (d8baf3a).
+- **Settings screen parity** — one `DAEMON_SETTINGS` catalog drives the dashboard's Settings screen, accepted names and hot-reload vs restart; 18 missing variables added, HTTPS ports saveable, five startup-only settings relabelled; a test fails when the crate reads an unlisted `MENTISDB_*` variable (776d26d, 9222567).
+- **YAML frontmatter in skill import** — block scalars and block lists for `triggers`, `tags`, `warnings`; header-like one-line values kept; multi-line descriptions round-trip (PR #26, Austin Faulkner-Pearce, 948c7e0).
+- **Packaging and toolchain** — `promo/` and editor backups excluded from the crate (11cfa4e); clean on Rust 1.100 clippy (acd5358, 6cbf268).
+
 
 ### 0.12.1.58 - Lean search, live memories, agent key pairs
 - **Security: agent key ids are never rebound** — the proof-based registration path (dashboard key route, library `add_agent_key`) could replace an existing key id or revive a revoked one; ids are now never reused or overwritten (6438e00), and the dashboard's agent-key add and delete routes need a PIN (d78eb7e). Operators whose dashboard was reachable by untrusted local processes or users should review registered keys.
@@ -307,7 +316,7 @@ The next phase closes the remaining competitive gaps and ships what enterprise u
 
 **Go/No-Go Gate for Track B**: Library reaches ≥85% LoCoMo R@10, 3+ design partners committed, cookbook published, crates.io downloads >1k/mo.
 
-### Carried over from 0.11.0.56 (still open after 0.12.1.58)
+### Carried over from 0.11.0.56 (still open after 0.12.2.59)
 - **Faster open of governed chains** — persist the verified prefix so open-time verification is not O(n)
 - **Checkpoint re-issue** after a hash-changing migration (today the signed checkpoint is dropped)
 - **Thought schema 5** — hash `entity_type` and `source_episode` (schema 4 is a taken historical alias)
@@ -320,6 +329,10 @@ The next phase closes the remaining competitive gaps and ships what enterprise u
 - **Deep pages come back short** — the collapse refill window (`max(16 * limit, 4096)`) and the cross-chain fetch (`max(16 * (offset + limit), 4096)` per chain) are capped
 - **`MentisDb::query_federated`** (library) still cuts each chain at its query's `limit` before redirection and de-duplication
 - **onnxruntime segfault at exit** in the vector sidecar's rebuild thread, seen in tests
+
+### Opened by 0.12.2.59
+- **`source_episode` on the remaining routes** — `/v1/lexical-search`, thought traversal, summary candidates and the MEMORY.md export do not take the filter
+- **Relation `valid_at` / `invalid_at`** on append are accepted but not applied
 
 ### Developer Experience
 - **Browser extension** — read/write memories from any webpage
