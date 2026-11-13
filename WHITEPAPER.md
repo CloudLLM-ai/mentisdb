@@ -1,8 +1,8 @@
 # MentisDB: Durable, Verifiable Memory for Software Agents
 
 **Author:** Angel Leon
-**Version:** 0.12.2.59
-**Date:** 2026-11-12
+**Version:** 0.12.3.60
+**Date:** 2026-11-13
 
 ---
 
