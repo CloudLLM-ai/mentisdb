@@ -39,7 +39,7 @@ There is no data migration and no library break.
 - **Markdown skill import reads standard YAML frontmatter** (#26). Multi-line `description:
   >` / `|` values and `- item` block lists for `triggers`, `tags` and `warnings` were
   dropped, so skills written for agent harnesses uploaded with no description and nothing
-  to search on (thanks to faulknerpearce).
+  to search on (thanks to Austin Faulkner-Pearce).
 
 ## Upgrading
 
