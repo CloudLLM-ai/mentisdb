@@ -3466,18 +3466,6 @@ impl ThoughtQuery {
             }
         }
 
-        if let Some(entity_type) = &self.entity_type {
-            if thought.entity_type.as_deref() != Some(entity_type.as_str()) {
-                return false;
-            }
-        }
-
-        if let Some(source_episode) = &self.source_episode {
-            if thought.source_episode.as_deref() != Some(source_episode.as_str()) {
-                return false;
-            }
-        }
-
         if !self.tags_any.is_empty()
             && !self
                 .tags_any
@@ -3499,7 +3487,30 @@ impl ThoughtQuery {
         self.matches_post_index_filters(thought)
     }
 
+    /// Checks every filter that no index narrows: the exact-match
+    /// `entity_type` / `source_episode` fields, importance, confidence and the
+    /// time window.
+    ///
+    /// This is the single source of truth for those fields. [`Self::matches`]
+    /// calls it after the index-backed checks, and the indexed query and
+    /// traversal paths call it directly on candidates the indexes already
+    /// narrowed. A field checked only in `matches` would be silently dropped
+    /// whenever an index filter is also present, so any new filter that has no
+    /// index belongs here. Every check is an `Option` compare, because this
+    /// runs once per candidate.
     fn matches_post_index_filters(&self, thought: &Thought) -> bool {
+        if let Some(entity_type) = &self.entity_type {
+            if thought.entity_type.as_deref() != Some(entity_type.as_str()) {
+                return false;
+            }
+        }
+
+        if let Some(source_episode) = &self.source_episode {
+            if thought.source_episode.as_deref() != Some(source_episode.as_str()) {
+                return false;
+            }
+        }
+
         if let Some(min_importance) = self.min_importance {
             if thought.importance < min_importance {
                 return false;

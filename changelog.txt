@@ -1,3 +1,13 @@
+UNRELEASED
+  - fix(query): `source_episode` and `entity_type` filters were silently dropped whenever
+    they were combined with an indexed filter (`tags_any`, `concepts_any`, `thought_types`,
+    `roles`, `agent_ids`, agent names or owners). The indexed path applied only the
+    importance, confidence and time checks to the narrowed candidates, so `source_episode=E1`
+    returned one thought alone and every tagged thought once `tags_any` was added. Plain,
+    ranked and federated search, context bundles, traversal and the CLI all share the path.
+    The exact-match fields now live in `matches_post_index_filters`, which `matches` calls,
+    so there is one place to check them.
+
 0.12.2.59 NOV/12/2026
   - fix(mcp): the MCP event stream (`GET /` on the MCP port) no longer goes silent. It wrote
     no bytes until a tool call was broadcast, so MCP clients with an idle-body timeout,
