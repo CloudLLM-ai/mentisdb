@@ -60,7 +60,12 @@ touching Docker, the `Docker image` PR build for amd64 + arm64.
 
 Run unless the owner explicitly skips them (record the exception). Build release
 in a scratch worktree, fresh daemon + fresh chain keys, LoCoMo and LongMemEval
-default and rerank; compare against the stored baseline. If a metric regresses,
+default and rerank; compare against the stored baseline. LongMemEval ingests
+concurrently, so a fresh ingest moves R@5 by 1-3 questions on the same binary;
+when numbers differ, score the previous release's binary against the same
+ingested chains (`--skip-ingest`) before calling it a regression, and keep the
+per-question `.txt` outputs in `results/benchmarks/<date>-<version>/`
+(`git add -f`, `results/` is ignored). If a metric regresses,
 bisect with score-only runs against a copy of the baseline-ingested data.
 
 ## Phase 4 — Code review
