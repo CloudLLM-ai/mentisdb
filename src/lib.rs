@@ -2794,6 +2794,9 @@ pub struct ThoughtInput {
     /// are auto-registered in the per-chain [`EntityTypeRegistry`] on append.
     pub entity_type: Option<String>,
     /// Optional episode or conversational context identifier.
+    ///
+    /// Trimmed at append, and a blank value is stored as `None`, the same way
+    /// `entity_type` is. There is no length cap yet.
     #[serde(default)]
     pub source_episode: Option<String>,
 }
@@ -3417,6 +3420,11 @@ impl ThoughtQuery {
     }
 
     /// Limit matches to thoughts with the specified source episode.
+    ///
+    /// The comparison is exact after trimming surrounding whitespace from the
+    /// filter, because the stored value was trimmed at append: `"X "` finds
+    /// `"X"`. Thoughts stored by older versions with padding are not found by
+    /// either spelling, since the hash covers the stored bytes.
     pub fn with_source_episode(mut self, source_episode: impl Into<String>) -> Self {
         self.source_episode = Some(source_episode.into());
         self
@@ -3506,7 +3514,8 @@ impl ThoughtQuery {
         }
 
         if let Some(source_episode) = &self.source_episode {
-            if thought.source_episode.as_deref() != Some(source_episode.as_str()) {
+            // Stored values are trimmed at append, so trim the filter to match.
+            if thought.source_episode.as_deref() != Some(source_episode.trim()) {
                 return false;
             }
         }
@@ -7088,7 +7097,11 @@ impl MentisDb {
                 .take()
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty()),
-            source_episode: input.source_episode.take(),
+            source_episode: input
+                .source_episode
+                .take()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
             prev_hash,
             hash: String::new(),
         };

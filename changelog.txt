@@ -7,8 +7,14 @@ UNRELEASED
     ranked and federated search, context bundles, traversal and the CLI all share the path.
     The exact-match fields now live in `matches_post_index_filters`, which `matches` calls,
     so there is one place to check them.
+<<<<<<< HEAD
   - fix(dashboard): a setting value containing a NUL byte is refused with 400. It reached
     `std::env::set_var`, which panics on NUL, inside the settings handler.
+=======
+  - fix(query): `source_episode` is trimmed at append (blank becomes none), as `entity_type`
+    already was, and the filter trims its argument, so `"X "` finds `"X"`. Thoughts already
+    stored with padding keep it (the hash covers it), so no spelling finds them.
+>>>>>>> 81e9057 (fix(query): normalise source_episode like entity_type)
 
 0.12.2.59 NOV/12/2026
   - fix(mcp): the MCP event stream (`GET /` on the MCP port) no longer goes silent. It wrote
