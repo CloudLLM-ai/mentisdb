@@ -228,10 +228,11 @@ fn every_setting_accepts_blank_and_its_default_and_rejects_the_wrong_kind() {
                 "{}",
                 spec.name
             ),
-            // Free text is accepted unless the setting has its own check.
+            // Free text is accepted unless the setting has its own check; a
+            // secret's check (the PIN) only refuses blank or padded values.
             SettingKind::Text => assert_eq!(
                 validate_setting(spec.name, "abc").is_ok(),
-                spec.validate.is_none(),
+                spec.validate.is_none() || spec.secret,
                 "{}",
                 spec.name
             ),
