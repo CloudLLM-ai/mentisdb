@@ -1,12 +1,4 @@
 UNRELEASED
-  - fix(dashboard): the Settings screen now checks every value on the server before saving,
-    by kind (number, boolean) and by the same parsers the daemon uses at startup (body
-    limits, ports, `MENTISDB_WEBHOOK_ALLOWED_CIDRS`). A bad value used to be saved and made
-    the next start fail, with the dashboard unreachable to repair it. The whole request is
-    validated before anything is applied; a rejected save returns 400 with a message per
-    setting. A cleared field or Reset (an empty value) now unsets the variable and deletes
-    its `.env` line instead of writing `NAME=`; the daemon also treats a blank body-limit
-    variable as unset, so a `.env` written by an older release starts.
   - fix(security): saving a setting from the dashboard could leave a `.env` that the daemon
     half-loads, so it restarted without its PIN or with open access and said nothing.
     Values were written raw, and the `.env` parser stops at the first bad line: `B=x y`, a
@@ -24,8 +16,18 @@ UNRELEASED
     line's text, which may be the PIN). It used to ignore the error and run with the keys
     after the bad line unset. CLI subcommands and `--help` print a warning and continue.
     `mentisdb::paths::load_dotenv_files` now returns `Result`.
+  - fix(dashboard): the Settings screen now checks every value on the server before saving,
+    by kind (number, boolean) and by the same parsers the daemon uses at startup (body
+    limits, ports, `MENTISDB_WEBHOOK_ALLOWED_CIDRS`). A bad value used to be saved and made
+    the next start fail, with the dashboard unreachable to repair it. The whole request is
+    validated before anything is applied; a rejected save returns 400 with a message per
+    setting. A cleared field or Reset (an empty value) now unsets the variable and deletes
+    its `.env` line instead of writing `NAME=`; the daemon also treats a blank body-limit
+    variable as unset, so a `.env` written by an older release starts.
   - fix(dashboard): saving `MENTISDB_DASHBOARD_PIN` from the Settings screen no longer prints
     the new PIN in the daemon's terminal config pane. Secret settings now show `<hidden>`.
+  - fix(dashboard): a setting value containing a NUL byte is refused with 400. It reached
+    `std::env::set_var`, which panics on NUL, inside the settings handler.
   - fix(dashboard): `MENTISDB_HNSW_EF_SEARCH` was listed as applying without a restart, but
     the search backend reads it once per process (`OnceLock`), so a saved change did nothing
     until the next start. It is now marked as needing a restart.
@@ -37,8 +39,6 @@ UNRELEASED
     ranked and federated search, context bundles, traversal and the CLI all share the path.
     The exact-match fields now live in `matches_post_index_filters`, which `matches` calls,
     so there is one place to check them.
-  - fix(dashboard): a setting value containing a NUL byte is refused with 400. It reached
-    `std::env::set_var`, which panics on NUL, inside the settings handler.
   - fix(query): `source_episode` is trimmed at append (blank becomes none), as `entity_type`
     already was, and the filter trims its argument, so `"X "` finds `"X"`. Thoughts already
     stored with padding keep it (the hash covers it), so no spelling finds them.
