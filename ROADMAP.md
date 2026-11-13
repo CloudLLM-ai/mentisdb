@@ -23,7 +23,16 @@
   (912 together). The first four hold about 59% of the uncovered regions: test the dashboard handlers,
   the daemon's `main` path as a process, and the terminal views against a test buffer.
 
-## Shipped (0.8.2 -> 0.12.2.59)
+## Shipped (0.8.2 -> 0.12.3.60)
+
+### 0.12.3.60 - Hotfix: settings that survive a restart, filters that filter
+- **Security: dashboard settings no longer half-load** — values were written raw into `<MENTISDB_DIR>/.env` and load errors ignored, so a value with a space, `"` or ` #` dropped every later key (PIN, bearer switch) on restart; `$` changed a PIN; a PIN of spaces loaded as none. Values now round-trip exactly (escaped quoting, fuzzed), each save is read back before an atomic 0600 rename, a broken file is refused, `export` lines are matched (0122b46, 119a434, 7cf8367, 0d68708).
+- **Fail-closed startup** — the daemon exits 2 naming file and line when a `.env` it loads would drop a `MENTISDB_` setting; another tool's bad `.env` in a parent only warns (8c886c9). Library `load_dotenv_files` keeps its signature; `try_load_dotenv_files` returns the error (69d9698).
+- **Settings validated like startup parses them** — kind, ranges, ports, body limits, CIDRs, IP for bind host, choice settings; whole request validated first; empty value unsets (46b2c28, 4de14c7). PIN never shown in the TUI (978c66b, d3b376f).
+- **Combined filters** — `source_episode`/`entity_type` were dropped next to any indexed filter; now in `matches_post_index_filters` for every route and traversal (7cbecb0); both trimmed (4427d46, a771e40).
+- **Early oversized-thought reject** — O(1) lower bound before signature/hash work under the write lock (55f6dc6, b52c8b6).
+- Benchmarks: same chains, identical top-k and scores against 0.12.2.59.
+
 
 ### 0.12.2.59 - Steady MCP stream, safe appends, source episodes
 - **MCP event stream keepalive** — the streamable-HTTP `GET /` stream wrote nothing until a tool call was broadcast, so clients with an idle-body timeout (Claude Code's HTTP MCP client) dropped and reconnected in a loop (cloudllm#57). Built on `cloudllm_mcp` 0.4.1, which sends `: keepalive` after 15 s idle; MentisDB test opens its own stream on a paused clock (78f80ff).
@@ -316,7 +325,7 @@ The next phase closes the remaining competitive gaps and ships what enterprise u
 
 **Go/No-Go Gate for Track B**: Library reaches ≥85% LoCoMo R@10, 3+ design partners committed, cookbook published, crates.io downloads >1k/mo.
 
-### Carried over from 0.11.0.56 (still open after 0.12.2.59)
+### Carried over from 0.11.0.56 (still open after 0.12.3.60)
 - **Faster open of governed chains** — persist the verified prefix so open-time verification is not O(n)
 - **Checkpoint re-issue** after a hash-changing migration (today the signed checkpoint is dropped)
 - **Thought schema 5** — hash `entity_type` and `source_episode` (schema 4 is a taken historical alias)
@@ -333,6 +342,12 @@ The next phase closes the remaining competitive gaps and ships what enterprise u
 ### Opened by 0.12.2.59
 - **`source_episode` on the remaining routes** — `/v1/lexical-search`, thought traversal, summary candidates and the MEMORY.md export do not take the filter
 - **Relation `valid_at` / `invalid_at`** on append are accepted but not applied
+
+### Opened by 0.12.3.60
+- **MCP event stream lifetime** — the bearer token is checked when `GET /` opens; a stream opened with a token later revoked stays open (the 15 s keepalive keeps it alive); cap stream lifetime or re-check per keepalive, and cap streams per token/IP (cloudllm_mcp)
+- **Security settings writable on a PIN-less dashboard** — webhook CIDRs and allowed hosts can be changed without a PIN when the daemon holds no private chain; decide whether those keys always need one
+- **Blank `source_episode` / `entity_type` filter** matches nothing instead of meaning no filter; no length cap on `source_episode`
+- **Tags and concepts** are not in the early size reject (dedup makes a raw-size bound unsafe)
 
 ### Developer Experience
 - **Browser extension** — read/write memories from any webpage
