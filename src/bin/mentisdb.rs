@@ -3178,7 +3178,11 @@ pub(crate) fn build_config_lines(
     );
     add_var(
         "MENTISDB_DASHBOARD_PIN",
-        std::env::var("MENTISDB_DASHBOARD_PIN").ok(),
+        // Never the PIN itself: the pane is on screen, in scrollback and in
+        // terminal recordings.
+        std::env::var("MENTISDB_DASHBOARD_PIN")
+            .ok()
+            .map(|_| "<hidden>".to_string()),
         if config.dashboard_pin.is_some() {
             "set".to_string()
         } else {
@@ -3353,6 +3357,24 @@ mod tui_config_lines_tests {
                 mentisdb::StorageAdapterKind::Binary,
             ),
         }
+    }
+
+    /// Regression: the startup pane printed `MENTISDB_DASHBOARD_PIN=<the PIN>`.
+    #[test]
+    fn startup_config_pane_never_shows_the_pin() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let secret = "pin-that-must-not-show-4417";
+        std::env::set_var("MENTISDB_DASHBOARD_PIN", secret);
+        let lines = build_config_lines(&fixture_config(), &update_config_from_env());
+        std::env::remove_var("MENTISDB_DASHBOARD_PIN");
+
+        assert!(lines.iter().all(|l| !l.contains(secret)), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("MENTISDB_DASHBOARD_PIN=<hidden>")),
+            "{lines:?}"
+        );
     }
 
     /// The TUI's "Configuration:" pane must list every `MENTISDB_*` env var

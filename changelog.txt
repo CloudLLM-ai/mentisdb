@@ -15,7 +15,10 @@ UNRELEASED
     cannot be read or has a line the parser rejects, naming the file and line (never the
     line's text, which may be the PIN). It used to ignore the error and run with the keys
     after the bad line unset. CLI subcommands and `--help` print a warning and continue.
-    `mentisdb::paths::load_dotenv_files` now returns `Result`.
+    Library: `mentisdb::paths::try_load_dotenv_files` returns that error;
+    `load_dotenv_files` keeps its 0.12.2 signature and now warns on stderr about a bad file.
+  - fix(security): the startup TUI config pane printed `MENTISDB_DASHBOARD_PIN` in clear;
+    it shows `<hidden>`, as the pane already did after a save from the dashboard.
   - fix(dashboard): the Settings screen now checks every value on the server before saving,
     by kind (number, boolean) and by the same parsers the daemon uses at startup (body
     limits, ports, `MENTISDB_WEBHOOK_ALLOWED_CIDRS`). A bad value used to be saved and made
