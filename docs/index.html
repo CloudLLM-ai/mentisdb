@@ -40,6 +40,19 @@
   </header>
 
   <article>
+    <h2><a href="mentisdb-0.12.3.60.html">MentisDB 0.12.3.60 &mdash; Hotfix: settings that survive a restart</a></h2>
+    <div class="meta">November 13, 2026</div>
+    <p>
+      <strong>Security notice:</strong> saving a setting from the dashboard could leave a
+      settings file the daemon half-loads, so it could restart without its PIN or with
+      bearer-token enforcement off. Settings are now written so they read back exactly, every
+      value is checked before it is saved, and the daemon refuses to start rather than run
+      with settings missing. <code>source_episode</code> and <code>entity_type</code> filters
+      now work alongside tag, type and agent filters. Upgrade recommended.
+    </p>
+  </article>
+
+  <article>
     <h2><a href="mentisdb-0.12.2.59.html">MentisDB 0.12.2.59 &mdash; Steady MCP stream, safe appends, source episodes</a></h2>
     <div class="meta">November 12, 2026</div>
     <p>
