@@ -40,6 +40,19 @@
   </header>
 
   <article>
+    <h2><a href="mentisdb-0.12.2.59.html">MentisDB 0.12.2.59 &mdash; Steady MCP stream, safe appends, source episodes</a></h2>
+    <div class="meta">November 12, 2026</div>
+    <p>
+      The MCP event stream sends a keepalive after 15 s of silence, so HTTP MCP clients
+      such as Claude Code stop dropping and reconnecting to it. An append over the 10 MiB
+      record cap is refused instead of making the chain unreadable.
+      <code>source_episode</code> is stored and filterable over REST, MCP and the CLI; the
+      Settings screen lists every daemon setting; and skill import reads standard YAML
+      frontmatter.
+    </p>
+  </article>
+
+  <article>
     <h2><a href="mentisdb-0.12.1.58.html">MentisDB 0.12.1.58 &mdash; Lean search, live memories, agent key pairs</a></h2>
     <div class="meta">November 8, 2026</div>
     <p>
