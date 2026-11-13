@@ -586,6 +586,10 @@ static ENV_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// quote or a trailing backslash, change which lines the edit sees. The
 /// operator fixes the line by hand; the error names it, never its text.
 ///
+/// Each save also deletes `.env.<pid>.<n>.tmp` files in the directory that are
+/// over an hour old: the leftovers of a crash mid-save, which hold the new
+/// settings, the PIN included.
+///
 /// Before the rename the new text is parsed back and checked: every changed
 /// name must load as exactly the requested value (and an unset name must be
 /// gone), and every other name must keep the value it had (a value that
@@ -629,15 +633,81 @@ pub fn update_env_file(path: &Path, changes: &[(&str, Option<&str>)]) -> Result<
             ),
         });
     }
+    if let Some(dir) = target.parent().filter(|p| !p.as_os_str().is_empty()) {
+        sweep_stale_env_temp_files(dir);
+    }
     replace_file_atomically(&target, updated.as_bytes()).map_err(|source| EnvFileError::Write {
         path: target,
         source,
     })
 }
 
+/// How long a `.env.<pid>.<n>.tmp` file may sit before a save treats it as
+/// the leftover of a crash and deletes it.
+const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Whether `name` is one of the temporary names [`replace_file_atomically`]
+/// makes: `.env.<digits>.<digits>.tmp`, nothing looser.
+fn is_env_temp_name(name: &str) -> bool {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    name.strip_prefix(".env.")
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+        .and_then(|ids| ids.split_once('.'))
+        .is_some_and(|(pid, n)| digits(pid) && digits(n))
+}
+
+/// Delete the `.env.<pid>.<n>.tmp` files in `dir` that are older than
+/// [`STALE_TEMP_AGE`]: a crash between creating the temporary file and
+/// renaming it leaves one behind, holding the new settings (the PIN included)
+/// at mode `0600`. Only regular files with exactly our own name pattern are
+/// touched, and failures are ignored: this is housekeeping, never a reason to
+/// fail a save.
+fn sweep_stale_env_temp_files(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let stale = entry.file_name().to_str().is_some_and(is_env_temp_name)
+            && entry.metadata().is_ok_and(|meta| {
+                meta.is_file()
+                    && meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age >= STALE_TEMP_AGE)
+            });
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Write `bytes` to `target` through a synced, owner-only temporary file and a
 /// rename.
+///
+/// This replaces the file rather than rewriting it, so the new file belongs to
+/// the daemon's user with mode `0600` whatever the old one had, and a hard
+/// link to the old file no longer sees the changes (a symlink is followed by
+/// the caller, so the link survives). After a successful rename the directory
+/// is synced so the rename survives power loss; that sync is best effort,
+/// because some filesystems refuse it (`EINVAL`, `ENOTSUP`) and failing the
+/// request then would leave the file on disk changed while the caller kept the
+/// old environment. A process that dies between creating the temporary file
+/// and the rename leaves a `.env.<pid>.<n>.tmp` behind; see
+/// [`sweep_stale_env_temp_files`].
 fn replace_file_atomically(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    replace_file_with(target, bytes, |dir| {
+        std::fs::File::open(dir).and_then(|d| d.sync_all())
+    })
+}
+
+/// [`replace_file_atomically`] with the directory sync injected, so a test can
+/// make it fail. An `Err` from `sync_dir` is reported on stderr and ignored.
+fn replace_file_with(
+    target: &Path,
+    bytes: &[u8],
+    sync_dir: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     use std::io::Write;
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = target
@@ -659,7 +729,14 @@ fn replace_file_atomically(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
         return written;
     }
     #[cfg(unix)]
-    std::fs::File::open(dir).and_then(|d| d.sync_all())?;
+    if let Err(error) = sync_dir(dir) {
+        eprintln!(
+            "warning: {} was replaced but its directory could not be synced: {error}",
+            target.display()
+        );
+    }
+    #[cfg(not(unix))]
+    let _ = sync_dir;
     Ok(())
 }
 
@@ -872,5 +949,83 @@ mod tests {
         assert!(!reads_back(old, "A=1\nB=2\nC=3\n", &unset), "still set");
         let old = "A=1\nB=${A}-x\n";
         assert!(reads_back(old, "A=2\nB=${A}-x\n", &[("A", Some("2"))]));
+    }
+
+    /// A failing directory sync after the rename does not fail the save: the
+    /// new content is in place and the call returns `Ok`. (Some filesystems
+    /// refuse `fsync` on a directory.)
+    #[test]
+    fn test_a_failed_directory_sync_does_not_fail_the_replace() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join(".env");
+        std::fs::write(&target, "A=1\n").unwrap();
+
+        let result = replace_file_with(&target, b"A=2\n", |_| {
+            Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+        });
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "A=2\n");
+    }
+
+    /// Only the exact `.env.<digits>.<digits>.tmp` pattern is a temporary
+    /// name of ours.
+    #[test]
+    fn test_is_env_temp_name_matches_only_our_pattern() {
+        for good in [".env.1.0.tmp", ".env.4242.17.tmp"] {
+            assert!(is_env_temp_name(good), "{good}");
+        }
+        for bad in [
+            ".env",
+            ".env.tmp",
+            ".env.1.tmp",
+            ".env.a.1.tmp",
+            ".env.1.b.tmp",
+            ".env.1.2.3.tmp",
+            ".env..1.tmp",
+            ".env.1.2.bak",
+            "env.1.2.tmp",
+            ".env.backup.tmp",
+        ] {
+            assert!(!is_env_temp_name(bad), "{bad}");
+        }
+    }
+
+    /// A save deletes old temporary files of our pattern and nothing else:
+    /// a fresh one (another save may be in flight), a look-alike name and a
+    /// directory are left alone.
+    #[test]
+    fn test_save_sweeps_only_stale_env_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = std::time::SystemTime::now() - 2 * STALE_TEMP_AGE;
+        let make = |name: &str, age: Option<std::time::SystemTime>| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, "MENTISDB_DASHBOARD_PIN=leftover\n").unwrap();
+            if let Some(time) = age {
+                std::fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_modified(time)
+                    .unwrap();
+            }
+        };
+        make(".env.999999.1.tmp", Some(old));
+        make(".env.999999.2.tmp", None);
+        make(".env.notes.tmp", Some(old));
+        make("other.tmp", Some(old));
+        std::fs::create_dir(dir.path().join(".env.999999.3.tmp")).unwrap();
+
+        update_env_file(&dir.path().join(".env"), &[("A", Some("1"))]).unwrap();
+
+        let left = |name: &str| dir.path().join(name).exists();
+        assert!(!left(".env.999999.1.tmp"), "stale file survived");
+        assert!(left(".env.999999.2.tmp"), "fresh file was deleted");
+        assert!(left(".env.notes.tmp") && left("other.tmp"));
+        assert!(left(".env.999999.3.tmp"), "directory was deleted");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".env")).unwrap(),
+            "A=1\n"
+        );
     }
 }

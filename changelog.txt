@@ -55,6 +55,13 @@ UNRELEASED
     the file is left alone, and every edit is parsed back before the rename: each changed
     name must load as the requested value, each other name must keep its value, or nothing
     is written.
+  - fix(dashboard): a save no longer fails when the filesystem refuses the directory sync
+    that follows the rename (`EINVAL`/`ENOTSUP` on some mounts). The file was already
+    replaced, so the request used to report an error while the new settings were on disk and
+    the old ones in the process; the sync is now best effort and logged on stderr. Each save
+    also deletes `.env.<pid>.<n>.tmp` files over an hour old in the data directory: a crash
+    mid-save left one behind holding the new PIN. The replacement is documented to reset the
+    file's owner and mode to the daemon's (0600) and to break hard links.
   - fix(dashboard): a setting value containing a NUL byte is refused with 400. It reached
     `std::env::set_var`, which panics on NUL, inside the settings handler.
   - fix(dashboard): `MENTISDB_HNSW_EF_SEARCH` was listed as applying without a restart, but
