@@ -76,8 +76,9 @@ UNRELEASED
     The exact-match fields now live in `matches_post_index_filters`, which `matches` calls,
     so there is one place to check them.
   - fix(query): `source_episode` is trimmed at append (blank becomes none), as `entity_type`
-    already was, and the filter trims its argument, so `"X "` finds `"X"`. Thoughts already
-    stored with padding keep it (the hash covers it), so no spelling finds them.
+    already was, and the `source_episode` and `entity_type` filters trim their argument, so
+    `"X "` finds `"X"`. Thoughts already stored with padding keep it (stored values are not
+    rewritten), so no spelling finds them. A blank filter value still matches nothing.
   - fix(storage): an oversized thought is refused before the expensive work. The 10 MiB
     record cap was checked in the storage adapter, after signature verification, dedup
     tokenization, hashing and serialization had run under the chain write lock, so 60 MB

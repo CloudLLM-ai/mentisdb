@@ -3440,6 +3440,11 @@ impl ThoughtQuery {
     }
 
     /// Limit matches to thoughts with the specified entity type.
+    ///
+    /// The comparison is exact after trimming surrounding whitespace from the
+    /// filter, because the stored value was trimmed at append: `"person "`
+    /// finds `"person"`. A blank filter matches nothing (no stored thought has
+    /// a blank entity type); leave the filter off to match all.
     pub fn with_entity_type(mut self, entity_type: impl Into<String>) -> Self {
         self.entity_type = Some(entity_type.into());
         self
@@ -3450,7 +3455,10 @@ impl ThoughtQuery {
     /// The comparison is exact after trimming surrounding whitespace from the
     /// filter, because the stored value was trimmed at append: `"X "` finds
     /// `"X"`. Thoughts stored by older versions with padding are not found by
-    /// either spelling, since the hash covers the stored bytes.
+    /// either spelling: the filter is trimmed and the stored value is not. (The
+    /// hash does not cover this field, so nothing in the chain stops a padded
+    /// value from being rewritten; it is simply left as stored.) A blank filter
+    /// matches nothing; leave the filter off to match all.
     pub fn with_source_episode(mut self, source_episode: impl Into<String>) -> Self {
         self.source_episode = Some(source_episode.into());
         self
@@ -3534,7 +3542,8 @@ impl ThoughtQuery {
     /// runs once per candidate.
     fn matches_post_index_filters(&self, thought: &Thought) -> bool {
         if let Some(entity_type) = &self.entity_type {
-            if thought.entity_type.as_deref() != Some(entity_type.as_str()) {
+            // Stored values are trimmed at append, so trim the filter to match.
+            if thought.entity_type.as_deref() != Some(entity_type.trim()) {
                 return false;
             }
         }

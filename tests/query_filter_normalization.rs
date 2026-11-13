@@ -51,3 +51,45 @@ fn source_episode_is_normalised_like_entity_type() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The `entity_type` filter is trimmed like the stored value (trimmed at
+/// append), alone and combined with an indexed filter.
+#[test]
+fn entity_type_filter_is_trimmed_like_the_stored_value() {
+    let dir = temp_dir("entity");
+    let mut chain = MentisDb::open(&dir, "a1", "A", None, None).expect("open");
+    chain
+        .append_thought(
+            "a1",
+            ThoughtInput::new(ThoughtType::Finding, "padded")
+                .with_entity_type(" person\t")
+                .with_tags(["t"]),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "a1",
+            ThoughtInput::new(ThoughtType::Finding, "other")
+                .with_entity_type("place")
+                .with_tags(["t"]),
+        )
+        .unwrap();
+    for filter in ["person", "person ", " person", "  person\t"] {
+        assert_eq!(
+            contents(&chain, &ThoughtQuery::new().with_entity_type(filter)),
+            ["padded"],
+            "filter {filter:?}"
+        );
+        assert_eq!(
+            contents(
+                &chain,
+                &ThoughtQuery::new()
+                    .with_entity_type(filter)
+                    .with_tags_any(["t"])
+            ),
+            ["padded"],
+            "indexed filter {filter:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
