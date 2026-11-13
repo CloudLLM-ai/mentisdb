@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.12.2.59 — Steady MCP stream, safe appends, source episodes</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article .meta { color: #888; font-size: 0.85rem; margin-bottom: 1rem; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    article table { border-collapse: collapse; margin-bottom: 1rem; font-size: 0.9rem; width: 100%; }
+    article th, article td { border-bottom: 1px solid #e0e0e0; padding: 0.35rem 0.5rem; text-align: left; }
+    a { color: #4361ee; }
+    .callout { background: #eef2ff; border-left: 3px solid #4361ee; border-radius: 0 4px 4px 0; padding: 1rem; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="index.html">MentisDB Blog</a></h1>
+    <p>Durable memory for AI agents</p>
+  </header>
+
+  <article>
+    <h2>MentisDB 0.12.2.59 &mdash; Steady MCP stream, safe appends, source episodes</h2>
+    <div class="meta">November 12, 2026</div>
+
+    <p>
+      A maintenance release. If you connect an agent to MentisDB over HTTP MCP, Claude Code
+      included, this is the one to take: the MCP event stream no longer goes silent, so
+      your client stops dropping and reconnecting to it. It also closes a way one oversized
+      thought could make a whole chain unreadable, makes <code>source_episode</code>
+      actually stored and searchable, and brings the dashboard's Settings screen and
+      Markdown skill import up to what the daemon supports.
+    </p>
+
+    <h3>1. The MCP event stream stays alive</h3>
+    <p>
+      MCP clients open a long-lived <code>GET /</code> on the MCP port to hear about
+      events. MentisDB wrote nothing on it until a tool call was broadcast, and most of
+      the time nothing is. HTTP clients with an idle-body timeout took the silence for a
+      dead connection: one user's Claude Code logged hundreds of
+      <code>SSE stream disconnected: TimeoutError</code> lines in a session, a reconnect
+      every minute, and a reconnect that met a brief network stall could leave MentisDB
+      disconnected until restart
+      (<a href="https://github.com/CloudLLM-ai/cloudllm/issues/57">cloudllm#57</a>).
+    </p>
+    <p>
+      The fix lives in <code>cloudllm_mcp</code> 0.4.1, the MCP library MentisDB is built
+      on. After 15 seconds with nothing to send, the stream sends an SSE comment line,
+      <code>: keepalive</code>. Clients ignore comment lines by specification, so nothing
+      else changes, and a busy stream carries none. A MentisDB test now opens its own MCP
+      stream on a paused clock and expects the keepalives, so this cannot come back
+      unnoticed. Restart the daemon to get it; there is nothing to configure.
+    </p>
+
+    <h3>2. One oversized thought can no longer break a chain</h3>
+    <p>
+      A single thought record is capped at 10 MiB, but the cap was only checked when a
+      chain was opened. An append over it was written, and the next start-up refused to
+      load the chain at all. Ordinary REST and MCP requests are limited to 2 MiB, so the
+      way in was the library and the large-body import routes, for a token holder. The
+      append itself now fails with a 400 before anything reaches disk.
+    </p>
+
+    <h3>3. <code>source_episode</code> works</h3>
+    <p>
+      The README documents <code>source_episode</code>, a tag for the conversation or
+      session a memory came from. REST and MCP appends accepted it and silently dropped
+      it. It is now stored and returned, and it is an exact-match filter on search,
+      ranked, federated and context-bundle search, over REST and MCP. Thanks to cgcardona
+      for the fix (<a href="https://github.com/CloudLLM-ai/mentisdb/pull/27">#27</a>).
+      The CLI has the same:
+    </p>
+    <pre><code>mentisdb thought append ... --source-episode standup-2026-11-12
+mentisdb search "deploy plan" --source-episode standup-2026-11-12</code></pre>
+    <p>
+      Commands whose route cannot apply the filter, such as lexical search and traversal,
+      refuse the flag instead of quietly ignoring it.
+    </p>
+
+    <h3>4. Every setting on the Settings screen</h3>
+    <p>
+      The dashboard's Settings screen was missing 18 variables the daemon reads, among
+      them the dedup threshold, auto-edge settings, request-body limits, fsync and the
+      search defaults. The HTTPS ports were shown but refused on save, and five settings
+      read only at start-up were labelled hot-reload. One catalog now drives the screen,
+      and a test fails if the daemon ever reads a <code>MENTISDB_*</code> variable the
+      catalog doesn't list.
+    </p>
+
+    <h3>5. Skills written for agent harnesses import whole</h3>
+    <p>
+      Skill files written for Claude Code, OpenCode and similar harnesses use standard
+      YAML frontmatter: a folded <code>description: &gt;</code> over several lines,
+      <code>- item</code> lists for triggers. MentisDB read the description as just
+      <code>&gt;</code> and dropped the lists, so those skills arrived with nothing to
+      search on. Block scalars and block lists are now read, and a multi-line description
+      survives export and re-import. Thanks to faulknerpearce for the change
+      (<a href="https://github.com/CloudLLM-ai/mentisdb/pull/26">#26</a>).
+    </p>
+
+    <h3>Upgrading</h3>
+    <p>
+      There is no migration and no library break. Restart the daemon after upgrading. If
+      you embed <code>cloudllm_mcp</code> yourself, the keepalive is on by default;
+      <code>StreamableHttpConfig::with_sse_keepalive(None)</code> turns it off. The
+      <a href="mentisdb-0.12.2.59-release-notes.md">release notes</a> list every change.
+    </p>
+    <pre><code>cargo install mentisdb --locked --force
+# or
+docker pull ghcr.io/cloudllm-ai/mentisdb:0.12.2.59</code></pre>
+  </article>
+</body>
+</html>
