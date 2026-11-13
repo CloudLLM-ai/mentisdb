@@ -24,6 +24,8 @@ UNRELEASED
     when content, signature, entity type, source episode, signing key id and references
     alone exceed the cap (same `InvalidInput` / 400); the adapter check stays as the exact
     backstop for what the lower bound cannot see (tags and concepts).
+  - test(rest): the record cap's mapping is pinned: an oversized thought through
+    `/v1/import-markdown` is a 400 `too large`, and the chain keeps accepting appends.
 
 0.12.2.59 NOV/12/2026
   - fix(mcp): the MCP event stream (`GET /` on the MCP port) no longer goes silent. It wrote
