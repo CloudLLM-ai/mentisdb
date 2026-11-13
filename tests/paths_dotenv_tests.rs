@@ -18,7 +18,7 @@ fn test_load_dotenv_files_reads_mentisdb_dir_env_without_overriding() {
     std::env::remove_var("MENTISDB_TEST_DOTENV_NEW");
 
     assert_eq!(mentisdb_dir_env_file(), dir.path().join(".env"));
-    let loaded = load_dotenv_files();
+    let loaded = load_dotenv_files().expect("well-formed .env files load");
 
     assert!(loaded.contains(&dir.path().join(".env")));
     assert_eq!(

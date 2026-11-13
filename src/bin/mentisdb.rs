@@ -2727,16 +2727,30 @@ async fn run_update_standalone(force: bool) -> ExitCode {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    let first = std::env::args().nth(1).unwrap_or_default();
+    let reads_limits = !mentisdb::cli::is_subcommand(&first)
+        && !matches!(first.as_str(), "--help" | "-h" | "--version" | "-V");
+
     // Load ./.env, then <MENTISDB_DIR>/.env (where the dashboard saves
     // settings). Missing files are ignored; existing env vars take precedence.
-    let _ = mentisdb::paths::load_dotenv_files();
+    // The loader stops at the first bad line and drops every setting after it,
+    // a PIN or the bearer-token switch among them, so the daemon refuses to
+    // start on a broken file instead of coming up open. CLI subcommands and
+    // `--help` only warn: they must still work so the file can be fixed.
+    if let Err(error) = mentisdb::paths::load_dotenv_files() {
+        if reads_limits {
+            eprintln!("error: {error}");
+            eprintln!(
+                "error: refusing to start with settings missing; fix or remove the file and start again"
+            );
+            return ExitCode::from(2);
+        }
+        eprintln!("warning: {error}");
+    }
 
     // A typo in a request-body limit must not silently become the default, so
     // the daemon refuses to start on one. CLI subcommands and `--help` never
     // read the limits and are not affected.
-    let first = std::env::args().nth(1).unwrap_or_default();
-    let reads_limits = !mentisdb::cli::is_subcommand(&first)
-        && !matches!(first.as_str(), "--help" | "-h" | "--version" | "-V");
     if reads_limits {
         if let Err(error) = mentisdb::server::validate_body_limits_env() {
             eprintln!("error: {error}");

@@ -1,4 +1,21 @@
 UNRELEASED
+  - fix(security): saving a setting from the dashboard could leave a `.env` that the daemon
+    half-loads, so it restarted without its PIN or with open access and said nothing.
+    Values were written raw, and the `.env` parser stops at the first bad line: `B=x y`, a
+    `"`, or ` # x` dropped every later key (`MENTISDB_DASHBOARD_PIN`, `MENTISDB_BEARER_TOKEN_
+    ACCESS`), and a PIN such as `pa$word#1` loaded as `pa#1` (`$` expansion). Values are now
+    written as plain text when safe and as an escaped double-quoted string otherwise, and
+    round-trip through the loader exactly (NUL, CR and LF are refused). The save also no
+    longer truncates in place (a crash left a short file): it replaces the file atomically
+    (synced temp file, mode 0600, rename), aborts with an error when the existing `.env`
+    cannot be read instead of rewriting it from nothing, follows a symlinked `.env`,
+    updates `export NAME=` and `NAME =` lines in place (a rotated PIN used to be appended
+    after an `export` line and silently ignored) and deletes duplicates of the same name.
+  - fix(security): the daemon refuses to start (exit 2) when `./.env` or `<MENTISDB_DIR>/.env`
+    cannot be read or has a line the parser rejects, naming the file and line (never the
+    line's text, which may be the PIN). It used to ignore the error and run with the keys
+    after the bad line unset. CLI subcommands and `--help` print a warning and continue.
+    `mentisdb::paths::load_dotenv_files` now returns `Result`.
   - fix(dashboard): saving `MENTISDB_DASHBOARD_PIN` from the Settings screen no longer prints
     the new PIN in the daemon's terminal config pane. Secret settings now show `<hidden>`.
   - fix(dashboard): `MENTISDB_HNSW_EF_SEARCH` was listed as applying without a restart, but

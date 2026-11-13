@@ -39,7 +39,6 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::Write;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -4224,6 +4223,20 @@ fn validate_setting(name: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Map a failed `.env` update to an HTTP error: a name or value the file
+/// cannot hold is the caller's (400), anything else is the server's (500).
+fn env_file_error(error: mentisdb::paths::EnvFileError) -> (StatusCode, Json<Value>) {
+    use mentisdb::paths::EnvFileError;
+    let status = match error {
+        EnvFileError::InvalidName(_) | EnvFileError::InvalidValue { .. } => StatusCode::BAD_REQUEST,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (
+        status,
+        Json(json!({ "error": "Settings not saved", "message": error.to_string() })),
+    )
+}
+
 /// What the TUI config pane may show for `name` when it is set to `value`:
 /// the value itself, except for a secret (see [`SettingSpec::secret`]), which
 /// is replaced by `<hidden>` so a PIN saved from the dashboard never lands on
@@ -4262,29 +4275,40 @@ async fn api_update_settings(
     Json(body): Json<SettingsUpdateRequest>,
 ) -> Result<Json<SettingsUpdateResponse>, (StatusCode, Json<Value>)> {
     require_pin_for_admin(&state)?;
-    let mut restart_required = false;
-    let mut updated = Vec::new();
 
+    // Validate every entry before touching the file or the process.
     for (name, value) in &body.settings {
-        // Validate before mutating any process state.
         if let Err(msg) = validate_setting(name, value) {
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(json!({ "error": "Invalid setting", "message": msg })),
             ));
         }
+    }
 
-        // The PIN is never returned by GET /settings, so a blank value means
-        // "unchanged" and must not wipe the configured PIN.
-        if name == "MENTISDB_DASHBOARD_PIN" && value.is_empty() {
-            continue;
-        }
+    // The PIN is never returned by GET /settings, so a blank value means
+    // "unchanged" and must not wipe the configured PIN.
+    let changed: Vec<(&String, &String)> = body
+        .settings
+        .iter()
+        .filter(|(name, value)| !(*name == "MENTISDB_DASHBOARD_PIN" && value.is_empty()))
+        .filter(|(name, value)| std::env::var(name).unwrap_or_default() != **value)
+        .collect();
 
-        let old_value = std::env::var(name).unwrap_or_default();
-        if old_value == *value {
-            continue;
-        }
+    // Persist first: when the file cannot be updated the request fails and
+    // the running daemon still matches what is on disk.
+    if !changed.is_empty() {
+        let edits: Vec<(&str, Option<&str>)> = changed
+            .iter()
+            .map(|(name, value)| (name.as_str(), Some(value.as_str())))
+            .collect();
+        mentisdb::paths::update_env_file(&state.mentisdb_dir.join(".env"), &edits)
+            .map_err(env_file_error)?;
+    }
 
+    let mut restart_required = false;
+    let mut updated = Vec::new();
+    for (name, value) in changed {
         std::env::set_var(name, value);
         updated.push(name.clone());
 
@@ -4308,52 +4332,6 @@ async fn api_update_settings(
             _ => {
                 restart_required = true;
             }
-        }
-    }
-
-    // Persist changes to .env file
-    if !updated.is_empty() {
-        let env_path = state.mentisdb_dir.join(".env");
-        let mut lines: Vec<String> = Vec::new();
-        if let Ok(content) = std::fs::read_to_string(&env_path) {
-            lines = content.lines().map(|l| l.to_string()).collect();
-        }
-
-        for name in &updated {
-            let new_value = body.settings.get(name).cloned().unwrap_or_default();
-            let prefix_eq = format!("{}=", name);
-            let prefix_sp = format!("{} =", name);
-            let mut found = false;
-            for line in &mut lines {
-                if line.starts_with(&prefix_eq) || line.starts_with(&prefix_sp) {
-                    *line = format!("{}={}", name, new_value);
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                lines.push(format!("{}={}", name, new_value));
-            }
-        }
-
-        // The .env can hold the dashboard PIN: keep it owner-only, including
-        // when the file already existed with looser permissions.
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&env_path).map_err(internal_error)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))
-                .map_err(internal_error)?;
-        }
-        for line in &lines {
-            writeln!(file, "{}", line).map_err(internal_error)?;
         }
     }
 

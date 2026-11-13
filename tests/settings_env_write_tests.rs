@@ -105,3 +105,173 @@ async fn test_nul_in_value_is_rejected_not_a_panic() {
     assert!(!dir.join(".env").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Parse `<dir>/.env` the way the daemon does at startup and return every
+/// assignment in file order. Fails the test on the first line the loader
+/// rejects: that is the failure that silently drops all later settings.
+fn parse_env_file(dir: &Path) -> Vec<(String, String)> {
+    dotenvy::from_path_iter(dir.join(".env"))
+        .expect("open .env")
+        .map(|item| item.expect("every line of the saved .env must parse"))
+        .collect()
+}
+
+/// Values that are not safe to write raw: each used to corrupt the file or
+/// load as something else (`$` interpolation, ` #` comments, a space or quote
+/// that aborts the parse, a trailing backslash).
+const HOSTILE_VALUES: &[&str] = &[
+    "B=x y",
+    "\"",
+    "a \" b",
+    "it's",
+    "pa$word#1",
+    "${HOME}/x",
+    "$HOME",
+    "trailing space ",
+    "x # not a comment",
+    "C:\\dir\\",
+    "back\\slash",
+    "'single'",
+    "tab\tinside",
+    "ünï-cødé",
+    "a=b=c",
+    "#leading-hash",
+];
+
+/// Whatever the value, the saved file must parse, give the value back
+/// unchanged, and keep the lines after it (the PIN here) loadable. Raw
+/// `NAME=value` writing failed on most of these.
+#[tokio::test]
+async fn test_saved_value_round_trips_through_the_env_loader() {
+    let _env = env_guard().await;
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join(".env"),
+        "MENTISDB_DASHBOARD_PIN=keep-me\nMENTISDB_BEARER_TOKEN_ACCESS=true\n",
+    )
+    .unwrap();
+
+    for value in HOSTILE_VALUES {
+        let (status, body) = save(&dir, json!({ "MENTISDB_UPDATE_REPO": value })).await;
+        assert_eq!(status, StatusCode::OK, "{value:?}: {body}");
+
+        let parsed = parse_env_file(&dir);
+        let lookup = |name: &str| {
+            parsed
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(lookup("MENTISDB_UPDATE_REPO"), Some(*value), "{value:?}");
+        assert_eq!(lookup("MENTISDB_DASHBOARD_PIN"), Some("keep-me"));
+        assert_eq!(lookup("MENTISDB_BEARER_TOKEN_ACCESS"), Some("true"));
+    }
+    std::env::remove_var("MENTISDB_UPDATE_REPO");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A PIN containing `$` and `#` must survive a save unchanged: unquoted it
+/// loaded as a different, shorter PIN and the operator was locked out.
+#[tokio::test]
+async fn test_pin_with_shell_metacharacters_loads_back_identically() {
+    let _env = env_guard().await;
+    let dir = unique_dir();
+    let (status, body) = save(&dir, json!({ "MENTISDB_DASHBOARD_PIN": "pa$word#1" })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let parsed = parse_env_file(&dir);
+    assert_eq!(
+        parsed,
+        vec![(
+            "MENTISDB_DASHBOARD_PIN".to_string(),
+            "pa$word#1".to_string()
+        )]
+    );
+    std::env::remove_var("MENTISDB_DASHBOARD_PIN");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A rotated value must replace an `export NAME=` line (the loader reads the
+/// first occurrence, so an appended duplicate was ignored) and delete later
+/// duplicates; `NAME =` spacing matches too.
+#[tokio::test]
+async fn test_save_updates_export_and_spaced_lines_and_drops_duplicates() {
+    let _env = env_guard().await;
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join(".env"),
+        "# mine\nexport MENTISDB_UPDATE_REPO=old/one\nOTHER=1\nMENTISDB_UPDATE_REPO=old/two\nMENTISDB_LOG_FILE = /tmp/x.log\n",
+    )
+    .unwrap();
+
+    let (status, body) = save(
+        &dir,
+        json!({ "MENTISDB_UPDATE_REPO": "new/repo", "MENTISDB_LOG_FILE": "/tmp/y.log" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let text = std::fs::read_to_string(dir.join(".env")).unwrap();
+    assert_eq!(
+        text,
+        "# mine\nexport MENTISDB_UPDATE_REPO=new/repo\nOTHER=1\nMENTISDB_LOG_FILE=/tmp/y.log\n"
+    );
+    std::env::remove_var("MENTISDB_UPDATE_REPO");
+    std::env::remove_var("MENTISDB_LOG_FILE");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An existing `.env` that cannot be read must stop the save: the old code
+/// ignored the error, rewrote the file from nothing and so deleted every
+/// setting the request did not mention. The file and the process environment
+/// stay as they were.
+#[tokio::test]
+async fn test_unreadable_env_file_aborts_the_save_and_is_left_alone() {
+    let _env = env_guard().await;
+    let dir = unique_dir();
+    let original = b"MENTISDB_DASHBOARD_PIN=secret\n\xff\xfe not utf-8\n";
+    std::fs::write(dir.join(".env"), original).unwrap();
+    std::env::remove_var("MENTISDB_UPDATE_REPO");
+
+    let (status, _) = save(&dir, json!({ "MENTISDB_UPDATE_REPO": "x/y" })).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(std::fs::read(dir.join(".env")).unwrap(), original);
+    assert!(std::env::var("MENTISDB_UPDATE_REPO").is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The file is replaced through a temporary file and a rename, always
+/// owner-only, and no temporary file is left behind.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_save_is_owner_only_and_leaves_no_temp_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let _env = env_guard().await;
+    let dir = unique_dir();
+    let env_path = dir.join(".env");
+    std::fs::write(&env_path, "KEEP=1\n").unwrap();
+    std::fs::set_permissions(&env_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let inode_before = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&env_path).unwrap());
+
+    let (status, body) = save(&dir, json!({ "MENTISDB_UPDATE_REPO": "x/y" })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let meta = std::fs::metadata(&env_path).unwrap();
+    assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    assert_ne!(
+        std::os::unix::fs::MetadataExt::ino(&meta),
+        inode_before,
+        "an in-place truncate keeps the inode; an atomic replace does not"
+    );
+    let stray: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(".env.") || n.ends_with(".tmp"))
+        .collect();
+    assert!(stray.is_empty(), "temporary files left behind: {stray:?}");
+    assert!(std::fs::read_to_string(&env_path)
+        .unwrap()
+        .contains("KEEP=1"));
+    std::env::remove_var("MENTISDB_UPDATE_REPO");
+    let _ = std::fs::remove_dir_all(&dir);
+}
