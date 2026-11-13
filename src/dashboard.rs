@@ -4201,8 +4201,9 @@ struct RestartDaemonResponse {
     message: String,
 }
 
-/// Validate that a setting name is in [`DAEMON_SETTINGS`] and the value does
-/// not contain newline characters (which would allow `.env` injection).
+/// Validate that a setting name is in [`DAEMON_SETTINGS`] and the value holds
+/// no newline (which would allow `.env` injection) and no NUL byte (which
+/// panics `std::env::set_var`).
 fn validate_setting(name: &str, value: &str) -> Result<(), String> {
     if setting_spec(name).is_none() {
         return Err(format!(
@@ -4212,6 +4213,12 @@ fn validate_setting(name: &str, value: &str) -> Result<(), String> {
     if value.contains('\n') || value.contains('\r') {
         return Err(format!(
             "Setting value for '{name}' contains a newline, which is not allowed."
+        ));
+    }
+    // `std::env::set_var` panics on NUL, and no environment variable can hold one.
+    if value.contains('\0') {
+        return Err(format!(
+            "Setting value for '{name}' contains a NUL byte, which is not allowed."
         ));
     }
     Ok(())
