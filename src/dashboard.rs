@@ -4113,8 +4113,8 @@ pub(crate) const DAEMON_SETTINGS: &[SettingSpec] = &[
         "Minimum number of vectors before the HNSW approximate backend is selected."),
     SettingSpec::new("MENTISDB_HNSW_EF_CONSTRUCTION", "400", Number, true,
         "Search width during HNSW graph construction (higher = better recall, slower build)."),
-    SettingSpec::new("MENTISDB_HNSW_EF_SEARCH", "128", Number, true,
-        "Search width during HNSW queries (higher = better recall, slower search)."),
+    SettingSpec::new("MENTISDB_HNSW_EF_SEARCH", "128", Number, false,
+        "Search width during HNSW queries (higher = better recall, slower search). Read once, on the first HNSW query after a start."),
     SettingSpec::new("MENTISDB_HNSW_BACKGROUND_BUILD", "true", Boolean, true,
         "Build large HNSW graphs in a background thread so the daemon stays responsive."),
     // ── Updates and sounds ─────────────────────────────────────────────────

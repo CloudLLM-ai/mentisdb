@@ -145,6 +145,8 @@ fn startup_only_settings_are_not_marked_hot_reload() {
         "MENTISDB_GROUP_COMMIT_MS",
         "MENTISDB_FSYNC",
         "MENTISDB_EMBEDDINGS",
+        // Cached in a `OnceLock` on first use (src/search/hnsw_backend.rs).
+        "MENTISDB_HNSW_EF_SEARCH",
     ] {
         assert!(
             !setting_spec(name).unwrap().hot_reload,

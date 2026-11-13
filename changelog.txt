@@ -1,4 +1,7 @@
 UNRELEASED
+  - fix(dashboard): `MENTISDB_HNSW_EF_SEARCH` was listed as applying without a restart, but
+    the search backend reads it once per process (`OnceLock`), so a saved change did nothing
+    until the next start. It is now marked as needing a restart.
   - fix(query): `source_episode` and `entity_type` filters were silently dropped whenever
     they were combined with an indexed filter (`tags_any`, `concepts_any`, `thought_types`,
     `roles`, `agent_ids`, agent names or owners). The indexed path applied only the
