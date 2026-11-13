@@ -1,8 +1,8 @@
 # MentisDB: Durable, Verifiable Memory for Software Agents
 
 **Author:** Angel Leon
-**Version:** 0.12.1.58
-**Date:** 2026-11-08
+**Version:** 0.12.2.59
+**Date:** 2026-11-12
 
 ---
 
@@ -459,7 +459,8 @@ deduplicate against a thought in a private segment, and a refused write does not
 which agents or keys exist. Push channels respect it as well. Webhooks never receive
 private thoughts or governance records, and the MCP event stream carries metadata only
 (tool, chain, outcome, duration, method and client address), never arguments, results or
-error text.
+error text. When nothing has been sent for 15 seconds the stream sends an SSE comment
+(`: keepalive`), so HTTP clients with an idle timeout keep it open.
 
 Some metadata stays public by design, so that the chain remains verifiable. A public
 reader can see that a chain has private segments and where they are, how many thoughts
@@ -542,7 +543,9 @@ daemon beyond loopback should run 0.11.0.56 or later and enable tokens.
 
 Each chain is one append-only file, `<stem>.tcbin`. Each record is an 8-byte
 little-endian length followed by the bincode 2 encoding of the `Thought`
-(`persist_binary_thought`). A record payload may not exceed 10 MiB.
+(`persist_binary_thought`). A record payload may not exceed 10 MiB. The limit is
+checked when a thought is appended, so an oversized thought is refused before it is
+written, and again when a chain is opened.
 
 The file stem is the chain key with characters outside `[A-Za-z0-9_-]` replaced by `_`,
 a dash, and the first 16 hex characters of the SHA-256 of the chain key. Two keys that

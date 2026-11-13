@@ -123,7 +123,7 @@
 
 \title{\textbf{MentisDB}\\[0.3em]\large Durable, Verifiable Memory for Software Agents}
 \author{Angel Leon}
-\date{0.12.1.58 --- 2026-11-08}
+\date{0.12.2.59 --- 2026-11-12}
 
 \begin{document}
 \maketitle
@@ -829,7 +829,10 @@ refused write does not reveal which agents or keys exist. Push channels
 respect it as well. Webhooks never receive private thoughts or
 governance records, and the MCP event stream carries metadata only
 (tool, chain, outcome, duration, method and client address), never
-arguments, results or error text.
+arguments, results or error text. When nothing has been sent for 15
+seconds the stream sends an SSE comment
+(\passthrough{\lstinline!: keepalive!}), so HTTP clients with an idle
+timeout keep it open.
 
 Some metadata stays public by design, so that the chain remains
 verifiable. A public reader can see that a chain has private segments
@@ -939,7 +942,9 @@ Each chain is one append-only file,
 little-endian length followed by the bincode 2 encoding of the
 \passthrough{\lstinline!Thought!}
 (\passthrough{\lstinline!persist\_binary\_thought!}). A record payload
-may not exceed 10 MiB.
+may not exceed 10 MiB. The limit is checked when a thought is appended,
+so an oversized thought is refused before it is written, and again when
+a chain is opened.
 
 The file stem is the chain key with characters outside
 \passthrough{\lstinline![A-Za-z0-9\_-]!} replaced by
