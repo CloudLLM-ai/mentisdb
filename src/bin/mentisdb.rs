@@ -2737,7 +2737,7 @@ async fn main() -> ExitCode {
     // a PIN or the bearer-token switch among them, so the daemon refuses to
     // start on a broken file instead of coming up open. CLI subcommands and
     // `--help` only warn: they must still work so the file can be fixed.
-    if let Err(error) = mentisdb::paths::load_dotenv_files() {
+    if let Err(error) = mentisdb::paths::try_load_dotenv_files() {
         if reads_limits {
             eprintln!("error: {error}");
             eprintln!(

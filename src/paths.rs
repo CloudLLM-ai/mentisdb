@@ -664,7 +664,7 @@ fn find_working_dir_dotenv() -> Option<PathBuf> {
 /// syntax (see [`load_dotenv_file`]). The daemon must not carry on: a file cut
 /// short at its first bad line can silently drop `MENTISDB_DASHBOARD_PIN` or
 /// `MENTISDB_BEARER_TOKEN_ACCESS`, and the daemon would start open.
-pub fn load_dotenv_files() -> Result<Vec<PathBuf>, EnvFileError> {
+pub fn try_load_dotenv_files() -> Result<Vec<PathBuf>, EnvFileError> {
     let mut loaded = Vec::new();
     if let Some(path) = find_working_dir_dotenv() {
         if load_dotenv_file(&path)? {
@@ -676,6 +676,32 @@ pub fn load_dotenv_files() -> Result<Vec<PathBuf>, EnvFileError> {
         loaded.push(dir_env);
     }
     Ok(loaded)
+}
+
+/// Load `.env` files like [`try_load_dotenv_files`], reporting a bad file on
+/// stderr instead of failing.
+///
+/// Kept with its 0.12.2 signature for library callers. It loads every file
+/// that parses and prints a warning naming any file that does not, which
+/// matters because a file cut short at a bad line can silently drop security
+/// settings such as `MENTISDB_DASHBOARD_PIN`. The daemon uses
+/// [`try_load_dotenv_files`] and refuses to start instead; embedders that load
+/// the same settings should do the same.
+pub fn load_dotenv_files() -> Vec<PathBuf> {
+    let working = find_working_dir_dotenv();
+    let dir_env = mentisdb_dir_env_file();
+    let skip_dir_env = working.as_ref() == Some(&dir_env);
+    working
+        .into_iter()
+        .chain((!skip_dir_env).then_some(dir_env))
+        .filter(|path| match load_dotenv_file(path) {
+            Ok(found) => found,
+            Err(error) => {
+                eprintln!("warning: {error}");
+                false
+            }
+        })
+        .collect()
 }
 
 fn non_empty_var(name: &str) -> Option<PathBuf> {

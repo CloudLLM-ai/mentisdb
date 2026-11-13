@@ -1,4 +1,4 @@
-use mentisdb::paths::{load_dotenv_files, mentisdb_dir_env_file};
+use mentisdb::paths::{mentisdb_dir_env_file, try_load_dotenv_files};
 
 /// Settings saved by the dashboard to `<MENTISDB_DIR>/.env` must be loaded at
 /// startup even when the daemon runs from a different working directory, and
@@ -18,7 +18,7 @@ fn test_load_dotenv_files_reads_mentisdb_dir_env_without_overriding() {
     std::env::remove_var("MENTISDB_TEST_DOTENV_NEW");
 
     assert_eq!(mentisdb_dir_env_file(), dir.path().join(".env"));
-    let loaded = load_dotenv_files().expect("well-formed .env files load");
+    let loaded = try_load_dotenv_files().expect("well-formed .env files load");
 
     assert!(loaded.contains(&dir.path().join(".env")));
     assert_eq!(

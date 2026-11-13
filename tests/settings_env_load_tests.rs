@@ -2,10 +2,10 @@
 //! be reported (and the daemon must refuse to start), not skipped.
 //!
 //! Each test uses variable names of its own so they can run in parallel in
-//! one process; only [`test_load_dotenv_files_fails_on_a_bad_mentisdb_dir_env`]
+//! one process; only [`test_try_load_dotenv_files_fails_on_a_bad_mentisdb_dir_env`]
 //! touches `MENTISDB_DIR`.
 
-use mentisdb::paths::{load_dotenv_file, load_dotenv_files, EnvFileError};
+use mentisdb::paths::{load_dotenv_file, load_dotenv_files, try_load_dotenv_files, EnvFileError};
 
 /// Lines `dotenvy` rejects, each of which used to abort the file silently at
 /// that line and leave every later variable unset.
@@ -98,11 +98,11 @@ fn test_unreadable_file_is_a_read_error() {
     assert!(matches!(err, EnvFileError::Read { .. }), "{err}");
 }
 
-/// `load_dotenv_files` is what the daemon calls: a bad
+/// `try_load_dotenv_files` is what the daemon calls: a bad
 /// `<MENTISDB_DIR>/.env` makes it fail instead of returning the files that
 /// loaded.
 #[test]
-fn test_load_dotenv_files_fails_on_a_bad_mentisdb_dir_env() {
+fn test_try_load_dotenv_files_fails_on_a_bad_mentisdb_dir_env() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join(".env"),
@@ -111,11 +111,17 @@ fn test_load_dotenv_files_fails_on_a_bad_mentisdb_dir_env() {
     .unwrap();
     std::env::set_var("MENTISDB_DIR", dir.path());
 
-    let err = load_dotenv_files().unwrap_err();
+    let err = try_load_dotenv_files().unwrap_err();
 
     assert!(
         matches!(err, EnvFileError::Parse { line: Some(2), .. }),
         "{err}"
     );
     assert!(std::env::var("MENTISDB_DASHBOARD_PIN").is_err());
+
+    // The library's compatible `load_dotenv_files` (0.12.2 signature) warns
+    // and carries on: the bad file is not reported as loaded. It shares this
+    // test because only one test may set `MENTISDB_DIR`.
+    let loaded = load_dotenv_files();
+    assert!(!loaded.contains(&dir.path().join(".env")), "{loaded:?}");
 }
