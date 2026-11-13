@@ -28,6 +28,11 @@ UNRELEASED
     its `.env` line instead of writing `NAME=`.
   - fix(dashboard): saving `MENTISDB_DASHBOARD_PIN` from the Settings screen no longer prints
     the new PIN in the daemon's terminal config pane. Secret settings now show `<hidden>`.
+  - fix(security): the dashboard refuses a PIN that is blank or has leading or trailing
+    whitespace (400). Startup trims `MENTISDB_DASHBOARD_PIN` and treats an empty result as
+    no PIN, so a PIN of spaces saved from the Settings screen restarted as an open
+    dashboard, and a padded one loaded as a different PIN than typed. An empty value still
+    means "unchanged".
   - fix(dashboard): a setting value containing a NUL byte is refused with 400. It reached
     `std::env::set_var`, which panics on NUL, inside the settings handler.
   - fix(dashboard): `MENTISDB_HNSW_EF_SEARCH` was listed as applying without a restart, but

@@ -4118,6 +4118,7 @@ pub(crate) const DAEMON_SETTINGS: &[SettingSpec] = &[
     },
     SettingSpec {
         secret: true,
+        validate: Some(validate_pin),
         ..SettingSpec::new("MENTISDB_DASHBOARD_PIN", "", Text, false,
             "Optional PIN to protect dashboard access. Leave blank to keep the current value.")
     },
@@ -4247,6 +4248,26 @@ fn validate_port(_name: &str, value: &str) -> Result<(), String> {
         .parse::<u16>()
         .map(|_| ())
         .map_err(|_| format!("{value:?} is not a port number (0 to 65535)"))
+}
+
+/// A dashboard PIN the daemon reads back exactly as typed.
+///
+/// Startup trims `MENTISDB_DASHBOARD_PIN` and treats an empty result as "no
+/// PIN", so a blank PIN would restart as an open dashboard and one with
+/// leading or trailing whitespace would load as a different PIN than the
+/// operator typed. Both are refused (inner spaces are fine). An empty value
+/// never reaches this check: it means "unchanged".
+fn validate_pin(_name: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Err("a PIN made only of whitespace would leave the dashboard open after a restart".into())
+    } else if value.trim() != value {
+        Err(
+            "a PIN must not start or end with whitespace: the daemon trims it when it starts"
+                .into(),
+        )
+    } else {
+        Ok(())
+    }
 }
 
 /// A body limit, checked by the parser the daemon runs at startup.

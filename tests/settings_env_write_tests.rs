@@ -414,3 +414,40 @@ async fn test_empty_value_unsets_the_variable_and_removes_its_line() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A PIN the daemon would read back as "no PIN" must be refused. Startup
+/// trims `MENTISDB_DASHBOARD_PIN` and treats an empty result as unset, so a
+/// whitespace-only PIN saved from the dashboard used to restart as an open
+/// dashboard, and one with a stray leading or trailing blank would load as
+/// something other than what the operator typed. The request fails with 400,
+/// the PIN is not applied, and the file is not written. An empty value still
+/// means "unchanged" and a PIN with inner spaces is fine.
+#[tokio::test]
+async fn test_blank_or_padded_pin_is_rejected() {
+    let _env = env_guard().await;
+    let dir = unique_dir();
+    std::env::remove_var("MENTISDB_DASHBOARD_PIN");
+    for pin in ["   ", "\t", " 1234", "1234 ", "\u{a0}", "\u{3000}12"] {
+        let (status, body) = save(&dir, json!({ "MENTISDB_DASHBOARD_PIN": pin })).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{pin:?}: {body}");
+        let message = body["message"].as_str().unwrap_or_default();
+        assert!(message.contains("MENTISDB_DASHBOARD_PIN"), "{message}");
+        assert!(message.contains("whitespace"), "{message}");
+        assert!(std::env::var("MENTISDB_DASHBOARD_PIN").is_err(), "{pin:?}");
+        assert!(!dir.join(".env").exists(), "{pin:?} was written");
+    }
+
+    let (status, body) = save(&dir, json!({ "MENTISDB_DASHBOARD_PIN": "" })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!dir.join(".env").exists());
+
+    let (status, body) = save(&dir, json!({ "MENTISDB_DASHBOARD_PIN": "12 34" })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        parse_env_file(&dir),
+        [("MENTISDB_DASHBOARD_PIN".into(), "12 34".into())]
+    );
+    std::env::remove_var("MENTISDB_DASHBOARD_PIN");
+    let _ = std::fs::remove_dir_all(&dir);
+}
