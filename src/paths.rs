@@ -501,6 +501,67 @@ pub fn edit_env_text(
     Ok(format!("{bom}{body}"))
 }
 
+/// The assignments the loader applies for `text`, in file order, keeping the
+/// first of a repeated name (the loader never overrides a variable it has
+/// already set). `None` when any line does not parse.
+fn effective_assignments(text: &str) -> Option<Vec<(String, String)>> {
+    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for item in dotenvy::from_read_iter(body.as_bytes()) {
+        let (name, value) = item.ok()?;
+        if seen.insert(name.clone()) {
+            out.push((name, value));
+        }
+    }
+    Some(out)
+}
+
+/// Names whose assignment in `text` mentions `$`: their loaded value may
+/// legitimately follow a change to another name.
+fn names_using_substitution(text: &str) -> std::collections::HashSet<&str> {
+    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
+    split_entries(body)
+        .into_iter()
+        .filter(|entry| entry.iter().any(|line| line.contains('$')))
+        .filter_map(|entry| assigned_name(entry[0]).map(|(name, _)| name))
+        .collect()
+}
+
+/// The first value `name` has in `list`.
+fn value_of<'a>(list: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    list.iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, v)| v.as_str())
+}
+
+/// Whether `updated`, the edit of `old` by `changes`, loads as intended: each
+/// changed name has the requested value (absent when unset) and each other name
+/// keeps its value from `before`, `old`'s own assignments.
+fn edit_reads_back(
+    old: &str,
+    before: &[(String, String)],
+    updated: &str,
+    changes: &[(&str, Option<&str>)],
+) -> bool {
+    let Some(after) = effective_assignments(updated) else {
+        return false;
+    };
+    let changed_ok = changes
+        .iter()
+        .all(|&(name, wanted)| value_of(&after, name) == wanted);
+    let is_changed = |name: &str| changes.iter().any(|&(n, _)| n == name);
+    let follows = names_using_substitution(old);
+    let others_ok = before
+        .iter()
+        .filter(|(name, _)| !is_changed(name) && !follows.contains(name.as_str()))
+        .all(|(name, value)| value_of(&after, name) == Some(value.as_str()));
+    let nothing_new = after
+        .iter()
+        .all(|(name, _)| is_changed(name) || value_of(before, name).is_some());
+    changed_ok && others_ok && nothing_new
+}
+
 /// Serialises read-modify-write cycles of [`update_env_file`] within the
 /// process, so two saves cannot interleave and lose one another's change.
 static ENV_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -519,11 +580,25 @@ static ENV_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// rewriting from an empty buffer would drop every setting the change did not
 /// mention, the PIN included.
 ///
+/// An existing file the loader rejects is refused too, and also left
+/// untouched. Editing around a bad line would keep the file broken (the
+/// daemon's loader fails closed on it at the next start) or, with an open
+/// quote or a trailing backslash, change which lines the edit sees. The
+/// operator fixes the line by hand; the error names it, never its text.
+///
+/// Before the rename the new text is parsed back and checked: every changed
+/// name must load as exactly the requested value (and an unset name must be
+/// gone), and every other name must keep the value it had (a value that
+/// refers to another with `$NAME` is exempt, since it follows the change on
+/// purpose). On any mismatch nothing is written.
+///
 /// # Errors
 ///
 /// [`EnvFileError::Read`] when the existing file cannot be read,
-/// [`EnvFileError::Write`] when the replacement cannot be written, and the
-/// name and value errors of [`edit_env_text`].
+/// [`EnvFileError::Parse`] when it does not parse,
+/// [`EnvFileError::Write`] when the replacement cannot be written or fails the
+/// read-back check (an `InvalidData` source), and the name and value errors of
+/// [`edit_env_text`].
 pub fn update_env_file(path: &Path, changes: &[(&str, Option<&str>)]) -> Result<(), EnvFileError> {
     let _guard = ENV_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -537,9 +612,22 @@ pub fn update_env_file(path: &Path, changes: &[(&str, Option<&str>)]) -> Result<
             })
         }
     };
+    let before = effective_assignments(&content).ok_or_else(|| EnvFileError::Parse {
+        path: target.clone(),
+        line: first_unparsable_line(&content),
+    })?;
     let updated = edit_env_text(&content, changes)?;
     if updated == content {
         return Ok(());
+    }
+    if !edit_reads_back(&content, &before, &updated, changes) {
+        return Err(EnvFileError::Write {
+            path: target,
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the edited file would not load back as requested; nothing was written",
+            ),
+        });
     }
     replace_file_atomically(&target, updated.as_bytes()).map_err(|source| EnvFileError::Write {
         path: target,
@@ -708,4 +796,37 @@ fn non_empty_var(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runs the read-back check on `old` edited into `updated` by `changes`.
+    fn reads_back(old: &str, updated: &str, changes: &[(&str, Option<&str>)]) -> bool {
+        let before = effective_assignments(old).expect("old text parses");
+        edit_reads_back(old, &before, updated, changes)
+    }
+
+    /// The read-back check accepts what `edit_env_text` produces and refuses
+    /// a text where a changed name has the wrong value, an unset name is
+    /// still present, another name lost or changed its value, or the text
+    /// no longer parses. A value that follows a `$` reference is exempt.
+    #[test]
+    fn test_edit_reads_back_accepts_good_edits_and_refuses_bad_ones() {
+        let old = "A=1\nB=2\nC=3\n";
+        let set = [("A", Some("9"))];
+        assert!(reads_back(old, "A=9\nB=2\nC=3\n", &set));
+        assert!(!reads_back(old, "A=8\nB=2\nC=3\n", &set), "wrong value");
+        assert!(!reads_back(old, "B=2\nC=3\n", &set), "missing");
+        assert!(!reads_back(old, "A=9\nC=3\n", &set), "lost B");
+        assert!(!reads_back(old, "A=9\nB=5\nC=3\n", &set), "changed B");
+        assert!(!reads_back(old, "A=9\nB=2\nC=3\nD=4\n", &set), "new name");
+        assert!(!reads_back(old, "A=9\nB=x y\nC=3\n", &set), "unparsable");
+        let unset = [("B", None)];
+        assert!(reads_back(old, "A=1\nC=3\n", &unset));
+        assert!(!reads_back(old, "A=1\nB=2\nC=3\n", &unset), "still set");
+        let old = "A=1\nB=${A}-x\n";
+        assert!(reads_back(old, "A=2\nB=${A}-x\n", &[("A", Some("2"))]));
+    }
 }

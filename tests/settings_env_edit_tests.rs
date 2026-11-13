@@ -220,3 +220,72 @@ fn test_update_env_file_edge_cases() {
         assert_eq!(std::fs::read_to_string(&real).unwrap(), "A=2\n");
     }
 }
+
+/// Files the loader already rejects (or reads differently from how an edit
+/// treats them): saving into one would keep or worsen the damage and the
+/// dashboard's Restart would then exit on the fail-closed loader. Each is
+/// refused with the line named, never its text, and left byte for byte as it
+/// was. The second line is a PIN that must survive.
+const BROKEN_FILES: &[(&str, usize)] = &[
+    ("A=b c\nMENTISDB_X=1\n", 1),
+    ("MENTISDB_X='a\\'\nZ=2\n", 1),
+    ("OK=1\nMENTISDB_X=\"never closed\nZ=2\n", 2),
+    // A backslash before the line break inside double quotes: the loader
+    // rejects it (outside quotes it reads `A=b` and carries on).
+    ("OK=1\nA=\"x\\\ny\"\nMENTISDB_DASHBOARD_PIN=s3cret\n", 2),
+    ("=novalue\nMENTISDB_DASHBOARD_PIN=s3cret\n", 1),
+];
+
+/// `update_env_file` refuses to edit a file that does not parse.
+#[test]
+fn test_update_env_file_refuses_an_already_broken_file() {
+    for &(text, line) in BROKEN_FILES {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, text).unwrap();
+
+        let err = update_env_file(&path, &[("MENTISDB_X", Some("2"))]).expect_err(text);
+
+        assert!(
+            matches!(err, EnvFileError::Parse { line: Some(n), .. } if n == line),
+            "{text:?}: {err}"
+        );
+        let message = err.to_string();
+        assert!(
+            !message.contains("s3cret") && !message.contains("never closed"),
+            "{message}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "{text:?}");
+    }
+}
+
+/// A file that parses is still edited, and the result loads back with the
+/// changed names at their new values and every other name unchanged.
+#[test]
+fn test_update_env_file_edit_keeps_every_other_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".env");
+    std::fs::write(
+        &path,
+        "# c\nKEEP=1\nexport PIN=\"a b\"\nMULTI=\"x\ny\"\nGONE=1\n",
+    )
+    .unwrap();
+
+    update_env_file(
+        &path,
+        &[("NEW", Some("n o")), ("GONE", None), ("KEEP", Some("2"))],
+    )
+    .unwrap();
+
+    let loaded: Vec<(String, String)> = dotenvy::from_path_iter(&path)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let expected = [
+        ("KEEP", "2"),
+        ("PIN", "a b"),
+        ("MULTI", "x\ny"),
+        ("NEW", "n o"),
+    ];
+    assert_eq!(loaded, expected.map(|(k, v)| (k.to_owned(), v.to_owned())));
+}

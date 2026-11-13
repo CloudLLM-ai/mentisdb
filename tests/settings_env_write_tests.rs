@@ -525,3 +525,26 @@ fn test_integer_range_and_host_settings_follow_their_startup_parsers() {
         }
     }
 }
+
+/// Saving into a `<MENTISDB_DIR>/.env` the loader already rejects is refused
+/// with 422 naming the line, leaves the file and the process environment as
+/// they were, and does not echo the PIN on a later line. Before the check the
+/// save returned 200 and Restart then died on the fail-closed loader.
+#[tokio::test]
+async fn test_save_into_an_unparsable_env_file_is_refused() {
+    let _env = env_guard().await;
+    let dir = unique_dir();
+    let original = "A=b c\nMENTISDB_DASHBOARD_PIN=s3cret\n";
+    std::fs::write(dir.join(".env"), original).unwrap();
+    std::env::remove_var("MENTISDB_UPDATE_REPO");
+
+    let (status, body) = save(&dir, json!({ "MENTISDB_UPDATE_REPO": "x/y" })).await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(message.contains("line 1"), "{message}");
+    assert!(!message.contains("s3cret"), "{message}");
+    assert_eq!(std::fs::read_to_string(dir.join(".env")).unwrap(), original);
+    assert!(std::env::var("MENTISDB_UPDATE_REPO").is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -43,6 +43,13 @@ UNRELEASED
     127.0.0.1). Each now has a check that mirrors its startup parser and is refused with
     400. Same for the choice settings (`MENTISDB_STORAGE_ADAPTER`, `MENTISDB_VECTOR_FUSION`,
     `MENTISDB_DF_SCOPE`, `MENTISDB_EMBEDDINGS`) and `MENTISDB_COLLAPSE_DUPLICATES`.
+  - fix(dashboard): saving a setting into a `<MENTISDB_DIR>/.env` that the loader already
+    rejects (another tool's line, an open quote, a backslash before a line break inside
+    quotes) used to edit around the bad line and return 200; Restart then exited on the
+    fail-closed loader. The save is now refused (422, naming the line, never its text) and
+    the file is left alone, and every edit is parsed back before the rename: each changed
+    name must load as the requested value, each other name must keep its value, or nothing
+    is written.
   - fix(dashboard): a setting value containing a NUL byte is refused with 400. It reached
     `std::env::set_var`, which panics on NUL, inside the settings handler.
   - fix(dashboard): `MENTISDB_HNSW_EF_SEARCH` was listed as applying without a restart, but

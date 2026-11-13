@@ -4483,11 +4483,13 @@ pub(crate) fn validate_setting(name: &str, value: &str) -> Result<(), String> {
 }
 
 /// Map a failed `.env` update to an HTTP error: a name or value the file
-/// cannot hold is the caller's (400), anything else is the server's (500).
+/// cannot hold is the caller's (400), an existing file that does not parse needs
+/// the operator's hand (422), anything else is the server's (500).
 fn env_file_error(error: mentisdb::paths::EnvFileError) -> (StatusCode, Json<Value>) {
     use mentisdb::paths::EnvFileError;
     let status = match error {
         EnvFileError::InvalidName(_) | EnvFileError::InvalidValue { .. } => StatusCode::BAD_REQUEST,
+        EnvFileError::Parse { .. } => StatusCode::UNPROCESSABLE_ENTITY,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (
