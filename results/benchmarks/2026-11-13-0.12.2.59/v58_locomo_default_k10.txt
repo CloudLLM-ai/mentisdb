@@ -1,0 +1,116 @@
+  reranking    : enabled=False k=50
+  timeouts     : request=300s rebuild=7200s
+
+LoCoMo × mentisdb
+  top-k        : 10  (also computing R@10, R@20, R@50)
+  limit        : full
+  chain        : locomo-full
+  data-dir     : /private/tmp/claude-501/-Users-gubatron-workspace-mentischat/8e9a306e-b44a-4398-9b9b-9ef8eff5883b/scratchpad/bench/data
+  endpoint     : http://127.0.0.1:9592
+
+  Loaded 5882 conversation turns, 1977 test queries
+
+  Chain 'locomo-full' already exists (5882 thoughts) — skipping ingestion.
+
+  50/1977 QAs — R@10: 64.0%
+  100/1977 QAs — R@10: 68.0%
+  150/1977 QAs — R@10: 76.0%
+  200/1977 QAs — R@10: 80.0%
+  250/1977 QAs — R@10: 80.4%
+  300/1977 QAs — R@10: 80.3%
+  350/1977 QAs — R@10: 76.9%
+  400/1977 QAs — R@10: 78.0%
+  450/1977 QAs — R@10: 78.7%
+  500/1977 QAs — R@10: 78.4%
+  550/1977 QAs — R@10: 77.6%
+  600/1977 QAs — R@10: 76.3%
+  650/1977 QAs — R@10: 76.6%
+  700/1977 QAs — R@10: 76.9%
+  750/1977 QAs — R@10: 76.9%
+  800/1977 QAs — R@10: 76.5%
+  850/1977 QAs — R@10: 77.1%
+  900/1977 QAs — R@10: 77.8%
+  950/1977 QAs — R@10: 78.3%
+  1000/1977 QAs — R@10: 78.6%
+  1050/1977 QAs — R@10: 76.9%
+  1100/1977 QAs — R@10: 77.2%
+  1150/1977 QAs — R@10: 77.2%
+  1200/1977 QAs — R@10: 76.4%
+  1250/1977 QAs — R@10: 76.7%
+  1300/1977 QAs — R@10: 77.2%
+  1350/1977 QAs — R@10: 77.9%
+  1400/1977 QAs — R@10: 77.7%
+  1450/1977 QAs — R@10: 77.5%
+  1500/1977 QAs — R@10: 77.9%
+  1550/1977 QAs — R@10: 77.6%
+  1600/1977 QAs — R@10: 77.5%
+  1650/1977 QAs — R@10: 77.2%
+  1700/1977 QAs — R@10: 77.2%
+  1750/1977 QAs — R@10: 77.3%
+  1800/1977 QAs — R@10: 76.9%
+  1850/1977 QAs — R@10: 76.5%
+  1900/1977 QAs — R@10: 76.5%
+  1950/1977 QAs — R@10: 76.7%
+  1977/1977 QAs — R@10: 76.7%
+
+=======================================================
+LoCoMo  R@10: 76.7%  (1516/1977)
+Evaluation time: 6s  (347.7 q/s)
+
+By question type:
+  multi         62.9%  (266/423)  ████████████
+  single        80.4%  (1250/1554)  ████████████████
+
+Near-miss analysis:
+  type         total  R@10   R@10  R@20  R@50
+  -------------------------------------------------------
+  multi          423   62.9%   62.9%   73.8%   87.9%
+  single        1554   80.4%   80.4%   86.0%   92.0%
+
+Avg top-1 score breakdown on MISSES (461 samples):
+  lexical        13.2157
+  vector         0.1342
+  graph          0.0159
+  relation       0.0084
+  seed_support   0.0030
+  recency        0.0268
+  total          15.6070
+
+Of 461 misses:
+    0 (  0.0%) appear in top-10 (ranking problem)
+  133 ( 28.9%) appear in top-20
+  286 ( 62.0%) appear in top-50
+  175 ( 38.0%) not in top-50 (lexical gap)
+
+Miss counts by type:
+  single       304/1554 misses  (0 near top-10)
+  multi        157/423 misses  (0 near top-10)
+
+Sample misses from 'single' (5 of 304):
+
+  Q:         when did caroline give a speech at a school?
+  Evidence:  hey melanie! how's it going? i wanted to tell you about my school event last week. it was awesome! i talked about my tra…
+  Top-1 ret: looks good! how did the extra funding help with building the school?…
+  Score:     lexical=10.915  vector=0.136  graph=0.000  recency=0.007  total=13.400
+
+  Q:         how long has caroline had her current group of friends for?
+  Evidence:  yeah, i'm really lucky to have them. they've been there through everything, i've known these friends for 4 years, since …
+  Top-1 ret: since speaking last, i reconnected with my mom's old friends. their stories made me tear up and reminded me how lucky i …
+  Score:     lexical=13.316  vector=0.169  graph=0.000  recency=0.039  total=16.790
+
+  Q:         what did caroline research?
+  Evidence:  researching adoption agencies — it's been a dream to have a family and give a loving home to kids who need it.…
+  Top-1 ret: wow, that's cool, caroline! what happened that was so awesome? did you hear any inspiring stories?…
+  Score:     lexical=10.189  vector=0.211  graph=0.000  recency=0.000  total=11.597
+
+  Q:         when did caroline have a picnic?
+  Evidence:  wow, that's great! it sure shows how important friendship and compassion are. it's made me appreciate how lucky i am to …
+  Top-1 ret: sounds good, jolene! when did you have in mind? that cafe rocks.…
+  Score:     lexical=9.661  vector=0.000  graph=0.000  recency=0.039  total=10.569
+
+  Q:         would caroline likely have dr. seuss books on her bookshelf?
+  Evidence:  i've got lots of kids' books- classics, stories from different cultures, educational books, all of that. what's a favori…
+  Top-1 ret: yeah, check it out - here's my bookshelf! i have some of my favorites on there, like these ones. it's an amazing journey…
+  Score:     lexical=12.238  vector=0.123  graph=0.000  recency=0.020  total=14.711
+
+Results written to /private/tmp/claude-501/-Users-gubatron-workspace-mentischat/8e9a306e-b44a-4398-9b9b-9ef8eff5883b/scratchpad/bench/out/v58_locomo_default_k10.json

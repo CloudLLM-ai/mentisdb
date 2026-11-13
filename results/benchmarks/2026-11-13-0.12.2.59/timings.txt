@@ -1,0 +1,7 @@
+locomo_default_k10 rc=1 secs=55
+locomo_default_k5 rc=1 secs=4
+locomo_rerank_k10 rc=1 secs=5
+locomo_rerank_k5 rc=1 secs=5
+lme_default rc=1 secs=156
+lme_rerank rc=2 secs=0
+DONE
