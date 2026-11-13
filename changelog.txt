@@ -1,4 +1,4 @@
-UNRELEASED
+0.12.3.60 NOV/13/2026
   - fix(security): saving a setting from the dashboard could leave a `.env` that the daemon
     half-loads, so it restarted without its PIN or with open access and said nothing.
     Values were written raw, and the `.env` parser stops at the first bad line: `B=x y`, a
