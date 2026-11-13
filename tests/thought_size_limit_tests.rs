@@ -101,3 +101,46 @@ fn the_early_reject_is_a_lower_bound_and_the_backstop_still_applies() {
     assert_eq!(db.thoughts().len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The early reject must stay a strict lower bound of the stored record:
+/// inputs whose raw size is far over the cap but whose stored record is just
+/// under it are accepted. Heavy duplicate tags and concepts (normalisation
+/// keeps one of each), whitespace padding around `entity_type` and
+/// `source_episode` (trimmed at append), many references and a content just
+/// under the cap together would trip a floor that counted raw sizes.
+#[test]
+fn the_early_reject_never_counts_more_than_the_stored_record() {
+    let dir = temp_dir("floor");
+    let mut db = MentisDb::open_with_key(&dir, "c").unwrap();
+    for i in 0..20 {
+        db.append_thought(
+            "a",
+            ThoughtInput::new(ThoughtType::Summary, format!("p{i}")),
+        )
+        .unwrap();
+    }
+    let padding = " ".repeat(2 * 1024 * 1024);
+    let input = ThoughtInput::new(
+        ThoughtType::Summary,
+        "x".repeat(10 * 1024 * 1024 - 16 * 1024),
+    )
+    .with_tags(std::iter::repeat_n("dup-tag".to_string(), 200_000))
+    .with_concepts(std::iter::repeat_n("dup-concept".to_string(), 200_000))
+    .with_entity_type(format!("{padding}person{padding}"))
+    .with_source_episode(format!("{padding}episode{padding}"))
+    .with_refs((0..20).collect());
+
+    let stored = db
+        .append_thought("a", input)
+        .expect("a record just under the cap is accepted")
+        .clone();
+
+    assert_eq!(stored.tags, ["dup-tag"]);
+    assert_eq!(stored.entity_type.as_deref(), Some("person"));
+    assert_eq!(stored.source_episode.as_deref(), Some("episode"));
+    assert_eq!(db.thoughts().len(), 21);
+    drop(db);
+    let reopened = MentisDb::open_with_key(&dir, "c").expect("the chain still opens");
+    assert_eq!(reopened.thoughts().len(), 21);
+    let _ = std::fs::remove_dir_all(&dir);
+}
