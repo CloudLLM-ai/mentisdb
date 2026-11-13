@@ -17,6 +17,13 @@ UNRELEASED
   - fix(query): `source_episode` is trimmed at append (blank becomes none), as `entity_type`
     already was, and the filter trims its argument, so `"X "` finds `"X"`. Thoughts already
     stored with padding keep it (the hash covers it), so no spelling finds them.
+  - fix(storage): an oversized thought is refused before the expensive work. The 10 MiB
+    record cap was checked in the storage adapter, after signature verification, dedup
+    tokenization, hashing and serialization had run under the chain write lock, so 60 MB
+    bodies on the large-body routes cost CPU per request. The append now rejects, in O(1),
+    when content, signature, entity type, source episode, signing key id and references
+    alone exceed the cap (same `InvalidInput` / 400); the adapter check stays as the exact
+    backstop for what the lower bound cannot see (tags and concepts).
 
 0.12.2.59 NOV/12/2026
   - fix(mcp): the MCP event stream (`GET /` on the MCP port) no longer goes silent. It wrote

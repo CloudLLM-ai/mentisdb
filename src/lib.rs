@@ -769,6 +769,20 @@ const ENTITY_TYPE_REGISTRY_FLUSH_THRESHOLD: usize = FLUSH_THRESHOLD;
 /// Maximum allowed bincode payload size for a single thought record (DoS protection).
 const MAX_THOUGHT_PAYLOAD_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 
+/// The `InvalidInput` error for a thought whose record would exceed
+/// [`MAX_THOUGHT_PAYLOAD_BYTES`]. `bytes` is the exact record size at the
+/// storage backstop, or the lower bound found by the early reject in
+/// `MentisDb::append_thought_inner`; either way it is over the limit.
+fn thought_too_large_error(bytes: u64) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "thought is too large: its record is {bytes} bytes, the limit is \
+             {MAX_THOUGHT_PAYLOAD_BYTES} (content, tags, concepts and the other fields together)"
+        ),
+    )
+}
+
 #[derive(Debug, Clone)]
 struct BackgroundWriteError {
     kind: io::ErrorKind,
@@ -1332,13 +1346,7 @@ impl StorageAdapter for BinaryStorageAdapter {
         // in memory, is untouched (the caller pushes only after this
         // succeeds).
         if payload_len > MAX_THOUGHT_PAYLOAD_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "thought is too large: its record is {payload_len} bytes, the limit is \
-                     {MAX_THOUGHT_PAYLOAD_BYTES} (content, tags, concepts and the other fields together)"
-                ),
-            ));
+            return Err(thought_too_large_error(payload_len));
         }
         record[..8].copy_from_slice(&payload_len.to_le_bytes());
 
@@ -2802,6 +2810,24 @@ pub struct ThoughtInput {
 }
 
 impl ThoughtInput {
+    /// A lower bound, in bytes, on this input's serialized record.
+    ///
+    /// Sums the variable-length fields that reach the record unchanged:
+    /// `content`, the signature, the trimmed `entity_type`, `source_episode`
+    /// and `signing_key_id`, and at least one byte per reference. Tags and
+    /// concepts are left out because normalisation deduplicates them, so their
+    /// raw size can exceed what is stored. Every term is `len()`, so this is
+    /// O(1) and allocation free, and it never exceeds the real record size.
+    fn record_size_floor(&self) -> u64 {
+        let trimmed = |value: &Option<String>| value.as_deref().map_or(0, |v| v.trim().len());
+        (self.content.len()
+            + self.thought_signature.as_ref().map_or(0, Vec::len)
+            + trimmed(&self.entity_type)
+            + trimmed(&self.source_episode)
+            + trimmed(&self.signing_key_id)
+            + self.refs.len()) as u64
+    }
+
     /// Create a new input with default metadata.
     ///
     /// Defaults:
@@ -6955,6 +6981,15 @@ impl MentisDb {
         mut input: ThoughtInput,
         governance: bool,
     ) -> io::Result<&Thought> {
+        // Cheap early reject, before signature verification, dedup
+        // tokenization, hashing and serialization, all of which run under the
+        // chain write lock. The storage adapter keeps the exact check as the
+        // backstop; this one only has to be a lower bound, so a thought it
+        // lets through is never refused here wrongly.
+        let floor = input.record_size_floor();
+        if floor > MAX_THOUGHT_PAYLOAD_BYTES {
+            return Err(thought_too_large_error(floor));
+        }
         // An empty signature is no signature (see `Thought::signature_bytes`).
         input.thought_signature.take_if(|bytes| bytes.is_empty());
         if !governance {

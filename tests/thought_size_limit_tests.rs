@@ -56,3 +56,48 @@ fn an_oversized_thought_is_refused_and_the_chain_still_opens() {
     assert_eq!(contents, ["before", "after"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The early reject fires on the variable-length fields alone, before
+/// signature verification: an oversized thought carrying a signature with no
+/// key id fails as `too large`, not with the access error verification would
+/// raise. This pins that the cheap check runs first.
+#[test]
+fn an_oversized_thought_is_refused_before_signature_checks() {
+    let dir = temp_dir("early");
+    let mut db = MentisDb::open_with_key(&dir, "c").unwrap();
+    let mut input = ThoughtInput::new(ThoughtType::Summary, oversized());
+    input.thought_signature = Some(vec![1, 2, 3]);
+    let err = match db.append_thought("a", input) {
+        Ok(t) => panic!("a {}-byte thought was accepted", t.content.len()),
+        Err(e) => e,
+    };
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
+    assert!(err.to_string().contains("too large"), "{err}");
+    assert!(db.thoughts().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The early reject is only a lower bound: a thought just under the cap is
+/// still accepted (content alone below the limit passes it), and one whose size
+/// comes from tags alone, which the early reject does not count, is still
+/// refused by the storage backstop with the same error.
+#[test]
+fn the_early_reject_is_a_lower_bound_and_the_backstop_still_applies() {
+    let dir = temp_dir("bound");
+    let mut db = MentisDb::open_with_key(&dir, "c").unwrap();
+    db.append_thought(
+        "a",
+        ThoughtInput::new(ThoughtType::Summary, "x".repeat(9 * 1024 * 1024)),
+    )
+    .expect("9 MiB of content fits");
+    let heavy_tags = ThoughtInput::new(ThoughtType::Summary, "small")
+        .with_tags((0..11).map(|i| format!("{i}{}", "t".repeat(1024 * 1024))));
+    let err = match db.append_thought("a", heavy_tags) {
+        Ok(_) => panic!("11 MiB of tags was accepted"),
+        Err(e) => e,
+    };
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
+    assert!(err.to_string().contains("too large"), "{err}");
+    assert_eq!(db.thoughts().len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
