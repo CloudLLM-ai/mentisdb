@@ -451,3 +451,77 @@ async fn test_blank_or_padded_pin_is_rejected() {
     std::env::remove_var("MENTISDB_DASHBOARD_PIN");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Settings whose startup parser is stricter than "any finite number":
+/// `(name, value, accepted)`. Each rejected value is one the daemon would
+/// silently replace with the default, so a save that took it would show one
+/// value on the Settings screen and run another.
+const PARSER_CASES: &[(&str, &str, bool)] = &[
+    ("MENTISDB_DEDUP_SCAN_WINDOW", "64", true),
+    ("MENTISDB_DEDUP_SCAN_WINDOW", "0", true),
+    ("MENTISDB_DEDUP_SCAN_WINDOW", "1.5", false),
+    ("MENTISDB_DEDUP_SCAN_WINDOW", "-3", false),
+    ("MENTISDB_DEDUP_SCAN_WINDOW", "1e3", false),
+    ("MENTISDB_AUTO_EDGE_K", "5", true),
+    ("MENTISDB_AUTO_EDGE_K", "2.5", false),
+    ("MENTISDB_AUTO_EDGE_K", "-1", false),
+    ("MENTISDB_HNSW_THRESHOLD", "50000", true),
+    ("MENTISDB_HNSW_THRESHOLD", "0", false),
+    ("MENTISDB_HNSW_THRESHOLD", "1e5", false),
+    ("MENTISDB_HNSW_THRESHOLD", "0.5", false),
+    ("MENTISDB_HNSW_EF_CONSTRUCTION", "400", true),
+    ("MENTISDB_HNSW_EF_CONSTRUCTION", "0", false),
+    ("MENTISDB_HNSW_EF_CONSTRUCTION", "12.5", false),
+    ("MENTISDB_HNSW_EF_SEARCH", "128", true),
+    ("MENTISDB_HNSW_EF_SEARCH", "0", false),
+    ("MENTISDB_HNSW_EF_SEARCH", "-1", false),
+    ("MENTISDB_GROUP_COMMIT_MS", "0", true),
+    ("MENTISDB_GROUP_COMMIT_MS", "2.5", false),
+    ("MENTISDB_GROUP_COMMIT_MS", "-1", false),
+    ("MENTISDB_MIGRATION_CONCURRENCY", "4", true),
+    ("MENTISDB_MIGRATION_CONCURRENCY", "1.5", false),
+    ("MENTISDB_MIGRATION_BACKUP_RETENTION_DAYS", "0", true),
+    ("MENTISDB_MIGRATION_BACKUP_RETENTION_DAYS", "-14", false),
+    ("MENTISDB_DEDUP_THRESHOLD", "0.85", true),
+    ("MENTISDB_DEDUP_THRESHOLD", "0", true),
+    ("MENTISDB_DEDUP_THRESHOLD", "1", true),
+    ("MENTISDB_DEDUP_THRESHOLD", "1.5", false),
+    ("MENTISDB_DEDUP_THRESHOLD", "-0.1", false),
+    ("MENTISDB_DEDUP_THRESHOLD", "NaN", false),
+    ("MENTISDB_AUTO_EDGE_THRESHOLD", "0.85", true),
+    ("MENTISDB_AUTO_EDGE_THRESHOLD", "1", true),
+    ("MENTISDB_AUTO_EDGE_THRESHOLD", "7", false),
+    ("MENTISDB_AUTO_EDGE_THRESHOLD", "-1", false),
+    ("MENTISDB_BIND_HOST", "127.0.0.1", true),
+    ("MENTISDB_BIND_HOST", "0.0.0.0", true),
+    ("MENTISDB_BIND_HOST", "::1", true),
+    ("MENTISDB_BIND_HOST", "my.host.example", false),
+    ("MENTISDB_BIND_HOST", "127.0.0.1:9471", false),
+    ("MENTISDB_BIND_HOST", "127.0.0.1 ", false),
+    ("MENTISDB_STORAGE_ADAPTER", "binary", true),
+    ("MENTISDB_STORAGE_ADAPTER", "jsonl", true),
+    ("MENTISDB_STORAGE_ADAPTER", "sqlite", false),
+    ("MENTISDB_VECTOR_FUSION", "absolute", true),
+    ("MENTISDB_VECTOR_FUSION", "sideways", false),
+    ("MENTISDB_DF_SCOPE", "field", true),
+    ("MENTISDB_DF_SCOPE", "everywhere", false),
+    ("MENTISDB_EMBEDDINGS", "local-text", true),
+    ("MENTISDB_EMBEDDINGS", "magic", false),
+    ("MENTISDB_COLLAPSE_DUPLICATES", "off", true),
+    ("MENTISDB_COLLAPSE_DUPLICATES", "0.75", true),
+    ("MENTISDB_COLLAPSE_DUPLICATES", "1.7", false),
+    ("MENTISDB_COLLAPSE_DUPLICATES", "banana", false),
+];
+
+/// The dashboard's check for each of these settings gives the verdict the
+/// startup parser's does, so a saved value is the value the daemon runs with.
+#[test]
+fn test_integer_range_and_host_settings_follow_their_startup_parsers() {
+    for (name, value, accepted) in PARSER_CASES {
+        let verdict = dashboard_impl::validate_setting(name, value);
+        assert_eq!(verdict.is_ok(), *accepted, "{name}={value:?}: {verdict:?}");
+        if let Err(message) = verdict {
+            assert!(message.contains(name), "{message}");
+        }
+    }
+}

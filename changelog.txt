@@ -33,6 +33,16 @@ UNRELEASED
     no PIN, so a PIN of spaces saved from the Settings screen restarted as an open
     dashboard, and a padded one loaded as a different PIN than typed. An empty value still
     means "unchanged".
+  - fix(dashboard): the Settings screen accepted any finite number for settings the daemon
+    reads as whole numbers or ranges, and the daemon then silently used the default: `1.5`
+    for `MENTISDB_AUTO_EDGE_K`, `MENTISDB_DEDUP_SCAN_WINDOW`, `MENTISDB_GROUP_COMMIT_MS`
+    or the migration settings, `0` or `1e5` for `MENTISDB_HNSW_THRESHOLD`,
+    `MENTISDB_HNSW_EF_CONSTRUCTION` and `MENTISDB_HNSW_EF_SEARCH` (at least 1), `1.5` for
+    `MENTISDB_DEDUP_THRESHOLD` and `MENTISDB_AUTO_EDGE_THRESHOLD` (0.0 to 1.0), and a DNS
+    name for `MENTISDB_BIND_HOST` (an IP address is required; the daemon fell back to
+    127.0.0.1). Each now has a check that mirrors its startup parser and is refused with
+    400. Same for the choice settings (`MENTISDB_STORAGE_ADAPTER`, `MENTISDB_VECTOR_FUSION`,
+    `MENTISDB_DF_SCOPE`, `MENTISDB_EMBEDDINGS`) and `MENTISDB_COLLAPSE_DUPLICATES`.
   - fix(dashboard): a setting value containing a NUL byte is refused with 400. It reached
     `std::env::set_var`, which panics on NUL, inside the settings handler.
   - fix(dashboard): `MENTISDB_HNSW_EF_SEARCH` was listed as applying without a restart, but

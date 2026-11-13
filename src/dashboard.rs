@@ -4046,26 +4046,41 @@ pub(crate) const DAEMON_SETTINGS: &[SettingSpec] = &[
         ..SettingSpec::new("MENTISDB_DEFAULT_CHAIN_KEY", "default", Text, false,
             "Default chain key when none is specified. The older name MENTISDB_DEFAULT_KEY is still read when this is unset.")
     },
-    SettingSpec::new("MENTISDB_STORAGE_ADAPTER", "binary", Text, false,
-        "Storage adapter: binary or jsonl."),
+    SettingSpec {
+        validate: Some(validate_storage_adapter),
+        ..SettingSpec::new("MENTISDB_STORAGE_ADAPTER", "binary", Text, false,
+            "Storage adapter: binary or jsonl.")
+    },
     SettingSpec::new("MENTISDB_AUTO_FLUSH", "true", Boolean, true,
         "Flush immediately on each append (true) or use buffered writes (false)."),
-    SettingSpec::new("MENTISDB_GROUP_COMMIT_MS", "2", Number, false,
-        "Group-commit window in milliseconds for the binary writer. A lone append never waits; 0 disables batching."),
+    SettingSpec {
+        validate: Some(validate_u64),
+        ..SettingSpec::new("MENTISDB_GROUP_COMMIT_MS", "2", Number, false,
+            "Group-commit window in milliseconds for the binary writer. A lone append never waits; 0 disables batching.")
+    },
     SettingSpec::new("MENTISDB_FSYNC", "false", Boolean, false,
         "fsync the chain file after every group commit, for power-loss durability. Off by default because it slows appends several times over."),
-    SettingSpec::new("MENTISDB_MIGRATION_CONCURRENCY", "2", Number, false,
-        "How many chains the background migration manager rewrites at once."),
-    SettingSpec::new("MENTISDB_MIGRATION_BACKUP_RETENTION_DAYS", "14", Number, false,
-        "Days to keep the original of a migrated chain under migrations/backup/. 0 keeps backups forever."),
+    SettingSpec {
+        validate: Some(validate_u64),
+        ..SettingSpec::new("MENTISDB_MIGRATION_CONCURRENCY", "2", Number, false,
+            "How many chains the background migration manager rewrites at once.")
+    },
+    SettingSpec {
+        validate: Some(validate_u64),
+        ..SettingSpec::new("MENTISDB_MIGRATION_BACKUP_RETENTION_DAYS", "14", Number, false,
+            "Days to keep the original of a migrated chain under migrations/backup/. 0 keeps backups forever.")
+    },
     // ── Logging ────────────────────────────────────────────────────────────
     SettingSpec::new("MENTISDB_VERBOSE", "true", Boolean, false,
         "Enable verbose logging."),
     SettingSpec::new("MENTISDB_LOG_FILE", "", Text, false,
         "Path to log file (optional)."),
     // ── Network ────────────────────────────────────────────────────────────
-    SettingSpec::new("MENTISDB_BIND_HOST", "127.0.0.1", Text, false,
-        "Host address to bind servers to."),
+    SettingSpec {
+        validate: Some(validate_bind_host),
+        ..SettingSpec::new("MENTISDB_BIND_HOST", "127.0.0.1", Text, false,
+            "Host address to bind servers to.")
+    },
     SettingSpec {
         validate: Some(validate_port),
         ..SettingSpec::new("MENTISDB_MCP_PORT", "9471", Number, false,
@@ -4132,29 +4147,62 @@ pub(crate) const DAEMON_SETTINGS: &[SettingSpec] = &[
             "Comma-separated CIDR ranges webhooks may target even though they are internal (private, loopback, link-local). Unset blocks them all. Nothing broader than /8 is accepted.")
     },
     // ── Memory quality ─────────────────────────────────────────────────────
-    SettingSpec::new("MENTISDB_DEDUP_THRESHOLD", "", Number, false,
-        "Auto-dedup on append: a new thought whose word overlap (Jaccard) with a recent one reaches this value (0.0 to 1.0) automatically Supersedes it. Unset means off; 0.85 is recommended for long-lived chains."),
-    SettingSpec::new("MENTISDB_DEDUP_SCAN_WINDOW", "64", Number, false,
-        "How many recent thoughts auto-dedup compares a new thought against."),
-    SettingSpec::new("MENTISDB_AUTO_EDGE_THRESHOLD", "0.85", Number, false,
-        "Vector similarity (0.0 to 1.0) at or above which an appended thought is linked to an earlier one by an implicit edge. Applies to chains opened after a restart."),
-    SettingSpec::new("MENTISDB_AUTO_EDGE_K", "5", Number, false,
-        "Most implicit edges added per appended thought."),
+    SettingSpec {
+        validate: Some(validate_unit_interval),
+        ..SettingSpec::new("MENTISDB_DEDUP_THRESHOLD", "", Number, false,
+            "Auto-dedup on append: a new thought whose word overlap (Jaccard) with a recent one reaches this value (0.0 to 1.0) automatically Supersedes it. Unset means off; 0.85 is recommended for long-lived chains.")
+    },
+    SettingSpec {
+        validate: Some(validate_usize),
+        ..SettingSpec::new("MENTISDB_DEDUP_SCAN_WINDOW", "64", Number, false,
+            "How many recent thoughts auto-dedup compares a new thought against.")
+    },
+    SettingSpec {
+        validate: Some(validate_unit_interval),
+        ..SettingSpec::new("MENTISDB_AUTO_EDGE_THRESHOLD", "0.85", Number, false,
+            "Vector similarity (0.0 to 1.0) at or above which an appended thought is linked to an earlier one by an implicit edge. Applies to chains opened after a restart.")
+    },
+    SettingSpec {
+        validate: Some(validate_usize),
+        ..SettingSpec::new("MENTISDB_AUTO_EDGE_K", "5", Number, false,
+            "Most implicit edges added per appended thought.")
+    },
     // ── Search ─────────────────────────────────────────────────────────────
-    SettingSpec::new("MENTISDB_EMBEDDINGS", "", Text, false,
-        "Embeddings for managed vector sidecars: off (lexical and graph only), local-text (built-in, never loads ONNX) or fastembed. Unset means fastembed when compiled in, local-text otherwise."),
-    SettingSpec::new("MENTISDB_VECTOR_FUSION", "relative", Text, true,
-        "How vector similarity is blended with the lexical score: relative (keeps the vector channel for paraphrased questions) or absolute (the older raw-BM25 decay)."),
-    SettingSpec::new("MENTISDB_COLLAPSE_DUPLICATES", "0.9", Text, true,
-        "Collapse exact and near-duplicate search hits at this Jaccard threshold (0 to 1), or off. Requests can override it."),
-    SettingSpec::new("MENTISDB_DF_SCOPE", "global", Text, false,
-        "How the lexical stop-word gate counts a term's document frequency: global (any field) or field (each field's own count). Experimental."),
-    SettingSpec::new("MENTISDB_HNSW_THRESHOLD", "50000", Number, true,
-        "Minimum number of vectors before the HNSW approximate backend is selected."),
-    SettingSpec::new("MENTISDB_HNSW_EF_CONSTRUCTION", "400", Number, true,
-        "Search width during HNSW graph construction (higher = better recall, slower build)."),
-    SettingSpec::new("MENTISDB_HNSW_EF_SEARCH", "128", Number, false,
-        "Search width during HNSW queries (higher = better recall, slower search). Read once, on the first HNSW query after a start."),
+    SettingSpec {
+        validate: Some(validate_embeddings),
+        ..SettingSpec::new("MENTISDB_EMBEDDINGS", "", Text, false,
+            "Embeddings for managed vector sidecars: off (lexical and graph only), local-text (built-in, never loads ONNX) or fastembed. Unset means fastembed when compiled in, local-text otherwise.")
+    },
+    SettingSpec {
+        validate: Some(validate_vector_fusion),
+        ..SettingSpec::new("MENTISDB_VECTOR_FUSION", "relative", Text, true,
+            "How vector similarity is blended with the lexical score: relative (keeps the vector channel for paraphrased questions) or absolute (the older raw-BM25 decay).")
+    },
+    SettingSpec {
+        validate: Some(validate_collapse_duplicates),
+        ..SettingSpec::new("MENTISDB_COLLAPSE_DUPLICATES", "0.9", Text, true,
+            "Collapse exact and near-duplicate search hits at this Jaccard threshold (0 to 1), or off. Requests can override it.")
+    },
+    SettingSpec {
+        validate: Some(validate_df_scope),
+        ..SettingSpec::new("MENTISDB_DF_SCOPE", "global", Text, false,
+            "How the lexical stop-word gate counts a term's document frequency: global (any field) or field (each field's own count). Experimental.")
+    },
+    SettingSpec {
+        validate: Some(validate_positive_usize),
+        ..SettingSpec::new("MENTISDB_HNSW_THRESHOLD", "50000", Number, true,
+            "Minimum number of vectors before the HNSW approximate backend is selected.")
+    },
+    SettingSpec {
+        validate: Some(validate_positive_usize),
+        ..SettingSpec::new("MENTISDB_HNSW_EF_CONSTRUCTION", "400", Number, true,
+            "Search width during HNSW graph construction (higher = better recall, slower build).")
+    },
+    SettingSpec {
+        validate: Some(validate_positive_usize),
+        ..SettingSpec::new("MENTISDB_HNSW_EF_SEARCH", "128", Number, false,
+            "Search width during HNSW queries (higher = better recall, slower search). Read once, on the first HNSW query after a start.")
+    },
     SettingSpec::new("MENTISDB_HNSW_BACKGROUND_BUILD", "true", Boolean, true,
         "Build large HNSW graphs in a background thread so the daemon stays responsive."),
     // ── Updates and sounds ─────────────────────────────────────────────────
@@ -4273,6 +4321,103 @@ fn validate_pin(_name: &str, value: &str) -> Result<(), String> {
 /// A body limit, checked by the parser the daemon runs at startup.
 fn validate_body_limit(name: &str, value: &str) -> Result<(), String> {
     mentisdb::server::validate_body_limit_value(name, value)
+}
+
+/// A whole number that fits `T`, the way the daemon's `str::parse::<T>()`
+/// reads it: no sign on an unsigned type, no fraction, no exponent, no blanks.
+fn parse_whole<T: std::str::FromStr>(value: &str) -> Result<T, String> {
+    value
+        .parse::<T>()
+        .map_err(|_| format!("{value:?} is not a whole number (no fraction, sign or exponent)"))
+}
+
+/// A whole number of at least 0 that startup reads as `usize` (the auto-dedup
+/// scan window, the auto-edge fan-out). Anything else falls back to the
+/// default there, silently.
+fn validate_usize(_name: &str, value: &str) -> Result<(), String> {
+    parse_whole::<usize>(value).map(|_| ())
+}
+
+/// A whole number of at least 0 that startup reads as `u64` (the group-commit
+/// window, the migration concurrency and retention).
+fn validate_u64(_name: &str, value: &str) -> Result<(), String> {
+    parse_whole::<u64>(value).map(|_| ())
+}
+
+/// A whole number of at least 1: the HNSW tuning variables are read as
+/// `usize` and a `0` is discarded for the default.
+fn validate_positive_usize(_name: &str, value: &str) -> Result<(), String> {
+    match parse_whole::<usize>(value)? {
+        0 => Err("must be at least 1 (0 is ignored and the default used)".to_string()),
+        _ => Ok(()),
+    }
+}
+
+/// A similarity threshold: a finite number from 0.0 to 1.0 inclusive. Startup
+/// reads it as `f32`; the auto-dedup reader discards a value outside the
+/// range and the implicit-edge reader would accept one that never (or
+/// always) matches, which the Settings screen documents as 0.0 to 1.0.
+fn validate_unit_interval(_name: &str, value: &str) -> Result<(), String> {
+    match value.parse::<f32>() {
+        Ok(t) if (0.0..=1.0).contains(&t) => Ok(()),
+        _ => Err(format!("{value:?} is not a number from 0.0 to 1.0")),
+    }
+}
+
+/// An IP address, as `MENTISDB_BIND_HOST` is parsed when the listeners are
+/// built. A DNS name or `host:port` does not parse there and the daemon binds
+/// loopback instead, so it is refused here.
+fn validate_bind_host(_name: &str, value: &str) -> Result<(), String> {
+    value.parse::<std::net::IpAddr>().map(|_| ()).map_err(|_| {
+        format!("{value:?} is not an IP address (a DNS name is not accepted; use 0.0.0.0 for every interface)")
+    })
+}
+
+/// `MENTISDB_STORAGE_ADAPTER`: `binary` or `jsonl`.
+fn validate_storage_adapter(_name: &str, value: &str) -> Result<(), String> {
+    value
+        .parse::<mentisdb::StorageAdapterKind>()
+        .map(|_| ())
+        .map_err(|_| format!("{value:?} is not a storage adapter (binary or jsonl)"))
+}
+
+/// `MENTISDB_VECTOR_FUSION`: `relative` or `absolute`.
+fn validate_vector_fusion(_name: &str, value: &str) -> Result<(), String> {
+    value
+        .parse::<mentisdb::VectorFusion>()
+        .map(|_| ())
+        .map_err(|_| format!("{value:?} is not a fusion mode (relative or absolute)"))
+}
+
+/// `MENTISDB_DF_SCOPE`: `global` or `field`.
+fn validate_df_scope(_name: &str, value: &str) -> Result<(), String> {
+    value
+        .parse::<mentisdb::search::lexical::DfScope>()
+        .map(|_| ())
+        .map_err(|_| format!("{value:?} is not a document-frequency scope (global or field)"))
+}
+
+/// `MENTISDB_EMBEDDINGS`: the modes [`mentisdb::EmbeddingsMode`] parses.
+fn validate_embeddings(_name: &str, value: &str) -> Result<(), String> {
+    value
+        .parse::<mentisdb::EmbeddingsMode>()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// `MENTISDB_COLLAPSE_DUPLICATES`: `off` (also `false`, `none`, `0`) or a
+/// threshold above 0.0 and up to 1.0; the reader replaces anything else with
+/// its default.
+fn validate_collapse_duplicates(_name: &str, value: &str) -> Result<(), String> {
+    if matches!(value.trim(), "off" | "false" | "0" | "none") {
+        return Ok(());
+    }
+    match value.trim().parse::<f32>() {
+        Ok(t) if t > 0.0 && t <= 1.0 => Ok(()),
+        _ => Err(format!(
+            "{value:?} is not off or a number above 0 and up to 1"
+        )),
+    }
 }
 
 /// A webhook CIDR allow-list, checked by the parser the daemon runs at startup.
