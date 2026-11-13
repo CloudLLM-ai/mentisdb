@@ -1,4 +1,6 @@
 UNRELEASED
+  - fix(dashboard): saving `MENTISDB_DASHBOARD_PIN` from the Settings screen no longer prints
+    the new PIN in the daemon's terminal config pane. Secret settings now show `<hidden>`.
   - fix(dashboard): `MENTISDB_HNSW_EF_SEARCH` was listed as applying without a restart, but
     the search backend reads it once per process (`OnceLock`), so a saved change did nothing
     until the next start. It is now marked as needing a restart.

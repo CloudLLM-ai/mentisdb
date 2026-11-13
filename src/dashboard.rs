@@ -4224,6 +4224,30 @@ fn validate_setting(name: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// What the TUI config pane may show for `name` when it is set to `value`:
+/// the value itself, except for a secret (see [`SettingSpec::secret`]), which
+/// is replaced by `<hidden>` so a PIN saved from the dashboard never lands on
+/// the operator's terminal, in a screen share or in a scrollback.
+pub(crate) fn tui_display_value<'a>(name: &str, value: &'a str) -> &'a str {
+    if setting_spec(name).is_some_and(|spec| spec.secret) {
+        "<hidden>"
+    } else {
+        value
+    }
+}
+
+/// One line of the TUI config pane, `  NAME=value`, after `name` was saved as
+/// `value`. `previous` is the line being replaced, if any: its trailing
+/// `(default: ...)` hint is kept so the pane stays readable. The value goes
+/// through [`tui_display_value`].
+pub(crate) fn tui_config_line(name: &str, value: &str, previous: Option<&str>) -> String {
+    let shown = tui_display_value(name, value);
+    let hint = previous
+        .and_then(|line| line.find(" (default:").map(|idx| &line[idx..]))
+        .unwrap_or("");
+    format!("  {name}={shown}{hint}")
+}
+
 /// `POST /dashboard/api/settings`
 ///
 /// Accepts changed setting values, updates the environment, hot-reloads
@@ -4336,24 +4360,18 @@ async fn api_update_settings(
             if let Some(ref tui) = state.tui_state {
                 if let Ok(mut tui_guard) = tui.lock() {
                     for name in &updated {
-                        let new_value = body.settings.get(name).cloned().unwrap_or_default();
+                        let value = body.settings.get(name).map_or("", String::as_str);
                         let prefix = format!("  {name}=");
-                        let mut found = false;
-                        for line in &mut tui_guard.config_lines {
-                            if (*line).starts_with(prefix.as_str()) {
-                                // Replace the value portion while keeping default hint
-                                if let Some(idx) = line.find(" (default:") {
-                                    let default_part = &(*line)[idx..];
-                                    *line = format!("  {name}={new_value}{default_part}");
-                                } else {
-                                    *line = format!("  {name}={new_value}");
-                                }
-                                found = true;
-                                break;
+                        let slot = tui_guard
+                            .config_lines
+                            .iter_mut()
+                            .find(|line| line.starts_with(prefix.as_str()));
+                        match slot {
+                            Some(line) => *line = tui_config_line(name, value, Some(line)),
+                            None => {
+                                let line = tui_config_line(name, value, None);
+                                tui_guard.config_lines.push(line);
                             }
-                        }
-                        if !found {
-                            tui_guard.config_lines.push(format!("  {name}={new_value}"));
                         }
                     }
                 }

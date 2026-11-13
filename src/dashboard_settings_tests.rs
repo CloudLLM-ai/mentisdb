@@ -3,7 +3,7 @@
 //! They live outside `dashboard.rs` because a dozen integration-test binaries
 //! compile that file by path; tests inside it would run once per binary.
 
-use crate::dashboard::{setting_spec, CLIENT_ONLY_ENV_VARS, DAEMON_SETTINGS};
+use crate::dashboard::{setting_spec, tui_config_line, CLIENT_ONLY_ENV_VARS, DAEMON_SETTINGS};
 use std::collections::BTreeSet;
 
 /// Every `"MENTISDB_*"` string literal under `src/`, which is how the crate
@@ -162,4 +162,35 @@ fn secret_settings_never_echo_their_value() {
     let row = pin.to_dashboard_setting();
     assert!(row.value.is_empty());
     assert!(DAEMON_SETTINGS.iter().filter(|s| s.secret).count() == 1);
+}
+
+/// The TUI config pane is redrawn after a save. A secret must not be echoed
+/// into it, whatever the line looked like before.
+#[test]
+fn tui_config_line_never_shows_a_secret() {
+    for secret in DAEMON_SETTINGS.iter().filter(|s| s.secret) {
+        let before = format!("  {}=<unset> (default: not set)", secret.name);
+        let line = tui_config_line(secret.name, "hunter2-pin", Some(&before));
+        assert!(!line.contains("hunter2-pin"), "{line}");
+        assert_eq!(
+            line,
+            format!("  {}=<hidden> (default: not set)", secret.name)
+        );
+        assert!(!tui_config_line(secret.name, "hunter2-pin", None).contains("hunter2-pin"));
+    }
+}
+
+/// Non-secret values are shown, and the `(default: ...)` hint survives the
+/// redraw.
+#[test]
+fn tui_config_line_keeps_value_and_default_hint() {
+    let before = "  MENTISDB_UPDATE_REPO=a/b (default: CloudLLM-ai/mentisdb)";
+    assert_eq!(
+        tui_config_line("MENTISDB_UPDATE_REPO", "x/y", Some(before)),
+        "  MENTISDB_UPDATE_REPO=x/y (default: CloudLLM-ai/mentisdb)"
+    );
+    assert_eq!(
+        tui_config_line("MENTISDB_UPDATE_REPO", "x/y", None),
+        "  MENTISDB_UPDATE_REPO=x/y"
+    );
 }
