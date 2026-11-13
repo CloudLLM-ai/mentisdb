@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.12.3.60 — Hotfix: settings that survive a restart</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article .meta { color: #888; font-size: 0.85rem; margin-bottom: 1rem; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    article table { border-collapse: collapse; margin-bottom: 1rem; font-size: 0.9rem; width: 100%; }
+    article th, article td { border-bottom: 1px solid #e0e0e0; padding: 0.35rem 0.5rem; text-align: left; }
+    a { color: #4361ee; }
+    .callout { background: #eef2ff; border-left: 3px solid #4361ee; border-radius: 0 4px 4px 0; padding: 1rem; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="index.html">MentisDB Blog</a></h1>
+    <p>Durable memory for AI agents</p>
+  </header>
+
+  <article>
+    <h2>MentisDB 0.12.3.60 &mdash; Hotfix: settings that survive a restart</h2>
+    <div class="meta">November 13, 2026</div>
+
+    <p>
+      Our release process calls for two independent code reviews, one adversarial and one
+      on correctness. For 0.12.2.59 they ran after it shipped, and both found a serious
+      problem. This hotfix fixes them, and the fixes went through a second review of their
+      own. Upgrade recommended, especially if you
+      change settings from the dashboard.
+    </p>
+    <div class="callout">
+      <strong>Security notice.</strong> Saving a setting from the dashboard could leave a
+      settings file the daemon only half-loads at its next start, so it could restart
+      without its dashboard PIN or with bearer-token enforcement off, and say nothing. If you
+      saved settings from the dashboard on 0.12.2.59 or earlier, check that
+      <code>MENTISDB_DASHBOARD_PIN</code> and <code>MENTISDB_BEARER_TOKEN_ACCESS</code> in
+      <code>&lt;MENTISDB_DIR&gt;/.env</code> are what you expect.
+    </div>
+
+    <h3>1. A saved setting could switch off your PIN</h3>
+    <p>
+      The Settings screen wrote each value into <code>.env</code> as raw text, and the
+      daemon ignored errors when it loaded that file at startup. The <code>.env</code>
+      parser gives up at the first line it cannot read and drops everything after it. A value
+      with a space was enough, such as a list of network ranges or a folder name with a space
+      in it. If your PIN or the bearer-token switch sat below that line, the next restart
+      came up without it. A PIN containing <code>$</code> loaded as a different PIN, and a
+      PIN of only spaces saved fine and loaded as none.
+    </p>
+    <p>
+      Now values are written so they read back exactly, and we checked that against the real
+      parser with 300,000 deliberately awkward values. Every save is read back before it
+      replaces the file, and is refused if any setting would come out different. The file is
+      replaced in one step instead of being rewritten in place. And the daemon no longer
+      starts quietly with settings missing: if a <code>.env</code> it loads would drop one of
+      its settings, it refuses to start and names the file and line. It never prints the
+      line, which may hold your PIN.
+    </p>
+
+    <h3>2. Settings the daemon would misread are refused</h3>
+    <p>
+      The screen accepted any text for any setting. Some bad values stopped the next start,
+      which also took down the dashboard you would use to fix them. Others, like
+      <code>1.5</code> for a setting the daemon reads as a whole number, were saved and then
+      quietly replaced by the default. Each value is now checked with the same rules the
+      daemon applies at startup, and a bad one is refused with a message saying why.
+    </p>
+
+    <h3>3. <code>source_episode</code> filters, for real</h3>
+    <p>
+      0.12.2.59 made <code>source_episode</code> searchable, but combined with a tag, type,
+      role or agent filter it was silently ignored, so a search for one episode's
+      <code>deploy</code> thoughts returned every episode's. That now works across every
+      search route, traversal and the CLI, and <code>entity_type</code> had the same gap.
+      Episode names are also trimmed, so <code>"standup "</code> finds
+      <code>"standup"</code>.
+    </p>
+
+    <h3>Benchmarks</h3>
+    <p>
+      Retrieval is unchanged: on the same data, this release and 0.12.2.59 return the same
+      results with identical scores for every LongMemEval question, and append speed is the
+      same.
+    </p>
+
+    <h3>Upgrading</h3>
+    <p>
+      No migration and no library break. Restart the daemon after upgrading. If it refuses
+      to start, the file and line it names were already dropping your settings: fix that line
+      by hand and start again. The
+      <a href="mentisdb-0.12.3.60-release-notes.md">release notes</a> list every change.
+    </p>
+    <pre><code>cargo install mentisdb --locked --force
+# or
+docker pull ghcr.io/cloudllm-ai/mentisdb:0.12.3.60</code></pre>
+  </article>
+</body>
+</html>
