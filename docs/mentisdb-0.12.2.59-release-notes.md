@@ -64,4 +64,20 @@ There is no data migration, and the library API only gained items.
   not take the `source_episode` filter yet.
 - Relations' `valid_at` / `invalid_at` on append are accepted but not yet applied.
 
+## Benchmarks
+
+Full LoCoMo-10P and LongMemEval protocol runs on a fresh daemon and fresh chains, built from the tag. Ranking is
+unchanged: 0.12.1.58, run against the same ingested chains, returned the same top-5 lists for all 500
+LongMemEval questions and the same LoCoMo results. LongMemEval sits one to three questions under the stored
+0.12.1.58 numbers because the harness ingests concurrently; two fresh ingests on 0.12.2.59 alone differ by
+one question. Details: [`results/benchmarks/2026-11-13-0.12.2.59`](https://github.com/CloudLLM-ai/mentisdb/tree/master/results/benchmarks/2026-11-13-0.12.2.59).
+
+| Benchmark | Metric | 0.12.1.58 | 0.12.2.59 |
+|---|---|---|---|
+| LoCoMo-10P | default R@10 | 76.7 | 76.7 |
+| LoCoMo-10P | rerank R@10 | 76.9 | 76.9 |
+| LoCoMo-10P | default R@5 | 67.9 | 67.9 |
+| LongMemEval | default R@5 | 70.0 | 69.6-69.8 |
+| LongMemEval | rerank R@5 | 70.6 | 70.0-70.2 |
+
 Full changelog: [`changelog.txt`](https://github.com/CloudLLM-ai/mentisdb/blob/0.12.2.59/changelog.txt)
