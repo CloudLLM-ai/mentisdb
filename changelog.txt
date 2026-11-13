@@ -11,10 +11,15 @@ UNRELEASED
     cannot be read instead of rewriting it from nothing, follows a symlinked `.env`,
     updates `export NAME=` and `NAME =` lines in place (a rotated PIN used to be appended
     after an `export` line and silently ignored) and deletes duplicates of the same name.
-  - fix(security): the daemon refuses to start (exit 2) when `./.env` or `<MENTISDB_DIR>/.env`
-    cannot be read or has a line the parser rejects, naming the file and line (never the
-    line's text, which may be the PIN). It used to ignore the error and run with the keys
-    after the bad line unset. CLI subcommands and `--help` print a warning and continue.
+  - fix(security): the daemon refuses to start (exit 2) when a `.env` it loads has a line the
+    parser rejects with a `MENTISDB_` setting on or after it, naming the file and line (never
+    the line's text, which may be the PIN). The parser stops at the bad line, so such a file
+    used to run with those settings unset (no PIN, open access). The rule is the same for
+    `./.env` (or the nearest parent's, as `dotenv` finds it) and `<MENTISDB_DIR>/.env`; a
+    bad line with nothing of ours behind it, as in another tool's `.env` in a parent
+    directory, only warns and what parsed is kept. An unreadable `<MENTISDB_DIR>/.env` or
+    working-directory `.env` is fatal too; an unreadable parent-directory file only warns.
+    CLI subcommands and `--help` print a warning and continue.
     Library: `mentisdb::paths::try_load_dotenv_files` returns that error;
     `load_dotenv_files` keeps its 0.12.2 signature and now warns on stderr about a bad file.
   - fix(security): the startup TUI config pane printed `MENTISDB_DASHBOARD_PIN` in clear;

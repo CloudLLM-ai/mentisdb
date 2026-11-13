@@ -693,18 +693,40 @@ fn first_unparsable_line(text: &str) -> Option<usize> {
     None
 }
 
+/// Whether a `MENTISDB_` assignment (`MENTISDB_X=...` or `export MENTISDB_X=...`)
+/// stands on or after `bad_line` (1-based) in `text`: a setting the loader
+/// dropped when it stopped at that line. With `None`, where the bad line could
+/// not be found, the whole text is searched.
+fn drops_mentisdb_setting(text: &str, bad_line: Option<usize>) -> bool {
+    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
+    body.split('\n')
+        .skip(bad_line.map_or(0, |n| n.saturating_sub(1)))
+        .filter_map(|line| assigned_name(line.strip_suffix('\r').unwrap_or(line)))
+        .any(|(name, _)| name.starts_with("MENTISDB_"))
+}
+
 /// Load one `.env` file into the process environment, never overriding a
 /// variable that is already set.
 ///
 /// Returns `Ok(false)` when the file does not exist and `Ok(true)` when it
 /// was loaded.
 ///
+/// The `.env` parser stops at the first bad line, so the settings after it
+/// are not applied. That is dangerous only for the daemon's own settings, a
+/// PIN or the bearer-token switch among them, so a bad line is an error only
+/// when a `MENTISDB_` assignment stands on or after it. A file that is merely
+/// someone else's (a stray `.env` in a parent directory, with a line the
+/// parser rejects and nothing of ours behind it) loads as far as it parses,
+/// with a warning on stderr that names the file and line, and this returns
+/// `Ok(true)`.
+///
 /// # Errors
 ///
 /// [`EnvFileError::Read`] when it exists but cannot be read, and
-/// [`EnvFileError::Parse`] when a line is not valid `.env` syntax. The parser
-/// stops at the first bad line, so the settings after it were not applied;
-/// the caller should treat this as fatal rather than run with them missing.
+/// [`EnvFileError::Parse`] when a line is not valid `.env` syntax and a
+/// `MENTISDB_` setting is on or after it (or the line cannot be found); the
+/// caller should treat this as fatal rather than run with the settings
+/// missing. Messages never echo a line.
 pub fn load_dotenv_file(path: &Path) -> Result<bool, EnvFileError> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -722,10 +744,19 @@ pub fn load_dotenv_file(path: &Path) -> Result<bool, EnvFileError> {
             path: path.to_path_buf(),
             source,
         }),
-        Err(_) => Err(EnvFileError::Parse {
-            path: path.to_path_buf(),
-            line: first_unparsable_line(&String::from_utf8_lossy(&bytes)),
-        }),
+        Err(_) => {
+            let text = String::from_utf8_lossy(&bytes);
+            let line = first_unparsable_line(&text);
+            let error = EnvFileError::Parse {
+                path: path.to_path_buf(),
+                line,
+            };
+            if drops_mentisdb_setting(&text, line) {
+                return Err(error);
+            }
+            eprintln!("warning: {error}; no MENTISDB_ setting is affected, continuing");
+            Ok(true)
+        }
     }
 }
 
@@ -748,17 +779,30 @@ fn find_working_dir_dotenv() -> Option<PathBuf> {
 ///
 /// # Errors
 ///
-/// Fails on a file that exists but cannot be read or is not valid `.env`
-/// syntax (see [`load_dotenv_file`]). The daemon must not carry on: a file cut
-/// short at its first bad line can silently drop `MENTISDB_DASHBOARD_PIN` or
-/// `MENTISDB_BEARER_TOKEN_ACCESS`, and the daemon would start open.
+/// The rule is the same for every file: the daemon must not carry on if a
+/// `MENTISDB_` setting could have been dropped, since a lost
+/// `MENTISDB_DASHBOARD_PIN` or `MENTISDB_BEARER_TOKEN_ACCESS` would start it
+/// open. So a bad line (see [`load_dotenv_file`]) fails only when a
+/// `MENTISDB_` assignment stands on or after it; otherwise the file loads as
+/// far as it parses, with a warning. A file that exists but cannot be read
+/// fails when it is `<MENTISDB_DIR>/.env` or the `.env` in the working
+/// directory itself (both are ours to read), and only warns when it is one
+/// found in a parent directory, which may belong to another user or tool.
 pub fn try_load_dotenv_files() -> Result<Vec<PathBuf>, EnvFileError> {
     let mut loaded = Vec::new();
     if let Some(path) = find_working_dir_dotenv() {
-        if load_dotenv_file(&path)? {
-            loaded.push(path);
+        let own = path == mentisdb_dir_env_file()
+            || path.parent() == std::env::current_dir().ok().as_deref();
+        match load_dotenv_file(&path) {
+            Ok(true) => loaded.push(path),
+            Ok(false) => {}
+            Err(error @ EnvFileError::Read { .. }) if !own => {
+                eprintln!("warning: {error}; skipping it, it is not in the working directory");
+            }
+            Err(error) => return Err(error),
         }
     }
+    // Read after the working-directory file, which may have set MENTISDB_DIR.
     let dir_env = mentisdb_dir_env_file();
     if !loaded.contains(&dir_env) && load_dotenv_file(&dir_env)? {
         loaded.push(dir_env);
