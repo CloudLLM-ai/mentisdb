@@ -1983,8 +1983,13 @@ async fn dashboard_settings_screen_lists_and_applies_every_daemon_setting() {
     let (status, reply) = post("MENTISDB_VERBOSE", "true").await;
     assert_eq!(status, StatusCode::OK, "{reply}");
     assert_eq!(reply["restart_required"], true);
-    // Read on every use, so no restart.
+    // Cached in a OnceLock on first use (src/search/hnsw_backend.rs), so a
+    // saved value only takes effect after a restart.
     let (status, reply) = post("MENTISDB_HNSW_EF_SEARCH", "128").await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["restart_required"], true);
+    // Read on every use, so no restart.
+    let (status, reply) = post("MENTISDB_HNSW_EF_CONSTRUCTION", "400").await;
     assert_eq!(status, StatusCode::OK, "{reply}");
     assert_eq!(reply["restart_required"], false);
     // A client-side variable is refused.
