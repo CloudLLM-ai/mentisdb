@@ -1,4 +1,12 @@
 UNRELEASED
+  - fix(dashboard): the Settings screen now checks every value on the server before saving,
+    by kind (number, boolean) and by the same parsers the daemon uses at startup (body
+    limits, ports, `MENTISDB_WEBHOOK_ALLOWED_CIDRS`). A bad value used to be saved and made
+    the next start fail, with the dashboard unreachable to repair it. The whole request is
+    validated before anything is applied; a rejected save returns 400 with a message per
+    setting. A cleared field or Reset (an empty value) now unsets the variable and deletes
+    its `.env` line instead of writing `NAME=`; the daemon also treats a blank body-limit
+    variable as unset, so a `.env` written by an older release starts.
   - fix(security): saving a setting from the dashboard could leave a `.env` that the daemon
     half-loads, so it restarted without its PIN or with open access and said nothing.
     Values were written raw, and the `.env` parser stops at the first bad line: `B=x y`, a

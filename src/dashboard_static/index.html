@@ -1309,6 +1309,8 @@
     if (!r.ok) {
       let txt = '';
       try { txt = await r.text(); } catch (_) {}
+      // The API reports problems as {"error", "message"}: show the sentence.
+      try { const j = JSON.parse(txt); txt = j.message || j.error || txt; } catch (_) {}
       throw new Error(`HTTP ${r.status}: ${txt || r.statusText}`);
     }
     return r.json();

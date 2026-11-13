@@ -3,7 +3,9 @@
 //! They live outside `dashboard.rs` because a dozen integration-test binaries
 //! compile that file by path; tests inside it would run once per binary.
 
-use crate::dashboard::{setting_spec, tui_config_line, CLIENT_ONLY_ENV_VARS, DAEMON_SETTINGS};
+use crate::dashboard::{
+    setting_spec, tui_config_line, validate_setting, CLIENT_ONLY_ENV_VARS, DAEMON_SETTINGS,
+};
 use std::collections::BTreeSet;
 
 /// Every `"MENTISDB_*"` string literal under `src/`, which is how the crate
@@ -193,4 +195,46 @@ fn tui_config_line_keeps_value_and_default_hint() {
         tui_config_line("MENTISDB_UPDATE_REPO", "x/y", None),
         "  MENTISDB_UPDATE_REPO=x/y"
     );
+}
+
+/// Every setting accepts "unset" and its own documented default, rejects
+/// text where it wants a number or a boolean, and is accepted only by its own
+/// kind: a catalog entry whose default fails its own check would make the
+/// Reset button unusable.
+#[test]
+fn every_setting_accepts_blank_and_its_default_and_rejects_the_wrong_kind() {
+    use crate::dashboard::SettingKind;
+    for spec in DAEMON_SETTINGS {
+        assert!(
+            validate_setting(spec.name, "").is_ok(),
+            "{} blank",
+            spec.name
+        );
+        let default = spec.default_value;
+        // Defaults that are a path, a derived value or prose are not typed values.
+        if !default.is_empty() && spec.kind != SettingKind::Text {
+            assert!(
+                validate_setting(spec.name, default).is_ok(),
+                "{} default {default:?}",
+                spec.name
+            );
+        }
+        match spec.kind {
+            SettingKind::Number => {
+                assert!(validate_setting(spec.name, "abc").is_err(), "{}", spec.name)
+            }
+            SettingKind::Boolean => assert!(
+                validate_setting(spec.name, "maybe").is_err(),
+                "{}",
+                spec.name
+            ),
+            // Free text is accepted unless the setting has its own check.
+            SettingKind::Text => assert_eq!(
+                validate_setting(spec.name, "abc").is_ok(),
+                spec.validate.is_none(),
+                "{}",
+                spec.name
+            ),
+        }
+    }
 }

@@ -3920,6 +3920,9 @@ pub(crate) struct DashboardSetting {
     set: bool,
 }
 
+/// A per-setting value check: `fn(name, value)`, `Err` carrying the reason.
+pub(crate) type ValueCheck = fn(&str, &str) -> Result<(), String>;
+
 /// How a value of a [`SettingSpec`] is edited on the Settings screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SettingKind {
@@ -3972,6 +3975,12 @@ pub(crate) struct SettingSpec {
     /// The value is a secret: it is never sent to the browser, only whether
     /// one is set.
     pub(crate) secret: bool,
+    /// Extra check, `fn(name, value)`, run on a non-empty proposed value after the kind check,
+    /// for settings whose startup code refuses or misreads some values (a
+    /// port, a body limit, a CIDR list). It reuses the startup parser, so the
+    /// screen cannot save what the next start would reject. `Err` carries the
+    /// reason, shown to the operator.
+    pub(crate) validate: Option<ValueCheck>,
 }
 
 impl SettingSpec {
@@ -3991,6 +4000,7 @@ impl SettingSpec {
             kind,
             hot_reload,
             secret: false,
+            validate: None,
         }
     }
 
@@ -4056,29 +4066,56 @@ pub(crate) const DAEMON_SETTINGS: &[SettingSpec] = &[
     // ── Network ────────────────────────────────────────────────────────────
     SettingSpec::new("MENTISDB_BIND_HOST", "127.0.0.1", Text, false,
         "Host address to bind servers to."),
-    SettingSpec::new("MENTISDB_MCP_PORT", "9471", Number, false,
-        "Port for the MCP server."),
-    SettingSpec::new("MENTISDB_REST_PORT", "9472", Number, false,
-        "Port for the REST server."),
-    SettingSpec::new("MENTISDB_HTTPS_MCP_PORT", "9473", Number, false,
-        "Port for the HTTPS MCP server (0 to disable)."),
-    SettingSpec::new("MENTISDB_HTTPS_REST_PORT", "9474", Number, false,
-        "Port for the HTTPS REST server (0 to disable)."),
+    SettingSpec {
+        validate: Some(validate_port),
+        ..SettingSpec::new("MENTISDB_MCP_PORT", "9471", Number, false,
+            "Port for the MCP server.")
+    },
+    SettingSpec {
+        validate: Some(validate_port),
+        ..SettingSpec::new("MENTISDB_REST_PORT", "9472", Number, false,
+            "Port for the REST server.")
+    },
+    SettingSpec {
+        validate: Some(validate_port),
+        ..SettingSpec::new("MENTISDB_HTTPS_MCP_PORT", "9473", Number, false,
+            "Port for the HTTPS MCP server (0 to disable).")
+    },
+    SettingSpec {
+        validate: Some(validate_port),
+        ..SettingSpec::new("MENTISDB_HTTPS_REST_PORT", "9474", Number, false,
+            "Port for the HTTPS REST server (0 to disable).")
+    },
     SettingSpec::new("MENTISDB_TLS_CERT", "~/.cloudllm/mentisdb/tls/cert.pem", Text, false,
         "Path to TLS certificate."),
     SettingSpec::new("MENTISDB_TLS_KEY", "~/.cloudllm/mentisdb/tls/key.pem", Text, false,
         "Path to TLS private key."),
-    SettingSpec::new("MENTISDB_MAX_BODY_BYTES", "67108864", Number, false,
-        "Largest request body accepted, in bytes (64 MiB). Allowed range 1 MiB to 1 GiB."),
-    SettingSpec::new("MENTISDB_MAX_INFLIGHT_BODY_BYTES", "", Number, false,
-        "Body bytes all large (import) requests in flight may hold together. Unset means four times MENTISDB_MAX_BODY_BYTES; over it a request gets 503 with Retry-After."),
-    SettingSpec::new("MENTISDB_BODY_IDLE_TIMEOUT_SECS", "30", Number, false,
-        "Seconds a request body may stall without sending a byte before the request is dropped (1 to 3600)."),
-    SettingSpec::new("MENTISDB_MIN_BODY_BYTES_PER_SEC", "65536", Number, false,
-        "Slowest average upload rate allowed for a request body, in bytes per second; 0 switches the rule off."),
+    SettingSpec {
+        validate: Some(validate_body_limit),
+        ..SettingSpec::new("MENTISDB_MAX_BODY_BYTES", "67108864", Number, false,
+            "Largest request body accepted, in bytes (64 MiB). Allowed range 1 MiB to 1 GiB.")
+    },
+    SettingSpec {
+        validate: Some(validate_body_limit),
+        ..SettingSpec::new("MENTISDB_MAX_INFLIGHT_BODY_BYTES", "", Number, false,
+            "Body bytes all large (import) requests in flight may hold together. Unset means four times MENTISDB_MAX_BODY_BYTES; over it a request gets 503 with Retry-After.")
+    },
+    SettingSpec {
+        validate: Some(validate_body_limit),
+        ..SettingSpec::new("MENTISDB_BODY_IDLE_TIMEOUT_SECS", "30", Number, false,
+            "Seconds a request body may stall without sending a byte before the request is dropped (1 to 3600).")
+    },
+    SettingSpec {
+        validate: Some(validate_body_limit),
+        ..SettingSpec::new("MENTISDB_MIN_BODY_BYTES_PER_SEC", "65536", Number, false,
+            "Slowest average upload rate allowed for a request body, in bytes per second; 0 switches the rule off.")
+    },
     // ── Dashboard and access ───────────────────────────────────────────────
-    SettingSpec::new("MENTISDB_DASHBOARD_PORT", "9475", Number, false,
-        "Port for the web dashboard (0 to disable)."),
+    SettingSpec {
+        validate: Some(validate_port),
+        ..SettingSpec::new("MENTISDB_DASHBOARD_PORT", "9475", Number, false,
+            "Port for the web dashboard (0 to disable).")
+    },
     SettingSpec {
         secret: true,
         ..SettingSpec::new("MENTISDB_DASHBOARD_PIN", "", Text, false,
@@ -4088,8 +4125,11 @@ pub(crate) const DAEMON_SETTINGS: &[SettingSpec] = &[
         "Extra comma-separated hostnames or IPs accepted in the Host header (e.g. a reverse proxy or public DNS name). localhost and the bind address are always accepted."),
     SettingSpec::new(MENTISDB_BEARER_TOKEN_ACCESS_ENV, "false", Boolean, true,
         "Require bearer tokens for MCP HTTP and HTTPS access."),
-    SettingSpec::new("MENTISDB_WEBHOOK_ALLOWED_CIDRS", "", Text, false,
-        "Comma-separated CIDR ranges webhooks may target even though they are internal (private, loopback, link-local). Unset blocks them all. Nothing broader than /8 is accepted."),
+    SettingSpec {
+        validate: Some(validate_webhook_cidrs),
+        ..SettingSpec::new("MENTISDB_WEBHOOK_ALLOWED_CIDRS", "", Text, false,
+            "Comma-separated CIDR ranges webhooks may target even though they are internal (private, loopback, link-local). Unset blocks them all. Nothing broader than /8 is accepted.")
+    },
     // ── Memory quality ─────────────────────────────────────────────────────
     SettingSpec::new("MENTISDB_DEDUP_THRESHOLD", "", Number, false,
         "Auto-dedup on append: a new thought whose word overlap (Jaccard) with a recent one reaches this value (0.0 to 1.0) automatically Supersedes it. Unset means off; 0.85 is recommended for long-lived chains."),
@@ -4200,27 +4240,80 @@ struct RestartDaemonResponse {
     message: String,
 }
 
-/// Validate that a setting name is in [`DAEMON_SETTINGS`] and the value holds
-/// no newline (which would allow `.env` injection) and no NUL byte (which
-/// panics `std::env::set_var`).
-fn validate_setting(name: &str, value: &str) -> Result<(), String> {
-    if setting_spec(name).is_none() {
+/// A TCP port as the daemon parses it (`u16`; `0` switches the HTTPS and
+/// dashboard listeners off).
+fn validate_port(_name: &str, value: &str) -> Result<(), String> {
+    value
+        .parse::<u16>()
+        .map(|_| ())
+        .map_err(|_| format!("{value:?} is not a port number (0 to 65535)"))
+}
+
+/// A body limit, checked by the parser the daemon runs at startup.
+fn validate_body_limit(name: &str, value: &str) -> Result<(), String> {
+    mentisdb::server::validate_body_limit_value(name, value)
+}
+
+/// A webhook CIDR allow-list, checked by the parser the daemon runs at startup.
+fn validate_webhook_cidrs(_name: &str, value: &str) -> Result<(), String> {
+    mentisdb::webhooks::WebhookUrlPolicy::from_allowed_cidrs(value)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// Check `value` against the setting's kind: a number must parse as a finite
+/// number, a boolean must be one of the spellings the daemon reads.
+fn validate_kind(kind: SettingKind, value: &str) -> Result<(), String> {
+    match kind {
+        SettingKind::Text => Ok(()),
+        SettingKind::Number => value
+            .parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite())
+            .map(|_| ())
+            .ok_or_else(|| format!("{value:?} is not a number")),
+        SettingKind::Boolean => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "true" | "false" | "1" | "0" | "yes" | "no" | "on" | "off"
+        )
+        .then_some(())
+        .ok_or_else(|| format!("{value:?} is not true or false")),
+    }
+}
+
+/// Validate one proposed setting without changing anything: the name is in
+/// [`DAEMON_SETTINGS`], the value holds no newline (which would allow `.env`
+/// injection) and no NUL byte (which panics `std::env::set_var`), and a
+/// non-empty value fits the setting's kind and its own check. An empty value
+/// is always acceptable: it means "unset".
+///
+/// # Errors
+///
+/// A message naming the setting and what is wrong.
+pub(crate) fn validate_setting(name: &str, value: &str) -> Result<(), String> {
+    let Some(spec) = setting_spec(name) else {
         return Err(format!(
             "Unknown setting '{name}'. Allowed settings are limited to MENTISDB_* variables."
         ));
-    }
+    };
     if value.contains('\n') || value.contains('\r') {
         return Err(format!(
             "Setting value for '{name}' contains a newline, which is not allowed."
         ));
     }
-    // `std::env::set_var` panics on NUL, and no environment variable can hold one.
     if value.contains('\0') {
         return Err(format!(
             "Setting value for '{name}' contains a NUL byte, which is not allowed."
         ));
     }
-    Ok(())
+    if value.is_empty() {
+        return Ok(());
+    }
+    let checks = validate_kind(spec.kind, value).and_then(|()| match spec.validate {
+        Some(check) => check(name, value),
+        None => Ok(()),
+    });
+    checks.map_err(|reason| format!("Invalid value for '{name}': {reason}."))
 }
 
 /// Map a failed `.env` update to an HTTP error: a name or value the file
@@ -4246,6 +4339,8 @@ fn env_file_error(error: mentisdb::paths::EnvFileError) -> (StatusCode, Json<Val
 pub(crate) fn tui_display_value<'a>(name: &str, value: &'a str) -> &'a str {
     if setting_spec(name).is_some_and(|spec| spec.secret) {
         "<hidden>"
+    } else if value.is_empty() {
+        "<unset>"
     } else {
         value
     }
@@ -4276,32 +4371,52 @@ async fn api_update_settings(
 ) -> Result<Json<SettingsUpdateResponse>, (StatusCode, Json<Value>)> {
     require_pin_for_admin(&state)?;
 
-    // Validate every entry before touching the file or the process.
-    for (name, value) in &body.settings {
-        if let Err(msg) = validate_setting(name, value) {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "Invalid setting", "message": msg })),
-            ));
-        }
+    // Validate every entry before touching the file or the process, and report
+    // all problems at once, in name order.
+    let problems: Vec<String> = body
+        .settings
+        .iter()
+        .collect::<BTreeMap<_, _>>()
+        .into_iter()
+        .filter_map(|(name, value)| validate_setting(name, value).err())
+        .collect();
+    if !problems.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Invalid setting", "message": problems.join(" ") })),
+        ));
     }
 
     // The PIN is never returned by GET /settings, so a blank value means
-    // "unchanged" and must not wipe the configured PIN.
-    let changed: Vec<(&String, &String)> = body
+    // "unchanged" and must not wipe the configured PIN. For every other
+    // setting a blank value means "unset": the variable and its `.env` line
+    // go. A blank is always sent to the file, even when the variable is
+    // already unset, so a stray `NAME=` line an older release wrote is
+    // cleaned up too.
+    let requested: Vec<(&String, &String)> = body
         .settings
         .iter()
         .filter(|(name, value)| !(*name == "MENTISDB_DASHBOARD_PIN" && value.is_empty()))
+        .collect();
+    let changed: Vec<(&String, &String)> = requested
+        .iter()
+        .copied()
         .filter(|(name, value)| std::env::var(name).unwrap_or_default() != **value)
         .collect();
 
     // Persist first: when the file cannot be updated the request fails and
     // the running daemon still matches what is on disk.
-    if !changed.is_empty() {
-        let edits: Vec<(&str, Option<&str>)> = changed
-            .iter()
-            .map(|(name, value)| (name.as_str(), Some(value.as_str())))
-            .collect();
+    let edits: Vec<(&str, Option<&str>)> = requested
+        .iter()
+        .filter(|(name, value)| value.is_empty() || changed.iter().any(|(n, _)| n == name))
+        .map(|(name, value)| {
+            (
+                name.as_str(),
+                Some(value.as_str()).filter(|v| !v.is_empty()),
+            )
+        })
+        .collect();
+    if !edits.is_empty() {
         mentisdb::paths::update_env_file(&state.mentisdb_dir.join(".env"), &edits)
             .map_err(env_file_error)?;
     }
@@ -4309,14 +4424,26 @@ async fn api_update_settings(
     let mut restart_required = false;
     let mut updated = Vec::new();
     for (name, value) in changed {
-        std::env::set_var(name, value);
+        if value.is_empty() {
+            std::env::remove_var(name);
+        } else {
+            std::env::set_var(name, value);
+        }
         updated.push(name.clone());
+
+        // What the daemon now uses: the value, or the default once unset.
+        let spec = setting_spec(name);
+        let effective = if value.is_empty() {
+            spec.map_or("", |spec| spec.default_value)
+        } else {
+            value.as_str()
+        };
 
         // Hot-reload applicable fields in DashboardState
         match name.as_str() {
             "MENTISDB_AUTO_FLUSH" => {
                 let new_bool = matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
+                    effective.trim().to_ascii_lowercase().as_str(),
                     "1" | "true" | "yes" | "on"
                 );
                 state.auto_flush.store(new_bool, Ordering::Relaxed);
@@ -4324,11 +4451,11 @@ async fn api_update_settings(
             MENTISDB_BEARER_TOKEN_ACCESS_ENV => {
                 state
                     .bearer_token_access
-                    .store(parse_bearer_token_access(value), Ordering::Relaxed);
+                    .store(parse_bearer_token_access(effective), Ordering::Relaxed);
             }
             // Every other hot-reload setting is read from the environment on
-            // each use, so `set_var` above is all it needs.
-            _ if setting_spec(name).is_some_and(|spec| spec.hot_reload) => {}
+            // each use, so the environment change above is all it needs.
+            _ if spec.is_some_and(|spec| spec.hot_reload) => {}
             _ => {
                 restart_required = true;
             }

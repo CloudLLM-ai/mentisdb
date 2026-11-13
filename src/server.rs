@@ -784,38 +784,78 @@ impl Default for BodyLimits {
 /// Read and validate `MENTISDB_MAX_BODY_BYTES`, `MENTISDB_MAX_INFLIGHT_BODY_BYTES`,
 /// `MENTISDB_BODY_IDLE_TIMEOUT_SECS` and `MENTISDB_MIN_BODY_BYTES_PER_SEC`.
 ///
-/// Unset variables take their defaults. A set variable must be a whole number in
+/// Unset or blank variables take their defaults. A set variable must be a whole number in
 /// range, otherwise the daemon refuses to start ([`validate_body_limits_env`])
 /// instead of quietly running with a different limit than the operator wrote.
 fn body_limits_from_env() -> Result<BodyLimits, String> {
-    let number = |name: &str, min: u64, max: u64| -> Result<Option<u64>, String> {
-        let Ok(raw) = env_var(&[name]) else {
-            return Ok(None);
-        };
-        let value = raw
-            .trim()
-            .parse::<u64>()
-            .map_err(|_| format!("{name}={raw:?} is not a whole number"))?;
-        if !(min..=max).contains(&value) {
-            return Err(format!("{name}={value} is outside {min}..={max}"));
+    // A blank value is "unset", the same as the Settings screen saves it.
+    let number = |name: &str| -> Result<Option<u64>, String> {
+        match env_var(&[name]) {
+            Ok(raw) if !raw.trim().is_empty() => parse_body_limit(name, &raw).map(Some),
+            _ => Ok(None),
         }
-        Ok(Some(value))
     };
     let defaults = BodyLimits::default();
     Ok(BodyLimits {
-        max_body_bytes: number(
-            "MENTISDB_MAX_BODY_BYTES",
-            MIN_MAX_BODY_BYTES as u64,
-            MAX_MAX_BODY_BYTES as u64,
-        )?
-        .map_or(defaults.max_body_bytes, |v| v as usize),
-        max_inflight_body_bytes: number("MENTISDB_MAX_INFLIGHT_BODY_BYTES", 1, u64::MAX / 2)?
-            .map(|v| v as usize),
-        body_idle_timeout: number("MENTISDB_BODY_IDLE_TIMEOUT_SECS", 1, 3600)?
+        max_body_bytes: number("MENTISDB_MAX_BODY_BYTES")?
+            .map_or(defaults.max_body_bytes, |v| v as usize),
+        max_inflight_body_bytes: number("MENTISDB_MAX_INFLIGHT_BODY_BYTES")?.map(|v| v as usize),
+        body_idle_timeout: number("MENTISDB_BODY_IDLE_TIMEOUT_SECS")?
             .map_or(defaults.body_idle_timeout, std::time::Duration::from_secs),
-        min_body_bytes_per_sec: number("MENTISDB_MIN_BODY_BYTES_PER_SEC", 0, 1 << 30)?
+        min_body_bytes_per_sec: number("MENTISDB_MIN_BODY_BYTES_PER_SEC")?
             .map_or(defaults.min_body_bytes_per_sec, |v| v as usize),
     })
+}
+
+/// Inclusive range of the body-limit variable `name`, `None` for any other name.
+fn body_limit_bounds(name: &str) -> Option<(u64, u64)> {
+    match name {
+        "MENTISDB_MAX_BODY_BYTES" => Some((MIN_MAX_BODY_BYTES as u64, MAX_MAX_BODY_BYTES as u64)),
+        "MENTISDB_MAX_INFLIGHT_BODY_BYTES" => Some((1, u64::MAX / 2)),
+        "MENTISDB_BODY_IDLE_TIMEOUT_SECS" => Some((1, 3600)),
+        "MENTISDB_MIN_BODY_BYTES_PER_SEC" => Some((0, 1 << 30)),
+        _ => None,
+    }
+}
+
+/// Parse one body-limit value: a whole number inside [`body_limit_bounds`].
+fn parse_body_limit(name: &str, raw: &str) -> Result<u64, String> {
+    let (min, max) =
+        body_limit_bounds(name).ok_or_else(|| format!("{name} is not a body-limit variable"))?;
+    let value = raw
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| format!("{name}={raw:?} is not a whole number"))?;
+    if !(min..=max).contains(&value) {
+        return Err(format!("{name}={value} is outside {min}..={max}"));
+    }
+    Ok(value)
+}
+
+/// Check one proposed body-limit value without touching the environment.
+///
+/// The daemon refuses to start on a bad `MENTISDB_MAX_BODY_BYTES`,
+/// `MENTISDB_MAX_INFLIGHT_BODY_BYTES`, `MENTISDB_BODY_IDLE_TIMEOUT_SECS` or
+/// `MENTISDB_MIN_BODY_BYTES_PER_SEC` ([`validate_body_limits_env`]). The
+/// dashboard Settings screen calls this with the value it is about to save so
+/// it never writes one the next start would reject; both use the same ranges.
+///
+/// # Errors
+///
+/// A message naming the variable and what is wrong with the value, which is
+/// also returned for a `name` that is not a body-limit variable.
+///
+/// # Examples
+///
+/// ```
+/// use mentisdb::server::validate_body_limit_value;
+///
+/// assert!(validate_body_limit_value("MENTISDB_BODY_IDLE_TIMEOUT_SECS", "30").is_ok());
+/// assert!(validate_body_limit_value("MENTISDB_BODY_IDLE_TIMEOUT_SECS", "0").is_err());
+/// assert!(validate_body_limit_value("MENTISDB_MAX_BODY_BYTES", "lots").is_err());
+/// ```
+pub fn validate_body_limit_value(name: &str, raw: &str) -> Result<(), String> {
+    parse_body_limit(name, raw).map(|_| ())
 }
 
 /// Check the body-limit environment variables.

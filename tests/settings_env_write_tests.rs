@@ -275,3 +275,142 @@ async fn test_save_is_owner_only_and_leaves_no_temp_files() {
     std::env::remove_var("MENTISDB_UPDATE_REPO");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Settings that are checked by kind or by a startup validator, with values
+/// the next start would reject or silently misread: `(name, bad value)`.
+const BAD_VALUES: &[(&str, &str)] = &[
+    ("MENTISDB_MAX_BODY_BYTES", "lots"),
+    ("MENTISDB_MAX_BODY_BYTES", "10"),
+    ("MENTISDB_MAX_BODY_BYTES", "2000000000"),
+    ("MENTISDB_MAX_INFLIGHT_BODY_BYTES", "0"),
+    ("MENTISDB_BODY_IDLE_TIMEOUT_SECS", "0"),
+    ("MENTISDB_BODY_IDLE_TIMEOUT_SECS", "99999"),
+    ("MENTISDB_MIN_BODY_BYTES_PER_SEC", "-1"),
+    ("MENTISDB_WEBHOOK_ALLOWED_CIDRS", "10.0.0.0/33"),
+    ("MENTISDB_WEBHOOK_ALLOWED_CIDRS", "not-a-cidr"),
+    ("MENTISDB_WEBHOOK_ALLOWED_CIDRS", "0.0.0.0/0"),
+    ("MENTISDB_MCP_PORT", "99999"),
+    ("MENTISDB_REST_PORT", "abc"),
+    ("MENTISDB_HTTPS_MCP_PORT", "-1"),
+    ("MENTISDB_HTTPS_REST_PORT", "9474 "),
+    ("MENTISDB_DASHBOARD_PORT", "65536"),
+    ("MENTISDB_GROUP_COMMIT_MS", "fast"),
+    ("MENTISDB_FSYNC", "maybe"),
+    ("MENTISDB_AUTO_FLUSH", "2"),
+];
+
+/// A value the daemon would refuse or misread is rejected with 400 and a
+/// message naming the setting, and neither the process environment nor the
+/// `.env` file changes. Before this check the save went through and the next
+/// start failed, with the dashboard unreachable to repair it.
+#[tokio::test]
+async fn test_bad_values_are_rejected_by_kind_and_range() {
+    let _env = env_guard().await;
+    let dir = unique_dir();
+    for (name, value) in BAD_VALUES {
+        std::env::remove_var(name);
+        let (status, body) = save(&dir, json!({ *name: *value })).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{name}={value:?}: {body}");
+        let message = body["message"].as_str().unwrap_or_default();
+        assert!(message.contains(name), "{name}={value:?}: {message}");
+        assert!(std::env::var(name).is_err(), "{name}={value:?} was applied");
+        assert!(!dir.join(".env").exists(), "{name}={value:?} was written");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Validation covers the whole request before anything is applied: one bad
+/// entry keeps the good ones out of the environment and the file.
+#[tokio::test]
+async fn test_one_bad_setting_rejects_the_whole_request() {
+    let _env = env_guard().await;
+    let dir = unique_dir();
+    std::env::remove_var("MENTISDB_UPDATE_REPO");
+
+    let (status, _) = save(
+        &dir,
+        json!({ "MENTISDB_UPDATE_REPO": "x/y", "MENTISDB_REST_PORT": "nope" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(std::env::var("MENTISDB_UPDATE_REPO").is_err());
+    assert!(!dir.join(".env").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Values the daemon accepts still save: the check must not be stricter than
+/// startup (`0` disables the HTTPS and dashboard ports; CIDR lists may use
+/// commas and blanks; booleans may be `yes`).
+#[tokio::test]
+async fn test_valid_values_are_saved() {
+    let _env = env_guard().await;
+    let dir = unique_dir();
+    let good = [
+        ("MENTISDB_MAX_BODY_BYTES", "67108864"),
+        ("MENTISDB_MAX_INFLIGHT_BODY_BYTES", "1"),
+        ("MENTISDB_BODY_IDLE_TIMEOUT_SECS", "3600"),
+        ("MENTISDB_MIN_BODY_BYTES_PER_SEC", "0"),
+        (
+            "MENTISDB_WEBHOOK_ALLOWED_CIDRS",
+            "100.64.0.0/10, 10.8.0.0/24",
+        ),
+        ("MENTISDB_DASHBOARD_PORT", "0"),
+        ("MENTISDB_HTTPS_REST_PORT", "65535"),
+        ("MENTISDB_AUTO_EDGE_THRESHOLD", "0.85"),
+        ("MENTISDB_FSYNC", "yes"),
+    ];
+    for (name, _) in &good {
+        std::env::remove_var(name);
+    }
+    let settings: serde_json::Map<String, Value> = good
+        .iter()
+        .map(|(n, v)| (n.to_string(), json!(v)))
+        .collect();
+
+    let (status, body) = save(&dir, Value::Object(settings)).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let parsed = parse_env_file(&dir);
+    for (name, value) in &good {
+        assert!(
+            parsed.iter().any(|(n, v)| n == name && v == value),
+            "{name} missing from {parsed:?}"
+        );
+        std::env::remove_var(name);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A cleared field (and Reset) posts an empty string. That means "unset": the
+/// variable leaves the environment and its line leaves the file. Writing
+/// `NAME=` instead made the next start fail on the body limits and the
+/// webhook CIDR list. A stale blank line from the old behaviour is removed
+/// even though the variable was already unset.
+#[tokio::test]
+async fn test_empty_value_unsets_the_variable_and_removes_its_line() {
+    let _env = env_guard().await;
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join(".env"),
+        "MENTISDB_GROUP_COMMIT_MS=5\nMENTISDB_MAX_BODY_BYTES=\nKEEP=1\n",
+    )
+    .unwrap();
+    std::env::set_var("MENTISDB_GROUP_COMMIT_MS", "5");
+    std::env::remove_var("MENTISDB_MAX_BODY_BYTES");
+
+    let (status, body) = save(
+        &dir,
+        json!({ "MENTISDB_GROUP_COMMIT_MS": "", "MENTISDB_MAX_BODY_BYTES": "" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(std::env::var("MENTISDB_GROUP_COMMIT_MS").is_err());
+    assert_eq!(
+        std::fs::read_to_string(dir.join(".env")).unwrap(),
+        "KEEP=1\n"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
