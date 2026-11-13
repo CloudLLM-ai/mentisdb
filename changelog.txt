@@ -22,8 +22,7 @@ UNRELEASED
     the next start fail, with the dashboard unreachable to repair it. The whole request is
     validated before anything is applied; a rejected save returns 400 with a message per
     setting. A cleared field or Reset (an empty value) now unsets the variable and deletes
-    its `.env` line instead of writing `NAME=`; the daemon also treats a blank body-limit
-    variable as unset, so a `.env` written by an older release starts.
+    its `.env` line instead of writing `NAME=`.
   - fix(dashboard): saving `MENTISDB_DASHBOARD_PIN` from the Settings screen no longer prints
     the new PIN in the daemon's terminal config pane. Secret settings now show `<hidden>`.
   - fix(dashboard): a setting value containing a NUL byte is refused with 400. It reached

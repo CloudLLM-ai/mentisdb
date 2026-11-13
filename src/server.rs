@@ -784,15 +784,14 @@ impl Default for BodyLimits {
 /// Read and validate `MENTISDB_MAX_BODY_BYTES`, `MENTISDB_MAX_INFLIGHT_BODY_BYTES`,
 /// `MENTISDB_BODY_IDLE_TIMEOUT_SECS` and `MENTISDB_MIN_BODY_BYTES_PER_SEC`.
 ///
-/// Unset or blank variables take their defaults. A set variable must be a whole number in
+/// Unset variables take their defaults. A set variable must be a whole number in
 /// range, otherwise the daemon refuses to start ([`validate_body_limits_env`])
 /// instead of quietly running with a different limit than the operator wrote.
 fn body_limits_from_env() -> Result<BodyLimits, String> {
-    // A blank value is "unset", the same as the Settings screen saves it.
     let number = |name: &str| -> Result<Option<u64>, String> {
         match env_var(&[name]) {
-            Ok(raw) if !raw.trim().is_empty() => parse_body_limit(name, &raw).map(Some),
-            _ => Ok(None),
+            Ok(raw) => parse_body_limit(name, &raw).map(Some),
+            Err(_) => Ok(None),
         }
     };
     let defaults = BodyLimits::default();

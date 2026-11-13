@@ -1,6 +1,5 @@
 //! The startup body-limit check and the dashboard's per-value check share one
-//! set of ranges, and a blank variable (what an older Settings screen wrote
-//! for a cleared field) means "unset", not "not a number".
+//! set of ranges and give the same verdict on every value.
 //!
 //! One test, because it edits process environment variables.
 
@@ -13,18 +12,14 @@ const NAMES: [&str; 4] = [
     "MENTISDB_MIN_BODY_BYTES_PER_SEC",
 ];
 
-/// Blank values pass startup validation; bad ones still fail it with the same
-/// verdict `validate_body_limit_value` gives the dashboard.
+/// For each variable and a spread of values, startup validation and
+/// `validate_body_limit_value` agree.
 #[test]
-fn test_blank_limit_is_unset_and_both_checks_agree() {
+fn test_startup_and_dashboard_checks_agree() {
     for name in NAMES {
         std::env::remove_var(name);
     }
     for name in NAMES {
-        for blank in ["", "   "] {
-            std::env::set_var(name, blank);
-            validate_body_limits_env().unwrap_or_else(|e| panic!("{name}={blank:?}: {e}"));
-        }
         for (value, ok) in [
             ("abc", false),
             ("-5", false),
