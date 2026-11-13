@@ -1,0 +1,182 @@
+  reranking    : enabled=False k=50
+  timeouts     : request=300s rebuild=7200s
+
+LoCoMo × mentisdb
+  top-k        : 10  (also computing R@10, R@20, R@50)
+  limit        : full
+  chain        : locomo-v59
+  data-dir     : /private/tmp/claude-501/-Users-gubatron-workspace-mentischat/8e9a306e-b44a-4398-9b9b-9ef8eff5883b/scratchpad/bench/r60/data
+  endpoint     : http://127.0.0.1:9592
+
+  Loaded 5882 conversation turns, 1977 test queries
+
+    100/419 turns ingested
+    200/419 turns ingested
+    300/419 turns ingested
+    400/419 turns ingested
+    419/419 turns ingested
+    100/369 turns ingested
+    200/369 turns ingested
+    300/369 turns ingested
+    369/369 turns ingested
+    100/663 turns ingested
+    200/663 turns ingested
+    300/663 turns ingested
+    400/663 turns ingested
+    500/663 turns ingested
+    600/663 turns ingested
+    663/663 turns ingested
+    100/629 turns ingested
+    200/629 turns ingested
+    300/629 turns ingested
+    400/629 turns ingested
+    500/629 turns ingested
+    600/629 turns ingested
+    629/629 turns ingested
+    100/680 turns ingested
+    200/680 turns ingested
+    300/680 turns ingested
+    400/680 turns ingested
+    500/680 turns ingested
+    600/680 turns ingested
+    680/680 turns ingested
+    100/675 turns ingested
+    200/675 turns ingested
+    300/675 turns ingested
+    400/675 turns ingested
+    500/675 turns ingested
+    600/675 turns ingested
+    675/675 turns ingested
+    100/689 turns ingested
+    200/689 turns ingested
+    300/689 turns ingested
+    400/689 turns ingested
+    500/689 turns ingested
+    600/689 turns ingested
+    689/689 turns ingested
+    100/681 turns ingested
+    200/681 turns ingested
+    300/681 turns ingested
+    400/681 turns ingested
+    500/681 turns ingested
+    600/681 turns ingested
+    681/681 turns ingested
+    100/509 turns ingested
+    200/509 turns ingested
+    300/509 turns ingested
+    400/509 turns ingested
+    500/509 turns ingested
+    509/509 turns ingested
+    100/568 turns ingested
+    200/568 turns ingested
+    300/568 turns ingested
+    400/568 turns ingested
+    500/568 turns ingested
+    568/568 turns ingested
+  Ingested 5882 turns in 21.7s
+
+Building vector sidecar…
+  [fastembed-minilm] Vector sidecar rebuilt — 5882 thoughts indexed.
+  [local-text-v1] Vector sidecar rebuilt — 5882 thoughts indexed.
+  50/1977 QAs — R@10: 62.0%
+  100/1977 QAs — R@10: 67.0%
+  150/1977 QAs — R@10: 74.7%
+  200/1977 QAs — R@10: 79.0%
+  250/1977 QAs — R@10: 79.6%
+  300/1977 QAs — R@10: 79.7%
+  350/1977 QAs — R@10: 76.0%
+  400/1977 QAs — R@10: 77.5%
+  450/1977 QAs — R@10: 78.2%
+  500/1977 QAs — R@10: 77.8%
+  550/1977 QAs — R@10: 77.1%
+  600/1977 QAs — R@10: 75.7%
+  650/1977 QAs — R@10: 76.0%
+  700/1977 QAs — R@10: 76.3%
+  750/1977 QAs — R@10: 76.4%
+  800/1977 QAs — R@10: 76.0%
+  850/1977 QAs — R@10: 76.6%
+  900/1977 QAs — R@10: 77.3%
+  950/1977 QAs — R@10: 77.9%
+  1000/1977 QAs — R@10: 78.2%
+  1050/1977 QAs — R@10: 76.5%
+  1100/1977 QAs — R@10: 76.8%
+  1150/1977 QAs — R@10: 77.0%
+  1200/1977 QAs — R@10: 76.2%
+  1250/1977 QAs — R@10: 76.5%
+  1300/1977 QAs — R@10: 77.0%
+  1350/1977 QAs — R@10: 77.6%
+  1400/1977 QAs — R@10: 77.5%
+  1450/1977 QAs — R@10: 77.3%
+  1500/1977 QAs — R@10: 77.7%
+  1550/1977 QAs — R@10: 77.4%
+  1600/1977 QAs — R@10: 77.3%
+  1650/1977 QAs — R@10: 77.0%
+  1700/1977 QAs — R@10: 76.8%
+  1750/1977 QAs — R@10: 76.9%
+  1800/1977 QAs — R@10: 76.5%
+  1850/1977 QAs — R@10: 76.1%
+  1900/1977 QAs — R@10: 76.2%
+  1950/1977 QAs — R@10: 76.3%
+  1977/1977 QAs — R@10: 76.3%
+
+=======================================================
+LoCoMo  R@10: 76.3%  (1508/1977)
+Evaluation time: 4s  (448.6 q/s)
+
+By question type:
+  multi         62.6%  (265/423)  ████████████
+  single        80.0%  (1243/1554)  ███████████████
+
+Near-miss analysis:
+  type         total  R@10   R@10  R@20  R@50
+  -------------------------------------------------------
+  multi          423   62.6%   62.6%   74.0%   87.5%
+  single        1554   80.0%   80.0%   86.1%   92.2%
+
+Avg top-1 score breakdown on MISSES (469 samples):
+  lexical        13.2151
+  vector         0.1349
+  graph          0.0149
+  relation       0.0078
+  seed_support   0.0009
+  recency        0.0269
+  total          15.6269
+
+Of 469 misses:
+    0 (  0.0%) appear in top-10 (ranking problem)
+  143 ( 30.5%) appear in top-20
+  295 ( 62.9%) appear in top-50
+  174 ( 37.1%) not in top-50 (lexical gap)
+
+Miss counts by type:
+  single       311/1554 misses  (0 near top-10)
+  multi        158/423 misses  (0 near top-10)
+
+Sample misses from 'single' (5 of 311):
+
+  Q:         what did caroline research?
+  Evidence:  researching adoption agencies — it's been a dream to have a family and give a loving home to kids who need it.…
+  Top-1 ret: wow, that's cool, caroline! what happened that was so awesome? did you hear any inspiring stories?…
+  Score:     lexical=10.189  vector=0.216  graph=0.000  recency=0.000  total=11.653
+
+  Q:         when did caroline give a speech at a school?
+  Evidence:  hey melanie! how's it going? i wanted to tell you about my school event last week. it was awesome! i talked about my tra…
+  Top-1 ret: looks good! how did the extra funding help with building the school?…
+  Score:     lexical=10.915  vector=0.137  graph=0.000  recency=0.007  total=13.414
+
+  Q:         how long has caroline had her current group of friends for?
+  Evidence:  yeah, i'm really lucky to have them. they've been there through everything, i've known these friends for 4 years, since …
+  Top-1 ret: since speaking last, i reconnected with my mom's old friends. their stories made me tear up and reminded me how lucky i …
+  Score:     lexical=13.316  vector=0.169  graph=0.000  recency=0.039  total=16.801
+
+  Q:         when did caroline have a picnic?
+  Evidence:  wow, that's great! it sure shows how important friendship and compassion are. it's made me appreciate how lucky i am to …
+  Top-1 ret: thanks, maria! we love being outdoors - going for hikes, hanging out at the park, having picnics - plus playing board ga…
+  Score:     lexical=8.553  vector=0.100  graph=0.000  recency=0.011  total=10.590
+
+  Q:         would caroline likely have dr. seuss books on her bookshelf?
+  Evidence:  i've got lots of kids' books- classics, stories from different cultures, educational books, all of that. what's a favori…
+  Top-1 ret: yeah, check it out - here's my bookshelf! i have some of my favorites on there, like these ones. it's an amazing journey…
+  Score:     lexical=12.238  vector=0.122  graph=0.000  recency=0.020  total=14.703
+
+Results written to /private/tmp/claude-501/-Users-gubatron-workspace-mentischat/8e9a306e-b44a-4398-9b9b-9ef8eff5883b/scratchpad/bench/r60/out/ing_v59_locomo.json

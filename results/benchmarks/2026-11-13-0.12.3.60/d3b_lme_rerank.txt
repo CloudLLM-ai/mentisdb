@@ -1,0 +1,97 @@
+
+LongMemEval × mentisdb
+  instances    : 500
+  top-k        : 5  (also computing R@10, R@20)
+  chain        : lme-full
+  endpoint     : http://127.0.0.1:9592
+  eval-workers : 8
+  reranking    : enabled=True k=50
+  timeouts     : request=300s rebuild=7200s
+
+   50/500 — R@5 so far: 84.0%
+  100/500 — R@5 so far: 66.0%
+  150/500 — R@5 so far: 71.3%
+  200/500 — R@5 so far: 72.5%
+  250/500 — R@5 so far: 68.0%
+  300/500 — R@5 so far: 70.7%
+  350/500 — R@5 so far: 72.0%
+  400/500 — R@5 so far: 70.5%
+  450/500 — R@5 so far: 69.6%
+  500/500 — R@5 so far: 70.2%
+
+=======================================================
+LongMemEval  R@5: 70.2%  (351/500)
+Evaluation time: 1.3s  (378.2 q/s)
+
+By question type:
+  knowledge-update                          83.3%  ████████████████
+  multi-session                             69.2%  █████████████
+  single-session-assistant                  85.7%  █████████████████
+  single-session-preference                 30.0%  ██████
+  single-session-user                       71.4%  ██████████████
+  temporal-reasoning                        65.4%  █████████████
+
+Near-miss analysis (evidence found at wider k):
+  type                                     R@5     R@10   R@20
+  --------------------------------------------------------------
+  knowledge-update                          83.3%   85.9%   89.7%
+  multi-session                             69.2%   76.7%   82.7%
+  single-session-assistant                  85.7%   91.1%   96.4%
+  single-session-preference                 30.0%   33.3%   43.3%
+  single-session-user                       71.4%   74.3%   85.7%
+  temporal-reasoning                        65.4%   72.9%   76.7%
+
+Avg top-1 score breakdown on MISSES:
+  lexical        21.0494
+  vector         0.2182
+  graph          0.0940
+  relation       0.0564
+  seed_support   0.0215
+  recency        0.0267
+  total          26.4397
+
+Of 149 misses:
+  28 (18.8%) appear in top-10 (ranking problem, not retrieval)
+  58 (38.9%) appear in top-20
+  91 (61.1%) not in top-20 (lexical gap)
+
+Miss counts by type:
+  temporal-reasoning                       46/133 misses  (10 near top-10)
+  multi-session                            41/133 misses  (10 near top-10)
+  single-session-preference                21/30 misses  (1 near top-10)
+  single-session-user                      20/70 misses  (2 near top-10)
+  knowledge-update                         13/78 misses  (2 near top-10)
+  single-session-assistant                 8/56 misses  (3 near top-10)
+
+Sample misses from 'temporal-reasoning' (3 of 46):
+
+  Q:         How many days did it take for me to find a house I loved after starting to work with Rachel?
+  Evidence:  I'd like to ask Rachel about the new construction listings in these areas. Since I started working with her on 2/15, I'm…
+  Top-1 ret: I'm looking for some advice on neighborhoods near my workplace. I've been working with a real estate agent, Rachel, and …
+  Score:     lexical=16.804  graph=0.000  recency=0.001  total=21.692
+
+  Q:         Which pair of shoes did I clean last month?
+  Evidence:  I'm glad I finally got around to cleaning my white Adidas sneakers last month, which I'd been meaning to do for weeks. T…
+  Top-1 ret: That's really helpful, thanks for the detailed comparison. I think I'll try on both pairs to see which one feels more co…
+  Score:     lexical=19.399  graph=0.000  recency=0.001  total=25.574
+
+  Q:         Which event happened first, the purchase of the coffee maker or the malfunction of the stand mixer?
+  Evidence:  I'm having some issues with my coffee maker's performance lately. I bought it about three weeks ago, it's a black and st…
+  Top-1 ret: I'm thinking of making some desserts for my dinner party, and I was wondering if you have any ideas for desserts that do…
+  Score:     lexical=27.175  graph=0.000  recency=0.001  total=33.046
+
+Miss evidence length (chars) by type — short evidence = harder substring match:
+  knowledge-update                         avg=   201  min=90  max=545
+  multi-session                            avg=   303  min=53  max=959
+  single-session-assistant                 avg=   786  min=25  max=1895
+  single-session-preference                avg=   190  min=99  max=384
+  single-session-user                      avg=   187  min=83  max=356
+  temporal-reasoning                       avg=   302  min=113  max=561
+
+Writing per-instance JSONL to /private/tmp/claude-501/-Users-gubatron-workspace-mentischat/8e9a306e-b44a-4398-9b9b-9ef8eff5883b/scratchpad/bench/r60/out/d3b_lme_rerank.jsonl …
+  100/500 written
+  200/500 written
+  300/500 written
+  400/500 written
+  500/500 written
+Per-instance results written to /private/tmp/claude-501/-Users-gubatron-workspace-mentischat/8e9a306e-b44a-4398-9b9b-9ef8eff5883b/scratchpad/bench/r60/out/d3b_lme_rerank.jsonl
