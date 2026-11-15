@@ -1,4 +1,15 @@
 0.12.3.60 NOV/13/2026
+  - fix(security): a dashboard with no `MENTISDB_DASHBOARD_PIN` let anyone who could reach it
+    change security-sensitive settings, such as the webhook SSRF allow-list
+    (`MENTISDB_WEBHOOK_ALLOWED_CIDRS`) and the Host allow-list that guards against DNS
+    rebinding (`MENTISDB_DASHBOARD_ALLOWED_HOSTS`), unless the daemon held private chains.
+    Those settings, plus `MENTISDB_BEARER_TOKEN_ACCESS`, `MENTISDB_BIND_HOST`,
+    `MENTISDB_TLS_CERT`, `MENTISDB_TLS_KEY`, `MENTISDB_DIR`, `MENTISDB_LOG_FILE` and
+    `MENTISDB_UPDATE_REPO`, now need a PIN and a signed-in session whether or not private
+    chains exist. Without a PIN the whole request is refused with 403 and nothing is saved;
+    the message says to set `MENTISDB_DASHBOARD_PIN` and sign in, or to edit
+    `<MENTISDB_DIR>/.env` by hand. Other settings, and setting the PIN itself, still work
+    without one. The Settings screen shows the locked fields disabled and explains why.
   - fix(security): saving a setting from the dashboard could leave a `.env` that the daemon
     half-loads, so it restarted without its PIN or with open access and said nothing.
     Values were written raw, and the `.env` parser stops at the first bad line: `B=x y`, a
