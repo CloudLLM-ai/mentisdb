@@ -1539,6 +1539,10 @@
                   const ph = s.set && !s.value ? '(set \u2014 type to replace)' : s.default_value;
                   control = `<input type="text" id="${inputId}" data-idx="${idx}" value="${esc(s.value)}" placeholder="${esc(ph)}" title="Enter a text value">`;
                 }
+                if (s.locked) {
+                  control = control.replace('<input ', '<input disabled ');
+                }
+                const lockNote = s.locked ? ' <span style="color:#d29922;font-size:0.78rem" title="This setting changes what the daemon exposes or how it authenticates, so it can only be changed on a dashboard protected by a PIN.">(locked: set MENTISDB_DASHBOARD_PIN and sign in, or edit the .env file by hand)</span>' : '';
                 return `
                   <tr>
                     <td class="st-name" title="${esc(s.name)} — ${esc(s.description.substring(0, 120))}">${esc(s.name)}</td>
@@ -1546,10 +1550,10 @@
                     <td class="st-default">
                       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
                         <span style="color:#8b949e">${esc(s.default_value || '—')}</span>
-                        <button class="btn btn-sm" data-reset="${idx}" title="Restore the default value for this setting">Reset</button>
+                        <button class="btn btn-sm" data-reset="${idx}" ${s.locked ? 'disabled' : ''} title="Restore the default value for this setting">Reset</button>
                       </div>
                     </td>
-                    <td class="st-desc">${esc(s.description)}${s.hot_reload ? ' <span style="color:#3fb950;font-size:0.78rem" title="This change takes effect immediately without restarting">(hot-reload)</span>' : ' <span style="color:#f0883e;font-size:0.78rem" title="This change requires a daemon restart to take effect">(restart required)</span>'}</td>
+                    <td class="st-desc">${esc(s.description)}${lockNote}${s.hot_reload ? ' <span style="color:#3fb950;font-size:0.78rem" title="This change takes effect immediately without restarting">(hot-reload)</span>' : ' <span style="color:#f0883e;font-size:0.78rem" title="This change requires a daemon restart to take effect">(restart required)</span>'}</td>
                   </tr>
                 `;
               }).join('')}

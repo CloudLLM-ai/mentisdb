@@ -161,7 +161,7 @@ fn startup_only_settings_are_not_marked_hot_reload() {
 fn secret_settings_never_echo_their_value() {
     let pin = setting_spec("MENTISDB_DASHBOARD_PIN").unwrap();
     assert!(pin.secret);
-    let row = pin.to_dashboard_setting();
+    let row = pin.to_dashboard_setting(true);
     assert!(row.value.is_empty());
     assert!(DAEMON_SETTINGS.iter().filter(|s| s.secret).count() == 1);
 }

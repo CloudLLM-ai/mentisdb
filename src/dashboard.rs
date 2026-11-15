@@ -3918,6 +3918,10 @@ pub(crate) struct DashboardSetting {
     hot_reload: bool,
     /// True when a secret value is configured but withheld from the response.
     set: bool,
+    /// True when this dashboard will refuse to change the setting because it
+    /// is security-sensitive and no PIN protects the dashboard. The Settings
+    /// screen shows such a field disabled, with the way to unlock it.
+    locked: bool,
 }
 
 /// A per-setting value check: `fn(name, value)`, `Err` carrying the reason.
@@ -3975,6 +3979,13 @@ pub(crate) struct SettingSpec {
     /// The value is a secret: it is never sent to the browser, only whether
     /// one is set.
     pub(crate) secret: bool,
+    /// Changing this setting widens what the daemon exposes or loosens how it
+    /// authenticates (who may reach the dashboard, which hosts it answers to,
+    /// where webhooks may connect, which keys and files it trusts). A
+    /// dashboard with no PIN refuses to change it, because with no PIN every
+    /// visitor is anonymous: see [`locked_security_settings`]. The PIN itself
+    /// is not marked, so a PIN-less dashboard can still bootstrap one.
+    pub(crate) security_sensitive: bool,
     /// Extra check, `fn(name, value)`, run on a non-empty proposed value after the kind check,
     /// for settings whose startup code refuses or misreads some values (a
     /// port, a body limit, a CIDR list). It reuses the startup parser, so the
@@ -4000,6 +4011,7 @@ impl SettingSpec {
             kind,
             hot_reload,
             secret: false,
+            security_sensitive: false,
             validate: None,
         }
     }
@@ -4012,8 +4024,10 @@ impl SettingSpec {
     }
 
     /// The row sent to the Settings screen. A secret's value is withheld and
-    /// only `set` says whether one is configured.
-    pub(crate) fn to_dashboard_setting(&self) -> DashboardSetting {
+    /// only `set` says whether one is configured. `pin_configured` says
+    /// whether the dashboard has a PIN; without one, a security-sensitive
+    /// setting is reported `locked`.
+    pub(crate) fn to_dashboard_setting(&self, pin_configured: bool) -> DashboardSetting {
         let current = self.current_value();
         let set = self.secret && current.as_deref().is_some_and(|v| !v.is_empty());
         DashboardSetting {
@@ -4028,6 +4042,7 @@ impl SettingSpec {
             kind: self.kind.as_str().to_string(),
             hot_reload: self.hot_reload,
             set,
+            locked: self.security_sensitive && !pin_configured,
         }
     }
 }
@@ -4039,8 +4054,11 @@ use SettingKind::{Boolean, Number, Text};
 /// the list is kept complete.
 pub(crate) const DAEMON_SETTINGS: &[SettingSpec] = &[
     // ── Storage ────────────────────────────────────────────────────────────
-    SettingSpec::new("MENTISDB_DIR", "~/.cloudllm/mentisdb", Text, false,
-        "Directory where chain files and registry are stored."),
+    SettingSpec {
+        security_sensitive: true,
+        ..SettingSpec::new("MENTISDB_DIR", "~/.cloudllm/mentisdb", Text, false,
+        "Directory where chain files and registry are stored.")
+    },
     SettingSpec {
         aliases: &["MENTISDB_DEFAULT_KEY"],
         ..SettingSpec::new("MENTISDB_DEFAULT_CHAIN_KEY", "default", Text, false,
@@ -4073,10 +4091,14 @@ pub(crate) const DAEMON_SETTINGS: &[SettingSpec] = &[
     // ── Logging ────────────────────────────────────────────────────────────
     SettingSpec::new("MENTISDB_VERBOSE", "true", Boolean, false,
         "Enable verbose logging."),
-    SettingSpec::new("MENTISDB_LOG_FILE", "", Text, false,
-        "Path to log file (optional)."),
+    SettingSpec {
+        security_sensitive: true,
+        ..SettingSpec::new("MENTISDB_LOG_FILE", "", Text, false,
+        "Path to log file (optional).")
+    },
     // ── Network ────────────────────────────────────────────────────────────
     SettingSpec {
+        security_sensitive: true,
         validate: Some(validate_bind_host),
         ..SettingSpec::new("MENTISDB_BIND_HOST", "127.0.0.1", Text, false,
             "Host address to bind servers to.")
@@ -4101,10 +4123,16 @@ pub(crate) const DAEMON_SETTINGS: &[SettingSpec] = &[
         ..SettingSpec::new("MENTISDB_HTTPS_REST_PORT", "9474", Number, false,
             "Port for the HTTPS REST server (0 to disable).")
     },
-    SettingSpec::new("MENTISDB_TLS_CERT", "~/.cloudllm/mentisdb/tls/cert.pem", Text, false,
-        "Path to TLS certificate."),
-    SettingSpec::new("MENTISDB_TLS_KEY", "~/.cloudllm/mentisdb/tls/key.pem", Text, false,
-        "Path to TLS private key."),
+    SettingSpec {
+        security_sensitive: true,
+        ..SettingSpec::new("MENTISDB_TLS_CERT", "~/.cloudllm/mentisdb/tls/cert.pem", Text, false,
+        "Path to TLS certificate.")
+    },
+    SettingSpec {
+        security_sensitive: true,
+        ..SettingSpec::new("MENTISDB_TLS_KEY", "~/.cloudllm/mentisdb/tls/key.pem", Text, false,
+        "Path to TLS private key.")
+    },
     SettingSpec {
         validate: Some(validate_body_limit),
         ..SettingSpec::new("MENTISDB_MAX_BODY_BYTES", "67108864", Number, false,
@@ -4137,11 +4165,18 @@ pub(crate) const DAEMON_SETTINGS: &[SettingSpec] = &[
         ..SettingSpec::new("MENTISDB_DASHBOARD_PIN", "", Text, false,
             "Optional PIN to protect dashboard access. Leave blank to keep the current value.")
     },
-    SettingSpec::new("MENTISDB_DASHBOARD_ALLOWED_HOSTS", "", Text, false,
-        "Extra comma-separated hostnames or IPs accepted in the Host header (e.g. a reverse proxy or public DNS name). localhost and the bind address are always accepted."),
-    SettingSpec::new(MENTISDB_BEARER_TOKEN_ACCESS_ENV, "false", Boolean, true,
-        "Require bearer tokens for MCP HTTP and HTTPS access."),
     SettingSpec {
+        security_sensitive: true,
+        ..SettingSpec::new("MENTISDB_DASHBOARD_ALLOWED_HOSTS", "", Text, false,
+        "Extra comma-separated hostnames or IPs accepted in the Host header (e.g. a reverse proxy or public DNS name). localhost and the bind address are always accepted.")
+    },
+    SettingSpec {
+        security_sensitive: true,
+        ..SettingSpec::new(MENTISDB_BEARER_TOKEN_ACCESS_ENV, "false", Boolean, true,
+        "Require bearer tokens for MCP HTTP and HTTPS access.")
+    },
+    SettingSpec {
+        security_sensitive: true,
         validate: Some(validate_webhook_cidrs),
         ..SettingSpec::new("MENTISDB_WEBHOOK_ALLOWED_CIDRS", "", Text, false,
             "Comma-separated CIDR ranges webhooks may target even though they are internal (private, loopback, link-local). Unset blocks them all. Nothing broader than /8 is accepted.")
@@ -4208,8 +4243,11 @@ pub(crate) const DAEMON_SETTINGS: &[SettingSpec] = &[
     // ── Updates and sounds ─────────────────────────────────────────────────
     SettingSpec::new("MENTISDB_UPDATE_CHECK", "true", Boolean, false,
         "Enable background GitHub release checks."),
-    SettingSpec::new("MENTISDB_UPDATE_REPO", "CloudLLM-ai/mentisdb", Text, false,
-        "GitHub repository for update checks."),
+    SettingSpec {
+        security_sensitive: true,
+        ..SettingSpec::new("MENTISDB_UPDATE_REPO", "CloudLLM-ai/mentisdb", Text, false,
+        "GitHub repository for update checks.")
+    },
     SettingSpec::new("MENTISDB_STARTUP_SOUND", "true", Boolean, false,
         "Play a sound on daemon startup."),
     SettingSpec::new("MENTISDB_THOUGHT_SOUNDS", "false", Boolean, false,
@@ -4258,12 +4296,13 @@ pub(crate) fn setting_spec(name: &str) -> Option<&'static SettingSpec> {
 /// value, default, kind, description and whether a change applies without a
 /// restart. Secret values are withheld.
 async fn api_settings(
-    State(_state): State<DashboardState>,
+    State(state): State<DashboardState>,
 ) -> Result<Json<Vec<DashboardSetting>>, (StatusCode, Json<Value>)> {
+    let pin_configured = state.dashboard_pin.is_some();
     Ok(Json(
         DAEMON_SETTINGS
             .iter()
-            .map(SettingSpec::to_dashboard_setting)
+            .map(|spec| spec.to_dashboard_setting(pin_configured))
             .collect(),
     ))
 }
@@ -4528,7 +4567,61 @@ pub(crate) fn tui_config_line(name: &str, value: &str, previous: Option<&str>) -
     format!("  {name}={shown}{hint}")
 }
 
+/// The security-sensitive settings among `names`, sorted and without
+/// duplicates (see [`SettingSpec::security_sensitive`]). Unknown names are
+/// ignored here: validation reports them.
+pub(crate) fn locked_security_settings<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Vec<&'static str> {
+    names
+        .into_iter()
+        .filter_map(setting_spec)
+        .filter(|spec| spec.security_sensitive)
+        .map(|spec| spec.name)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Gate for changing security-sensitive settings: refuses the whole request
+/// with 403 when it names any of them and the dashboard has no PIN.
+///
+/// With a PIN configured, [`pin_auth_middleware`] has already admitted only a
+/// signed-in operator (session cookie or PIN bearer) before any handler runs,
+/// so `dashboard_pin.is_some()` here means "this caller is that operator".
+/// With none, every visitor is anonymous, and rewriting the webhook allow-list
+/// or the Host allow-list (the DNS-rebinding guard) would hand the daemon to
+/// whoever can reach the port. Settings that are not security-sensitive, and
+/// the PIN itself (the bootstrap), are never refused here.
+fn require_pin_for_security_settings<'a>(
+    state: &DashboardState,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if state.dashboard_pin.is_some() {
+        return Ok(());
+    }
+    let locked = locked_security_settings(names);
+    if locked.is_empty() {
+        return Ok(());
+    }
+    Err((
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "Security settings locked",
+            "message": format!(
+                "{} can only be changed on a dashboard protected by a PIN. Set MENTISDB_DASHBOARD_PIN (it can be saved here) and restart, then sign in, or edit {} by hand. Nothing was saved.",
+                locked.join(", "),
+                state.mentisdb_dir.join(".env").display()
+            ),
+            "locked": locked,
+        })),
+    ))
+}
+
 /// `POST /dashboard/api/settings`
+///
+/// Settings marked [`SettingSpec::security_sensitive`] are refused with 403
+/// (the whole request, nothing saved) unless the dashboard has a PIN.
 ///
 /// Accepts changed setting values, updates the environment, hot-reloads
 /// applicable fields in DashboardState, and persists the changes to a
@@ -4538,6 +4631,7 @@ async fn api_update_settings(
     Json(body): Json<SettingsUpdateRequest>,
 ) -> Result<Json<SettingsUpdateResponse>, (StatusCode, Json<Value>)> {
     require_pin_for_admin(&state)?;
+    require_pin_for_security_settings(&state, body.settings.keys().map(String::as_str))?;
 
     // Validate every entry before touching the file or the process, and report
     // all problems at once, in name order.
