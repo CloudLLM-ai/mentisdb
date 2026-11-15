@@ -56,13 +56,18 @@ fn unique_dir() -> PathBuf {
     dir
 }
 
+/// The PIN the test dashboard is configured with.
+const PIN: &str = "2468";
+
 fn router(dir: &Path) -> axum::Router {
     dashboard_impl::dashboard_router(dashboard_impl::DashboardState {
         chains: Arc::new(DashMap::<String, Arc<RwLock<MentisDb>>>::new()),
         skills: Arc::new(RwLock::new(SkillRegistry::open(dir).unwrap())),
         mentisdb_dir: dir.to_path_buf(),
         default_chain_key: "source".to_string(),
-        dashboard_pin: None,
+        // A PIN: security-sensitive settings (most of the ones these tests save)
+        // are refused on a PIN-less dashboard, and `save` signs in with it.
+        dashboard_pin: Some(PIN.to_string()),
         sessions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         default_storage_adapter: StorageAdapterKind::Binary,
         auto_flush: Arc::new(AtomicBool::new(true)),
@@ -77,6 +82,7 @@ async fn save(dir: &Path, settings: Value) -> (StatusCode, Value) {
         .uri("/dashboard/api/settings")
         .header("content-type", "application/json")
         .header("x-mentisdb-dashboard", "1")
+        .header("authorization", format!("Bearer {PIN}"))
         .body(Body::from(json!({ "settings": settings }).to_string()))
         .unwrap();
     let resp = router(dir).oneshot(req).await.unwrap();
