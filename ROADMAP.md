@@ -31,6 +31,8 @@
 - **Settings validated like startup parses them** — kind, ranges, ports, body limits, CIDRs, IP for bind host, choice settings; whole request validated first; empty value unsets (46b2c28, 4de14c7). PIN never shown in the TUI (978c66b, d3b376f).
 - **Combined filters** — `source_episode`/`entity_type` were dropped next to any indexed filter; now in `matches_post_index_filters` for every route and traversal (7cbecb0); both trimmed (4427d46, a771e40).
 - **Early oversized-thought reject** — O(1) lower bound before signature/hash work under the write lock (55f6dc6, b52c8b6).
+- **Security settings need a PIN** — webhook CIDRs, allowed hosts, bearer switch, bind host, TLS cert/key, data dir, log file and update repo are refused (403, whole request) on a PIN-less dashboard regardless of private chains; flag in the settings catalog, shown locked in the UI; setting the PIN itself still allowed (6557dee, 50df4f5).
+- **Revoked tokens lose the MCP event stream** — `GET /` re-checks its token every 15 s and closes on failure, via `cloudllm_mcp` 0.4.2 (446ae56, a74cfbc).
 - Benchmarks: same chains, identical top-k and scores against 0.12.2.59.
 
 
@@ -344,8 +346,8 @@ The next phase closes the remaining competitive gaps and ships what enterprise u
 - **Relation `valid_at` / `invalid_at`** on append are accepted but not applied
 
 ### Opened by 0.12.3.60
-- **MCP event stream lifetime** — the bearer token is checked when `GET /` opens; a stream opened with a token later revoked stays open (the 15 s keepalive keeps it alive); cap stream lifetime or re-check per keepalive, and cap streams per token/IP (cloudllm_mcp)
-- **Security settings writable on a PIN-less dashboard** — webhook CIDRs and allowed hosts can be changed without a PIN when the daemon holds no private chain; decide whether those keys always need one
+- **MCP event streams per token/IP** are not capped (cloudllm_mcp)
+- **PIN bootstrap needs a restart** — a PIN saved from a PIN-less dashboard is not hot-reloaded, so security settings stay locked until restart
 - **Blank `source_episode` / `entity_type` filter** matches nothing instead of meaning no filter; no length cap on `source_episode`
 - **Tags and concepts** are not in the early size reject (dedup makes a raw-size bound unsafe)
 
