@@ -460,7 +460,8 @@ which agents or keys exist. Push channels respect it as well. Webhooks never rec
 private thoughts or governance records, and the MCP event stream carries metadata only
 (tool, chain, outcome, duration, method and client address), never arguments, results or
 error text. When nothing has been sent for 15 seconds the stream sends an SSE comment
-(`: keepalive`), so HTTP clients with an idle timeout keep it open.
+(`: keepalive`), so HTTP clients with an idle timeout keep it open. Every 15 seconds the
+stream also re-checks its bearer token and closes once the token is revoked.
 
 Some metadata stays public by design, so that the chain remains verifiable. A public
 reader can see that a chain has private segments and where they are, how many thoughts
@@ -528,7 +529,9 @@ While tokens are off, requests that come from a browser (they carry `Origin` or
 requests to the loopback listeners. On a loopback bind the MCP listener also refuses every
 client whose `Host` is not on the same allowlist, whether or not tokens are on. The dashboard sits behind an optional PIN with a
 per-IP limit of five failures per five minutes, sends a strict Content-Security-Policy and
-frame-denial headers, and guards state-changing calls against cross-site requests.
+frame-denial headers, and guards state-changing calls against cross-site requests. Settings
+that loosen security (allow-lists, TLS, bind address, token enforcement, data directory)
+can be changed from the dashboard only behind its PIN.
 
 Several authorization bypasses have been found and fixed, in 0.10.9 and again in
 0.11.0.56, including decoy chain-key fields that let a chain-scoped token read
