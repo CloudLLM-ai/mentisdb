@@ -1,4 +1,10 @@
 0.12.3.60 NOV/13/2026
+  - fix(security): the MCP event stream (`GET /`) checked its bearer token only when it
+    opened, so a stream opened with a token that was later revoked or rescoped kept
+    receiving `tool_called` events for as long as the connection lasted, which the
+    0.12.2.59 keepalive made indefinite. With cloudllm_mcp 0.4.2 the stream re-checks its
+    token every 15 s and closes at the first failure (reported as a rejected request), so a
+    revoked token sees at most 15 s more events.
   - fix(security): a dashboard with no `MENTISDB_DASHBOARD_PIN` let anyone who could reach it
     change security-sensitive settings, such as the webhook SSRF allow-list
     (`MENTISDB_WEBHOOK_ALLOWED_CIDRS`) and the Host allow-list that guards against DNS
