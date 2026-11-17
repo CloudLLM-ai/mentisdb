@@ -264,3 +264,57 @@ async fn an_idle_event_stream_sends_keepalive_comments() {
         );
     }
 }
+
+/// Regression: the event stream was authorized once, when it opened, so a
+/// token revoked afterwards kept receiving `tool_called` events for as long
+/// as the connection lasted, kept open indefinitely by the keepalive. Since
+/// cloudllm_mcp 0.4.2 the stream re-checks its token every
+/// [`mcp::streamable_http::DEFAULT_SSE_REAUTHORIZE`] and ends at the first
+/// check after revocation. Paused clock, so the 30 s cost no wall time.
+#[tokio::test(start_paused = true)]
+async fn a_revoked_token_loses_its_event_stream() {
+    use http_body_util::BodyExt;
+    use mcp::streamable_http::{DEFAULT_SSE_REAUTHORIZE, SSE_KEEPALIVE_FRAME};
+
+    let config = config("revoke");
+    let store = config.bearer_token_store.clone();
+    let global = store
+        .create("listener", BearerTokenScope::Global)
+        .unwrap()
+        .token;
+    let (router, _broadcaster) = standard_mcp_router(config, LOOPBACK);
+
+    let mut request = Request::get("/")
+        .header("accept", "text/event-stream")
+        .header("authorization", format!("Bearer {global}"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(SocketAddr::from((
+            [127, 0, 0, 1],
+            44103,
+        ))));
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+    let start = tokio::time::Instant::now();
+
+    // Still active: the 15 s check passes and the keepalive follows.
+    let frame = body
+        .frame()
+        .await
+        .expect("the stream stays open while the token is active")
+        .expect("the stream does not fail");
+    assert_eq!(
+        frame.into_data().expect("a data frame").as_ref(),
+        SSE_KEEPALIVE_FRAME.as_bytes()
+    );
+
+    store.revoke("listener").unwrap();
+    assert!(
+        body.frame().await.is_none(),
+        "the stream ends once its token is revoked"
+    );
+    assert_eq!(start.elapsed(), 2 * DEFAULT_SSE_REAUTHORIZE);
+}
