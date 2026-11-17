@@ -46,13 +46,13 @@
 
   <article>
     <h2>MentisDB 0.12.3.60 &mdash; Hotfix: settings that survive a restart</h2>
-    <div class="meta">November 13, 2026</div>
+    <div class="meta">November 17, 2026</div>
 
     <p>
       Our release process calls for two independent code reviews, one adversarial and one
       on correctness. For 0.12.2.59 they ran after it shipped, and both found a serious
       problem. This hotfix fixes them, and the fixes went through a second review of their
-      own. Upgrade recommended, especially if you
+      own. It also closes two smaller security gaps those reviews found. Upgrade recommended, especially if you
       change settings from the dashboard.
     </p>
     <div class="callout">
@@ -93,7 +93,25 @@
       daemon applies at startup, and a bad one is refused with a message saying why.
     </p>
 
-    <h3>3. <code>source_episode</code> filters, for real</h3>
+    <h3>3. Security settings need a PIN</h3>
+    <p>
+      On a dashboard without a PIN, anyone who could reach it could change the settings
+      that protect the daemon, such as which networks webhooks may call and which host names
+      the dashboard answers to. Those settings, along with TLS, the bind address, bearer-token
+      enforcement, the data folder, the log file and the update source, now need a PIN and a
+      signed-in session. Without one they show as locked. Everything else, including setting
+      the PIN itself, still works without one.
+    </p>
+
+    <h3>4. A revoked token loses the event stream</h3>
+    <p>
+      The MCP event stream checked its token only when it opened, and since 0.12.2.59's
+      keepalive a stream can stay open for days. Revoking the token did not close it. The
+      stream now re-checks its token every 15 seconds and closes when the token is no longer
+      valid.
+    </p>
+
+    <h3>5. <code>source_episode</code> filters, for real</h3>
     <p>
       0.12.2.59 made <code>source_episode</code> searchable, but combined with a tag, type,
       role or agent filter it was silently ignored, so a search for one episode's
