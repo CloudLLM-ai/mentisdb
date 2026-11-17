@@ -1,6 +1,6 @@
 # MentisDB 0.12.3.60 (Hotfix: settings that survive a restart, filters that filter)
 
-**Date:** November 13, 2026
+**Date:** November 17, 2026
 
 A hotfix on top of [0.12.2.59](mentisdb-0.12.2.59-release-notes.md), from the independent
 reviews of that release. **Upgrade recommended**, especially if you change settings from the
@@ -44,6 +44,20 @@ fine but loaded as no PIN at all.
   nothing of ours behind it, only warns.
 - A blank or whitespace-padded PIN is refused. The PIN is no longer printed in the terminal
   config pane, at startup or after a save.
+- **Security settings need a PIN.** A dashboard without `MENTISDB_DASHBOARD_PIN` let anyone
+  who could reach it change the webhook SSRF allow-list (`MENTISDB_WEBHOOK_ALLOWED_CIDRS`)
+  and the Host allow-list that guards against DNS rebinding
+  (`MENTISDB_DASHBOARD_ALLOWED_HOSTS`), unless the daemon held private chains. Those two,
+  plus `MENTISDB_BEARER_TOKEN_ACCESS`, `MENTISDB_BIND_HOST`, `MENTISDB_TLS_CERT`,
+  `MENTISDB_TLS_KEY`, `MENTISDB_DIR`, `MENTISDB_LOG_FILE` and `MENTISDB_UPDATE_REPO`, now
+  need a PIN and a signed-in session. Without a PIN, a request touching any of them is
+  refused whole with 403 and the Settings screen shows them locked. Other settings, and
+  setting the PIN itself, still work without one.
+- **A revoked token loses the MCP event stream.** `GET /` checked its bearer token only
+  when it opened, so a stream opened with a token that was later revoked kept receiving
+  `tool_called` events for as long as the connection lasted, which the 0.12.2.59 keepalive
+  made indefinite. Built on cloudllm_mcp 0.4.2, the stream now re-checks its token every
+  15 s and closes at the first failure, so a revoked token sees at most 15 s more events.
 
 **What to check.** If you saved settings from the dashboard on 0.12.2.59 or earlier, open
 `<MENTISDB_DIR>/.env` (default `~/.cloudllm/mentisdb/.env`) and confirm `MENTISDB_DASHBOARD_PIN`
@@ -94,8 +108,8 @@ There is no data migration.
   filter".
 - `source_episode` has no length limit yet, and is not covered by the thought hash (it is
   covered by the signature).
-- The MCP event stream checks its bearer token when it opens; a stream opened with a token
-  that is later revoked stays open until it disconnects.
+- A PIN set from a PIN-less dashboard takes effect at the next restart; until then the
+  security settings stay locked.
 
 ## Benchmarks
 

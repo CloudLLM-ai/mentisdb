@@ -1,4 +1,4 @@
-0.12.3.60 NOV/13/2026
+0.12.3.60 NOV/17/2026
   - fix(security): the MCP event stream (`GET /`) checked its bearer token only when it
     opened, so a stream opened with a token that was later revoked or rescoped kept
     receiving `tool_called` events for as long as the connection lasted, which the
