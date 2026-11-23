@@ -1,3 +1,22 @@
+UNRELEASED
+  - feat(search): multi-hop recall with `mentisdb_probe` (REST `POST /v1/probe`, CLI
+    `mentisdb search probe -p CLUE -p CLUE`, library `MentisDb::query_probes`). A question
+    that no single memory answers ("what did the agent who fixed the WAL bug recommend for
+    retries?") is split by the agent into 1-8 short clue-probing sub-questions; each runs as
+    a ranked search with the shared filters, and the response lists the distinct hits (those
+    reached by several probes first, with the probes that reached them), the entity
+    candidates (concepts, tags, entity types and identifier-like names in the content that
+    hits of different probes share; a label on 80% or more of the hits is left out as
+    non-discriminating) and each probe's intent signals. `limit` is hits per probe (default
+    5, at most 25); `text` and `offset` are refused. Lean by default over MCP like ranked
+    search. The core skill teaches the protocol: probe the clues, take the entity they
+    converge on, then ranked-search that entity for the answer. Based on the structured
+    recall protocol in "MeMo: Memory as a Model" (arXiv 2605.15156), where a structured
+    protocol beat single-query recall by 21.7 points on BrowseComp-Plus and beat 50
+    unstructured turns.
+  - feat(search): `QueryIntent::signals()` names the intent signals a query sets; probe
+    responses report them per probe.
+
 0.12.3.60 NOV/17/2026
   - fix(security): the MCP event stream (`GET /`) checked its bearer token only when it
     opened, so a stream opened with a token that was later revoked or rescoped kept
