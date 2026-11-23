@@ -132,6 +132,37 @@ impl QueryIntent {
     }
 }
 
+impl QueryIntent {
+    /// Names of the signals that are set, in a fixed order: `temporal`,
+    /// `entity`, `agent`, `causal`, `semantic`, `summary`.
+    ///
+    /// Transports report these so an agent can see why a probe matched what it
+    /// did and narrow it (a time window for `temporal`, graph expansion for
+    /// `causal`, an agent filter for `agent`).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mentisdb::search::query_intent::QueryIntent;
+    ///
+    /// let intent = QueryIntent::classify("why did we drop the cache last week", &[]);
+    /// assert_eq!(intent.signals(), vec!["temporal", "causal"]);
+    /// ```
+    pub fn signals(&self) -> Vec<&'static str> {
+        [
+            (self.temporal, "temporal"),
+            (self.entity_focused, "entity"),
+            (self.agent_focused, "agent"),
+            (self.causal, "causal"),
+            (self.semantic, "semantic"),
+            (self.summary_or_global, "summary"),
+        ]
+        .into_iter()
+        .filter_map(|(set, name)| set.then_some(name))
+        .collect()
+    }
+}
+
 /// Relative route weights selected from a [`QueryIntent`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QueryRoutingPlan {
