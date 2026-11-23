@@ -36,7 +36,7 @@ After every call to `mentisdb_skill_md`, **write the returned content to your ha
 
 ## 🔎 SEARCH BEFORE YOU WRITE (READ THIS BEFORE EVERY APPEND)
 
-Appending is the most expensive thing you do to a chain — every thought is a forever-record that pollutes retrieval forever after. So **before** you call `mentisdb_append`, take 5–15 seconds and search the chain for related memory. The point of searching first is **not** to find citations; the point is to make a better decision about whether and how to write.
+Every thought is a forever-record that every later search wades through. So **before** `mentisdb_append`, search for related memory: not to find citations, but to decide whether and how to write.
 
 Run this routine **every time** you are about to write, regardless of `thought_type`:
 1. **Quick scan** — `mentisdb_recent_context(last_n=20)` to see what was just thought.
@@ -50,8 +50,7 @@ Use what you find to make **three** decisions, in this order.
 Don't write when the answer is "I already know this." Common cases where the right action is **no append**:
 
 - The fact / decision / lesson is already in the chain (perhaps in a recent `Summary` or `LessonLearned`). Add a `DerivedFrom` edge to a *new* thought only if you genuinely have something to add; otherwise stop.
-- It is short-lived, ephemeral, or session-scoped (a transient variable value, a half-formed hunch, a debug breadcrumb that won't matter tomorrow). Skip it. Use `scope: session` only if you genuinely might need it within the same session.
-- It is restated boilerplate ("user wants the project to work", "I should be careful") that adds no information beyond what every other thought already implies. Skip it.
+- It is short-lived (a transient value, a half-formed hunch, a debug breadcrumb) or boilerplate ("I should be careful"). Skip it; use `scope: session` only if you need it later this session.
 - The chain already has a `Constraint` or `LessonLearned` covering this; you can `Corrects` or `Supersedes` it instead of writing a parallel thought.
 
 **Rule of thumb:** if the new thought wouldn't change a future `mentisdb_ranked_search` answer for any plausible query, do not write it. A smaller, denser chain is dramatically more useful than a larger, noisy one.
@@ -93,6 +92,7 @@ Search **before replying** when the question touches the user's preferences, a p
 - **Hits are lean by default:** an absent field means its default (no `provenance` = public, unsigned, see `default_provenance`; no `role` = Memory; no `importance` = 0.5; no `chain_key` = the chain searched). `successor_of` names a matched older version this hit replaces; `version_status` / `successors` / `current_version` always show a contested or superseded memory. `compact=false` gives the full record (to verify a hash or signature, debug scores); so does `mentisdb_get_thought`.
 - Before proposing a plan: search `thought_types=["Constraint","Decision"]` for the topic.
 - On "why did we…": ranked search with `graph={"max_depth":2}`, then follow `refs` / `relations`.
+- **Multi-hop** (no one memory answers it: "what did the agent who fixed X recommend for Y?"): structure beats more searches. (1) `mentisdb_probe(probes=["who fixed X","recommendation for Y"])`, one clue each; (2) take the top `entities` label, which several probes reached (none? rephrase the clues, don't repeat them); (3) `mentisdb_ranked_search` scoped to it (`concepts_any`/`tags_any`, or its name in `text`) and answer from those hits.
 - Never answer "I don't know your preference" without having searched.
 
 ## 📋 THOUGHT TYPES
@@ -160,7 +160,8 @@ Git-like immutable version store for agent behaviour. Tools: `mentisdb_upload_sk
 
 | Need | Tool |
 |---|---|
-| **Most queries** (topical, semantic, multi-hop) | `mentisdb_ranked_search` (default) |
+| **Most queries** (topical, semantic) | `mentisdb_ranked_search` (default) |
+| Multi-hop: clues → entity → answer | `mentisdb_probe`, then `mentisdb_ranked_search` |
 | Strict keyword match, no expansion | `mentisdb_lexical_search` |
 | Durable context (preferences, constraints, decisions, goals) | `mentisdb_standing_context` |
 | Recent context | `mentisdb_recent_context(last_n=N)` |
@@ -197,7 +198,7 @@ Raw-log writes instead of rules. **New agent IDs for the same role** — see §A
 
 ### Sub-agents & Agent Identity
 
-When spawning sub-agents, the coordinator MUST tell each sub-agent which `agent_id` to use. Sub-agents do NOT pick their own identity. Acceptable patterns: reuse the coordinator's `agent_id`; use a pre-existing, explicitly created agent ID; or ask the user to register a new agent ID first. A sub-agent that follows the Mandatory Startup sequence and finds itself missing MUST stop and ask — it must never auto-create.
+The coordinator MUST tell each sub-agent which existing `agent_id` to use (its own, or one the user registered). A sub-agent that finds itself missing MUST stop and ask, never auto-create.
 
 ## 🐕 DOGFOODING — Use the Chain to Coordinate Your Own Work
 
