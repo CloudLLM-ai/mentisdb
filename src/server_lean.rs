@@ -19,7 +19,7 @@
 //!
 //! # 2. Lean is the default for search
 //!
-//! `mentisdb_ranked_search`, `mentisdb_federated_search`,
+//! `mentisdb_ranked_search`, `mentisdb_probe`, `mentisdb_federated_search`,
 //! `mentisdb_lexical_search` and `mentisdb_context_bundles` return lean hits
 //! unless the call passes `compact: false`. Over REST `compact` still defaults
 //! to `false`.
@@ -67,8 +67,9 @@ use crate::server::compact_thought_json;
 use serde_json::{json, Map, Value};
 
 /// Tools whose results are searched hits and honor the lean default.
-const LEAN_SEARCH_TOOLS: [&str; 4] = [
+const LEAN_SEARCH_TOOLS: [&str; 5] = [
     "mentisdb_ranked_search",
+    "mentisdb_probe",
     "mentisdb_federated_search",
     "mentisdb_lexical_search",
     "mentisdb_context_bundles",
@@ -149,6 +150,9 @@ impl LeanPlan {
             "mentisdb_ranked_search" | "mentisdb_federated_search" if self.compact => {
                 with_provenance_reminder(self.lean_ranked(output, tool == "mentisdb_ranked_search"))
             }
+            "mentisdb_probe" if self.compact => {
+                with_provenance_reminder(lean_probe(self.lean_ranked(output, true)))
+            }
             "mentisdb_lexical_search" if self.compact => {
                 with_provenance_reminder(lean_lexical(output))
             }
@@ -215,6 +219,17 @@ fn with_provenance_reminder(mut output: Value) -> Value {
             "default_provenance".into(),
             Value::String(PROVENANCE_REMINDER.into()),
         );
+    }
+    output
+}
+
+/// Round entity-candidate scores of a `mentisdb_probe` result; its `results`
+/// were already shaped like ranked hits.
+fn lean_probe(mut output: Value) -> Value {
+    if let Some(entities) = output.get_mut("entities").and_then(Value::as_array_mut) {
+        for entity in entities.iter_mut().filter_map(Value::as_object_mut) {
+            round_field(entity, "score");
+        }
     }
     output
 }

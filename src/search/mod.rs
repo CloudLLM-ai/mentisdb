@@ -61,6 +61,9 @@ pub mod lexical;
     )
 )]
 pub mod ppr;
+/// Multi-probe recall: fuse several sub-question searches into convergent
+/// hits and entity candidates.
+pub mod probe;
 /// Provenance path structures for graph expansion starting from lexical seeds.
 pub mod provenance;
 /// Pseudo-relevance feedback query expansion primitives.

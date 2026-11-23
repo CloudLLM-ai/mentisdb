@@ -1051,6 +1051,39 @@ fn search_commands() -> Vec<Command> {
     ];
     federated.extend(ranked_flags());
 
+    let mut probe = vec![
+        Flag::opt(
+            "probe",
+            "probes",
+            Kind::Text,
+            "TEXT",
+            "One clue-probing sub-question; repeat for each (1 to 8).",
+        )
+        .short('p')
+        .many()
+        .req(),
+        chain(),
+        Flag::opt(
+            "limit",
+            "limit",
+            Kind::Int,
+            "N",
+            "Hits kept per probe, 1 to 25 (default 5).",
+        ),
+    ];
+    probe.extend(graph_flags());
+    probe.extend(thought_filters());
+    probe.push(source_episode_filter());
+    probe.push(include_invalidated());
+    probe.extend(ranking_flags());
+    probe.push(Flag::opt(
+        "compact",
+        "compact",
+        Kind::Switch,
+        "",
+        "Return compact thoughts (no hashes, signatures, schema version, agent name or owner).",
+    ));
+
     let mut bundles = vec![text_opt("What to look for."), chain()];
     bundles.extend(windowed_limit_offset());
     bundles.extend(graph_flags());
@@ -1063,7 +1096,7 @@ fn search_commands() -> Vec<Command> {
         rest_post(
             &["search"],
             "Ranked search (lexical + vector + graph)",
-            "Searches a chain with the full ranking pipeline and returns scored hits. A query that is exactly the name of a search mode (lexical, filter, federated, bundles) must follow --.",
+            "Searches a chain with the full ranking pipeline and returns scored hits. A query that is exactly the name of a search mode (lexical, filter, federated, probe, bundles) must follow --.",
             "/v1/ranked-search",
         )
         .with(ranked)
@@ -1093,6 +1126,14 @@ fn search_commands() -> Vec<Command> {
         )
         .with(federated)
         .example("mentisdb search federated \"auth bug\" --chain backend --chain frontend"),
+        rest_post(
+            &["search", "probe"],
+            "Multi-hop recall over several sub-questions",
+            "Runs each --probe as a ranked search with the shared filters, then returns the distinct hits (those several probes reached first) and the entity candidates (concepts, tags or names carried by hits of different probes).",
+            "/v1/probe",
+        )
+        .with(probe)
+        .example("mentisdb search probe -p \"who fixed the WAL bug\" -p \"retry library recommendation\""),
         rest_post(
             &["search", "bundles"],
             "Search results grouped with their graph support",

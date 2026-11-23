@@ -23,10 +23,10 @@ Markdown, skill content, the recent-context prompt) print the raw text, and
 
 ## Ranking knobs
 
-`search`, `search federated` and `search bundles` (REST `ranked-search`,
-`federated-search`, `context-bundles`; MCP `mentisdb_ranked_search`,
-`mentisdb_federated_search`, `mentisdb_context_bundles`) accept the same ranking
-knobs. Each CLI flag is the REST/MCP request field of the same name with `-`
+`search`, `search federated`, `search probe` and `search bundles` (REST
+`ranked-search`, `federated-search`, `probe`, `context-bundles`; MCP
+`mentisdb_ranked_search`, `mentisdb_federated_search`, `mentisdb_probe`,
+`mentisdb_context_bundles`) accept the same ranking knobs. Each CLI flag is the REST/MCP request field of the same name with `-`
 for `_`; omitted knobs keep the library default.
 
 | REST / MCP field | CLI flag | Library | Default |
@@ -43,8 +43,9 @@ rejected with an error instead of silently falling back.
 
 ## Compact results
 
-`search` and `search federated` (REST `ranked-search` and `federated-search`; MCP
-`mentisdb_ranked_search` and `mentisdb_federated_search`) accept `compact`. It has no
+`search`, `search federated` and `search probe` (REST `ranked-search`,
+`federated-search` and `probe`; MCP `mentisdb_ranked_search`,
+`mentisdb_federated_search` and `mentisdb_probe`) accept `compact`. It has no
 effect on `search bundles` (`context-bundles`): that REST route shares the
 ranked request type, so it accepts the field and ignores it, and `search
 bundles` therefore has no `--compact` flag. `lexical-search` also accepts
@@ -76,6 +77,7 @@ Over streamable-HTTP MCP, `compact` defaults to `true` (REST, the CLI and
 | `mentisdb_lexical_search` | `POST /v1/lexical-search` | `search lexical` |
 | `mentisdb_ranked_search` | `POST /v1/ranked-search` | `search` (default mode) |
 | `mentisdb_federated_search` | `POST /v1/federated-search` | `search federated` |
+| `mentisdb_probe` | `POST /v1/probe` | `search probe` |
 | `mentisdb_context_bundles` | `POST /v1/context-bundles` | `search bundles` |
 | `mentisdb_summary_candidates` | `POST /v1/summary-candidates` | `thought candidates` |
 | `mentisdb_list_chains` | `GET /v1/chains` | `chain list` |
