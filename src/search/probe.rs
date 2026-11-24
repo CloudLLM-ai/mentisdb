@@ -12,11 +12,11 @@
 //!
 //! This module is the deterministic, storage-free part:
 //!
-//! - [`probe_labels`] extracts the labels (entity type, concepts, tags and
+//! - [`probe_labels`](crate::search::probe::probe_labels) extracts the labels (entity type, concepts, tags and
 //!   identifier-like terms from the content) that can name an entity.
-//! - [`converge_probes`] fuses the per-probe hit lists into
-//!   [`ConvergentHit`]s (memories ordered by how many probes reached them) and
-//!   [`EntityCandidate`]s (labels shared by memories from different probes).
+//! - [`converge_probes`](crate::search::probe::converge_probes) fuses the per-probe hit lists into
+//!   [`ConvergentHit`](crate::search::probe::ConvergentHit)s (memories ordered by how many probes reached them) and
+//!   [`EntityCandidate`](crate::search::probe::EntityCandidate)s (labels shared by memories from different probes).
 //!
 //! [`crate::MentisDb::query_probes`] runs the probes against a chain and calls
 //! both. Nothing here calls an LLM or writes to a chain; the calling agent
